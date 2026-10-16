@@ -1,0 +1,42 @@
+{
+  "name": "x402-three-layer-agent-payments",
+  "version": "1.1.0",
+  "private": true,
+  "type": "module",
+  "description": "x402 agent payments with three-layer separation of payment authority (PoC)",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "check": "npm run typecheck && npm test && npm run demo:local",
+    "demo:local": "tsx scripts/demo-local.ts",
+    "local:chain": "tsx scripts/local-chain.ts",
+    "facilitator": "tsx scripts/facilitator.ts",
+    "seller": "tsx src/counterparty/seller.ts",
+    "l2:control": "tsx src/layer2-control/service.ts",
+    "l3:verifier": "tsx src/layer3-settlement/service.ts",
+    "agent": "tsx src/main.ts",
+    "agent:scripted": "tsx src/main.ts --scripted",
+    "approve": "tsx scripts/approve.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.135.0",
+    "@x402/core": "2.28.0",
+    "@x402/evm": "2.28.0",
+    "@x402/express": "2.28.0",
+    "dotenv": "^18.0.0",
+    "express": "^5.3.0",
+    "viem": "^2.57.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.0.0",
+    "ganache": "7.9.2",
+    "solc": "0.8.24",
+    "tsx": "^4.23.0",
+    "typescript": "^7.0.0",
+    "vitest": "^5.0.0"
+  }
+}

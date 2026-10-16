@@ -1,0 +1,13 @@
+{
+  "mandateId": "mandate-poc-001",
+  "expiresAt": "2027-12-31T23:59:59Z",
+  "allowedSchemes": ["exact"],
+  "allowedPayees": [],
+  "allowedHosts": ["127.0.0.1:4021"],
+  "autoApproveMaxAtomic": "20000",
+  "hardCapPerPaymentAtomic": "100000",
+  "sessionBudgetAtomic": "100000",
+  "dailyBudgetAtomic": "500000",
+  "maxAuthorizationsPerMinute": 10,
+  "maxTimeoutSeconds": 300
+}

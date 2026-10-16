@@ -1,0 +1,63 @@
+# CLAUDE.md — x402 three-layer agent payments PoC
+
+**Read `SPEC.md` before changing anything.** It is normative and has requirement IDs. This file is the short operating guide.
+
+## What this repo is
+A Claude agent buys HTTP resources with x402 (v2, `exact`, EIP-3009 USDC). Payment authority is split into three processes:
+- **L1** `src/layer1-intent/`: the agent and the 402 transport loop. No keys.
+- **L2** `src/layer2-control/`: pure policy engine, sole signer, hash-chained ledger, HITL approvals. Port 4020.
+- **L3** `src/layer3-settlement/`: read-only on-chain verification and reconciliation into L2. Port 4023.
+
+The counterparty (seller :4021, local facilitator :4022) is in `src/counterparty/`; the facilitator process starts from `scripts/facilitator.ts`, which wraps the factory in `src/counterparty/facilitator.ts`. Cross-layer types live **only** in `src/shared/contracts.ts`.
+
+## Commands
+```bash
+npm install                    # not `npm ci` (ganache lockfile quirk)
+npm run typecheck
+npm test                       # policy, ledger, architecture, agent, on-chain e2e
+npm run demo:local             # 6 processes; expect "spent on-chain: 0.006 USDC" and "hash chain ok=true"
+npm run check                  # typecheck + test + demo:local (definition of done in one command)
+npx vitest run test/policy.test.ts -t "<name>"   # single test
+```
+
+## Hard rules (SPEC §4). Never break these to make something pass.
+1. A layer imports only `../shared/*` and its own folder. Cross-layer wiring happens only in `src/main.ts`, `scripts/` and `test/`.
+2. Within `src/`, only `src/layer2-control/signer.ts` touches key material (`scripts/` may derive local dev keys only). L1 never references `PAYER_PRIVATE_KEY`. L3 never gets a wallet client.
+3. `policy.ts` stays pure: time is an input, no I/O, and the LLM `purpose` text is never an input to a decision.
+4. Budgets come from the ledger. Never add a mutable spend counter.
+5. Authorize stays inside the serialized section (check → sign → append).
+6. The ledger is append-only. Never rewrite or delete entries; add a new entry type instead.
+7. CONFIRMED is final. Contradicting reports are stored with `anomaly: true`.
+8. Amounts are atomic-unit decimal strings; use `BigInt` math only.
+9. Use the `@x402/*` SDK helpers to encode and decode x402 headers. Don't hand-roll base64.
+10. Each caller keeps its own bearer token. Never let one token authorize two roles.
+
+## How to make common changes
+- **New policy rule:**
+  1. Add the check in `evaluateRequirement` with a snake_case rule ID.
+  2. Add the row to SPEC §8.2 (L2-2).
+  3. Add a test in `test/policy.test.ts`.
+  4. If it needs new context, add a field to `PolicyContext` and compute it in `service.ts` from the ledger.
+- **New contract field:** edit `src/shared/contracts.ts` and every producer and consumer, update SPEC §7, and extend the e2e assertions.
+- **New network:**
+  1. Add a profile in `src/shared/config.ts`.
+  2. Register the scheme in the signer, seller and (if local) facilitator.
+  3. Check the token's EIP-712 domain (`name`/`version`).
+- **New paid route:** add it to `CATALOG` in `src/counterparty/seller.ts`. If the scripted plan changes, update SPEC §8.1 L1-4 and T-E2E-01.
+- **Extensions** (AP2 mandate, remote signer, `upto`, Solana, MCP, SQLite, mTLS, OTel, refunds): follow SPEC §15. Implement one EXT-* per PR.
+
+## Definition of done
+`npm run typecheck` and `npm test` are green. `npm run demo:local` summary is unchanged, unless the change is intentional and SPEC is updated. SPEC is updated for any behavior or contract change. New behavior has tests. When you add a safety mechanism, show its test fails without it, as T-E2E-04 does for the mutex.
+
+## Environment
+- One env file per process: `ENV_FILE=env/<role>.env`, with templates in `env/*.env.example`.
+- Never create a shared `.env` containing `PAYER_PRIVATE_KEY`. The agent refuses to start if it can see that key.
+- `.local/` holds the deployment and ledger and is gitignored.
+- Base Sepolia needs a payer funded with test USDC (faucet.circle.com). The hosted facilitator pays gas.
+
+## Gotchas
+- Ignore ganache's `uws_linux` warning.
+- Development runs on Node 26 (SPEC §5 floor is Node ≥ 22). npm 11 skips some native install scripts; ganache falls back to JS.
+- Base Sepolia USDC's EIP-712 name is `"USDC"`; the local mock's is `"USD Coin"`.
+- Concurrency tests need `signerLatencyMs`; local signing is too fast to expose races.
+- Kill demo children by process group; otherwise ganache keeps port 8545 open.

@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "x402-3l/ledger-entry.schema.json",
+  "title": "LedgerEntry (one line of .local/ledger-<network>.jsonl)",
+  "type": "object",
+  "required": ["seq", "ts", "type", "data", "prevHash", "hash"],
+  "properties": {
+    "seq": { "type": "integer", "minimum": 0 },
+    "ts": { "type": "string", "format": "date-time" },
+    "type": { "enum": ["INTENT", "AUTHORIZED", "DENIED", "ESCALATED", "HUMAN_APPROVAL", "SETTLEMENT"] },
+    "sessionId": { "type": "string" },
+    "intentId": { "type": "string" },
+    "authorizationId": { "type": "string" },
+    "data": { "type": "object" },
+    "prevHash": { "$ref": "#/$defs/hex64" },
+    "hash": { "$ref": "#/$defs/hex64" }
+  },
+  "allOf": [
+    { "if": { "properties": { "type": { "const": "INTENT" } } },
+      "then": { "properties": { "data": {
+        "required": ["resourceUrl", "purpose", "accepts"],
+        "properties": { "resourceUrl": { "type": "string" }, "purpose": { "type": "string" }, "accepts": { "type": "array" } } } } } },
+    { "if": { "properties": { "type": { "const": "AUTHORIZED" } } },
+      "then": { "properties": { "data": {
+        "required": ["amount", "asset", "network", "payTo", "payer", "validBefore", "resourceUrl", "mandateId", "approvalRef"],
+        "properties": {
+          "amount": { "$ref": "#/$defs/atomic" }, "asset": { "type": "string" }, "network": { "type": "string" },
+          "payTo": { "type": "string" }, "payer": { "type": "string" }, "validBefore": { "type": "integer" },
+          "resourceUrl": { "type": "string" }, "mandateId": { "type": "string" },
+          "approvalRef": { "type": ["string", "null"], "pattern": "^apr_" } } } } } },
+    { "if": { "properties": { "type": { "const": "DENIED" } } },
+      "then": { "properties": { "data": {
+        "required": ["violations", "resourceKey"],
+        "properties": { "violations": { "$ref": "#/$defs/violations" }, "resourceKey": { "type": "string" } } } } } },
+    { "if": { "properties": { "type": { "const": "ESCALATED" } } },
+      "then": { "properties": { "data": {
+        "required": ["violations", "resourceKey", "payTo", "amount"],
+        "properties": { "violations": { "$ref": "#/$defs/violations" }, "resourceKey": { "type": "string" },
+          "payTo": { "type": "string" }, "amount": { "$ref": "#/$defs/atomic" } } } } } },
+    { "if": { "properties": { "type": { "const": "HUMAN_APPROVAL" } } },
+      "then": { "properties": { "data": {
+        "required": ["approvalId", "escalationId", "resourceKey", "payTo", "amount", "approver", "expiresAtMs"],
+        "properties": { "approvalId": { "type": "string", "pattern": "^apr_" }, "escalationId": { "type": "string" }, "resourceKey": { "type": "string" },
+          "payTo": { "type": "string" }, "amount": { "$ref": "#/$defs/atomic" },
+          "approver": { "type": "string" }, "expiresAtMs": { "type": "integer" } } } } } },
+    { "if": { "properties": { "type": { "const": "SETTLEMENT" } } },
+      "then": { "properties": { "data": {
+        "required": ["authorizationId", "status", "network", "finalityClass", "detail", "observedAt", "verified", "anomaly"],
+        "properties": {
+          "status": { "enum": ["CONFIRMED", "PENDING", "MISMATCH", "NOT_SETTLED"] },
+          "finalityClass": { "enum": ["included", "confirmed-depth", "l1-safe"] },
+          "transaction": { "type": "string" }, "blockNumber": { "type": "string" },
+          "confirmations": { "type": "integer" },
+          "verified": { "type": "object", "required": ["asset", "payer", "payTo", "amount"] },
+          "anomaly": { "type": "boolean" } } } } } }
+  ],
+  "$defs": {
+    "hex64": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "atomic": { "type": "string", "pattern": "^\\d+$" },
+    "violations": { "type": "array", "items": { "type": "object", "required": ["rule", "detail"],
+      "properties": { "rule": { "type": "string" }, "detail": { "type": "string" } } } }
+  }
+}

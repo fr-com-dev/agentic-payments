@@ -1,0 +1,19 @@
+[
+  {
+    "name": "fetch_resource",
+    "description": "Fetch an HTTP resource. If it costs money, payment is requested from the Control layer, which may authorize, deny or escalate it. You cannot sign or approve payments.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "url": { "type": "string" },
+        "purpose": { "type": "string" }
+      },
+      "required": ["url", "purpose"]
+    }
+  },
+  {
+    "name": "check_budget",
+    "description": "Return the session budget as reported by the Control layer.",
+    "input_schema": { "type": "object", "properties": {} }
+  }
+]
