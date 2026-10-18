@@ -3,7 +3,7 @@
 // AssetAmount (never a "$" string), so the asset and its EIP-712 domain come from the network profile.
 import { pathToFileURL } from "node:url";
 import express from "express";
-import { HTTPFacilitatorClient, type RouteConfig, type RoutesConfig } from "@x402/core/server";
+import type { FacilitatorClient, RouteConfig, RoutesConfig } from "@x402/core/server";
 import {
   ExpressAdapter,
   paymentMiddlewareFromHTTPServer,
@@ -11,7 +11,32 @@ import {
   x402ResourceServer,
 } from "@x402/express";
 import { ExactEvmScheme } from "@x402/evm/exact/server";
-import { loadEnv, networkProfile, sellerPort, SELLER_BIND_HOST, type NetworkProfile } from "../shared/config.js";
+import {
+  ConfigError,
+  facilitatorChoice,
+  loadEnv,
+  networkProfile,
+  sellerPort,
+  SELLER_BIND_HOST,
+  type NetworkProfile,
+} from "../shared/config.js";
+import {
+  CategorizedFacilitatorClient,
+  categorize,
+  facilitatorClientFor,
+  failureDetail,
+  type FailureHook,
+} from "./facilitator-client.js";
+import {
+  CDP_AUTH_HINT,
+  cdpCredentialsFromEnv,
+  cdpCredentialsPresent,
+  cdpFacilitatorClient,
+  keyIdSuffix,
+  makeRedactor,
+  validateCdpSecret,
+  type CdpCredential,
+} from "./cdp-facilitator.js";
 
 export interface CatalogItem {
   /** Route path as advertised in the catalog (weather shows its query parameter). */
@@ -58,19 +83,52 @@ export function sellerRoutes(net: NetworkProfile, payTo: string): Record<string,
   return routes;
 }
 
-/** CP-3: verify and settle always go to the profile's facilitator (local :4022 or the hosted one). */
-export function facilitatorClientFor(net: NetworkProfile): HTTPFacilitatorClient {
-  return new HTTPFacilitatorClient({ url: net.facilitatorUrl });
+/**
+ * The facilitator when the caller passes none (tests, harness): the profile's URL with the SDK default
+ * timeout, as before v1.2. `main()` always passes the CP-3 choice explicitly.
+ */
+export function defaultFacilitator(net: NetworkProfile): CategorizedFacilitatorClient {
+  return facilitatorClientFor({ kind: net.name === "local" ? "local" : "public", url: net.facilitatorUrl, authenticated: false });
+}
+
+const identity = (s: string) => s;
+
+/** One stderr line per facilitator failure (contracts/seller-errors.md); excerpts are redacted first. */
+export function facilitatorFailureLogger(redact: (s: string) => string = identity, authHint?: string): FailureHook {
+  return (category, operation, err) => {
+    console.error(`seller: facilitator ${category} during ${operation}: ${redact(failureDetail(err)).slice(0, 200)}`);
+    if (authHint && category === "authentication") console.error(`seller: facilitator authentication — ${authHint}`);
+  };
+}
+
+export interface PaymentMiddlewareOptions {
+  facilitator?: FacilitatorClient;
+  redact?: (s: string) => string;
+  /** Appended to `authentication` failure logs (the CDP clock/credential hint). */
+  authHint?: string;
 }
 
 /**
  * The x402 middleware with a lazy, retrying facilitator sync. The SDK's own startup sync is turned off:
  * if the facilitator starts after the seller, the first priced request would fail instead of retrying.
  * Here every priced request waits for a successful `/supported` sync, a failed sync is retried on the
- * next request, and while the facilitator is unreachable the seller answers 503 (never a bogus 402).
+ * next request, and while the facilitator fails the seller answers 503 with its category (CP-1 v1.2),
+ * never a bogus 402.
  */
-export function sellerPaymentMiddleware(net: NetworkProfile, routes: RoutesConfig): express.RequestHandler {
-  const resourceServer = new x402ResourceServer(facilitatorClientFor(net)).register(net.caip2, new ExactEvmScheme());
+export function sellerPaymentMiddleware(
+  net: NetworkProfile,
+  routes: RoutesConfig,
+  opts: PaymentMiddlewareOptions = {},
+): express.RequestHandler {
+  const facilitator = opts.facilitator ?? defaultFacilitator(net);
+  const log = facilitatorFailureLogger(opts.redact, opts.authHint);
+  // Verify/settle failures are logged by the client hook; /supported failures by the sync catch below.
+  if (facilitator instanceof CategorizedFacilitatorClient) {
+    facilitator.setFailureHook((category, operation, err) => {
+      if (operation !== "supported") log(category, operation, err);
+    });
+  }
+  const resourceServer = new x402ResourceServer(facilitator).register(net.caip2, new ExactEvmScheme());
   const httpServer = new x402HTTPResourceServer(resourceServer, routes);
   const x402 = paymentMiddlewareFromHTTPServer(httpServer, undefined, undefined, false);
   let synced: Promise<void> | null = null;
@@ -91,7 +149,9 @@ export function sellerPaymentMiddleware(net: NetworkProfile, routes: RoutesConfi
     try {
       await sync();
     } catch (err) {
-      res.status(503).json({ error: "facilitator unavailable", detail: String(err).slice(0, 200) });
+      const category = categorize(err);
+      log(category, "supported", err);
+      res.status(503).json({ error: `facilitator ${category}`, category });
       return;
     }
     return x402(req, res, next);
@@ -131,32 +191,68 @@ export function mountPaidHandlers(app: express.Express): void {
   });
 }
 
-export interface SellerOptions {
+export interface SellerOptions extends PaymentMiddlewareOptions {
   net: NetworkProfile;
   payTo: string;
 }
 
 /** The seller app: catalog first, then the x402 middleware, then the paid handlers. */
-export function createSellerApp({ net, payTo }: SellerOptions): express.Express {
+export function createSellerApp({ net, payTo, ...middleware }: SellerOptions): express.Express {
   const app = express();
   mountCatalog(app, net);
-  app.use(sellerPaymentMiddleware(net, sellerRoutes(net, payTo)));
+  app.use(sellerPaymentMiddleware(net, sellerRoutes(net, payTo), middleware));
   mountPaidHandlers(app);
   return app;
 }
 
-function main(): void {
+function fail(message: string): never {
+  console.error(`seller: ${message}`);
+  process.exit(1);
+}
+
+/** Startup validation order (contracts/seller-config.md): choice, CDP key ID, secret, secret parses, payTo. */
+async function main(): Promise<void> {
   loadEnv("seller");
   const net = networkProfile();
-  const payTo = process.env.SELLER_PAY_TO;
-  if (!payTo || !/^0x[0-9a-fA-F]{40}$/.test(payTo)) {
-    console.error("seller: SELLER_PAY_TO must be set to a 0x address (env/seller.env)");
-    process.exit(1);
+  let choice: ReturnType<typeof facilitatorChoice>;
+  try {
+    choice = facilitatorChoice(net);
+  } catch (err) {
+    fail(`invalid facilitator config: ${err instanceof ConfigError ? err.message : "unreadable configuration"}`);
   }
+
+  let cred: CdpCredential | undefined;
+  if (choice.kind === "cdp") {
+    try {
+      cred = cdpCredentialsFromEnv(process.env);
+      await validateCdpSecret(cred);
+    } catch (err) {
+      // Only the fixed ConfigError messages from cdp-facilitator.ts are printed, never library text.
+      fail(err instanceof ConfigError ? err.message : "invalid CDP credentials");
+    }
+  } else if (cdpCredentialsPresent(process.env)) {
+    console.error(`seller: CDP credentials set but unused (FACILITATOR=${choice.kind})`);
+  }
+
+  const payTo = process.env.SELLER_PAY_TO;
+  if (!payTo || !/^0x[0-9a-fA-F]{40}$/.test(payTo)) fail("SELLER_PAY_TO must be set to a 0x address (env/seller.env)");
+
+  const facilitator = cred
+    ? facilitatorClientFor(choice, { cdp: cdpFacilitatorClient(cred) })
+    : facilitatorClientFor(choice);
+  const app = createSellerApp({
+    net,
+    payTo,
+    facilitator,
+    ...(cred && { redact: makeRedactor(cred), authHint: CDP_AUTH_HINT }),
+  });
   const port = sellerPort();
-  createSellerApp({ net, payTo }).listen(port, SELLER_BIND_HOST, () => {
-    console.log(`seller listening on ${SELLER_BIND_HOST}:${port} (${net.caip2}, facilitator ${net.facilitatorUrl})`);
+  const keyNote = cred ? ` key=${keyIdSuffix(cred)}` : "";
+  app.listen(port, SELLER_BIND_HOST, () => {
+    console.log(
+      `seller listening on ${SELLER_BIND_HOST}:${port} (${net.caip2}, facilitator=${choice.kind} host=${new URL(choice.url).host}${keyNote})`,
+    );
   });
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main();
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) void main();

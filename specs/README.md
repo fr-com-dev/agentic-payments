@@ -14,6 +14,7 @@ the definition of done and the governance rules.
 | 006 | [counterparty-seller-network](006-counterparty-seller-network/spec.md) | Counterparty | CP-1..CP-5, CFG-1, §10 wire formats | EIP-712 domain correctness |
 | 007 | [process-isolation-security](007-process-isolation-security/spec.md) | Cross-cutting | §3.1, §3.3, CFG-2, T-ARCH-* | INV-1..4/13, SEC-1..9 consolidated, residual risks |
 | 008 | [local-demo-regression](008-local-demo-regression/spec.md) | Cross-cutting | L1-4 baseline, T-E2E-01, demo, §13, §14 M0–M7 | Definition of done, clean shutdown, §16 gotchas |
+| 009 | [cdp-facilitator-base-sepolia](009-cdp-facilitator-base-sepolia/spec.md) | Counterparty (+ L3-1 step 2) | CP-3, CFG-1/2 and §3.3 amended (CDP facilitator on Base Sepolia, CDP API key held only by the seller) | Fail-closed credentials, no silent facilitator fallback, offline baseline unchanged. In SPEC v1.2 |
 
 ## Traceability (SPEC.md ID → feature)
 
@@ -32,15 +33,18 @@ the definition of done and the governance rules.
 | L2-4, L2-4.1 | 003 |
 | L2-4.2 | 004 |
 | L2-5 | 002 (authorize, budget), 003 (reconcile, ledger/verify), 004 (approvals) |
-| L3-1, L3-2 | 005 |
-| CP-1..CP-5 | 006 (CP-3/CP-5 also in 008) |
-| CFG-1 | 006 |
+| L3-1, L3-2 | 005 (L3-1 step 2 amended by 009) |
+| CP-1..CP-5 | 006 (CP-3/CP-5 also in 008; CP-1 failure categories and CP-3 amended by 009) |
+| CFG-1 | 006, 009 (facilitator selection) |
 | CFG-2 | 007 |
 | CFG-3 | 002 |
 | SEC-1..SEC-9 | 007 (consolidated), with detail in 001 (1, 2), 002 (3, 6), 003 (5, 7, 9), 004 (8), 005 (4) |
+| SEC-10, SEC-11 | 009 (with 007 for A8 and the threat matrix, 005 for L3-1 step 2) |
+| CFG-2 seller.env, §3.3 CDP row, §4.1 A8 | 009, 007 |
+| T-CDP-01..09, T-E2E-06 | 009 |
 | T-POL-01..14 | 002 (T-POL-13 also in 004) |
 | T-LED-01..03 | 003 |
-| T-ARCH-* | 007 |
+| T-ARCH-* | 007 (T-ARCH-A8 by 009) |
 | T-AGT-01 | 001 |
 | T-E2E-01 | 008 (owner), 001, 002, 003, 005, 006 |
 | T-E2E-02 | 004 |

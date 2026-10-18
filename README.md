@@ -49,11 +49,38 @@ Each approval is single-use and expires after 600 s. An approval never overrides
 
 ## Base Sepolia
 
-Base Sepolia uses Circle's test USDC and the hosted facilitator (`https://x402.org/facilitator`), which pays gas. No local chain or facilitator runs.
+Base Sepolia uses Circle's test USDC. No local chain or facilitator runs.
 
-1. Fund the payer address with test USDC at <https://faucet.circle.com>.
-2. Set `NETWORK=base-sepolia` and fill `env/seller.env`, `env/l2-control.env` (payer key, `ALLOWED_PAYEES`, `ALLOWED_HOSTS`, all tokens), `env/l3-verifier.env` and `env/l1-agent.env`. Off the local network every bearer token must be set; there are no dev defaults.
-3. One terminal each:
+The seller verifies and settles through the **Coinbase Developer Platform (CDP) x402 facilitator** (`https://api.cdp.coinbase.com/platform/v2/x402`) by default. It pays gas, so the payer needs test USDC only. Every request is authenticated with a short-lived JWT signed by your CDP API key. The key goes in the seller's env file and nowhere else (SPEC §3.3, rule A8).
+
+> **Upgrading from v1.1:** an existing Base Sepolia setup without a CDP key now stops at seller startup. Either add the key below, or set `FACILITATOR=public` to keep using `https://x402.org/facilitator`.
+
+1. Create a **Secret API key** at <https://cdp.coinbase.com>, in a project used only by this seller, with the narrowest permissions CDP offers for x402. Don't use a key that controls a funded CDP wallet. Ed25519 keys are recommended. EC keys work as PKCS#8 or SEC1 PEM.
+   Create it in the **production** (Live) environment. A **Sandbox** key is rejected with 401 (keys are environment-scoped), and the CDP Sandbox has no x402 facilitator and no blockchain activity. Production still settles on Base Sepolia with test USDC.
+2. Fund the payer address with test USDC at <https://faucet.circle.com>.
+3. Fill one env file per process. Off the local network every bearer token must be set; there are no dev defaults.
+   - `env/seller.base-sepolia.env`: `NETWORK=base-sepolia`, `SELLER_PAY_TO`, `CDP_API_KEY_ID`, `CDP_API_KEY_SECRET`. Quote a PEM key; real newlines or `\n` both work.
+   - `env/l2-control.base-sepolia.env`: the payer key, `ALLOWED_PAYEES` (including `SELLER_PAY_TO`), `ALLOWED_HOSTS=127.0.0.1:4021`, and all tokens.
+   - `env/l3-verifier.base-sepolia.env` and `env/l1-agent.base-sepolia.env` (`SELLER_URL=http://127.0.0.1:4021`).
+4. Run the opt-in live acceptance run (T-E2E-06). It is not part of `npm run check`:
+
+```bash
+npm run demo:base-sepolia
+```
+
+It refuses to start (exit 2) unless the seller resolves to `FACILITATOR=cdp` with both CDP values set, and the `SELLER_URL`/`ALLOWED_HOSTS`/`ALLOWED_PAYEES` layout above holds. A passing run ends with:
+
+```text
+outcomes:           FREE, PAID, PAID, ESCALATED, DENIED, DENIED
+spent on-chain: 0.006 USDC
+budget:             spentOrReserved=6000 remaining=94000 (atomic)
+hash chain ok=true entries=<n>
+settlements:        2 CONFIRMED
+payer gas spent:    0 wei
+secret scan:        clean
+```
+
+Or run the processes yourself, one terminal each, with `ENV_FILE=env/<role>.base-sepolia.env`:
 
 ```bash
 npm run seller
@@ -61,6 +88,14 @@ npm run l2:control
 npm run l3:verifier
 npm run agent -- "<goal>"
 ```
+
+The seller logs which facilitator it uses, for example `facilitator=cdp host=api.cdp.coinbase.com key=…abcd`. Misconfigurations exit 1 with a fixed message that never echoes the secret.
+
+Facilitator failures reach the agent in two ways:
+- Before a challenge, priced routes answer 503 `{"error":"facilitator <category>","category":…}`. The category is `unavailable`, `authentication`, `rate-limited` or `unsupported`.
+- During a paid retry, the seller answers 502.
+
+A CDP JWT is valid for 120 s, so a skewed clock on the seller host shows up as `authentication`.
 
 ## Definition of done
 

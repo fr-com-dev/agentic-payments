@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { formatAtomic, networkProfile, readDeployment } from "../src/shared/config.js";
+import { facilitatorChoice, formatAtomic, networkProfile, readDeployment } from "../src/shared/config.js";
 
 const missingDeployment = join(tmpdir(), "x402-no-such-dir", "deployment.json");
 
@@ -159,7 +159,7 @@ import {
 import {
   CATALOG,
   createSellerApp,
-  facilitatorClientFor,
+  defaultFacilitator,
   mountCatalog,
   mountPaidHandlers,
   sellerPaymentMiddleware,
@@ -310,7 +310,10 @@ describe("local counterparty (006)", () => {
       let late: Server | undefined;
       try {
         expect((await fetch(`${s.url}/api/catalog`)).status).toBe(200);
-        expect((await fetch(`${s.url}/api/market-brief`)).status).toBe(503);
+        const down = await fetch(`${s.url}/api/market-brief`);
+        expect(down.status).toBe(503);
+        // SPEC v1.2 CP-1 (009 T011): the body names the category and carries no upstream detail.
+        expect(await down.json()).toEqual({ error: "facilitator unavailable", category: "unavailable" });
         const port = Number(new URL(lateUrl).port);
         late = await new Promise<Server>((r) => {
           const srv = lateApp.listen(port, "127.0.0.1", () => r(srv));
@@ -642,14 +645,19 @@ describe("Base Sepolia is configuration only (006 T030–T032)", () => {
     expect(networkProfile("local", { env: {}, deploymentFile: missingDeployment }).assetDomain.name).toBe("USD Coin");
   });
 
-  it("T032: the seller's facilitator URL comes from the profile, and the override wins", () => {
-    expect(facilitatorClientFor(networkProfile("base-sepolia", { env: {} })).url).toBe("https://x402.org/facilitator");
-    expect(facilitatorClientFor(networkProfile("local", { env: {}, deploymentFile: missingDeployment })).url).toBe(
-      "http://127.0.0.1:4022",
-    );
+  it("T032: the seller's facilitator URL comes from the profile, and the override wins (CP-3 v1.2)", () => {
+    // base-sepolia defaults to CDP since SPEC v1.2; x402.org is the explicit FACILITATOR=public choice.
+    const sepolia = networkProfile("base-sepolia", { env: {} });
+    expect(facilitatorChoice(sepolia, { FACILITATOR: "public" }).url).toBe("https://x402.org/facilitator");
+    expect(facilitatorChoice(sepolia, {}).url).toBe("https://api.cdp.coinbase.com/platform/v2/x402");
+    const local = networkProfile("local", { env: {}, deploymentFile: missingDeployment });
+    expect(facilitatorChoice(local, {}).url).toBe("http://127.0.0.1:4022");
+    expect(defaultFacilitator(local).url).toBe("http://127.0.0.1:4022");
     for (const name of ["local", "base-sepolia"]) {
-      const p = networkProfile(name, { env: { FACILITATOR_URL: "http://fac.example" }, deploymentFile: missingDeployment });
-      expect(facilitatorClientFor(p).url).toBe("http://fac.example");
+      const env = { FACILITATOR_URL: "http://fac.example" };
+      const p = networkProfile(name, { env, deploymentFile: missingDeployment });
+      expect(facilitatorChoice(p, name === "local" ? env : { ...env, FACILITATOR: "public" }).url).toBe("http://fac.example");
+      expect(defaultFacilitator(p).url).toBe("http://fac.example");
     }
   });
 });

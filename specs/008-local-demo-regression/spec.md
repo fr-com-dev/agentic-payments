@@ -351,3 +351,4 @@ paid fetch.
   facilitator, mock token, network profiles), 007 (process topology).
 - How the demo, scripts and test runner are configured is specified in SPEC.md §5, §6, §13
   and §16.
+- *(Amended by 009, SPEC v1.2.)* The shared demo helpers move to `scripts/demo-lib.ts`, and the local demo's output is byte-identical. A second, opt-in demo, `npm run demo:base-sepolia` (T-E2E-06), reuses them for a live Base Sepolia run through the CDP facilitator. It is not part of `npm run check`, and it never changes the local baseline.

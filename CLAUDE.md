@@ -17,12 +17,13 @@ npm run typecheck
 npm test                       # policy, ledger, architecture, agent, on-chain e2e
 npm run demo:local             # 6 processes; expect "spent on-chain: 0.006 USDC" and "hash chain ok=true"
 npm run check                  # typecheck + test + demo:local (definition of done in one command)
+npm run demo:base-sepolia      # opt-in live run through the CDP facilitator; needs env/*.base-sepolia.env
 npx vitest run test/policy.test.ts -t "<name>"   # single test
 ```
 
 ## Hard rules (SPEC §4). Never break these to make something pass.
 1. A layer imports only `../shared/*` and its own folder. Cross-layer wiring happens only in `src/main.ts`, `scripts/` and `test/`.
-2. Within `src/`, only `src/layer2-control/signer.ts` touches key material (`scripts/` may derive local dev keys only). L1 never references `PAYER_PRIVATE_KEY`. L3 never gets a wallet client.
+2. Within `src/`, only `src/layer2-control/signer.ts` touches payment key material (`scripts/` may derive local dev keys only). The seller's CDP API credential is an auth credential confined to `src/counterparty/cdp-facilitator.ts` (A8). L1 never references `PAYER_PRIVATE_KEY`. L3 never gets a wallet client.
 3. `policy.ts` stays pure: time is an input, no I/O, and the LLM `purpose` text is never an input to a decision.
 4. Budgets come from the ledger. Never add a mutable spend counter.
 5. Authorize stays inside the serialized section (check → sign → append).
@@ -54,6 +55,7 @@ npx vitest run test/policy.test.ts -t "<name>"   # single test
 - Never create a shared `.env` containing `PAYER_PRIVATE_KEY`. The agent refuses to start if it can see that key.
 - `.local/` holds the deployment and ledger and is gitignored.
 - Base Sepolia needs a payer funded with test USDC (faucet.circle.com). The hosted facilitator pays gas.
+- On Base Sepolia the seller uses the CDP facilitator by default. The CDP API key (`CDP_API_KEY_ID`/`CDP_API_KEY_SECRET`) goes only in the seller's env file. `FACILITATOR=public` opts out to x402.org.
 
 ## Gotchas
 - Ignore ganache's `uws_linux` warning.
@@ -61,3 +63,5 @@ npx vitest run test/policy.test.ts -t "<name>"   # single test
 - Base Sepolia USDC's EIP-712 name is `"USDC"`; the local mock's is `"USD Coin"`.
 - Concurrency tests need `signerLatencyMs`; local signing is too fast to expose races.
 - Kill demo children by process group; otherwise ganache keeps port 8545 open.
+- CDP JWTs expire in 120 s; a skewed host clock shows up as `facilitator authentication` errors.
+- A CDP **Sandbox** key also shows up as `facilitator authentication` (401). Keys are environment-scoped, and the Sandbox has no x402 facilitator. Use a production key; it still settles on Base Sepolia.

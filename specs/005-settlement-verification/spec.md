@@ -47,7 +47,7 @@ different amount. The verifier returns `MISMATCH`. Verified by T-E2E-03 (L3 side
 **Acceptance Scenarios**:
 
 1. **Given** a claim with no payment response, **When** verified, **Then** the status is `NOT_SETTLED`.
-2. **Given** a payment response that cannot be decoded, reports `success: false`, or has no transaction, **When** verified, **Then** the status is `NOT_SETTLED`.
+2. **Given** a payment response that cannot be decoded, reports `success: false`, or has no transaction, **When** verified, **Then** the status is `NOT_SETTLED`. *(Amended by 009, SPEC v1.2 L3-1 step 2: a `success: false` response that carries a 32-byte transaction hash is checked on-chain like a success claim; only a failure without a hash is `NOT_SETTLED` from the claim alone. SEC-11, T-CDP-06.)*
 3. **Given** a payment response whose network differs from the requirement's network, **When** verified, **Then** the status is `MISMATCH`.
 4. **Given** a forged payment response that references a transaction whose Transfer amount differs from the claim, **When** verified, **Then** the status is `MISMATCH`.
 5. **Given** a referenced transaction that reverted, **When** verified, **Then** the status is `NOT_SETTLED`.
@@ -108,7 +108,7 @@ reconciled into L2, and the original request returns without waiting for them.
 
 - **FR-001**: The verifier MUST derive the finality class from the requirement's amount: `included` for ≤ 10,000; `confirmed-depth` for ≤ 1,000,000; `l1-safe` for > 1,000,000 atomic units. *(SPEC: L3-1 step 1, finality table)*
 - **FR-002**: Every report MUST include a `verified` object of {asset, payer, payTo, amount} taken from the claim, plus the network, the finality class, a detail message and an observed-at timestamp. *(SPEC: L3-1 step 1, §7 SettlementReport)*
-- **FR-003**: The verifier MUST return `NOT_SETTLED` when the payment response is absent, cannot be decoded, reports no success, or has no transaction. *(SPEC: L3-1 step 2)*
+- **FR-003**: The verifier MUST return `NOT_SETTLED` when the payment response is absent, cannot be decoded, reports no success, or has no transaction. *(SPEC: L3-1 step 2)* *(Amended by 009, SPEC v1.2 L3-1 step 2: a `success: false` response that carries a 32-byte transaction hash is checked on-chain like a success claim; only a failure without a hash is `NOT_SETTLED` from the claim alone. SEC-11, T-CDP-06.)*
 - **FR-004**: The verifier MUST return `MISMATCH` when the settlement's network differs from the requirement's network. *(SPEC: L3-1 step 3)*
 - **FR-005**: The verifier MUST wait for the transaction receipt for up to the wait window, polling at the poll interval. A timeout MUST yield `PENDING`, and a non-success receipt MUST yield `NOT_SETTLED`. *(SPEC: L3-1 step 4)*
 - **FR-006**: The verifier MUST require at least one token Transfer event emitted by the requirement's asset contract with `from == payer`, `to == payTo` and `value == amount`, comparing addresses case-insensitively. Otherwise it MUST return `MISMATCH`. *(SPEC: L3-1 step 5, INV-10)*

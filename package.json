@@ -12,6 +12,7 @@
     "test": "vitest run",
     "check": "npm run typecheck && npm test && npm run demo:local",
     "demo:local": "tsx scripts/demo-local.ts",
+    "demo:base-sepolia": "tsx scripts/demo-base-sepolia.ts",
     "local:chain": "tsx scripts/local-chain.ts",
     "facilitator": "tsx scripts/facilitator.ts",
     "seller": "tsx src/counterparty/seller.ts",
@@ -23,6 +24,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.135.0",
+    "@coinbase/cdp-sdk": "1.59.0",
     "@x402/core": "2.28.0",
     "@x402/evm": "2.28.0",
     "@x402/express": "2.28.0",

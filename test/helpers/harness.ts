@@ -7,6 +7,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type express from "express";
+import type { FacilitatorClient } from "@x402/core/server";
 import { createPublicClient, http, type Address } from "viem";
 import { mnemonicToAccount } from "viem/accounts";
 import { ACCOUNT_INDEX, LOCAL_MNEMONIC, localChain, localDevKeys, startLocalChain, type LocalChain } from "../../scripts/local-chain-lib.js";
@@ -29,6 +30,11 @@ export interface HarnessOptions {
   ports?: Partial<{ chain: number; control: number; seller: number; facilitator: number; settlement: number }>;
   /** Overrides on the default mandate (shape owned by 002). Allowlists are set by the harness. */
   mandateOverrides?: Partial<SpendingMandate>;
+  /**
+   * 009: the seller's facilitator client, built from the local facilitator's URL (for example, a CDP
+   * stub in front of it). Default: the seller's own client for that URL, as before.
+   */
+  sellerFacilitator?: (localFacilitatorUrl: string) => Promise<FacilitatorClient>;
 }
 
 export interface Harness {
@@ -94,7 +100,12 @@ export async function startHarness(opts: HarnessOptions = {}): Promise<Harness> 
     );
     const net = networkProfile("local", { env: { FACILITATOR_URL: facilitator }, deploymentFile });
     // Research R4: bind on 0.0.0.0; 127.0.0.1:<port> is allowlisted, localhost:<port> is the alias.
-    const seller = await up(createSellerApp({ net, payTo }), opts.ports?.seller, "0.0.0.0");
+    const sellerFacilitator = opts.sellerFacilitator ? await opts.sellerFacilitator(facilitator) : undefined;
+    const seller = await up(
+      createSellerApp({ net, payTo, ...(sellerFacilitator && { facilitator: sellerFacilitator }) }),
+      opts.ports?.seller,
+      "0.0.0.0",
+    );
 
     const json = { ...(DEFAULT_MANDATE as Record<string, unknown>), ...(opts.mandateOverrides ?? {}) };
     const mandate = buildMandate(json, net, { ALLOWED_HOSTS: new URL(seller).host, ALLOWED_PAYEES: payTo });

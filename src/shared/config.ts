@@ -123,6 +123,46 @@ export function networkProfile(name?: string, opts: NetworkProfileOptions = {}):
   throw new ConfigError(`unknown network "${selected}" (expected "local" or "base-sepolia")`);
 }
 
+// ---------------------------------------------------------------------------
+// CP-3 facilitator selection (009, SPEC v1.2). Pure; never reads the CDP credential (A8).
+// ---------------------------------------------------------------------------
+
+export type FacilitatorKind = "local" | "public" | "cdp";
+
+export const CDP_FACILITATOR_URL = "https://api.cdp.coinbase.com/platform/v2/x402";
+/** Per-request timeout for hosted facilitators (FR-017). The local facilitator keeps the SDK default. */
+export const HOSTED_FACILITATOR_TIMEOUT_MS = 30_000;
+
+export interface FacilitatorChoice {
+  kind: FacilitatorKind;
+  url: string;
+  /** Absent for `local`: the SDK default applies, so the local baseline is unchanged. */
+  timeoutMs?: number;
+  authenticated: boolean;
+}
+
+/**
+ * CP-3 (contracts/seller-config.md). Resolves the seller's facilitator once at startup from
+ * `FACILITATOR` (default `local` on local, `cdp` on base-sepolia). Every invalid combination throws.
+ */
+export function facilitatorChoice(net: NetworkProfile, env: Env = process.env): FacilitatorChoice {
+  const raw = env.FACILITATOR || undefined;
+  if (raw !== undefined && raw !== "local" && raw !== "public" && raw !== "cdp") {
+    throw new ConfigError(`unknown FACILITATOR "${raw}" (expected local, public or cdp)`);
+  }
+  const kind: FacilitatorKind = raw ?? (net.name === "local" ? "local" : "cdp");
+  if (net.name === "local") {
+    if (kind !== "local") throw new ConfigError(`FACILITATOR=${kind} is not valid on NETWORK=local`);
+    return { kind, url: net.facilitatorUrl, authenticated: false };
+  }
+  if (kind === "local") throw new ConfigError("FACILITATOR=local is only valid on NETWORK=local");
+  if (kind === "public") {
+    return { kind, url: net.facilitatorUrl, timeoutMs: HOSTED_FACILITATOR_TIMEOUT_MS, authenticated: false };
+  }
+  if (env.FACILITATOR_URL) throw new ConfigError("FACILITATOR=cdp cannot be combined with FACILITATOR_URL");
+  return { kind, url: CDP_FACILITATOR_URL, timeoutMs: HOSTED_FACILITATOR_TIMEOUT_MS, authenticated: true };
+}
+
 /** Formats an atomic-unit decimal string with BigInt math only (Principle VI). Display use only. */
 export function formatAtomic(amountAtomic: string, decimals: number): string {
   if (!/^\d+$/.test(amountAtomic)) throw new ConfigError(`not an atomic amount: "${amountAtomic}"`);

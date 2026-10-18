@@ -3,12 +3,25 @@
 | Field | Value |
 |---|---|
 | Spec ID | X402-3L-SPEC |
-| Version | 1.1 (2026-10-16). v1.0 described the original PoC; v1.1 is the build target for the spec-kit plans in `specs/` |
+| Version | 1.2 (2026-10-17). v1.0 described the original PoC; v1.1 is the build target for the spec-kit plans in `specs/`; v1.2 adds the CDP facilitator on Base Sepolia (`specs/009`) |
 | Owner | Fabricio Rojas |
 | Status | Implemented PoC; this spec is the source of truth for changes |
 | Reference | IMF Note 2026/004, *How Agentic AI Will Reshape Payments* (three-layer model) |
 
 ---
+
+## Changes in 1.2
+
+From `specs/009-cdp-facilitator-base-sepolia`. No `INV-*` is weakened. The constitution moves to v1.1.0 (MINOR: the stack gains the CDP SDK, and Principle V gains a third-party credential bullet).
+
+| Area | Change |
+|---|---|
+| §1.2, CP-3, CFG-1 | On `base-sepolia` the seller defaults to the authenticated CDP x402 facilitator (`FACILITATOR=cdp`). `FACILITATOR=public` opts back into `https://x402.org/facilitator`. Invalid combinations fail at startup, and there is no runtime fallback. |
+| §3.3, CFG-2, §4.1 | A new secret, `CDP_API_KEY_ID`/`CDP_API_KEY_SECRET`, is held by the seller only. New architecture rule A8 confines it to `src/counterparty/cdp-facilitator.ts` and `env/seller.env.example`. |
+| §5 | `@coinbase/cdp-sdk` 1.59.0 (exact). The seller only, and only `generateJwt` from `@coinbase/cdp-sdk/auth`. |
+| CP-1 | Facilitator failures map to four categories: `unavailable`, `authentication`, `rate-limited`, `unsupported`. Before a challenge they give 503 `{error, category}`; during a paid retry, 502 `{error}`. Hosted facilitator calls time out after 30 s. |
+| L3-1 | Step 2: a `PAYMENT-RESPONSE` that reports failure but carries a transaction hash is checked on-chain, not trusted (INV-10). |
+| §11, §12, §13, §16 | SEC-10 and SEC-11; T-CDP-01..09, T-ARCH-A8 and T-E2E-06; `npm run demo:base-sepolia`; the CDP JWT clock-skew gotcha. |
 
 ## Changes in 1.1
 
@@ -53,7 +66,7 @@ Show, as runnable code, that an LLM agent can buy HTTP resources with x402 stabl
 ### 1.2 In scope
 - x402 protocol v2, scheme `exact`, EVM, EIP-3009 `transferWithAuthorization` (USDC).
 - Networks: `local` (ganache, chainId 31337, MockUSDC) and `base-sepolia` (chainId 84532, Circle USDC).
-- One buyer agent (Claude tool-use, or a scripted agent with no LLM), one seller API, one facilitator.
+- One buyer agent (Claude tool-use, or a scripted agent with no LLM), one seller API, one facilitator. On `base-sepolia` the facilitator is Coinbase Developer Platform's hosted x402 facilitator by default (CP-3).
 - Spending mandate, human-in-the-loop (HITL) escalation, hash-chained audit ledger, on-chain settlement verification.
 
 ### 1.3 Out of scope (v1)
@@ -128,6 +141,9 @@ sequenceDiagram
 | `SETTLEMENT_TOKEN` (L3→L2) | — | ✅ verifies | ✅ | — | — | — |
 | `OPERATOR_TOKEN` (human→L2) | — | ✅ verifies | — | — | — | ✅ |
 | `FACILITATOR_PRIVATE_KEY` | — | — | — | — | ✅ (local) | — |
+| `CDP_API_KEY_ID` / `CDP_API_KEY_SECRET` | — | — | — | ✅ (`FACILITATOR=cdp`) | — | — |
+
+The CDP API credential authenticates the seller to the CDP facilitator. It cannot authorize an on-chain transfer, so it is not payment key material (INV-2). Rule A8 confines it to one file.
 
 ---
 
@@ -162,6 +178,7 @@ sequenceDiagram
 | A5 | INV-3 | `src/layer1-intent/**` | string or identifier `PAYER_PRIVATE_KEY` |
 | A6 | INV-5 | `src/layer2-control/policy.ts` | I/O or clock imports and calls (`node:*`, `fs`, `http`, `express`, `viem`, `@anthropic-ai/*`, `Date.now`, `new Date()`, `fetch(`, `Math.random`, `console.`), or code access to `purpose` |
 | A7 | §10 | all layer folders | `Buffer.from(…, "base64")`, `atob` or `btoa` in a file that mentions an x402 header name |
+| A8 | §3.3, SEC-10 | `src/**`, `scripts/**`, `env/*.env.example` (`test/**` exempt) | `CDP_API_KEY_ID`, `CDP_API_KEY_SECRET` or an `@coinbase/cdp-sdk` import outside `src/counterparty/cdp-facilitator.ts` and `env/seller.env.example` |
 
 Each rule has a fixture under `test/fixtures/arch/` that must trip it (Principle VIII). T-ARCH-ENV checks that each `env/*.env.example` holds only the variables its process may see (§3.3, CFG-2).
 
@@ -179,6 +196,7 @@ Each rule has a fixture under `test/fixtures/arch/` that must trip it (Principle
 | Tests | vitest (`fileParallelism: false`, 120 s timeouts) | ^5.0 |
 | Local chain (dev) | ganache (hardfork `shanghai`) + solc 0.8.24 (`evmVersion: shanghai`, optimizer 200) | 7.9.2 / 0.8.24 |
 | Config | dotenv, one file per process via `ENV_FILE` | ^18 |
+| CDP facilitator auth (seller only) | `@coinbase/cdp-sdk`, `./auth` subpath only | 1.59.0 (exact) |
 
 Resolved versions (v1.1, `package-lock.json`): typescript 7.0.2, tsx 4.23.15, vitest 5.0.5, viem 2.57.7, express 5.3.0, `@x402/*` 2.28.0, `@anthropic-ai/sdk` 0.135.0, dotenv 18.0.8, ganache 7.9.2, solc 0.8.24, `@types/node` 22.x. `engines.node` is `>=22`; development also runs on Node 26. npm ≥ 11 skips dependency install scripts by default. Ganache falls back to its JavaScript implementations, which is harmless.
 
@@ -193,6 +211,7 @@ SDK entry points in use:
 | `ExactEvmScheme` from `@x402/evm/exact/facilitator`, `toFacilitatorEvmSigner` from `@x402/evm` | facilitator |
 | `x402Facilitator` from `@x402/core/facilitator` | facilitator |
 | `paymentMiddleware`, `x402ResourceServer` from `@x402/express`; `HTTPFacilitatorClient` from `@x402/core/server` | seller |
+| `generateJwt` from `@coinbase/cdp-sdk/auth` (CDP facilitator JWTs; the `./x402` barrel is not used because it loads the optional `@x402/svm` peer) | seller (`src/counterparty/cdp-facilitator.ts` only) |
 | Types from `@x402/core/types` | contracts |
 
 ---
@@ -207,7 +226,9 @@ scripts/
   local-chain-lib.ts             start ganache, compile + deploy MockUSDC, mint 10 USDC to payer, localDevKeys()
   facilitator.ts                 facilitator entry point: loads env, derives its account, starts the factory
   local-chain.ts                 CLI wrapper
+  demo-lib.ts                    shared demo helpers: env reading, child envs, process groups, readiness, summary
   demo-local.ts                  6-process orchestrated demo
+  demo-base-sepolia.ts           opt-in live run through the CDP facilitator (T-E2E-06)
   approve.ts                     HITL operator CLI
   solc.d.ts                      type shim
 src/
@@ -230,14 +251,18 @@ src/
     service.ts                   HTTP API + reconciliation + recheck (L3-2)
   counterparty/
     seller.ts                    x402 seller API (CP-1)
+    facilitator-client.ts        facilitator client selection and failure categories (CP-1, CP-3); no credentials
+    cdp-facilitator.ts           CDP JWT-authenticated facilitator client; the only reader of the CDP credential (A8)
     facilitator.ts               local facilitator factory, takes a ready account (CP-2)
   main.ts                        composition root for the agent process
 test/
   policy.test.ts  ledger.test.ts  architecture.test.ts  agent.test.ts  e2e.local.test.ts
   counterparty.test.ts  verifier.test.ts  settlement-service.test.ts  auth.test.ts  demo.local.test.ts
+  cdp-config.test.ts  cdp-auth.test.ts  cdp-isolation.test.ts  cdp-failures.test.ts
   helpers/harness.ts             in-process multi-service harness shared by e2e suites
   helpers/fake-public-client.ts  deterministic read-only chain client for L3 unit tests
-  fixtures/arch/                 one violating fixture per architecture rule A1–A7
+  helpers/cdp-stub.ts            offline CDP facilitator stub: verifies JWTs, delegates to the local facilitator
+  fixtures/arch/                 one violating fixture per architecture rule A1–A8
 ```
 
 Runtime artifacts go in `.local/` (gitignored): `deployment.json` and `ledger-<network>.jsonl`.
@@ -458,7 +483,7 @@ Reconcile algorithm. It runs inside the same serialized section as authorize, so
 **L3-1 Verifier** `verify(claim) → SettlementReport`, with the read-only viem public client on `net.rpcUrl`:
 
 1. If `claim.requirement.amount` is not an integer string → `MISMATCH`. Otherwise `amount = BigInt(claim.requirement.amount)`. `finalityClass = finalityClassFor(amount, policy)`. `verified = {asset, payer, payTo, amount}` from the claim.
-2. No `PAYMENT-RESPONSE` → `NOT_SETTLED`. If decoding fails → `NOT_SETTLED`. If `!success` or there is no `transaction` → `NOT_SETTLED`.
+2. No `PAYMENT-RESPONSE` → `NOT_SETTLED`. If decoding fails → `NOT_SETTLED`. If `transaction` is not a 32-byte hex hash → `NOT_SETTLED`. Otherwise continue with step 3, **whether `success` is true or false**: a facilitator's failure claim is not proof that nothing settled (INV-10). When `!success`, the report's `detail` starts with `facilitator reported failure (<errorReason>); ` before the step 3–6 outcome. (v1.2, SEC-11. A hosted facilitator can return `settlement_pending` with a broadcast hash.)
 3. `settle.network ≠ requirement.network` → `MISMATCH`.
 4. `waitForTransactionReceipt(hash, timeout = waitMs, polling = pollMs)`. Timeout → `PENDING`. Any other RPC error → `PENDING` with the reason in `detail` (the amount stays committed and L3-2 re-checks it). If the status is not `success` → `NOT_SETTLED`. Any other unexpected verifier error also gives `PENDING`, never a 5xx.
 5. Parse ERC-20 `Transfer` logs emitted by `requirement.asset`. One log must match `from == payer`, `to == payTo` and `value == amount` (case-insensitive addresses). If none does → `MISMATCH`.
@@ -482,6 +507,20 @@ Defaults: `waitMs = 45000`, `pollMs = 1000`. One deadline (`start + waitMs`) cov
 - `x402ResourceServer(HTTPFacilitatorClient{url: net.facilitatorUrl}).register(net.caip2, new ExactEvmScheme())`.
 - Each priced route accepts one option: `{ scheme:"exact", network, payTo, maxTimeoutSeconds:120, price:{ asset: net.asset, amount, extra: net.assetDomain } }` (an explicit `AssetAmount`, not a "$" string).
 - The seller does not sync with the facilitator at startup. It syncs lazily on the first priced request and retries; while the facilitator is unreachable, priced routes answer 503 and the catalog stays available.
+- Facilitator failures (v1.2) map to four categories, each with its own response:
+
+  | Category | Raised when |
+  |---|---|
+  | `unavailable` | timeout, network error, 5xx, malformed body |
+  | `authentication` | 401 or 403 |
+  | `rate-limited` | 429, or 402 from the facilitator |
+  | `unsupported` | `exact` on the route's network is missing from `/supported` |
+
+  - Before a challenge, priced routes answer 503 `{"error":"facilitator <category>","category":"<category>"}`.
+  - During a paid retry, the seller answers 502 `{"error":"facilitator <category>"}` and does not serve the resource.
+  - Verification rejections and settlement failures keep the SDK's x402 402 responses unchanged. A `PAYMENT-RESPONSE` passes through any transaction hash.
+  - Every hosted facilitator call (`public`, `cdp`) has a 30 s timeout. The local facilitator keeps the SDK default.
+  - Each failure logs one stderr line: `seller: facilitator <category> during <op>: <redacted excerpt>`.
 - `GET /api/catalog` is free and is mounted **before** the payment middleware. It returns `{network, asset, decimals, items:[{path, priceAtomic, description}]}`.
 
 | Route | Amount | Body (mock, deterministic) |
@@ -496,7 +535,18 @@ Defaults: `waitMs = 45000`, `pollMs = 1000`. One deadline (`start + waitMs`) cov
 - `x402Facilitator().register(caip2, new ExactEvmScheme(toFacilitatorEvmSigner({...viem wallet+public actions, address}, {confirmationTimeoutMs:30000})))`.
 - Endpoints: `GET /supported`, `POST /verify`, `POST /settle`. The body is `{x402Version, paymentPayload, paymentRequirements}`. Exceptions map to 400 with an x402-shaped error body: `{isValid:false, invalidReason}` for `/verify`, and `{success:false, errorReason}` for `/settle`.
 
-**CP-3 Base Sepolia**: the seller uses `FACILITATOR_URL` (default `https://x402.org/facilitator`). No local facilitator runs.
+**CP-3 Base Sepolia** (v1.2): no local facilitator runs. The seller's facilitator is chosen once at startup by `facilitatorChoice(net, env)` and never changes at runtime. There is no fallback.
+
+| `NETWORK` | `FACILITATOR` | `FACILITATOR_URL` | Result |
+|---|---|---|---|
+| local | unset or `local` | any | local: the override or `http://127.0.0.1:4022` |
+| local | `public` or `cdp` | any | startup error |
+| base-sepolia | unset or `cdp` | unset | CDP: `https://api.cdp.coinbase.com/platform/v2/x402`, every request authenticated with a fresh CDP JWT |
+| base-sepolia | unset or `cdp` | set | startup error (`FACILITATOR=cdp cannot be combined with FACILITATOR_URL`) |
+| base-sepolia | `public` | any | public: the override or `https://x402.org/facilitator`, unauthenticated |
+| base-sepolia | `local` | any | startup error |
+
+With `cdp`, a missing or empty `CDP_API_KEY_ID` or `CDP_API_KEY_SECRET`, or a secret that cannot sign a JWT locally, exits 1 with a fixed message that never echoes the value. Accepted secrets are base64 Ed25519, PKCS#8 PEM or SEC1 PEM; SEC1 is converted to PKCS#8. The startup log reads `seller listening on <host>:<port> (<caip2>, facilitator=<kind> host=<host>[ key=…<last 4 of key id>])`.
 
 **CP-4 MockUSDC.sol**: ERC-20 with `name "USD Coin"`, `symbol "USDC"`, `version "2"`, 6 decimals, and an owner-only `mint`.
 - EIP-712 domain: `(name, version, chainId, verifyingContract)`.
@@ -523,7 +573,7 @@ Defaults: `waitMs = 45000`, `pollMs = 1000`. One deadline (`start + waitMs`) cov
 | rpcUrl | from deployment, or `http://127.0.0.1:8545` | `BASE_SEPOLIA_RPC_URL` or `https://sepolia.base.org` |
 | asset | from `.local/deployment.json` | `0x036CbD53842c5426634e7929541eC2318f3dCF7e` |
 | assetDomain | `{name:"USD Coin", version:"2"}` | `{name:"USDC", version:"2"}` |
-| facilitatorUrl | `FACILITATOR_URL` or `http://127.0.0.1:4022` | `FACILITATOR_URL` or `https://x402.org/facilitator` |
+| facilitatorUrl (`local` and `public` choices) | `FACILITATOR_URL` or `http://127.0.0.1:4022` | `FACILITATOR_URL` or `https://x402.org/facilitator` (only with `FACILITATOR=public`; the default choice is `cdp`, see CP-3) |
 | confirmationDepth | 1 | 2 |
 | supportsSafeTag | false | true |
 
@@ -534,7 +584,7 @@ Defaults: `waitMs = 45000`, `pollMs = 1000`. One deadline (`start + waitMs`) cov
 | `l1-agent.env` | `NETWORK, ANTHROPIC_API_KEY, ANTHROPIC_MODEL?, SELLER_URL, CONTROL_URL, SETTLEMENT_URL, CONTROL_TOKEN, VERIFIER_TOKEN, SESSION_ID?` |
 | `l2-control.env` | `NETWORK, PAYER_PRIVATE_KEY, ALLOWED_PAYEES, ALLOWED_HOSTS, CONTROL_TOKEN, SETTLEMENT_TOKEN, OPERATOR_TOKEN` |
 | `l3-verifier.env` | `NETWORK, BASE_SEPOLIA_RPC_URL?, CONTROL_URL, VERIFIER_TOKEN, SETTLEMENT_TOKEN` |
-| `seller.env` | `NETWORK, SELLER_PAY_TO, FACILITATOR_URL?` |
+| `seller.env` | `NETWORK, SELLER_PAY_TO, FACILITATOR?, FACILITATOR_URL?, CDP_API_KEY_ID?, CDP_API_KEY_SECRET?` (the CDP pair is required when the choice is `cdp`) |
 | `facilitator.env` | `NETWORK=local, FACILITATOR_PRIVATE_KEY` |
 | `operator.env` | `CONTROL_URL, OPERATOR_TOKEN` |
 
@@ -590,8 +640,14 @@ Only use the SDK helpers to encode and decode these headers. Never hand-roll bas
 | SEC-7 | Audit tampering | Hash chain; startup integrity check | T-LED-01 |
 | SEC-8 | Agent self-approves an escalation | Operator token only; single-use, exact-match approval | T-E2E-02, T-POL-13 |
 | SEC-9 | Stale signature settles late | Committed spend keeps counting until `validBefore` passes | T-LED-02 |
+| SEC-10 | The CDP API credential leaks to another process, a log or a response, or a misconfiguration silently uses an unauthenticated facilitator | Seller-only credential (A8, T-ARCH-ENV); fail-closed startup; no runtime fallback; redaction | T-ARCH-A8, T-CDP-02, T-CDP-07, T-CDP-08 |
+| SEC-11 | A facilitator reports failure for a transfer that actually settled, so the budget under-counts | L3 checks any reported hash on-chain (L3-1 step 2) | T-CDP-06 |
 
 Residual risks (accepted in v1): bearer tokens over loopback instead of mTLS; key held in an env var; single-node JSONL ledger; facilitator trusted for liveness; no refund path.
+
+Residual risks added in v1.2:
+- The CDP facilitator sees each payment's payer, payee, amount, asset, resource URL and description, and applies its own compliance screening.
+- A settle call that times out before any transaction hash comes back is indeterminate for every facilitator. The amount stays committed until `validBefore` (SEC-9), but a transfer that completed anyway is invisible to the ledger. A possible follow-up is an on-chain EIP-3009 nonce check (`authorizationState`).
 
 ---
 
@@ -622,11 +678,22 @@ Residual risks (accepted in v1): bearer tokens over loopback instead of mTLS; ke
 | T-E2E-03 | e2e | forged `PAYMENT-RESPONSE` → L3 returns MISMATCH; L2 keeps the first CONFIRMED and records an anomaly naming `amount` |
 | T-E2E-04 | e2e | with `signerLatencyMs: 25`, 15 concurrent intents → exactly 10 AUTHORIZED in the trailing 60 s. **Must fail if the mutex is removed** (verified: 15/15 without it) |
 | T-E2E-05 | e2e (must-fail proof in auth) | `/v1/reconcile` with the agent token returns 401; the ledger is unchanged |
+| T-CDP-01 | cdp-config | the `facilitatorChoice` matrix (CP-3), and the public path sends no credential |
+| T-CDP-02 | cdp-isolation | seller startup fails closed: missing ID or secret, malformed secret, conflicts; the log line format; the unused-credential warning |
+| T-CDP-03 | cdp-auth | JWT headers (EdDSA, ES256 from PKCS#8 and SEC1); the scripted plan through a JWT-verifying CDP stub matches T-E2E-01 |
+| T-CDP-04 | cdp-failures | pre-challenge 503 per category; 0 AUTHORIZED entries |
+| T-CDP-05 | cdp-failures | paid-retry failures: compliance decline gives 402; auth failure gives 502; L1 `PAYMENT_FAILED` |
+| T-CDP-06 | cdp-failures | must-fail: a `settlement_pending` failure carrying a settled hash is CONFIRMED with L3-1 v1.2 and NOT_SETTLED without it |
+| T-CDP-07 | cdp-isolation | must-fail: the secret never appears in any output; the redaction wiring is proven by an echoing upstream |
+| T-CDP-08 | cdp-isolation | demo child environments carry no CDP key; a down CDP facilitator causes 0 requests to any other host |
+| T-CDP-09 | cdp-failures | after a facilitator outage, the next priced request succeeds without a restart |
+| T-ARCH-A8 | architecture | rule A8 trips on its fixture and the tree is clean |
 
 Suites added in v1.1: `counterparty.test.ts` (seller, facilitator, MockUSDC, M2/M3), `verifier.test.ts` and `settlement-service.test.ts` (L3 units with a fake chain client), `auth.test.ts` (per-role guards), and `demo.local.test.ts` (demo smoke and clean shutdown). `test/helpers/harness.ts` runs the in-process e2e system.
 
 Manual checks:
 - `PAYER_PRIVATE_KEY=0x1 ENV_FILE=/dev/null npx tsx src/main.ts --scripted` exits 1 with the refusal message.
+- T-E2E-06 (opt-in, needs a CDP key and a funded Base Sepolia payer): `npm run demo:base-sepolia` exits 0 three times in a row. Each run prints the demo summary plus `settlements:        2 CONFIRMED`, `payer gas spent:    0 wei` and `secret scan:        clean`.
 - `npm run demo:local` summary shows `spent on-chain: 0.006 USDC` and `hash chain ok=true entries=<n>` (`entries` counts the persistent `.local` ledger and grows across runs), and no listeners remain on ports 8545 or 4020–4023 afterwards.
 
 ---
@@ -640,6 +707,7 @@ npm test
 npm run demo:local [-- --llm]
 # Base Sepolia, one terminal each:
 npm run seller | npm run l2:control | npm run l3:verifier | npm run agent -- "<goal>"
+npm run demo:base-sepolia   # opt-in live run through CDP (T-E2E-06); reads env/<role>.base-sepolia.env
 npm run approve -- <authorizationId> [approver]
 npm run check               # typecheck && test && demo:local (definition of done in one command)
 ```
@@ -647,6 +715,7 @@ npm run check               # typecheck && test && demo:local (definition of don
 Exit codes:
 - `demo:local`: 0 when the scripted baseline matches (or an `--llm` run completes with a valid chain); 2 on a baseline mismatch; 1 on a busy port, readiness timeout or child crash.
 - `approve`: 0 on success; 1 on an HTTP or network error; 2 on a missing argument.
+- `demo:base-sepolia`: 0 when the baseline matches and there are 2 CONFIRMED settlements, 0 payer gas and a clean secret scan; 2 on a failed preflight or a mismatch; 1 on a readiness timeout or child crash.
 
 ---
 
@@ -690,4 +759,6 @@ Each item must preserve every `INV-*` invariant.
 - On a Linux sandbox without IPv6, binding `::` fails. The tests bind the seller on `0.0.0.0` and use `localhost` as the not-allowlisted alias.
 - Local ECDSA signing finishes within microtasks, so concurrency races are invisible without `signerLatencyMs`. Keep that hook in T-E2E-04.
 - Base Sepolia USDC's EIP-712 name is `"USDC"`, not `"USD Coin"`. A wrong `extra.name` makes signatures fail verification.
+- CDP JWTs expire 120 s after they are signed. A skewed seller clock shows up as `facilitator authentication` errors.
+- `generateJwt` accepts EC keys only as PKCS#8 (`-----BEGIN PRIVATE KEY-----`, and no leading whitespace). The seller converts SEC1 (`-----BEGIN EC PRIVATE KEY-----`) keys before use.
 - Child processes spawned through `npx` must be started `detached` and killed by process group (`process.kill(-pid)`), or ganache keeps port 8545 open.
