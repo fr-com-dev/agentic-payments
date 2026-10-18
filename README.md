@@ -9,7 +9,7 @@ A Claude agent buys HTTP resources with x402 (protocol v2, scheme `exact`, EIP-3
 | L3 Settlement | `src/layer3-settlement/` | Read-only on-chain verification, reconciles into L2 | 4023 (loopback) |
 | Counterparty | `src/counterparty/`, `scripts/facilitator.ts` | Seller API and local facilitator | 4021, 4022 |
 
-`SPEC.md` (v1.2) is normative. Feature specs, plans and task lists live under `specs/` (spec-kit). Agent guidance is in `CLAUDE.md`.
+`SPEC.md` (v1.3) is normative. Feature specs, plans and task lists live under `specs/` (spec-kit). Agent guidance is in `CLAUDE.md`.
 
 ## Diagrams
 
@@ -49,13 +49,19 @@ Each process reads exactly one env file, `env/<role>.env` (templates in `env/*.e
 
 ### Human approval
 
-A payment above the auto-approve limit (default $0.02) is escalated. The agent reports its `authorizationId`; an operator approves it once:
+A payment above the auto-approve limit (default $0.02) is escalated. The agent reports its `authorizationId`. The escalation ends exactly once, and nothing is ever reversed:
+
+- **Approved.** The operator approves it, and the agent retries the purchase in the same session. The approval is single-use and expires after 600 s, so an escalation pays at most once. Approving it again returns the same approval.
+- **Denied.** The operator rejects it, optionally with a reason. Every later request for that resource in that session is refused with `human_rejected`, at any price.
+- **Expired.** Nobody decides within 5 minutes. The next request for the same purchase starts a new escalation.
 
 ```bash
 npm run approve -- <authorizationId> [approver]
+npm run reject -- <authorizationId> [operator] [reason]
+npm run escalations -- --watch    # lists pending escalations, then shows each new one and each outcome
 ```
 
-Each approval is single-use and expires after 600 s. An approval never overrides a DENY rule. The agent must then retry the purchase in the same session. For a step-by-step run on Base Sepolia, see [Approving an escalated payment](#approving-an-escalated-payment).
+While an escalation is pending, a repeat of the same purchase returns the same `authorizationId`. An approval never overrides a DENY rule. A rejection's reason is shown to the operator only, never to the agent. For a step-by-step run on Base Sepolia, see [Approving an escalated payment](#approving-an-escalated-payment).
 
 ## Base Sepolia
 
@@ -106,7 +112,7 @@ The seller logs which facilitator it uses, for example `facilitator=cdp host=api
 
 `/api/premium-report` costs 0.05 USDC, above the 0.02 USDC auto-approve limit in `config/mandate.json`, so L2 escalates it instead of paying. An approval applies to one session and one resource. `demo:base-sepolia` stops L2 when it finishes and starts a new session each run, so run the processes yourself with a fixed `SESSION_ID`:
 
-1. Start the seller, L2 and L3 as shown above.
+1. Start the seller, L2 and L3 as shown above. Optionally, watch escalations in another terminal: `ENV_FILE=env/operator.base-sepolia.env npm run escalations -- --watch`.
 2. Run the agent with a session ID you choose. Step 4 is escalated and prints its `authorizationId`:
 
    ```bash
@@ -114,11 +120,18 @@ The seller logs which facilitator it uses, for example `facilitator=cdp host=api
    # 4. ESCALATED http://127.0.0.1:4021/api/premium-report rules=human_approval_required authorizationId=auth_…
    ```
 
-3. Approve it as the operator:
+3. Within 5 minutes (escalations expire after 300 s), approve it as the operator:
 
    ```bash
    ENV_FILE=env/operator.base-sepolia.env npm run approve -- auth_… <approver>
    # {"ok":true,"approvalId":"apr_…","expiresAt":"…"}
+   ```
+
+   Or reject it instead. The next run's step 4 is then `DENIED … rules=human_rejected` for this session:
+
+   ```bash
+   ENV_FILE=env/operator.base-sepolia.env npm run reject -- auth_… <operator> <reason…>
+   # {"ok":true,"rejectionId":"rej_…","rejectedAt":"…","alreadyRejected":false}
    ```
 
 4. Within 600 s, run the agent again with the same `SESSION_ID`. Step 4 is now `PAID … settlement=CONFIRMED`. The scripted plan also buys the weather and the market brief again, so the session spends 0.062 of its 0.1 USDC budget.
@@ -168,12 +181,13 @@ A milestone must pass its exit check before the next one starts.
 |---|---|
 | `test/architecture.test.ts` | INV-1..4 and rules A1–A7 (static import and identifier scan), env templates |
 | `test/auth.test.ts` | per-role bearer guard `requireRole` (INV-13), token resolution, `loadEnv` |
-| `test/policy.test.ts` | mandate, T-POL-01..14, signer, authorize/budget API, approvals in-process |
+| `test/policy.test.ts` | mandate, T-POL-01..15, signer, authorize/budget API, approvals, rejections and escalation reads in-process, operator CLIs |
 | `test/ledger.test.ts` | T-LED-01..03, committed spend, reconcile, approvals lookup |
+| `test/escalations.test.ts` | T-LED-04 escalation lifecycle: state, expiry sweep, lapse, rejection and pending lookups, operator views |
 | `test/verifier.test.ts`, `test/settlement-service.test.ts` | L3 verification, finality, reconcile push, PENDING re-checks, T-AUTH-02 |
 | `test/counterparty.test.ts` | seller, facilitator, MockUSDC, network profiles |
 | `test/agent.test.ts` | L1 orchestrator, port adapters, T-AGT-01, scripted plan, key refusal |
-| `test/e2e.local.test.ts` | T-E2E-01..05 on the in-process harness (`test/helpers/harness.ts`) |
+| `test/e2e.local.test.ts` | T-E2E-01..05, T-E2E-07 (operator reject) and T-E2E-08 (expiry) on the in-process harness (`test/helpers/harness.ts`) |
 | `test/demo.local.test.ts` | the real six-process demo, port preflight, process-group shutdown |
 
 Run one test with `npx vitest run test/policy.test.ts -t "<name>"`.

@@ -3,12 +3,24 @@
 | Field | Value |
 |---|---|
 | Spec ID | X402-3L-SPEC |
-| Version | 1.2 (2026-10-17). v1.0 described the original PoC; v1.1 is the build target for the spec-kit plans in `specs/`; v1.2 adds the CDP facilitator on Base Sepolia (`specs/009`) |
+| Version | 1.3 (2026-10-18). v1.0 described the original PoC; v1.1 is the build target for the spec-kit plans in `specs/`; v1.2 adds the CDP facilitator on Base Sepolia (`specs/009`); v1.3 adds the escalation lifecycle: operator rejection, expiry and notification (`specs/010`) |
 | Owner | Fabricio Rojas |
 | Status | Implemented PoC; this spec is the source of truth for changes |
 | Reference | IMF Note 2026/004, *How Agentic AI Will Reshape Payments* (three-layer model) |
 
 ---
+
+## Changes in 1.3
+
+From `specs/010-operator-reject-flow`. No `INV-*` is weakened. The constitution moves to v1.1.1 (PATCH: Principle I names "rejects" among the capabilities the agent never gets).
+
+| Area | Change |
+|---|---|
+| L2-4.3 (new) | Every escalation starts pending and ends exactly once: approved, denied (rejected by the operator) or expired 300 s after creation. Final states are never left. A repeat of the same purchase while pending returns the pending escalation's ID. |
+| L2-2 | R15 `human_rejected`: a DENY for any request whose (session, resource key) the operator rejected, at any amount or payee. Its detail carries only the rejection ID (SEC-12). |
+| L2-4 | New entry types `HUMAN_REJECTION`, `ESCALATION_EXPIRED`, `APPROVAL_LAPSED` and `ESCALATION_REPEATED`. |
+| L2-4.2, L2-5 | Approve is state-aware: re-approving returns the existing approval, so an escalation pays at most once; approve on a denied or expired escalation is 409. New `POST /v1/rejections/:authorizationId`, `GET /v1/escalations` and `GET /v1/escalations/events`. L2 expires escalations through a 1 s sweep and makes no outbound calls. |
+| §11, §12, §13 | SEC-12; T-POL-15, T-LED-04, T-E2E-07 and T-E2E-08; `npm run reject` and `npm run escalations`. |
 
 ## Changes in 1.2
 
@@ -162,7 +174,7 @@ The CDP API credential authenticates the seller to the CDP facilitator. It canno
 | INV-9 | The ledger is append-only and hash-chained. Startup fails if the chain does not verify. | T-LED-01 |
 | INV-10 | L3 trusts the chain, not the seller's `PAYMENT-RESPONSE`. CONFIRMED requires a matching Transfer log. | T-E2E-03 |
 | INV-11 | CONFIRMED is final in L2. A later contradicting report is recorded with `anomaly: true` and does not change the effective status. | T-E2E-03, T-LED-03 |
-| INV-12 | A human approval never overrides a DENY rule. It only lifts `human_approval_required` for one exact (session, resource, payTo, amount) tuple, once. "Once" means once per approval: each approval is a separate human act and is consumed by the first payment that uses it. | T-POL-13, T-E2E-02 |
+| INV-12 | A human approval never overrides a DENY rule. It only lifts `human_approval_required` for one exact (session, resource, payTo, amount) tuple, once. "Once" means once per approval: each approval is a separate human act and is consumed by the first payment that uses it. Since v1.3 an escalation has at most one approval, and a `HUMAN_REJECTION` (R15) is a DENY that no approval can lift. | T-POL-13, T-POL-15, T-E2E-02 |
 | INV-13 | Each caller has its own bearer token. L1 cannot reconcile or approve; L3 cannot authorize. | T-E2E-02, T-E2E-05 |
 
 ---
@@ -230,6 +242,8 @@ scripts/
   demo-local.ts                  6-process orchestrated demo
   demo-base-sepolia.ts           opt-in live run through the CDP facilitator (T-E2E-06)
   approve.ts                     HITL operator CLI
+  reject.ts                      operator reject CLI (L2-4.3)
+  escalations.ts                 operator list and watch CLI (L2-4.3)
   solc.d.ts                      type shim
 src/
   shared/contracts.ts            ALL cross-layer types and ports (§7)
@@ -245,6 +259,9 @@ src/
     policy.ts                    pure rule engine (L2-2)
     signer.ts                    sole key holder (L2-3)
     ledger.ts                    hash-chained ledger (L2-4)
+    escalations.ts               escalation lifecycle derivations and the sweep (L2-4.3)
+    approval-routes.ts           operator approve and reject (L2-5)
+    escalation-routes.ts         operator escalation reads (L2-5)
     service.ts                   HTTP API (L2-5)
   layer3-settlement/
     verifier.ts                  chain verification + finality (L3-1)
@@ -258,7 +275,7 @@ src/
 test/
   policy.test.ts  ledger.test.ts  architecture.test.ts  agent.test.ts  e2e.local.test.ts
   counterparty.test.ts  verifier.test.ts  settlement-service.test.ts  auth.test.ts  demo.local.test.ts
-  cdp-config.test.ts  cdp-auth.test.ts  cdp-isolation.test.ts  cdp-failures.test.ts
+  cdp-config.test.ts  cdp-auth.test.ts  cdp-isolation.test.ts  cdp-failures.test.ts  escalations.test.ts
   helpers/harness.ts             in-process multi-service harness shared by e2e suites
   helpers/fake-public-client.ts  deterministic read-only chain client for L3 unit tests
   helpers/cdp-stub.ts            offline CDP facilitator stub: verifies JWTs, delegates to the local facilitator
@@ -393,7 +410,7 @@ All amounts are **decimal strings of atomic units**. Use `BigInt` for arithmetic
 
 **L2-2 Policy engine** (`evaluateRequirement`, `decide`)
 
-Inputs: `(req, mandate, ctx)` where `ctx = { nowMs, requestedUrl, challengeResourceUrl, sessionCommittedAtomic, dailyCommittedAtomic, authorizationsLastMinute, humanApprovedFor? }`.
+Inputs: `(req, mandate, ctx)` where `ctx = { nowMs, requestedUrl, challengeResourceUrl, sessionCommittedAtomic, dailyCommittedAtomic, authorizationsLastMinute, humanApprovedFor?, humanRejected? }`. `humanRejected = { rejectionId }` is present when a `HUMAN_REJECTION` exists for the request's (session, resource key); `service.ts` derives it from the ledger.
 
 Rules are evaluated in this order. All DENY violations are collected; evaluation does not stop at the first.
 
@@ -412,6 +429,7 @@ Rules are evaluated in this order. All DENY violations are collected; evaluation
 | R11 | `session_budget_exceeded` | `sessionCommitted + amount > sessionBudgetAtomic` | DENY |
 | R12 | `daily_budget_exceeded` | `dailyCommitted + amount > dailyBudgetAtomic` | DENY |
 | R13 | `velocity_limit` | `authorizationsLastMinute ≥ maxAuthorizationsPerMinute` | DENY |
+| R15 | `human_rejected` | `humanRejected` is present (the operator rejected this session and resource key; any amount or payee). Detail: `rejected by the operator (<rejectionId>)`, never the operator's label or reason (SEC-12). Listed here because evaluation follows table order. | DENY |
 | R14 | `human_approval_required` | no DENY, and `amount > autoApproveMaxAtomic`, and no matching `humanApprovedFor` (same payTo, case-insensitive, and the exact amount string) | ESCALATE |
 | — | (none) | otherwise | AUTHORIZED |
 
@@ -436,11 +454,15 @@ Entry: `{ seq, ts (ISO), type, sessionId?, intentId?, authorizationId?, data, pr
 
 | Type | Written when | `data` fields |
 |---|---|---|
-| `INTENT` | every authorize call, before deciding | `resourceUrl, purpose, accepts` |
+| `INTENT` | every authorize call, before deciding; followed by exactly one outcome entry (`AUTHORIZED`, `DENIED`, `ESCALATED` or `ESCALATION_REPEATED`) | `resourceUrl, purpose, accepts` |
 | `AUTHORIZED` | decision AUTHORIZED | `amount, asset, network, payTo, payer, validBefore, resourceUrl, mandateId, approvalRef` (the consumed approval's `approvalId`, or `null`; always present) |
 | `DENIED` | decision DENIED | `violations, resourceKey` |
 | `ESCALATED` | decision ESCALATE | `violations, resourceKey, payTo, amount` |
 | `HUMAN_APPROVAL` | operator approves | `approvalId` (`apr_<uuid>`), `escalationId, resourceKey, payTo, amount, approver, expiresAtMs` |
+| `HUMAN_REJECTION` | operator rejects a pending escalation (L2-4.3) | `rejectionId` (`rej_<uuid>`), `escalationId, resourceKey, payTo, amount, operator, reason?` (the last two are untrusted free text, never a decision input) |
+| `ESCALATION_EXPIRED` | sweep: an escalation was still pending at `expiresAtMs` | `escalationId, resourceKey, payTo, amount, expiresAtMs` |
+| `APPROVAL_LAPSED` | sweep: an approval passed `expiresAtMs` without being consumed | `approvalId, escalationId, resourceKey, payTo, amount, expiresAtMs` |
+| `ESCALATION_REPEATED` | ESCALATE for a purchase that already has a pending escalation | `escalationId, resourceKey, payTo, amount, violations` |
 | `SETTLEMENT` | L3 reconcile | the `SettlementReport` plus `anomaly: boolean` (status forced to `MISMATCH` on field mismatch, with detail `"verified field mismatch: <fields>"`) |
 
 `resourceKey = origin + pathname` of the resource URL (the query string is excluded).
@@ -450,7 +472,23 @@ Entry: `{ seq, ts (ISO), type, sessionId?, intentId?, authorizationId?, data, pr
 - Sum the `amount` of every `AUTHORIZED` entry in the filter **except** those whose effective report is `NOT_SETTLED` **and** where `nowMs > validBefore*1000` (the signature can no longer settle).
 - `MISMATCH` and `PENDING` keep counting (conservative).
 
-**L2-4.2 Approvals**: `findOpenApproval(sessionId, resourceKey, nowMs)` returns the **most recent** `HUMAN_APPROVAL` entry for that (session, resourceKey) that has not expired and is not yet consumed. An approval is single-use. It is consumed when an `AUTHORIZED` entry's `approvalRef` equals its `approvalId`. If one escalation is approved several times, each approval pays once. An approval is consumed only when it is what lifted R14 (same payee, exact amount, amount above `autoApproveMaxAtomic`); a matching approval seen on a payment that needed no approval stays open.
+**L2-4.2 Approvals**: `findOpenApproval(sessionId, resourceKey, nowMs)` returns the **most recent** `HUMAN_APPROVAL` entry for that (session, resourceKey) that has not expired and is not yet consumed. An approval is single-use. It is consumed when an `AUTHORIZED` entry's `approvalRef` equals its `approvalId`. An escalation has at most one approval (L2-4.3), so it authorizes at most one payment; approving an approved escalation returns the existing approval. An approval is consumed only when it is what lifted R14 (same payee, exact amount, amount above `autoApproveMaxAtomic`); a matching approval seen on a payment that needed no approval stays open.
+
+**L2-4.3 Escalation lifecycle** (v1.3, `src/layer2-control/escalations.ts`)
+
+An escalation is created by its `ESCALATED` entry at `createdMs = Date.parse(ts)`. It expires at `expiresAtMs = createdMs + 300 000`, a constant that is not configurable. Its state is derived from the ledger and the decision time only, in this order:
+
+1. `approved` when a `HUMAN_APPROVAL` names it.
+2. `denied` when a `HUMAN_REJECTION` names it.
+3. `expired` when an `ESCALATION_EXPIRED` names it, or `nowMs ≥ expiresAtMs`.
+4. Otherwise `pending`.
+
+- **Final states.** `approved`, `denied` and `expired` are final and are never left. Approve and reject act only on a pending escalation. Repeating the deciding action returns the existing decision. The opposite action, or any action on an expired escalation, is 409 and appends nothing.
+- **Sweep.** `sweep(nowMs)` runs at the start of every serialized L2 operation and every 1 s from `main()` (an unreferenced timer; `createControlService` never starts one). It appends one `ESCALATION_EXPIRED` for each escalation still pending with `nowMs ≥ expiresAtMs`, and one `APPROVAL_LAPSED` for each approval past `expiresAtMs` that was not consumed and not already recorded. A restart sweeps whatever came due while L2 was down.
+- **One pending escalation per purchase.** A purchase is (session, resource key, payee lower-cased, exact amount string). While an escalation for a purchase is pending, an ESCALATE decision for the same purchase returns that escalation's `authorizationId` and is recorded as `ESCALATION_REPEATED`. A different amount or payee is a different purchase.
+- **Denial scope.** A `HUMAN_REJECTION` blocks its (session, resource key) for good through R15, whatever the amount or payee. An expiry blocks nothing: the next request for the same purchase escalates again under a new ID.
+- **Notifications** are the lifecycle entries themselves. The operator reads them through `GET /v1/escalations` and `GET /v1/escalations/events`. L2 makes no outbound connection to notify anyone.
+- Every check-then-append (approve, reject, sweep, authorize) is one synchronous block inside the serialized section (INV-8), so each escalation gets exactly one final-state entry.
 
 **L2-5 HTTP API** (binds to 127.0.0.1)
 
@@ -459,7 +497,10 @@ Entry: `{ seq, ts (ISO), type, sessionId?, intentId?, authorizationId?, data, pr
 | `POST /v1/authorize` | `CONTROL_TOKEN` | `PaymentIntent` | `AuthorizationDecision` | 400 malformed (missing ids, `accepts` not an array, non-http(s) URL), 401 |
 | `GET /v1/budget/:sessionId` | `CONTROL_TOKEN` | — | `BudgetStatus` (`perPaymentCapAtomic` = auto-approve limit). An unknown session returns 200 with zero spend. `remainingAtomic` is never below 0. | 401 |
 | `POST /v1/reconcile` | `SETTLEMENT_TOKEN` | `SettlementReport` | `{ ok, anomaly }` | 400 malformed report (missing `authorizationId` or `verified`), 404 unknown authorizationId, 401 |
-| `POST /v1/approvals/:authorizationId` | `OPERATOR_TOKEN` | `{ approver? = "operator", ttlSeconds? = 600 }` | `{ ok, approvalId, expiresAt }`. Each call creates a new approval. | 400 `ttlSeconds` not a positive integer, 404 no ESCALATED entry, 401 |
+| `POST /v1/approvals/:authorizationId` | `OPERATOR_TOKEN` | `{ approver? = "operator", ttlSeconds? = 600 }` | Pending: `{ ok, approvalId, expiresAt }` and one `HUMAN_APPROVAL`. Already approved: the existing approval plus `alreadyApproved: true`; nothing is appended and the request's `ttlSeconds`/`approver` are ignored (v1.3). | 400 `ttlSeconds` not a positive integer, 404 no ESCALATED entry, 409 `{ error, state: "denied", rejectionId }` or `{ error, state: "expired", expiresAt }`, 401 |
+| `POST /v1/rejections/:authorizationId` | `OPERATOR_TOKEN` | `{ operator? = "operator" (1–64 chars), reason? (≤ 280 chars) }` | Pending: `{ ok, rejectionId, rejectedAt, alreadyRejected: false }` and one `HUMAN_REJECTION`. Already denied: the first rejection with `alreadyRejected: true`; nothing is appended. | 400 invalid `operator` or `reason`, 404 no ESCALATED entry, 409 `{ error, state: "approved", approvalId }` or `{ error, state: "expired", expiresAt }`, 401 |
+| `GET /v1/escalations` | `OPERATOR_TOKEN` | — | `{ pending: [{ authorizationId, sessionId, resourceKey, payTo, amount, createdAt, expiresAt }], cursor }`, oldest first; `cursor` is the last ledger `seq` (-1 when empty) | 401 |
+| `GET /v1/escalations/events?after=<seq>` | `OPERATOR_TOKEN` | `after`: integer ≥ -1, default -1 | `{ events, cursor }`: one event per lifecycle entry with `seq > after` (`escalated`, `approved`, `denied`, `expired`, `approval_lapsed`), built from a field whitelist; never tokens, payment headers, `accepts` or `purpose` | 400 bad `after`, 401 |
 | `GET /v1/ledger/verify` | `OPERATOR_TOKEN` | — | `{ entries, ok, brokenAt? }` | 401 |
 
 Authorize algorithm. The whole body runs inside one serialized critical section (INV-8: a promise-chain mutex):
@@ -593,7 +634,7 @@ Token defaults (`dev-control-token`, `dev-settlement-token`, `dev-verifier-token
 - Templates leave private keys empty (`# set me`).
 - `npm run demo:local` gives each child only `PATH`, `HOME`, `NODE_*` and its own `ENV_FILE`. On `local`, if `env/l2-control.env` or `env/facilitator.env` is missing or the key is empty, the demo derives that key with `localDevKeys()`. It passes the payer key only to the L2 child and the facilitator key only to the facilitator child.
 - The demo spawns `node_modules/.bin/tsx` directly (not `npx`) and reads each child's env file with a minimal `KEY=value` reader for its fallback decisions; only `src/shared/config.ts` uses dotenv (architecture test). On `local`, when `SELLER_PAY_TO` or `ALLOWED_PAYEES` is empty, the demo sets it to account #3 (CP-5).
-- `npm run approve` resolves its bearer token with `tokenFor("operator")`, so on `local` the dev operator token applies when `OPERATOR_TOKEN` is unset.
+- `npm run approve`, `npm run reject` and `npm run escalations` resolve their bearer token with `tokenFor("operator")`, so on `local` the dev operator token applies when `OPERATOR_TOKEN` is unset. They read only `env/operator.env` (or `ENV_FILE`).
 
 **CFG-3 `config/mandate.json`** (all amounts are atomic strings):
 
@@ -631,23 +672,29 @@ Only use the SDK helpers to encode and decode these headers. Never hand-roll bas
 
 | ID | Threat | Control | Test |
 |---|---|---|---|
-| SEC-1 | Prompt injection makes the agent overspend | Agent has no signing tool; L2 rules R1–R14; budgets | T-E2E-01, T-POL-* |
+| SEC-1 | Prompt injection makes the agent overspend | Agent has no signing tool; L2 rules R1–R15; budgets | T-E2E-01, T-POL-* |
 | SEC-2 | Agent process compromise leaks the key | Key only in the L2 process; `main.ts` refuses to start with the key | architecture test, T-ARCH-ENV, T-AGT-KEY |
 | SEC-3 | Malicious seller swaps payee or redirects | R5 payee allowlist, R6 host allowlist, R7 resource binding | T-POL-05/11 |
 | SEC-4 | Seller claims payment without settling, or replays an old tx | L3 checks receipt + Transfer(payer, payTo, amount, asset) | T-E2E-03 |
 | SEC-5 | Forged or contradictory settlement reports | L2 cross-check of `verified` fields; CONFIRMED is sticky; separate L3 token | T-E2E-03, T-E2E-05, T-AUTH-01/02 |
 | SEC-6 | Concurrent burst bypasses limits | Serialized decisions (INV-8) | T-E2E-04 |
 | SEC-7 | Audit tampering | Hash chain; startup integrity check | T-LED-01 |
-| SEC-8 | Agent self-approves an escalation | Operator token only; single-use, exact-match approval | T-E2E-02, T-POL-13 |
+| SEC-8 | Agent self-approves (or rejects) an escalation | Operator token only; single-use, exact-match approval; one final state per escalation | T-E2E-02, T-POL-13, T-E2E-07 |
 | SEC-9 | Stale signature settles late | Committed spend keeps counting until `validBefore` passes | T-LED-02 |
 | SEC-10 | The CDP API credential leaks to another process, a log or a response, or a misconfiguration silently uses an unauthenticated facilitator | Seller-only credential (A8, T-ARCH-ENV); fail-closed startup; no runtime fallback; redaction | T-ARCH-A8, T-CDP-02, T-CDP-07, T-CDP-08 |
 | SEC-11 | A facilitator reports failure for a transfer that actually settled, so the budget under-counts | L3 checks any reported hash on-chain (L3-1 step 2) | T-CDP-06 |
+| SEC-12 | Operator free text (label, reason) reaches the LLM agent and acts as a prompt injection | The R15 violation detail carries only the rejection ID; label and reason are stored as data and shown to the operator only | T-POL-15 |
 
 Residual risks (accepted in v1): bearer tokens over loopback instead of mTLS; key held in an env var; single-node JSONL ledger; facilitator trusted for liveness; no refund path.
 
 Residual risks added in v1.2:
 - The CDP facilitator sees each payment's payer, payee, amount, asset, resource URL and description, and applies its own compliance screening.
 - A settle call that times out before any transaction hash comes back is indeterminate for every facilitator. The amount stays committed until `validBefore` (SEC-9), but a transfer that completed anyway is invisible to the ledger. A possible follow-up is an on-chain EIP-3009 nonce check (`authorizationState`).
+
+Residual risks added in v1.3:
+- The operator label is self-declared, and one shared operator token stands for every operator (EXT-7 would add per-person identity).
+- The escalation reads expose session IDs, resources and amounts to the operator, which is their purpose.
+- A rejection blocks a (session, resource key) for good; buying it again needs a new session. There is no undo by design.
 
 ---
 
@@ -662,9 +709,11 @@ Residual risks added in v1.2:
 | T-POL-12 | policy | session and daily budgets include the new amount; the boundary passes |
 | T-POL-13 | policy | escalation; a matching approval authorizes; a different amount still escalates; an approval never overrides a DENY |
 | T-POL-14 | policy | velocity, expiry, empty `accepts` |
+| T-POL-15 | policy | R15: a rejected (session, resource) is DENIED `human_rejected` at any amount; an approval never lifts it; it is collected with other DENY rules; the detail carries only the rejection ID. **Must fail without the rule**: the same request escalates |
 | T-LED-01 | ledger | the chain verifies; editing an entry makes reload throw `integrity` |
 | T-LED-02 | ledger | a NOT_SETTLED authorization is released only after `validBefore` |
 | T-LED-03 | ledger | anomaly reports are ignored for the effective status |
+| T-LED-04 | escalations | L2-4.3 state derivation and the 300 s boundary; `findRejection`, `findPendingEscalation`; the sweep appends each expiry and lapse once, also after a restart; operator views and events carry no secret-bearing keys. **Must fail without the clock check**: with no sweep, the state is already expired at 300 s |
 | T-ARCH-* | architecture | rules A1–A7 (§4.1). Each fixture under `test/fixtures/arch/` trips its rule. |
 | T-ARCH-ENV | architecture | each `env/*.env.example` holds only its process's variables; private keys are empty |
 | T-ARCH-TRACE | architecture | every test ID named in the §11 threat matrix (specs/007 contracts) appears in a test title; a row naming a missing test fails |
@@ -678,6 +727,8 @@ Residual risks added in v1.2:
 | T-E2E-03 | e2e | forged `PAYMENT-RESPONSE` → L3 returns MISMATCH; L2 keeps the first CONFIRMED and records an anomaly naming `amount` |
 | T-E2E-04 | e2e | with `signerLatencyMs: 25`, 15 concurrent intents → exactly 10 AUTHORIZED in the trailing 60 s. **Must fail if the mutex is removed** (verified: 15/15 without it) |
 | T-E2E-05 | e2e (must-fail proof in auth) | `/v1/reconcile` with the agent token returns 401; the ledger is unchanged |
+| T-E2E-07 | e2e | operator reject: the retry is DENIED `human_rejected` with no operator text in the detail, another session still escalates, the ledger trail is ESCALATED → HUMAN_REJECTION → DENIED; a concurrent approve and reject yield exactly one final entry; the events feed reports escalated, denied and approved |
+| T-E2E-08 | e2e | expiry on L2's clock: a repeat while pending reuses the ID; after 300 s the escalation expires, approve and reject are 409, the next request escalates under a new ID, and re-approving returns the same approval so one payment happens |
 | T-CDP-01 | cdp-config | the `facilitatorChoice` matrix (CP-3), and the public path sends no credential |
 | T-CDP-02 | cdp-isolation | seller startup fails closed: missing ID or secret, malformed secret, conflicts; the log line format; the unused-credential warning |
 | T-CDP-03 | cdp-auth | JWT headers (EdDSA, ES256 from PKCS#8 and SEC1); the scripted plan through a JWT-verifying CDP stub matches T-E2E-01 |
@@ -709,12 +760,15 @@ npm run demo:local [-- --llm]
 npm run seller | npm run l2:control | npm run l3:verifier | npm run agent -- "<goal>"
 npm run demo:base-sepolia   # opt-in live run through CDP (T-E2E-06); reads env/<role>.base-sepolia.env
 npm run approve -- <authorizationId> [approver]
+npm run reject -- <authorizationId> [operator] [reason]
+npm run escalations [-- --watch]   # pending escalations; --watch reports every new escalation and outcome
 npm run check               # typecheck && test && demo:local (definition of done in one command)
 ```
 
 Exit codes:
 - `demo:local`: 0 when the scripted baseline matches (or an `--llm` run completes with a valid chain); 2 on a baseline mismatch; 1 on a busy port, readiness timeout or child crash.
-- `approve`: 0 on success; 1 on an HTTP or network error; 2 on a missing argument.
+- `approve`, `reject`: 0 on success; 1 on an HTTP or network error (409 included); 2 on a missing argument.
+- `escalations`: list mode exits 0, or 1 on an HTTP or network error. `--watch` polls every 1 s from a ledger cursor, prints errors once per failure streak and keeps polling, and exits 0 on SIGINT or SIGTERM.
 - `demo:base-sepolia`: 0 when the baseline matches and there are 2 CONFIRMED settlements, 0 payer gas and a clean secret scan; 2 on a failed preflight or a mismatch; 1 on a readiness timeout or child crash.
 
 ---

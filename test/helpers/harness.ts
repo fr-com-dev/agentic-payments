@@ -35,6 +35,8 @@ export interface HarnessOptions {
    * stub in front of it). Default: the seller's own client for that URL, as before.
    */
   sellerFacilitator?: (localFacilitatorUrl: string) => Promise<FacilitatorClient>;
+  /** 010: L2's clock (escalation expiry tests). Default: Date.now, as before. */
+  controlNow?: () => number;
 }
 
 export interface Harness {
@@ -47,6 +49,8 @@ export interface Harness {
   /** Parsed ledger entries, read from `ledgerPath`. */
   ledgerEntries(): LedgerEntry[];
   net: NetworkProfile;
+  /** 010: runs L2's escalation sweep now (on L2's clock, see `controlNow`). */
+  sweepEscalations(): Promise<unknown>;
   /** Stops every server and the chain and frees all ports. Safe to call twice. */
   close(): Promise<void>;
 }
@@ -118,6 +122,7 @@ export async function startHarness(opts: HarnessOptions = {}): Promise<Harness> 
       asset: { address: net.asset, decimals: net.decimals },
       tokens: { control: TOKENS.control, settlement: TOKENS.settlement, operator: TOKENS.operator },
       ...(opts.signerLatencyMs !== undefined && { signerLatencyMs: opts.signerLatencyMs }),
+      ...(opts.controlNow !== undefined && { now: opts.controlNow }),
     });
     const controlUrl = await up(control.app, opts.ports?.control);
 
@@ -153,6 +158,7 @@ export async function startHarness(opts: HarnessOptions = {}): Promise<Harness> 
           .filter((l) => l.length > 0)
           .map((l) => JSON.parse(l) as LedgerEntry),
       net,
+      sweepEscalations: () => control.sweep(),
       close,
     };
   } catch (err) {

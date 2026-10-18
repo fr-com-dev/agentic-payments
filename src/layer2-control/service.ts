@@ -1,5 +1,6 @@
 // L2 Control HTTP service (SPEC.md §8.2 L2-5). Owner of the bootstrap, authorize and budget: feature 002.
-// Reconcile and ledger-verify routes come from ./ledger-routes.ts (003); approvals from ./approval-routes.ts (004).
+// Reconcile and ledger-verify routes come from ./ledger-routes.ts (003); approvals and rejections from
+// ./approval-routes.ts (004, 010); escalation reads from ./escalation-routes.ts (010).
 // INV-8: the whole authorize body (INTENT → decide → sign → outcome entry) runs in one serialized section.
 import { randomUUID } from "node:crypto";
 import type { Server } from "node:http";
@@ -10,6 +11,8 @@ import { requireRole } from "../shared/auth.js";
 import { CONTROL_BIND_HOST, controlPort, loadEnv, networkProfile } from "../shared/config.js";
 import type { AuthorizationDecision, BudgetStatus, PaymentIntent, PolicyViolation } from "../shared/contracts.js";
 import { mountApprovalRoutes } from "./approval-routes.js";
+import { mountEscalationRoutes } from "./escalation-routes.js";
+import { findPendingEscalation, findRejection, sweep } from "./escalations.js";
 import { AuditLedger, resourceKey } from "./ledger.js";
 import { mountLedgerRoutes, type Serialize } from "./ledger-routes.js";
 import { loadMandate, type SpendingMandate } from "./mandate.js";
@@ -28,14 +31,23 @@ export interface ControlServiceDeps {
   tokens?: { control?: string; settlement?: string; operator?: string };
   /** Test hook: clock. Read once per authorize call. */
   now?: () => number;
+  /**
+   * Test hook (010 must-fail proof): `false` restores v1.2, where every ESCALATE writes a new ESCALATED
+   * even while one is pending for the same purchase. Default true (FR-005).
+   */
+  dedupePendingEscalations?: boolean;
 }
 
 export interface ControlService {
   app: Express;
   serialize: Serialize;
+  /** 010: runs the escalation sweep (L2-4.3) inside the serialized section at `now()`. */
+  sweep: () => Promise<unknown>;
 }
 
 const DAY_MS = 86_400_000;
+/** 010: escalation sweep period in main(); with a 1 s watch poll, events surface in about 2 s (FR-017, FR-021). */
+const SWEEP_INTERVAL_MS = 1_000;
 const SIGNER_DETAIL_MAX = 300;
 
 /** Promise-chain mutex. Every caller runs after the previous one settles, success or failure. */
@@ -84,6 +96,7 @@ const maxZero = (n: bigint) => (n < 0n ? 0n : n);
 export function createControlService(deps: ControlServiceDeps): ControlService {
   const { mandate, signer, ledger } = deps;
   const now = deps.now ?? Date.now;
+  const dedupePending = deps.dedupePendingEscalations ?? true;
   const serialize = createSerializer();
   const app = express();
   const tok = (t?: string) => (t === undefined ? {} : { token: t });
@@ -94,6 +107,8 @@ export function createControlService(deps: ControlServiceDeps): ControlService {
   async function authorize(intent: PaymentIntent): Promise<AuthorizationDecision> {
     // Step 1: one clock read; INTENT before deciding.
     const t = now();
+    // 010: record due expiries and lapses first, so the decision sees current escalation states.
+    sweep(ledger, t);
     const authorizationId = `auth_${randomUUID()}`;
     const { intentId, sessionId } = intent;
     const key = resourceKey(intent.resourceUrl);
@@ -106,6 +121,8 @@ export function createControlService(deps: ControlServiceDeps): ControlService {
     // Step 2: open approval for (session, resourceKey), most recent wins (L2-4.2).
     const approval = ledger.findOpenApproval(sessionId, key, t);
     const approvalData = approval?.data as { payTo: string; amount: string; approvalId: string } | undefined;
+    // 010: an operator rejection for (session, resourceKey) feeds R15.
+    const rejection = findRejection(ledger.entries(), sessionId, key);
 
     // Step 3: ledger-derived context (INV-7).
     const ctx: PolicyContext = {
@@ -118,6 +135,7 @@ export function createControlService(deps: ControlServiceDeps): ControlService {
       ...(approvalData && {
         humanApprovedFor: { payTo: approvalData.payTo, amount: approvalData.amount, approvalId: approvalData.approvalId },
       }),
+      ...(rejection && { humanRejected: { rejectionId: rejection.data.rejectionId as string } }),
     };
 
     // Step 4: pure decision.
@@ -130,6 +148,22 @@ export function createControlService(deps: ControlServiceDeps): ControlService {
 
     if (d.status === "ESCALATE") {
       const chosen = d.chosen!;
+      // 010 FR-005: one pending escalation per purchase. A repeat returns it and records the repeat.
+      const pending =
+        dedupePending && findPendingEscalation(ledger.entries(), sessionId, key, String(chosen.payTo), chosen.amount, t);
+      if (pending && pending.authorizationId !== undefined) {
+        ledger.append(
+          {
+            type: "ESCALATION_REPEATED",
+            sessionId,
+            intentId,
+            authorizationId: pending.authorizationId,
+            data: { escalationId: pending.authorizationId, resourceKey: key, payTo: chosen.payTo, amount: chosen.amount, violations: d.violations },
+          },
+          t,
+        );
+        return { status: "ESCALATE", authorizationId: pending.authorizationId, intentId, violations: d.violations };
+      }
       ledger.append(
         {
           type: "ESCALATED",
@@ -240,7 +274,14 @@ export function createControlService(deps: ControlServiceDeps): ControlService {
     ...(deps.tokens?.operator !== undefined && { tokens: { operator: deps.tokens.operator } }),
   });
 
-  return { app, serialize };
+  mountEscalationRoutes(app, {
+    ledger,
+    serialize,
+    now,
+    ...(deps.tokens?.operator !== undefined && { tokens: { operator: deps.tokens.operator } }),
+  });
+
+  return { app, serialize, sweep: () => serialize(() => sweep(ledger, now())) };
 }
 
 /** `.local/ledger-<network>.jsonl`, from the network name only (no profile resolution). */
@@ -265,7 +306,11 @@ export function main(): void {
     throw new Error("PAYER_PRIVATE_KEY is missing or malformed (env/l2-control.env)");
   }
   const signer = new PaymentSigner(key as `0x${string}`, net, mandate.hardCapPerPaymentAtomic);
-  const { app } = createControlService({ mandate, signer, ledger, asset: { address: net.asset, decimals: net.decimals } });
+  const { app, sweep: sweepNow } = createControlService({ mandate, signer, ledger, asset: { address: net.asset, decimals: net.decimals } });
+  // 010 (L2-4.3): expire escalations and lapse approvals on time even when nobody calls L2. The timer
+  // never keeps the process alive; tests never call main(), so they stay deterministic.
+  void sweepNow();
+  setInterval(() => void sweepNow(), SWEEP_INTERVAL_MS).unref();
   const port = controlPort();
   const server = listenControl(app, port, () => {
     console.log(`l2-control listening on http://${CONTROL_BIND_HOST}:${port} (network ${net.name}, payer ${signer.address})`);
