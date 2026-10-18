@@ -1,0 +1,204 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "x402 Escalation and Human Approval",
+    "locale": "en",
+    "output": "x402-approval.html",
+    "quality_profile": "showcase",
+    "column_fit": "spread",
+    "viewBox": [
+      1080,
+      692
+    ]
+  },
+  "participants": [
+    {
+      "id": "operator",
+      "type": "external",
+      "label": "Operator",
+      "sublabel": "npm run approve"
+    },
+    {
+      "id": "l2",
+      "type": "security",
+      "label": "L2 Control",
+      "sublabel": ":4020 · policy + ledger"
+    },
+    {
+      "id": "agent",
+      "type": "frontend",
+      "label": "L1 Agent",
+      "sublabel": "fixed SESSION_ID",
+      "brand": "claude"
+    },
+    {
+      "id": "seller",
+      "type": "backend",
+      "label": "Seller",
+      "sublabel": ":4021 · CDP facilitator"
+    }
+  ],
+  "segments": [
+    {
+      "from": 150,
+      "to": 292,
+      "label": "Challenge and escalate"
+    },
+    {
+      "from": 304,
+      "to": 378,
+      "label": "Operator approves: single use, never overrides a DENY"
+    },
+    {
+      "from": 390,
+      "to": 536,
+      "label": "Same-session retry"
+    },
+    {
+      "from": 548,
+      "to": 622,
+      "label": "Pay"
+    }
+  ],
+  "messages": [
+    {
+      "id": "get",
+      "from": "agent",
+      "to": "seller",
+      "y": 176,
+      "label": "GET /api/premium-report",
+      "variant": "emphasis"
+    },
+    {
+      "id": "challenge",
+      "from": "seller",
+      "to": "agent",
+      "y": 210,
+      "label": "402 + PAYMENT-REQUIRED",
+      "variant": "return"
+    },
+    {
+      "id": "premium",
+      "from": "agent",
+      "to": "l2",
+      "y": 244,
+      "label": "POST /v1/authorize (0.05 USDC)",
+      "variant": "default"
+    },
+    {
+      "id": "escalate",
+      "from": "l2",
+      "to": "agent",
+      "y": 278,
+      "label": "ESCALATE + authorizationId",
+      "variant": "return",
+      "note": "above the 0.02 USDC auto-approve limit"
+    },
+    {
+      "id": "approve",
+      "from": "operator",
+      "to": "l2",
+      "y": 330,
+      "label": "POST /v1/approvals/:id",
+      "variant": "security",
+      "note": "OPERATOR_TOKEN"
+    },
+    {
+      "id": "approval-id",
+      "from": "l2",
+      "to": "operator",
+      "y": 364,
+      "label": "approvalId, expires in 600 s",
+      "variant": "return"
+    },
+    {
+      "id": "get-again",
+      "from": "agent",
+      "to": "seller",
+      "y": 416,
+      "label": "GET /api/premium-report",
+      "variant": "emphasis"
+    },
+    {
+      "id": "challenge-again",
+      "from": "seller",
+      "to": "agent",
+      "y": 450,
+      "label": "402 + PAYMENT-REQUIRED",
+      "variant": "return"
+    },
+    {
+      "id": "again",
+      "from": "agent",
+      "to": "l2",
+      "y": 484,
+      "label": "POST /v1/authorize (same session)",
+      "variant": "default"
+    },
+    {
+      "id": "authorized",
+      "from": "l2",
+      "to": "agent",
+      "y": 518,
+      "label": "AUTHORIZED (approvalRef)",
+      "variant": "return",
+      "note": "consumes the approval"
+    },
+    {
+      "id": "retry",
+      "from": "agent",
+      "to": "seller",
+      "y": 574,
+      "label": "retry + PAYMENT-SIGNATURE",
+      "variant": "emphasis"
+    },
+    {
+      "id": "served",
+      "from": "seller",
+      "to": "agent",
+      "y": 608,
+      "label": "200 + PAYMENT-RESPONSE",
+      "variant": "return",
+      "note": "settled and verified as in the paid fetch"
+    }
+  ],
+  "activations": [
+    {
+      "participant": "seller",
+      "from": 170,
+      "to": 216,
+      "type": "backend"
+    },
+    {
+      "participant": "l2",
+      "from": 238,
+      "to": 284,
+      "type": "security"
+    },
+    {
+      "participant": "l2",
+      "from": 324,
+      "to": 370,
+      "type": "security"
+    },
+    {
+      "participant": "seller",
+      "from": 410,
+      "to": 456,
+      "type": "backend"
+    },
+    {
+      "participant": "l2",
+      "from": 478,
+      "to": 524,
+      "type": "security"
+    },
+    {
+      "participant": "seller",
+      "from": 568,
+      "to": 614,
+      "type": "backend"
+    }
+  ]
+}

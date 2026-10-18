@@ -1,0 +1,243 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "x402 Paid Fetch on Base Sepolia",
+    "locale": "en",
+    "output": "x402-paid-fetch.html",
+    "quality_profile": "showcase",
+    "column_fit": "spread",
+    "viewBox": [
+      1080,
+      690
+    ],
+    "views": [
+      {
+        "id": "authorize-and-pay",
+        "label": "Authorize and pay",
+        "focus": [
+          "agent",
+          "l2",
+          "seller",
+          "cdp",
+          "chain"
+        ],
+        "note": "L2 decides and signs; the seller settles the signed authorization through CDP."
+      },
+      {
+        "id": "verify",
+        "label": "Verify on-chain",
+        "focus": [
+          "agent",
+          "l3",
+          "chain",
+          "l2"
+        ],
+        "note": "L3 reads the receipt and Transfer log, then reconciles into the L2 ledger."
+      }
+    ]
+  },
+  "participants": [
+    {
+      "id": "agent",
+      "type": "frontend",
+      "label": "L1 Agent",
+      "sublabel": "no keys",
+      "brand": "claude"
+    },
+    {
+      "id": "l2",
+      "type": "security",
+      "label": "L2 Control",
+      "sublabel": ":4020 · signer"
+    },
+    {
+      "id": "l3",
+      "type": "backend",
+      "label": "L3 Verifier",
+      "sublabel": ":4023 · read-only"
+    },
+    {
+      "id": "seller",
+      "type": "backend",
+      "label": "Seller",
+      "sublabel": ":4021 · CDP key"
+    },
+    {
+      "id": "cdp",
+      "type": "cloud",
+      "label": "CDP facilitator",
+      "sublabel": "x402 verify/settle"
+    },
+    {
+      "id": "chain",
+      "type": "database",
+      "label": "Base Sepolia",
+      "sublabel": "USDC"
+    }
+  ],
+  "segments": [
+    {
+      "from": 150,
+      "to": 224,
+      "label": "402 challenge"
+    },
+    {
+      "from": 236,
+      "to": 298,
+      "label": "Authorize"
+    },
+    {
+      "from": 310,
+      "to": 474,
+      "label": "Pay through CDP"
+    },
+    {
+      "from": 486,
+      "to": 616,
+      "label": "Verify on-chain"
+    }
+  ],
+  "messages": [
+    {
+      "id": "get",
+      "from": "agent",
+      "to": "seller",
+      "y": 176,
+      "label": "GET /api/weather",
+      "variant": "emphasis"
+    },
+    {
+      "id": "challenge",
+      "from": "seller",
+      "to": "agent",
+      "y": 210,
+      "label": "402 + PAYMENT-REQUIRED",
+      "variant": "return"
+    },
+    {
+      "id": "authorize",
+      "from": "agent",
+      "to": "l2",
+      "y": 250,
+      "label": "POST /v1/authorize",
+      "variant": "security"
+    },
+    {
+      "id": "authorized",
+      "from": "l2",
+      "to": "agent",
+      "y": 284,
+      "label": "AUTHORIZED + paymentHeaders",
+      "variant": "return",
+      "note": "R1–R14 → sign EIP-3009 → append ledger; otherwise DENIED or ESCALATE"
+    },
+    {
+      "id": "retry",
+      "from": "agent",
+      "to": "seller",
+      "y": 324,
+      "label": "retry + PAYMENT-SIGNATURE",
+      "variant": "emphasis"
+    },
+    {
+      "id": "settle",
+      "from": "seller",
+      "to": "cdp",
+      "y": 358,
+      "label": "verify, settle + JWT",
+      "variant": "security",
+      "note": "fresh JWT per request, valid 120 s"
+    },
+    {
+      "id": "transfer",
+      "from": "cdp",
+      "to": "chain",
+      "y": 392,
+      "label": "transferWithAuthorization",
+      "variant": "emphasis",
+      "note": "CDP pays gas"
+    },
+    {
+      "id": "tx",
+      "from": "cdp",
+      "to": "seller",
+      "y": 426,
+      "label": "tx hash",
+      "variant": "return"
+    },
+    {
+      "id": "served",
+      "from": "seller",
+      "to": "agent",
+      "y": 460,
+      "label": "200 + PAYMENT-RESPONSE",
+      "variant": "return"
+    },
+    {
+      "id": "claim",
+      "from": "agent",
+      "to": "l3",
+      "y": 500,
+      "label": "POST /v1/settlements",
+      "variant": "default"
+    },
+    {
+      "id": "read",
+      "from": "l3",
+      "to": "chain",
+      "y": 534,
+      "label": "receipt, Transfer log, finality",
+      "variant": "dashed"
+    },
+    {
+      "id": "reconcile",
+      "from": "l3",
+      "to": "l2",
+      "y": 568,
+      "label": "POST /v1/reconcile",
+      "variant": "security",
+      "note": "CONFIRMED is final"
+    },
+    {
+      "id": "confirmed",
+      "from": "l3",
+      "to": "agent",
+      "y": 602,
+      "label": "SettlementReport (CONFIRMED)",
+      "variant": "return"
+    }
+  ],
+  "activations": [
+    {
+      "participant": "seller",
+      "from": 170,
+      "to": 216,
+      "type": "backend"
+    },
+    {
+      "participant": "l2",
+      "from": 244,
+      "to": 290,
+      "type": "security"
+    },
+    {
+      "participant": "seller",
+      "from": 318,
+      "to": 466,
+      "type": "backend"
+    },
+    {
+      "participant": "cdp",
+      "from": 352,
+      "to": 432,
+      "type": "cloud"
+    },
+    {
+      "participant": "l3",
+      "from": 494,
+      "to": 608,
+      "type": "backend"
+    }
+  ]
+}

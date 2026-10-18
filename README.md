@@ -9,7 +9,17 @@ A Claude agent buys HTTP resources with x402 (protocol v2, scheme `exact`, EIP-3
 | L3 Settlement | `src/layer3-settlement/` | Read-only on-chain verification, reconciles into L2 | 4023 (loopback) |
 | Counterparty | `src/counterparty/`, `scripts/facilitator.ts` | Seller API and local facilitator | 4021, 4022 |
 
-`SPEC.md` (v1.1) is normative. Feature specs, plans and task lists live under `specs/` (spec-kit). Agent guidance is in `CLAUDE.md`.
+`SPEC.md` (v1.2) is normative. Feature specs, plans and task lists live under `specs/` (spec-kit). Agent guidance is in `CLAUDE.md`.
+
+## Diagrams
+
+Interactive diagrams live in `docs/diagrams/`. Each is a self-contained HTML file with pan/zoom, search and guided views. GitHub shows HTML as source, so open them locally in a browser. The `.json` file next to each one is its [archify](https://github.com/tt-a1i/archify) source.
+
+| Diagram | Shows |
+|---|---|
+| [Architecture](docs/diagrams/x402-architecture.html) | The three layers, the seller, the CDP facilitator on Base Sepolia, the local-network path and the payment-authority boundary. Each box links to its source files. |
+| [Paid fetch](docs/diagrams/x402-paid-fetch.html) | 402 challenge, L2 authorization, signed retry, CDP verify/settle, then L3 on-chain verification and reconcile. |
+| [Escalation and approval](docs/diagrams/x402-approval.html) | A payment above 0.02 USDC escalates, an operator approves it, and the agent retries in the same session. |
 
 ## Quick start
 
