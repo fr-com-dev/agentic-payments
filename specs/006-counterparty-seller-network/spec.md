@@ -65,7 +65,7 @@ through the hosted facilitator and is verified on Base Sepolia.
 **Acceptance Scenarios**:
 
 1. **Given** `base-sepolia`, **Then** the profile is chain 84532 (`eip155:84532`), asset `0x036CbD53842c5426634e7929541eC2318f3dCF7e`, EIP-712 domain {name "USDC", version "2"}, confirmation depth 2, and safe tag supported.
-2. **Given** no facilitator override, **Then** the seller uses `https://x402.org/facilitator`.
+2. **Given** no facilitator override, **Then** the seller uses `https://x402.org/facilitator`. *(Amended by 009, SPEC v1.2: on `base-sepolia` the default is now the CDP facilitator; x402.org is the explicit `FACILITATOR=public` choice. See specs/009-cdp-facilitator-base-sepolia.)*
 3. **Given** the EIP-712 name is set to "USD Coin" on Base Sepolia, **Then** signatures fail verification. The profile MUST use "USDC".
 
 ---
@@ -123,7 +123,7 @@ both signature forms. Check the validity window, nonce replay rejection and emit
 - **FR-007**: The local facilitator MUST expose `GET /supported`, `POST /verify` and `POST /settle`. The request body is {x402Version, paymentPayload, paymentRequirements}. *(SPEC: CP-2)*
 - **FR-008**: Facilitator exceptions MUST map to HTTP 400 with an x402-shaped error body. *(SPEC: CP-2)*
 - **FR-009**: The local facilitator MUST submit settlement on-chain from its own account, paying gas, and wait up to 30 s for confirmation. *(SPEC: CP-2)*
-- **FR-010**: On `base-sepolia`, the seller MUST use the facilitator override if set, otherwise `https://x402.org/facilitator`. No local facilitator runs. *(SPEC: CP-3, CFG-1)*
+- **FR-010**: On `base-sepolia`, the seller MUST use the facilitator override if set, otherwise `https://x402.org/facilitator`. No local facilitator runs. *(SPEC: CP-3, CFG-1)* *(Amended by 009, SPEC v1.2: on `base-sepolia` the default is now the CDP facilitator; x402.org is the explicit `FACILITATOR=public` choice. See specs/009-cdp-facilitator-base-sepolia.)*
 
 **Mock token (CP-4) and local accounts (CP-5)**
 
@@ -143,6 +143,8 @@ both signature forms. Check the validity window, nonce replay rejection and emit
   | Asset | from the deployment record | `0x036CbD53842c5426634e7929541eC2318f3dCF7e` |
   | Asset domain | {"USD Coin", "2"} | {"USDC", "2"} |
   | Facilitator | the override, else `http://127.0.0.1:4022` | the override, else `https://x402.org/facilitator` |
+
+  *(Amended by 009, SPEC v1.2: the base-sepolia facilitator row applies to `FACILITATOR=public`; the default is CDP, `https://api.cdp.coinbase.com/platform/v2/x402`.)*
   | Confirmation depth | 1 | 2 |
   | Safe tag supported | false | true |
 

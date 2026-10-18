@@ -10,7 +10,7 @@ import { describe, expect, it } from "vitest";
 // Scanner core (T004–T006)
 // ---------------------------------------------------------------------------
 
-export type Rule = "A1" | "A2" | "A3" | "A4" | "A5" | "A6" | "A7";
+export type Rule = "A1" | "A2" | "A3" | "A4" | "A5" | "A6" | "A7" | "A8";
 export interface ArchViolation {
   rule: Rule;
   file: string;
@@ -239,6 +239,32 @@ export function checkFile(path: string, source: string): ArchViolation[] {
 }
 
 // ---------------------------------------------------------------------------
+// A8 (009, SPEC v1.2 §4.1, SEC-10): the CDP API credential is confined to one file. Its scope is wider
+// than checkFile's: src/**, scripts/** and env templates (test/** is exempt).
+// ---------------------------------------------------------------------------
+
+const A8_ALLOWED = new Set(["src/counterparty/cdp-facilitator.ts", "env/seller.env.example"]);
+const A8_NAME = /\bCDP_API_KEY_(?:ID|SECRET)\b/;
+
+export function checkCdpConfinement(path: string, source: string): ArchViolation[] {
+  if (A8_ALLOWED.has(path)) return [];
+  const template = /^env\/[^/]+\.env\.example$/.test(path);
+  if (!template && !path.startsWith("src/") && !path.startsWith("scripts/")) return [];
+  // In TS files comments cannot leak a value, so they are ignored; templates are checked whole.
+  const text = template ? source : lex(source).noComments;
+  const out: ArchViolation[] = [];
+  for (const off of matches(text, A8_NAME)) {
+    out.push({ rule: "A8", file: path, line: lineAt(source, off), detail: text.slice(off).match(/^\w+/)![0] });
+  }
+  if (!template) {
+    for (const { spec, offset } of specifiers(text)) {
+      if (spec.startsWith("@coinbase/cdp-sdk")) out.push({ rule: "A8", file: path, line: lineAt(source, offset), detail: spec });
+    }
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
 // Repository walk
 // ---------------------------------------------------------------------------
 
@@ -367,7 +393,10 @@ const TEMPLATES: Record<string, TemplateSpec> = {
     required: ["NETWORK", "CONTROL_URL", "VERIFIER_TOKEN", "SETTLEMENT_TOKEN"],
     optional: ["BASE_SEPOLIA_RPC_URL", "SETTLEMENT_PORT"],
   },
-  seller: { required: ["NETWORK", "SELLER_PAY_TO"], optional: ["FACILITATOR_URL", "SELLER_PORT"] },
+  seller: {
+    required: ["NETWORK", "SELLER_PAY_TO"],
+    optional: ["FACILITATOR", "FACILITATOR_URL", "SELLER_PORT", "CDP_API_KEY_ID", "CDP_API_KEY_SECRET"],
+  },
   facilitator: { required: ["NETWORK", "FACILITATOR_PRIVATE_KEY"], optional: ["FACILITATOR_PORT"] },
   operator: { required: ["CONTROL_URL", "OPERATOR_TOKEN"], optional: [] },
 };
@@ -397,7 +426,7 @@ export function checkTemplate(name: string, entries: TemplateEntry[]): string[] 
     if (!entries.some((e) => e.key === k && !e.commented)) errors.push(`${name}: missing required key ${k}`);
   }
   for (const e of entries) {
-    if (/PRIVATE_KEY$/.test(e.key) && e.value !== "") errors.push(`${name}: ${e.key} must be empty in a template`);
+    if (/PRIVATE_KEY$|_SECRET$/.test(e.key) && e.value !== "") errors.push(`${name}: ${e.key} must be empty in a template`);
   }
   if (name === "facilitator" && !entries.some((e) => e.key === "NETWORK" && e.value === "local")) {
     errors.push("facilitator: NETWORK must be local");
@@ -422,6 +451,32 @@ describe("T-ARCH-ENV per-process env templates (US4)", () => {
     const good = parseTemplate(readFileSync("env/l1-agent.env.example", "utf8"));
     const errors = checkTemplate("l1-agent", [...good, { key: "PAYER_PRIVATE_KEY", value: "", commented: false }]);
     expect(errors).toEqual(["l1-agent: forbidden key PAYER_PRIVATE_KEY"]);
+  });
+
+  it("T-ARCH-A8 fixture trips A8, and no other rule catches it (must fail without the rule)", () => {
+    const { path, source } = fixture(8);
+    expect(checkFile(path, source)).toEqual([]);
+    const violations = checkCdpConfinement(path, source);
+    expect([...new Set(violations.map((v) => v.rule))]).toEqual(["A8"]);
+    expect(violations.map((v) => v.detail).sort()).toEqual(["@coinbase/cdp-sdk/auth", "CDP_API_KEY_SECRET"]);
+  });
+
+  it("T-ARCH-A8 repository is clean: the CDP credential lives only in cdp-facilitator.ts and the seller template", () => {
+    const templates = readdirSync("env")
+      .filter((f) => f.endsWith(".env.example"))
+      .map((f) => `env/${f}`);
+    const files = [...walk("src"), ...walk("scripts"), ...templates];
+    const violations = files.flatMap((f) => checkCdpConfinement(f, readFileSync(f, "utf8")));
+    expect(violations.map(format)).toEqual([]);
+    // The allowed files really hold it, so the rule is not vacuous.
+    expect(checkCdpConfinement("src/layer3-settlement/x.ts", readFileSync("src/counterparty/cdp-facilitator.ts", "utf8")).length).toBeGreaterThan(0);
+    expect(checkCdpConfinement("env/l2-control.env.example", readFileSync("env/seller.env.example", "utf8")).length).toBeGreaterThan(0);
+  });
+
+  it("T-ARCH-A8 comments in TS never trip it; any other template naming the variables does", () => {
+    expect(checkCdpConfinement("scripts/x.ts", "// CDP_API_KEY_SECRET\nexport {};\n")).toEqual([]);
+    expect(checkCdpConfinement("env/l1-agent.env.example", "# CDP_API_KEY_ID=\n").map((v) => v.rule)).toEqual(["A8"]);
+    expect(checkCdpConfinement("test/x.test.ts", 'process.env.CDP_API_KEY_SECRET = "x";')).toEqual([]);
   });
 
   it("no root .env exists, and only src/shared/config.ts uses dotenv", () => {
@@ -466,9 +521,11 @@ function missingIds(rows: { sec: string; ids: string[] }[], titles: string[]): s
 }
 
 describe("T-ARCH-TRACE threat matrix → test titles (007 T051)", () => {
-  it("every SEC-1..SEC-9 row names at least one test, and each named ID is a test title", () => {
+  // SEC-10 and SEC-11 were added by 009 (SPEC v1.2).
+  const SEC_ROWS = Array.from({ length: 11 }, (_, i) => `SEC-${i + 1}`);
+  it(`every ${SEC_ROWS[0]}..${SEC_ROWS.at(-1)} row names at least one test, and each named ID is a test title`, () => {
     const rows = matrixRows(readFileSync(THREAT_MATRIX, "utf8"));
-    expect(rows.map((r) => r.sec)).toEqual(["SEC-1", "SEC-2", "SEC-3", "SEC-4", "SEC-5", "SEC-6", "SEC-7", "SEC-8", "SEC-9"]);
+    expect(rows.map((r) => r.sec)).toEqual(SEC_ROWS);
     expect(missingIds(rows, testTitles())).toEqual([]);
   });
 

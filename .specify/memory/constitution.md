@@ -1,5 +1,15 @@
 <!--
 Sync Impact Report
+- Version change: 1.0.0 → 1.1.0 (MINOR, 2026-10-17, feature 009-cdp-facilitator-base-sepolia)
+- Modified principles: V. Least-Privilege Credentials (adds a bullet on third-party API credentials)
+- Modified sections: Technology & Scope Constraints (the stack adds the CDP SDK, auth subpath, seller
+  only; residual risks add facilitator visibility of payment metadata)
+- Removed sections: none
+- Templates reviewed: plan-template.md, spec-template.md, tasks-template.md (no change)
+- Source: SPEC.md v1.2 (Changes in 1.2, §3.3, §4.1 A8, §5, §11 SEC-10/SEC-11)
+- Deferred TODOs: none
+
+Previous report (1.0.0)
 - Version change: template → 1.0.0 (initial ratification)
 - Principles defined: I. Separation of Payment Authority; II. Deterministic, Pure Policy;
   III. Ledger Is the Single Source of Truth; IV. Trust the Chain, Not the Counterparty;
@@ -66,6 +76,9 @@ Rationale: authorization must be reproducible, auditable and race-free.
   use its own credential. One credential MUST NEVER authorize two roles. (INV-13)
 - Secrets are scoped per process. A shared environment file containing the payer key is
   forbidden.
+- A third-party API credential (for example, the seller's CDP facilitator key) is held by
+  exactly one process and confined to one file by an architecture rule. It must never become
+  payment authority.
 - Internal control and verifier services listen only on the loopback interface.
 
 ### VI. Exact Money Arithmetic
@@ -90,7 +103,8 @@ Rationale: authorization must be reproducible, auditable and race-free.
 ## Technology & Scope Constraints
 
 - Stack (pinned, SPEC.md §5): Node.js 22 ESM, strict TypeScript, x402 SDK 2.28.0, viem,
-  express, Anthropic SDK and vitest. Ganache and solc are used for the local chain only.
+  express, Anthropic SDK and vitest. Ganache and solc are used for the local chain only. The
+  CDP SDK 1.59.0 is used by the seller only, through its auth subpath, to sign facilitator JWTs.
 - Networks in scope: `local` (dev chain with a mock EIP-3009 USDC) and `base-sepolia`
   (testnet USDC). Mainnet is out of scope.
 - Out of scope for v1: refunds and disputes, the `upto` and `batch-settlement` schemes,
@@ -100,7 +114,9 @@ Rationale: authorization must be reproducible, auditable and race-free.
 - Cross-layer types live only in the shared contract module. Changing them is a contract
   change: update every producer, consumer and test together.
 - Accepted residual risks (v1): bearer tokens over loopback, key in an environment variable,
-  single-node JSONL ledger, facilitator trusted for liveness, no refund path.
+  single-node JSONL ledger, facilitator trusted for liveness, no refund path. Added in 1.1.0:
+  the hosted facilitator sees payment metadata (payer, payee, amount, resource), and a settle
+  timeout without a transaction hash is indeterminate.
 
 ## Development Workflow & Quality Gates
 
@@ -129,4 +145,4 @@ New policy rules get a snake_case rule ID, a row in the SPEC rule table and a po
   design and again before implementation. Every review verifies the quality gates above.
 - Runtime guidance for agents lives in `CLAUDE.md`.
 
-**Version**: 1.0.0 | **Ratified**: 2026-10-16 | **Last Amended**: 2026-10-16
+**Version**: 1.1.0 | **Ratified**: 2026-10-16 | **Last Amended**: 2026-10-17

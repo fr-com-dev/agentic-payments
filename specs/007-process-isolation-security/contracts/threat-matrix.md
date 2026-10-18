@@ -11,6 +11,8 @@
 | SEC-7 | Audit tampering | Hash chain; startup integrity check | 003 | T-LED-01 |
 | SEC-8 | Agent self-approves an escalation | `operator` role token; single-use exact-tuple approval | 004, 007 | T-E2E-02, T-POL-13 |
 | SEC-9 | A stale signature settles late | Committed spend counts until `validBefore` | 003 | T-LED-02 |
+| SEC-10 | The CDP API credential leaks to another process, a log or a response, or a misconfiguration silently uses an unauthenticated facilitator | Seller-only credential (rule A8, T-ARCH-ENV); fail-closed startup; no runtime fallback; redaction (amended by 009, SPEC v1.2) | 009, 007 | T-ARCH-A8, T-CDP-02, T-CDP-07, T-CDP-08 |
+| SEC-11 | A facilitator reports failure for a transfer that actually settled, so the budget under-counts | L3 checks any reported hash on-chain (L3-1 step 2, amended by 009, SPEC v1.2) | 009, 005 | T-CDP-06 |
 
 ## Accepted residual risks (v1)
 
@@ -20,4 +22,6 @@
 | Payer key held in an environment variable | PoC; isolated to the L2 process | EXT-2 (remote signer or KMS) |
 | Single-node JSONL ledger | Hash chain detects tampering; no HA needed | EXT-6 |
 | Facilitator trusted for liveness | L3 still verifies settlement on-chain | none planned |
+| CDP facilitator sees payment metadata (payer, payee, amount, resource) and applies its own compliance screening (009) | Testnet PoC; CDP is the payment counterparty's chosen provider | none planned |
+| A settle that times out with no transaction hash is indeterminate (009) | Amount stays committed until `validBefore` (SEC-9); applies to every facilitator | follow-up: EIP-3009 nonce check |
 | No refund path | Micro-amounts; testnet only | EXT-9 |

@@ -21,6 +21,7 @@
 | `NETWORK` | profile selection |
 | `BASE_SEPOLIA_RPC_URL` | `base-sepolia.rpcUrl` |
 | `FACILITATOR_URL` | `facilitatorUrl` (both networks) |
+| `FACILITATOR` (009, SPEC v1.2) | not a profile field: the seller's `facilitatorChoice(net, env)` picks `local`, `public` or `cdp` (default `cdp` on base-sepolia); `facilitatorUrl` is used for `local` and `public` only |
 
 ## `.local/deployment.json` (written by `scripts/local-chain-lib.ts`)
 

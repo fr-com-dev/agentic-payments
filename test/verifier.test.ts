@@ -121,7 +121,11 @@ describe("US2: forged or missing evidence (005 T016–T019)", () => {
     const bad = await v.verify(claim("1000", { paymentResponseHeader: "%%%not-base64%%%" }));
     expect(bad.status).toBe("NOT_SETTLED");
     expect(bad.detail).toMatch(/decode/);
-    const failed = await v.verify(claim("1000", { paymentResponseHeader: header({ success: false, errorReason: "insufficient_funds" }) }));
+    // SPEC v1.2 L3-1 step 2: a failure claim WITH a hash is checked on-chain (FR-020 rows below), so the
+    // NOT_SETTLED case here is a failure claim that carries no transaction.
+    const failed = await v.verify(
+      claim("1000", { paymentResponseHeader: header({ success: false, errorReason: "insufficient_funds", transaction: "" }) }),
+    );
     expect(failed.status).toBe("NOT_SETTLED");
     expect(failed.detail).toMatch(/insufficient_funds/);
     const noTx = await v.verify(claim("1000", { paymentResponseHeader: header({ transaction: "" }) }));
@@ -208,5 +212,70 @@ describe("US3: finality scaled to the amount (005 T025–T028)", () => {
     const r = await verifier({ receiptError: new Error("connection refused") }).verify(claim("1000"));
     expect(r.status).toBe("PENDING");
     expect(r.detail).toMatch(/connection refused/);
+  });
+});
+
+describe("L3-1 step 2 v1.2 (FR-020, SEC-11): a failure claim carrying a hash is checked on-chain", () => {
+  const failure = (over: Partial<{ transaction: string; network: string }> = {}) =>
+    header({ success: false, errorReason: "settlement_pending", ...over });
+
+  it("L3-1 step 2 v1.2 (FR-020) success:false with no transaction → NOT_SETTLED, no chain read", async () => {
+    const client = fakePublicClient(settled(1000n));
+    const v = new ChainSettlementVerifier({ publicClient: client, net: LOCAL, waitMs: 500, pollMs: 10 });
+    const r = await v.verify(claim("1000", { paymentResponseHeader: failure({ transaction: "" }) }));
+    expect(r.status).toBe("NOT_SETTLED");
+    expect(r.detail).toMatch(/settlement_pending/);
+    expect(client.calls.receipt).toBe(0);
+  });
+
+  it("L3-1 step 2 v1.2 (FR-020) success:false with a non-32-byte transaction → NOT_SETTLED, no chain read", async () => {
+    const client = fakePublicClient(settled(1000n));
+    const v = new ChainSettlementVerifier({ publicClient: client, net: LOCAL, waitMs: 500, pollMs: 10 });
+    const r = await v.verify(claim("1000", { paymentResponseHeader: failure({ transaction: "0x1234" }) }));
+    expect(r.status).toBe("NOT_SETTLED");
+    expect(client.calls.receipt).toBe(0);
+  });
+
+  it("L3-1 step 2 v1.2 (FR-020) success:false, valid hash, reverted receipt → NOT_SETTLED", async () => {
+    const r = await verifier({ receipt: { status: "reverted", blockNumber: 10n, logs: [] }, heads: [10n] }).verify(
+      claim("1000", { paymentResponseHeader: failure() }),
+    );
+    expect(r.status).toBe("NOT_SETTLED");
+    expect(r.detail.startsWith("facilitator reported failure (settlement_pending); ")).toBe(true);
+  });
+
+  it("L3-1 step 2 v1.2 (FR-020) success:false, valid hash, Transfer mismatch → MISMATCH", async () => {
+    const r = await verifier(settled(1000n, {}, [transferLog(ASSET, PAYER, PAY_TO, 999n)])).verify(
+      claim("1000", { paymentResponseHeader: failure() }),
+    );
+    expect(r.status).toBe("MISMATCH");
+    expect(r.detail.startsWith("facilitator reported failure (settlement_pending); ")).toBe(true);
+  });
+
+  it("L3-1 step 2 v1.2 (FR-020) success:false, valid hash, wrong network → MISMATCH before any chain read", async () => {
+    const client = fakePublicClient(settled(1000n));
+    const v = new ChainSettlementVerifier({ publicClient: client, net: LOCAL, waitMs: 500, pollMs: 10 });
+    const r = await v.verify(claim("1000", { paymentResponseHeader: failure({ network: "eip155:84532" }) }));
+    expect(r.status).toBe("MISMATCH");
+    expect(client.calls.receipt).toBe(0);
+  });
+
+  it("L3-1 step 2 v1.2 (FR-020) success:false, valid hash, matching Transfer → CONFIRMED with the failure noted", async () => {
+    const r = await verifier(settled(1000n)).verify(claim("1000", { paymentResponseHeader: failure() }));
+    expect(r.status).toBe("CONFIRMED");
+    expect(r.transaction).toBe(TX);
+    expect(r.detail.startsWith("facilitator reported failure (settlement_pending); ")).toBe(true);
+  });
+
+  it("L3-1 step 2 v1.2 (FR-020) verifyFailedClaims:false restores v1.1 (test-only switch for the must-fail proof)", async () => {
+    const client = fakePublicClient(settled(1000n));
+    const v = new ChainSettlementVerifier({ publicClient: client, net: LOCAL, waitMs: 500, pollMs: 10, verifyFailedClaims: false });
+    const r = await v.verify(claim("1000", { paymentResponseHeader: failure() }));
+    expect(r.status).toBe("NOT_SETTLED");
+    expect(client.calls.receipt).toBe(0);
+  });
+
+  it("L3-1 step 2 v1.2 (FR-020) success:true rows are unchanged", async () => {
+    expect((await verifier(settled(1000n)).verify(claim("1000"))).detail).not.toMatch(/facilitator reported failure/);
   });
 });

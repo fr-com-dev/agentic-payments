@@ -7,3 +7,7 @@ that each produces exactly `["A<n>"]` (Principle VIII must-fail proof).
 
 These files are never imported by `src/`, are excluded from `tsc` (tsconfig `exclude`), and
 are not test files.
+
+`a8-violation.ts` (009) is checked with `checkCdpConfinement(path, source)` rather than `checkFile`,
+because A8's scope also covers `scripts/**` and `env/*.env.example`. The test asserts that `checkFile`
+finds nothing in it and A8 finds both the CDP variable and the `@coinbase/cdp-sdk` import.
