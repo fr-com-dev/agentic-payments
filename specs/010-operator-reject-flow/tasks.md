@@ -495,4 +495,13 @@ Places where the work differs from the task text, and the validation results.
   - `npm run check` passes: typecheck clean, 15 test files and 346 tests (up from 316 before this feature), and the demo summary `FREE, PAID, PAID, ESCALATED, DENIED, DENIED`, `spent on-chain: 0.006 USDC`, `hash chain ok=true`.
   - As research R10 expected, starting L2 on the existing `.local/ledger-local.jsonl` (inside the `demo.local` test) appended `ESCALATION_EXPIRED` for the old pending escalations: 16 entries before the final check.
   - `.local/ledger-base-sepolia.jsonl` is unchanged until the next L2 start on Base Sepolia.
-- **T050**: still open. The manual Base Sepolia run needs the operator's go-ahead, because it spends test USDC and calls CDP. The offline coverage (T-E2E-07, T-E2E-08) does not depend on it.
+- **T050**: partly done. On 2026-10-18 the approval part ran step by step on Base Sepolia through the CDP facilitator (key `…c73f`), session `sess_approve_1792326239`:
+  1. L2's startup sweep appended 7 `ESCALATION_EXPIRED` entries for old pending escalations in `.local/ledger-base-sepolia.jsonl` (research R10).
+  2. Agent run 1 escalated `/api/premium-report` (50000) as `auth_f429c92c-…`. `npm run escalations` listed it as the only pending escalation, with its 300 s expiry.
+  3. `npm run approve` returned `apr_87b21f30-…` (600 s).
+  4. A second approve returned the same `approvalId` and `expiresAt` with `alreadyApproved: true`. The ledger kept exactly one `HUMAN_APPROVAL` (FR-011).
+  5. Agent run 2 paid the report: `PAID … settlement=CONFIRMED`, tx `0xc7553c631fcd5d557a7e6c731c4dc17353ec5831765da5437762b56dccd5487a`. The session spent 0.062 of its 0.1 USDC.
+  6. Afterwards `npm run escalations` printed `no pending escalations`. The ledger trail is `ESCALATED` (seq 154) → `HUMAN_APPROVAL` (159, approver `operator-demo`) → `AUTHORIZED` (167, `approvalRef` = that approval).
+  7. `npm run check` stayed green afterwards: 346 tests, demo baseline unchanged.
+
+  Still open: quickstart.md §2 (reject flow), §3 steps 3–7 (expiry, lapse) and §4 (audit check). The offline coverage (T-E2E-07, T-E2E-08) does not depend on them.
