@@ -1,0 +1,406 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "x402 Three-Layer Agent Payments",
+    "locale": "en",
+    "output": "x402-architecture.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/fr-com-dev/agentic-payments",
+      "revision": "4b258df77ebbff091e45ce7a5a4edb2adad5dc10"
+    },
+    "views": [
+      {
+        "id": "paid-fetch",
+        "label": "Paid fetch",
+        "focus": [
+          "agent",
+          "l2",
+          "ledger",
+          "seller",
+          "cdp",
+          "chain"
+        ],
+        "note": "The agent asks, L2 decides and signs, the seller settles through CDP on Base Sepolia."
+      },
+      {
+        "id": "verification",
+        "label": "Settlement verification",
+        "focus": [
+          "agent",
+          "l3",
+          "chain",
+          "l2"
+        ],
+        "note": "L3 checks the receipt on-chain and reconciles the result into the L2 ledger."
+      },
+      {
+        "id": "approval",
+        "label": "Human approval",
+        "focus": [
+          "operator",
+          "l2",
+          "ledger",
+          "agent"
+        ],
+        "note": "Payments above 0.02 USDC escalate; an operator approves once per session and resource."
+      },
+      {
+        "id": "local-network",
+        "label": "Local network",
+        "focus": [
+          "seller",
+          "localfac",
+          "ganache"
+        ],
+        "note": "Offline baseline: local facilitator and ganache replace CDP and Base Sepolia."
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "operator",
+      "type": "external",
+      "label": "Human operator",
+      "sublabel": "npm run approve",
+      "pos": [
+        40,
+        360
+      ],
+      "size": [
+        180,
+        64
+      ]
+    },
+    {
+      "id": "agent",
+      "type": "frontend",
+      "label": "L1 Agent",
+      "sublabel": "Claude or scripted · no keys",
+      "brand": "claude",
+      "pos": [
+        320,
+        200
+      ],
+      "size": [
+        180,
+        64
+      ],
+      "sources": [
+        {
+          "path": "src/main.ts"
+        },
+        {
+          "path": "src/layer1-intent/orchestrator.ts"
+        }
+      ]
+    },
+    {
+      "id": "l2",
+      "type": "security",
+      "label": "L2 Control :4020",
+      "sublabel": "loopback · sole signer",
+      "tag": "payer key",
+      "pos": [
+        320,
+        360
+      ],
+      "size": [
+        180,
+        64
+      ],
+      "sources": [
+        {
+          "path": "src/layer2-control/service.ts"
+        },
+        {
+          "path": "src/layer2-control/signer.ts"
+        },
+        {
+          "path": "src/layer2-control/policy.ts"
+        }
+      ]
+    },
+    {
+      "id": "ledger",
+      "type": "database",
+      "label": "Audit ledger",
+      "sublabel": "hash-chained JSONL",
+      "pos": [
+        320,
+        500
+      ],
+      "size": [
+        180,
+        64
+      ],
+      "sources": [
+        {
+          "path": "src/layer2-control/ledger.ts"
+        }
+      ]
+    },
+    {
+      "id": "seller",
+      "type": "backend",
+      "label": "Seller :4021",
+      "sublabel": "x402 paywall",
+      "tag": "CDP key (A8)",
+      "pos": [
+        680,
+        200
+      ],
+      "size": [
+        180,
+        64
+      ],
+      "sources": [
+        {
+          "path": "src/counterparty/seller.ts"
+        },
+        {
+          "path": "src/counterparty/cdp-facilitator.ts"
+        },
+        {
+          "path": "src/counterparty/facilitator-client.ts"
+        }
+      ]
+    },
+    {
+      "id": "l3",
+      "type": "backend",
+      "label": "L3 Verifier :4023",
+      "sublabel": "loopback · read-only",
+      "pos": [
+        680,
+        360
+      ],
+      "size": [
+        180,
+        64
+      ],
+      "sources": [
+        {
+          "path": "src/layer3-settlement/verifier.ts"
+        },
+        {
+          "path": "src/layer3-settlement/service.ts"
+        }
+      ]
+    },
+    {
+      "id": "cdp",
+      "type": "cloud",
+      "label": "CDP x402 facilitator",
+      "sublabel": "api.cdp.coinbase.com",
+      "pos": [
+        1040,
+        200
+      ],
+      "size": [
+        180,
+        64
+      ]
+    },
+    {
+      "id": "chain",
+      "type": "database",
+      "label": "Base Sepolia",
+      "sublabel": "USDC · EIP-3009",
+      "pos": [
+        1040,
+        360
+      ],
+      "size": [
+        180,
+        64
+      ]
+    },
+    {
+      "id": "localfac",
+      "type": "backend",
+      "label": "Local facilitator :4022",
+      "sublabel": "NETWORK=local",
+      "pos": [
+        680,
+        60
+      ],
+      "size": [
+        180,
+        64
+      ],
+      "sources": [
+        {
+          "path": "scripts/facilitator.ts"
+        },
+        {
+          "path": "src/counterparty/facilitator.ts"
+        }
+      ]
+    },
+    {
+      "id": "ganache",
+      "type": "database",
+      "label": "Ganache :8545",
+      "sublabel": "MockUSDC",
+      "pos": [
+        1040,
+        60
+      ],
+      "size": [
+        180,
+        64
+      ],
+      "sources": [
+        {
+          "path": "scripts/local-chain.ts"
+        }
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "security-group",
+      "label": "Payment authority (payer key)",
+      "wraps": [
+        "l2",
+        "ledger"
+      ]
+    },
+    {
+      "kind": "region",
+      "label": "Base Sepolia (live)",
+      "wraps": [
+        "cdp",
+        "chain"
+      ]
+    },
+    {
+      "kind": "region",
+      "label": "Local network (offline)",
+      "wraps": [
+        "localfac",
+        "ganache"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "fetch",
+      "from": "agent",
+      "to": "seller",
+      "label": "402 · signed retry",
+      "variant": "emphasis"
+    },
+    {
+      "id": "authorize",
+      "from": "agent",
+      "to": "l2",
+      "label": "POST /v1/authorize",
+      "variant": "security",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelDy": 24
+    },
+    {
+      "id": "append",
+      "from": "l2",
+      "to": "ledger",
+      "label": "append",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelDy": 24
+    },
+    {
+      "id": "approve",
+      "from": "operator",
+      "to": "l2",
+      "label": "approve",
+      "variant": "security"
+    },
+    {
+      "id": "settle-cdp",
+      "from": "seller",
+      "to": "cdp",
+      "label": "verify/settle + JWT",
+      "variant": "emphasis"
+    },
+    {
+      "id": "transfer",
+      "from": "cdp",
+      "to": "chain",
+      "label": "transferWithAuthorization",
+      "variant": "emphasis",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelDy": 24
+    },
+    {
+      "id": "claim",
+      "from": "agent",
+      "to": "l3",
+      "label": "POST /v1/settlements",
+      "fromSide": "right",
+      "toSide": "top"
+    },
+    {
+      "id": "read-chain",
+      "from": "l3",
+      "to": "chain",
+      "label": "receipt, Transfer log, finality",
+      "variant": "dashed"
+    },
+    {
+      "id": "reconcile",
+      "from": "l3",
+      "to": "l2",
+      "label": "reconcile",
+      "variant": "security"
+    },
+    {
+      "id": "settle-local",
+      "from": "seller",
+      "to": "localfac",
+      "label": "verify/settle",
+      "variant": "dashed",
+      "fromSide": "top",
+      "toSide": "bottom"
+    },
+    {
+      "id": "transfer-local",
+      "from": "localfac",
+      "to": "ganache",
+      "label": "transfer",
+      "variant": "dashed"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "rose",
+      "title": "Payment authority",
+      "items": [
+        "L1 holds no keys; L2 is the only signer",
+        "Budgets come from the hash-chained ledger",
+        "L3 is read-only and verifies every settlement"
+      ]
+    },
+    {
+      "dot": "cyan",
+      "title": "CDP facilitator",
+      "items": [
+        "Default on Base Sepolia; JWT per request (120 s)",
+        "CDP key held by the seller only (rule A8)",
+        "No fallback; startup fails closed; CDP pays gas"
+      ]
+    },
+    {
+      "dot": "slate",
+      "title": "Local network",
+      "items": [
+        "Local facilitator and ganache, fully offline",
+        "npm run check baseline: 0.006 USDC spent"
+      ]
+    }
+  ]
+}
