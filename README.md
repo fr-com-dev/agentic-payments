@@ -45,7 +45,7 @@ A payment above the auto-approve limit (default $0.02) is escalated. The agent r
 npm run approve -- <authorizationId> [approver]
 ```
 
-Each approval is single-use and expires after 600 s. An approval never overrides a DENY rule.
+Each approval is single-use and expires after 600 s. An approval never overrides a DENY rule. The agent must then retry the purchase in the same session. For a step-by-step run on Base Sepolia, see [Approving an escalated payment](#approving-an-escalated-payment).
 
 ## Base Sepolia
 
@@ -62,6 +62,7 @@ The seller verifies and settles through the **Coinbase Developer Platform (CDP) 
    - `env/seller.base-sepolia.env`: `NETWORK=base-sepolia`, `SELLER_PAY_TO`, `CDP_API_KEY_ID`, `CDP_API_KEY_SECRET`. Quote a PEM key; real newlines or `\n` both work.
    - `env/l2-control.base-sepolia.env`: the payer key, `ALLOWED_PAYEES` (including `SELLER_PAY_TO`), `ALLOWED_HOSTS=127.0.0.1:4021`, and all tokens.
    - `env/l3-verifier.base-sepolia.env` and `env/l1-agent.base-sepolia.env` (`SELLER_URL=http://127.0.0.1:4021`).
+   - `env/operator.base-sepolia.env`: `CONTROL_URL=http://127.0.0.1:4020` and the `OPERATOR_TOKEN` that L2 verifies. It is needed only to approve escalated payments.
 4. Run the opt-in live acceptance run (T-E2E-06). It is not part of `npm run check`:
 
 ```bash
@@ -90,6 +91,31 @@ npm run agent -- "<goal>"
 ```
 
 The seller logs which facilitator it uses, for example `facilitator=cdp host=api.cdp.coinbase.com key=…abcd`. Misconfigurations exit 1 with a fixed message that never echoes the secret.
+
+### Approving an escalated payment
+
+`/api/premium-report` costs 0.05 USDC, above the 0.02 USDC auto-approve limit in `config/mandate.json`, so L2 escalates it instead of paying. An approval applies to one session and one resource. `demo:base-sepolia` stops L2 when it finishes and starts a new session each run, so run the processes yourself with a fixed `SESSION_ID`:
+
+1. Start the seller, L2 and L3 as shown above.
+2. Run the agent with a session ID you choose. Step 4 is escalated and prints its `authorizationId`:
+
+   ```bash
+   SESSION_ID=sess_approve1 ENV_FILE=env/l1-agent.base-sepolia.env npm run agent:scripted
+   # 4. ESCALATED http://127.0.0.1:4021/api/premium-report rules=human_approval_required authorizationId=auth_…
+   ```
+
+3. Approve it as the operator:
+
+   ```bash
+   ENV_FILE=env/operator.base-sepolia.env npm run approve -- auth_… <approver>
+   # {"ok":true,"approvalId":"apr_…","expiresAt":"…"}
+   ```
+
+4. Within 600 s, run the agent again with the same `SESSION_ID`. Step 4 is now `PAID … settlement=CONFIRMED`. The scripted plan also buys the weather and the market brief again, so the session spends 0.062 of its 0.1 USDC budget.
+
+The ledger shows `ESCALATED`, then `HUMAN_APPROVAL` with the `approvalId`, then an `AUTHORIZED` entry whose `approvalRef` points to that approval. Once used, the approval is spent, so a third run escalates again. An approval lifts only `human_approval_required`. It never overrides a refusal such as `hard_cap_exceeded` on `/api/dataset-export`.
+
+To buy only the report instead of repeating the plan, use the Claude agent in the same session: `SESSION_ID=sess_approve1 ENV_FILE=env/l1-agent.base-sepolia.env npm run agent -- "buy the premium report"`. It needs `ANTHROPIC_API_KEY` in `env/l1-agent.base-sepolia.env`.
 
 Facilitator failures reach the agent in two ways:
 - Before a challenge, priced routes answer 503 `{"error":"facilitator <category>","category":…}`. The category is `unavailable`, `authentication`, `rate-limited` or `unsupported`.
