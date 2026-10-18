@@ -290,6 +290,20 @@ describe("T-ARCH scanner on the real tree (T006)", () => {
     const violations = walk("src").flatMap((f) => checkFile(f, readFileSync(f, "utf8")));
     expect(violations.map(format)).toEqual([]);
   });
+
+  it("010 US5 L1 never references operator routes or the operator token (SEC-8, INV-13)", () => {
+    const l1Files = [...walk("src/layer1-intent"), "src/main.ts"];
+    expect(l1Files.length).toBeGreaterThan(1);
+    for (const f of l1Files) {
+      // Comments may document the absence (ports-http.ts does); only code counts, as for A8.
+      const src = readFileSync(f, "utf8")
+        .replace(/\/\*[\s\S]*?\*\//g, "")
+        .replace(/(^|[^:])\/\/.*$/gm, "$1");
+      for (const needle of ["/v1/rejections", "/v1/approvals", "/v1/escalations", "OPERATOR_TOKEN"]) {
+        expect(src.includes(needle), `${f} references ${needle}`).toBe(false);
+      }
+    }
+  });
 });
 
 describe("T-ARCH-INV3 / T-ARCH-INV2 (US1)", () => {
@@ -522,7 +536,7 @@ function missingIds(rows: { sec: string; ids: string[] }[], titles: string[]): s
 
 describe("T-ARCH-TRACE threat matrix → test titles (007 T051)", () => {
   // SEC-10 and SEC-11 were added by 009 (SPEC v1.2).
-  const SEC_ROWS = Array.from({ length: 11 }, (_, i) => `SEC-${i + 1}`);
+  const SEC_ROWS = Array.from({ length: 12 }, (_, i) => `SEC-${i + 1}`);
   it(`every ${SEC_ROWS[0]}..${SEC_ROWS.at(-1)} row names at least one test, and each named ID is a test title`, () => {
     const rows = matrixRows(readFileSync(THREAT_MATRIX, "utf8"));
     expect(rows.map((r) => r.sec)).toEqual(SEC_ROWS);

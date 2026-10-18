@@ -20,7 +20,9 @@
     "l3:verifier": "tsx src/layer3-settlement/service.ts",
     "agent": "tsx src/main.ts",
     "agent:scripted": "tsx src/main.ts --scripted",
-    "approve": "tsx scripts/approve.ts"
+    "approve": "tsx scripts/approve.ts",
+    "reject": "tsx scripts/reject.ts",
+    "escalations": "tsx scripts/escalations.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.135.0",

@@ -1,8 +1,8 @@
 # Specs index: x402 three-layer agent payments
 
-These spec-kit feature specs decompose `SPEC.md` v1.0, which remains normative.
-Project principles live in `.specify/memory/constitution.md` (v1.0.0). It covers INV-1..13,
-the definition of done and the governance rules.
+These spec-kit feature specs decompose `SPEC.md` (v1.0 for 001–008, amended through v1.3 by 009 and
+010), which remains normative. Project principles live in `.specify/memory/constitution.md` (v1.1.1).
+It covers INV-1..13, the definition of done and the governance rules.
 
 | # | Feature | Layer | Functional scope | Main non-functional scope |
 |---|---|---|---|---|
@@ -15,6 +15,7 @@ the definition of done and the governance rules.
 | 007 | [process-isolation-security](007-process-isolation-security/spec.md) | Cross-cutting | §3.1, §3.3, CFG-2, T-ARCH-* | INV-1..4/13, SEC-1..9 consolidated, residual risks |
 | 008 | [local-demo-regression](008-local-demo-regression/spec.md) | Cross-cutting | L1-4 baseline, T-E2E-01, demo, §13, §14 M0–M7 | Definition of done, clean shutdown, §16 gotchas |
 | 009 | [cdp-facilitator-base-sepolia](009-cdp-facilitator-base-sepolia/spec.md) | Counterparty (+ L3-1 step 2) | CP-3, CFG-1/2 and §3.3 amended (CDP facilitator on Base Sepolia, CDP API key held only by the seller) | Fail-closed credentials, no silent facilitator fallback, offline baseline unchanged. In SPEC v1.2 |
+| 010 | [operator-reject-flow](010-operator-reject-flow/spec.md) | L2 + operator | L2-2 R15, L2-4 entry types, L2-4.2 (one approval per escalation), new L2-4.3 escalation lifecycle, L2-5 rejections and escalation reads, §13 `reject` and `escalations` | Final states never reversed, 300 s expiry, operator notification without outbound calls, no operator text reaches the agent (SEC-12). In SPEC v1.3 |
 
 ## Traceability (SPEC.md ID → feature)
 
@@ -29,10 +30,11 @@ the definition of done and the governance rules.
 | INV-13 | 007 (owner), 003, 004, 005 |
 | L1-1..L1-3, L1-5 | 001 |
 | L1-4 | 001, 008 |
-| L2-1, L2-2, L2-3 | 002 (R14 also in 004) |
-| L2-4, L2-4.1 | 003 |
-| L2-4.2 | 004 |
-| L2-5 | 002 (authorize, budget), 003 (reconcile, ledger/verify), 004 (approvals) |
+| L2-1, L2-2, L2-3 | 002 (R14 also in 004; R15 in 010) |
+| L2-4, L2-4.1 | 003 (entry types added by 010) |
+| L2-4.2 | 004 (amended by 010) |
+| L2-4.3 | 010 |
+| L2-5 | 002 (authorize, budget), 003 (reconcile, ledger/verify), 004 (approvals), 010 (rejections, escalation reads; approve made state-aware) |
 | L3-1, L3-2 | 005 (L3-1 step 2 amended by 009) |
 | CP-1..CP-5 | 006 (CP-3/CP-5 also in 008; CP-1 failure categories and CP-3 amended by 009) |
 | CFG-1 | 006, 009 (facilitator selection) |
@@ -40,8 +42,10 @@ the definition of done and the governance rules.
 | CFG-3 | 002 |
 | SEC-1..SEC-9 | 007 (consolidated), with detail in 001 (1, 2), 002 (3, 6), 003 (5, 7, 9), 004 (8), 005 (4) |
 | SEC-10, SEC-11 | 009 (with 007 for A8 and the threat matrix, 005 for L3-1 step 2) |
+| SEC-12 | 010 (with 007 for the threat matrix, 002 for the rule) |
 | CFG-2 seller.env, §3.3 CDP row, §4.1 A8 | 009, 007 |
 | T-CDP-01..09, T-E2E-06 | 009 |
+| T-POL-15, T-LED-04, T-E2E-07, T-E2E-08 | 010 |
 | T-POL-01..14 | 002 (T-POL-13 also in 004) |
 | T-LED-01..03 | 003 |
 | T-ARCH-* | 007 (T-ARCH-A8 by 009) |

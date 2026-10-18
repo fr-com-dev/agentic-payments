@@ -13,6 +13,8 @@ export interface PolicyContext {
   dailyCommittedAtomic: bigint;
   authorizationsLastMinute: number;
   humanApprovedFor?: { payTo: string; amount: string; approvalId: string };
+  /** 010: present when an operator rejected this (session, resourceKey). Drives R15. */
+  humanRejected?: { rejectionId: string };
 }
 
 export type EvalStatus = "AUTHORIZED" | "DENIED" | "ESCALATE";
@@ -26,7 +28,7 @@ function hostOf(url: string): string | null {
   }
 }
 
-/** Evaluates one offered requirement against the mandate (rules R1–R14, in order). */
+/** Evaluates one offered requirement against the mandate (rules R1–R15, in SPEC table order). */
 export function evaluateRequirement(
   req: PaymentRequirements,
   m: SpendingMandate,
@@ -86,6 +88,9 @@ export function evaluateRequirement(
   if (ctx.authorizationsLastMinute >= m.maxAuthorizationsPerMinute) {
     deny("velocity_limit", `${ctx.authorizationsLastMinute} authorizations in the last 60 s (max ${m.maxAuthorizationsPerMinute})`);
   }
+  // R15 (010): an operator rejected this (session, resource). The detail carries only the ID, never
+  // operator free text, because violations reach the LLM agent (SEC-12).
+  if (ctx.humanRejected) deny("human_rejected", `rejected by the operator (${ctx.humanRejected.rejectionId})`);
   if (v.length > 0) return { status: "DENIED", violations: v };
 
   // R14: only when nothing denies. An approval lifts it for the exact payee and amount string.

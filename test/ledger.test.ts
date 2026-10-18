@@ -467,7 +467,7 @@ describe("findOpenApproval (004 T005)", () => {
     expect(l.findOpenApproval("sess_a", KEY, T0 + 1001)).toBeUndefined();
   });
 
-  it("excludes an approval whose approvalId is an AUTHORIZED approvalRef; a second approval of the same escalation stays open", () => {
+  it("excludes an approval whose approvalId is an AUTHORIZED approvalRef; two approvals for the same session and resource are each single-use", () => {
     const l = new AuditLedger(file);
     approve(l, "apr_1");
     approve(l, "apr_2", { at: T0 + 1 });

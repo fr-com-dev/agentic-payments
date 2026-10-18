@@ -432,3 +432,137 @@ describe("T-E2E-04 serialized authorization", () => {
     expect(h.ledgerEntries().filter((e) => e.type === "AUTHORIZED" && Date.parse(e.ts) >= since)).toHaveLength(10);
   });
 });
+
+// ---------------------------------------------------------------------------
+// T-E2E-07 (010): operator rejection, end to end (SPEC.md L2-4.3, L2-5; SEC-8, SEC-12).
+// ---------------------------------------------------------------------------
+describe("T-E2E-07 operator reject", () => {
+  let h: Harness;
+  beforeAll(async () => {
+    h = await startHarness();
+  });
+  afterAll(async () => {
+    await h?.close();
+  });
+
+  const operatorPost = (path: string, body: unknown, token = h.tokens.operator) =>
+    fetch(`${h.urls.control}${path}`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+      body: JSON.stringify(body),
+    });
+
+  it("T-E2E-07 reject: escalate → operator reject → retry DENIED human_rejected; other session escalates; ledger trail", async () => {
+    const { orchestrator } = l1(h, "sess_e2e07");
+    const url = `${h.urls.seller}/api/premium-report`;
+    const escalated = await orchestrator.fetchPaid(url, "premium report");
+    expect(escalated.outcome).toBe("ESCALATED");
+    const id = escalated.authorizationId!;
+
+    const res = await operatorPost(`/v1/rejections/${id}`, { operator: "e2e-operator", reason: "too expensive" });
+    expect(res.status).toBe(200);
+
+    const payer0 = await h.balanceOf(h.addresses.payer);
+    const again = await orchestrator.fetchPaid(url, "premium report, again");
+    expect(again.outcome).toBe("DENIED");
+    expect(rulesOf(again)).toEqual(["human_rejected"]);
+    expect(JSON.stringify(again.violations)).not.toMatch(/e2e-operator|too expensive/); // SEC-12
+    expect(await h.balanceOf(h.addresses.payer)).toBe(payer0);
+
+    const other = await l1(h, "sess_e2e07b").orchestrator.fetchPaid(url, "premium report, other session");
+    expect(other.outcome).toBe("ESCALATED");
+
+    const trail = h.ledgerEntries().filter((e) => e.sessionId === "sess_e2e07" && e.type !== "INTENT").map((e) => e.type);
+    expect(trail).toEqual(["ESCALATED", "HUMAN_REJECTION", "DENIED"]);
+  });
+  it("T-E2E-07 concurrent approve and reject on one pending escalation: exactly one final entry, the other is 409", async () => {
+    const { orchestrator } = l1(h, "sess_e2e07c");
+    const escalated = await orchestrator.fetchPaid(`${h.urls.seller}/api/premium-report`, "premium report, race");
+    expect(escalated.outcome).toBe("ESCALATED");
+    const id = escalated.authorizationId!;
+    const [a, r] = await Promise.all([operatorPost(`/v1/approvals/${id}`, {}), operatorPost(`/v1/rejections/${id}`, {})]);
+    expect([a.status, r.status].sort()).toEqual([200, 409]);
+    const finals = h
+      .ledgerEntries()
+      .filter((e) => (e.type === "HUMAN_APPROVAL" || e.type === "HUMAN_REJECTION" || e.type === "ESCALATION_EXPIRED") && e.data.escalationId === id);
+    expect(finals).toHaveLength(1);
+  });
+  it("T-E2E-07 watch: events feed reports escalated, denied and approved within one poll", async () => {
+    const get = (path: string) => fetch(`${h.urls.control}${path}`, { headers: { authorization: `Bearer ${h.tokens.operator}` } });
+    const { cursor } = (await (await get("/v1/escalations")).json()) as { cursor: number };
+    const url = `${h.urls.seller}/api/premium-report`;
+    const x = await l1(h, "sess_e2e07w1").orchestrator.fetchPaid(url, "premium report, watch 1");
+    const y = await l1(h, "sess_e2e07w2").orchestrator.fetchPaid(url, "premium report, watch 2");
+    expect((await operatorPost(`/v1/rejections/${x.authorizationId}`, { operator: "e2e-operator", reason: "no" })).status).toBe(200);
+    expect((await operatorPost(`/v1/approvals/${y.authorizationId}`, {})).status).toBe(200);
+    const { events } = (await (await get(`/v1/escalations/events?after=${cursor}`)).json()) as {
+      events: { kind: string; authorizationId: string; operator?: string; reason?: string }[];
+    };
+    expect(events.map((e) => [e.kind, e.authorizationId])).toEqual([
+      ["escalated", x.authorizationId],
+      ["escalated", y.authorizationId],
+      ["denied", x.authorizationId],
+      ["approved", y.authorizationId],
+    ]);
+    expect(events[2]).toMatchObject({ operator: "e2e-operator", reason: "no" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T-E2E-08 (010): escalation expiry, repeat while pending, and re-escalation (SPEC.md L2-4.3).
+// L2 runs on a controlled clock; everything else uses real time.
+// ---------------------------------------------------------------------------
+describe("T-E2E-08 expiry and re-escalation", () => {
+  let h: Harness;
+  let clock = Date.now();
+  beforeAll(async () => {
+    h = await startHarness({ controlNow: () => clock });
+  });
+  afterAll(async () => {
+    await h?.close();
+  });
+
+  const operatorPost = (path: string, body: unknown) =>
+    fetch(`${h.urls.control}${path}`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${h.tokens.operator}` },
+      body: JSON.stringify(body),
+    });
+
+  it("T-E2E-08 expiry: a pending repeat reuses the ID; 300 s expire it; decisions are 409; the next request escalates anew; one approval pays once", async () => {
+    const { orchestrator } = l1(h, "sess_e2e08");
+    const url = `${h.urls.seller}/api/premium-report`;
+
+    const first = await orchestrator.fetchPaid(url, "premium report");
+    expect(first.outcome).toBe("ESCALATED");
+    const A = first.authorizationId!;
+    const repeat = await orchestrator.fetchPaid(url, "premium report, repeat");
+    expect(repeat.outcome).toBe("ESCALATED");
+    expect(repeat.authorizationId).toBe(A);
+    expect(h.ledgerEntries().filter((e) => e.type === "ESCALATION_REPEATED")).toHaveLength(1);
+
+    clock += 300_000;
+    await h.sweepEscalations();
+    expect(h.ledgerEntries().filter((e) => e.type === "ESCALATION_EXPIRED" && e.data.escalationId === A)).toHaveLength(1);
+    for (const path of [`/v1/approvals/${A}`, `/v1/rejections/${A}`]) {
+      const r = await operatorPost(path, {});
+      expect(r.status, path).toBe(409);
+      expect(((await r.json()) as { state: string }).state).toBe("expired");
+    }
+
+    const fresh = await orchestrator.fetchPaid(url, "premium report, after expiry");
+    expect(fresh.outcome).toBe("ESCALATED");
+    expect(rulesOf(fresh)).toEqual(["human_approval_required"]);
+    const B = fresh.authorizationId!;
+    expect(B).not.toBe(A);
+
+    const a1 = (await (await operatorPost(`/v1/approvals/${B}`, {})).json()) as { approvalId: string };
+    const a2 = (await (await operatorPost(`/v1/approvals/${B}`, {})).json()) as { approvalId: string; alreadyApproved: boolean };
+    expect(a2).toMatchObject({ approvalId: a1.approvalId, alreadyApproved: true });
+
+    const payer0 = await h.balanceOf(h.addresses.payer);
+    const paid = await orchestrator.fetchPaid(url, "premium report, approved");
+    expect(paid.outcome).toBe("PAID");
+    expect(payer0 - (await h.balanceOf(h.addresses.payer))).toBe(50000n);
+  });
+});

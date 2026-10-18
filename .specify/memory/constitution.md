@@ -1,5 +1,14 @@
 <!--
 Sync Impact Report
+- Version change: 1.1.0 → 1.1.1 (PATCH, 2026-10-18, feature 010-operator-reject-flow)
+- Modified principles: I. Separation of Payment Authority (clarification: the agent never gets a tool
+  that rejects, alongside signs, approves or edits policy). No principle is redefined or removed.
+- Modified sections: none
+- Templates reviewed: plan-template.md, spec-template.md, tasks-template.md (no change)
+- Source: SPEC.md v1.3 (Changes in 1.3, L2-2 R15, L2-4.3, L2-5, §11 SEC-8/SEC-12)
+- Deferred TODOs: none
+
+Previous report (1.1.0)
 - Version change: 1.0.0 → 1.1.0 (MINOR, 2026-10-17, feature 009-cdp-facilitator-base-sepolia)
 - Modified principles: V. Least-Privilege Credentials (adds a bullet on third-party API credentials)
 - Modified sections: Technology & Scope Constraints (the stack adds the CDP SDK, auth subpath, seller
@@ -38,7 +47,7 @@ Settlement (L3). The isolation holds at the module, process and credential level
 - The agent (L1) MUST NOT reference the payer key and MUST refuse to start if the payer
   key is visible in its environment. (INV-3)
 - The settlement verifier (L3) MUST be read-only: no signing and no on-chain writes. (INV-4)
-- The agent MUST NEVER be given a tool that signs, approves or edits policy.
+- The agent MUST NEVER be given a tool that signs, approves, rejects or edits policy.
 
 Rationale: a prompt-injected or compromised agent can ask for a payment, but it cannot make
 one happen.
@@ -145,4 +154,4 @@ New policy rules get a snake_case rule ID, a row in the SPEC rule table and a po
   design and again before implementation. Every review verifies the quality gates above.
 - Runtime guidance for agents lives in `CLAUDE.md`.
 
-**Version**: 1.1.0 | **Ratified**: 2026-10-16 | **Last Amended**: 2026-10-17
+**Version**: 1.1.1 | **Ratified**: 2026-10-16 | **Last Amended**: 2026-10-18

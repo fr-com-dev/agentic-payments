@@ -8,7 +8,18 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { SettlementReport } from "../shared/contracts.js";
 
-export type EntryType = "INTENT" | "AUTHORIZED" | "DENIED" | "ESCALATED" | "HUMAN_APPROVAL" | "SETTLEMENT";
+export type EntryType =
+  | "INTENT"
+  | "AUTHORIZED"
+  | "DENIED"
+  | "ESCALATED"
+  | "HUMAN_APPROVAL"
+  | "SETTLEMENT"
+  // 010 escalation lifecycle (L2-4.3)
+  | "HUMAN_REJECTION"
+  | "ESCALATION_EXPIRED"
+  | "APPROVAL_LAPSED"
+  | "ESCALATION_REPEATED";
 
 export interface LedgerEntry {
   seq: number;

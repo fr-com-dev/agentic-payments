@@ -9,10 +9,11 @@
 | SEC-5 | Forged or contradictory settlement reports | Cross-check of the `verified` fields; CONFIRMED is sticky; `verifier-control` role token | 003, 007 | T-E2E-03, T-E2E-05, T-AUTH-01, T-AUTH-02 |
 | SEC-6 | A concurrent burst bypasses limits | Serialized check, sign and append (INV-8) | 002 | T-E2E-04 (fails without the mutex) |
 | SEC-7 | Audit tampering | Hash chain; startup integrity check | 003 | T-LED-01 |
-| SEC-8 | Agent self-approves an escalation | `operator` role token; single-use exact-tuple approval | 004, 007 | T-E2E-02, T-POL-13 |
+| SEC-8 | Agent self-approves (or rejects) an escalation | `operator` role token; single-use exact-tuple approval; one final state per escalation (010) | 004, 007, 010 | T-E2E-02, T-POL-13, T-E2E-07 |
 | SEC-9 | A stale signature settles late | Committed spend counts until `validBefore` | 003 | T-LED-02 |
 | SEC-10 | The CDP API credential leaks to another process, a log or a response, or a misconfiguration silently uses an unauthenticated facilitator | Seller-only credential (rule A8, T-ARCH-ENV); fail-closed startup; no runtime fallback; redaction (amended by 009, SPEC v1.2) | 009, 007 | T-ARCH-A8, T-CDP-02, T-CDP-07, T-CDP-08 |
 | SEC-11 | A facilitator reports failure for a transfer that actually settled, so the budget under-counts | L3 checks any reported hash on-chain (L3-1 step 2, amended by 009, SPEC v1.2) | 009, 005 | T-CDP-06 |
+| SEC-12 | Operator free text (label, reason) reaches the LLM agent and acts as a prompt injection | The R15 `human_rejected` detail carries only the rejection ID; label and reason are stored as data and shown to the operator only (010, SPEC v1.3) | 010, 002 | T-POL-15 |
 
 ## Accepted residual risks (v1)
 
@@ -24,4 +25,6 @@
 | Facilitator trusted for liveness | L3 still verifies settlement on-chain | none planned |
 | CDP facilitator sees payment metadata (payer, payee, amount, resource) and applies its own compliance screening (009) | Testnet PoC; CDP is the payment counterparty's chosen provider | none planned |
 | A settle that times out with no transaction hash is indeterminate (009) | Amount stays committed until `validBefore` (SEC-9); applies to every facilitator | follow-up: EIP-3009 nonce check |
+| Operator label is self-declared; one shared operator token for every operator (010) | Single-operator PoC; the token is still role-scoped (INV-13) | EXT-7 |
+| A rejection blocks a (session, resource) for good, with no undo (010) | By design: final states are never reversed; a new session can buy again | none planned |
 | No refund path | Micro-amounts; testnet only | EXT-9 |

@@ -5,7 +5,7 @@
 ## What this repo is
 A Claude agent buys HTTP resources with x402 (v2, `exact`, EIP-3009 USDC). Payment authority is split into three processes:
 - **L1** `src/layer1-intent/`: the agent and the 402 transport loop. No keys.
-- **L2** `src/layer2-control/`: pure policy engine, sole signer, hash-chained ledger, HITL approvals. Port 4020.
+- **L2** `src/layer2-control/`: pure policy engine, sole signer, hash-chained ledger, HITL approvals and rejections (escalations end approved, denied or expired; never reversed). Port 4020.
 - **L3** `src/layer3-settlement/`: read-only on-chain verification and reconciliation into L2. Port 4023.
 
 The counterparty (seller :4021, local facilitator :4022) is in `src/counterparty/`; the facilitator process starts from `scripts/facilitator.ts`, which wraps the factory in `src/counterparty/facilitator.ts`. Cross-layer types live **only** in `src/shared/contracts.ts`.
@@ -18,6 +18,9 @@ npm test                       # policy, ledger, architecture, agent, on-chain e
 npm run demo:local             # 6 processes; expect "spent on-chain: 0.006 USDC" and "hash chain ok=true"
 npm run check                  # typecheck + test + demo:local (definition of done in one command)
 npm run demo:base-sepolia      # opt-in live run through the CDP facilitator; needs env/*.base-sepolia.env
+npm run approve -- <id> [approver]           # operator: approve a pending escalation
+npm run reject -- <id> [operator] [reason]   # operator: reject a pending escalation (R15 human_rejected)
+npm run escalations -- --watch               # operator: pending escalations, then each new one and outcome
 npx vitest run test/policy.test.ts -t "<name>"   # single test
 ```
 

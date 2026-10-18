@@ -92,8 +92,8 @@ The operator runs an approval command with an authorization ID and, optionally, 
 - **Approval for a resource with a different query string**: the resource key excludes the query, so the approval still matches if the payee and amount match.
 - **Request from a different session**: it does not match the approval and escalates.
 - **Approval of an authorization ID that was DENIED or AUTHORIZED, not ESCALATED**: 404.
-- **Several approvals for the same escalation**: each is a separate entry with its own approval ID and is single-use. Each one pays at most once, so two approvals allow exactly two payments, and a third identical request escalates again.
-- **Re-approving an escalation**: returns 200 and records a new, independent approval. It never extends or revives an earlier one.
+- **Several approvals for the same escalation**: each is a separate entry with its own approval ID and is single-use. Each one pays at most once, so two approvals allow exactly two payments, and a third identical request escalates again. *(Amended by 010, SPEC v1.3: an escalation now has at most one approval; a second approve returns the existing approval with `alreadyApproved: true`, so one escalation pays at most once.)*
+- **Re-approving an escalation**: returns 200 and records a new, independent approval. It never extends or revives an earlier one. *(Amended by 010, SPEC v1.3: re-approving returns the existing approval and appends nothing; approve on a denied or expired escalation is 409.)*
 - **Several open approvals for the same session and resource key**: the lookup uses the most recent open one. An older open approval is not considered until the newer one is consumed or expires.
 - **Mandate misconfigured so that the auto-approve limit is not below the hard cap, or the hard cap exceeds the session budget**: L2 refuses to start (feature 002). The constraint `autoApproveMax < hardCap ≤ sessionBudget` therefore always holds at runtime.
 - **The agent's purpose text claims prior approval**: ignored; purpose is never a decision input (INV-5).
@@ -122,8 +122,8 @@ The operator runs an approval command with an authorization ID and, optionally, 
 
 **Approval**
 
-- **FR-006**: The operator MUST be able to approve an escalation by its authorization ID, optionally supplying an approver name and a time-to-live in seconds (default 600). *(SPEC: L2-5)*
-- **FR-007**: A successful approval MUST respond with `{ ok, approvalId, expiresAt }`. It records a HUMAN_APPROVAL entry with the escalation ID, resource key, payee, amount, approver and expiry time in milliseconds. *(SPEC: L2-5, L2-4 table)*
+- **FR-006**: The operator MUST be able to approve an escalation by its authorization ID, optionally supplying an approver name and a time-to-live in seconds (default 600). *(SPEC: L2-5)* *(Amended by 010, SPEC v1.3: approve acts only on a pending escalation; see L2-4.3.)*
+- **FR-007**: A successful approval MUST respond with `{ ok, approvalId, expiresAt }`. It records a HUMAN_APPROVAL entry with the escalation ID, resource key, payee, amount, approver and expiry time in milliseconds. *(SPEC: L2-5, L2-4 table)* *(Amended by 010, SPEC v1.3: a repeat returns the existing approval plus `alreadyApproved: true`.)*
 - **FR-008**: Approving an authorization ID with no ESCALATED entry MUST fail with 404. *(SPEC: L2-5)*
 - **FR-009**: During authorization, the system MUST look up an open approval for (session, resource key). An approval is open when it has not expired at the decision time and has not been consumed. *(SPEC: L2-4.2, L2-5 step 2)*
 - **FR-010**: An approval MUST be consumed exactly when an AUTHORIZED entry records its approval ID as the approval reference. A consumed approval cannot authorize again; other approvals of the same escalation stay open. *(SPEC: L2-4.2 as amended by SPEC v1.1 (008 T000), INV-12, T-E2E-02)*
@@ -166,7 +166,7 @@ The operator runs an approval command with an authorization ID and, optionally, 
 
 - Thresholds come from the mandate (feature 002 / CFG-3): auto-approve 20000, hard cap 100000, session budget 100000. The constraint `autoApproveMax < hardCap ≤ sessionBudget` is enforced at L2 startup (feature 002).
 - No notification channel tells operators about new escalations. The operator learns the authorization ID from the agent's report or the ledger.
-- There is no explicit "reject" operation. An unapproved escalation simply never pays.
+- There is no explicit "reject" operation. An unapproved escalation simply never pays. *(Amended by 010, SPEC v1.3: the operator can now reject a pending escalation (`npm run reject`), escalations expire after 300 s, and `npm run escalations -- --watch` notifies the operator; see `specs/010-operator-reject-flow`.)*
 - A single operator role exists; multi-approver or quorum approval is out of scope.
 - Ledger mechanics are in feature 003, the policy engine in feature 002, the agent in feature 001, and credential separation in feature 007.
 - HOW (endpoint shape, CLI invocation) is normative in SPEC.md §8.2 L2-5 and §13.

@@ -267,6 +267,47 @@ describe("PaymentSigner (L2-3)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Feature 010 — R15 human_rejected (SPEC.md §8.2 L2-2; contracts/policy-r15.md).
+describe("T-POL-15 human_rejected (R15)", () => {
+  const m = mandate();
+  const rejected = { rejectionId: "rej_0b6f3c2e-1d4a-4e8b-9f1a-2c3d4e5f6a7b" };
+
+  it("T-POL-15 a rejected (session, resource) is DENIED with exactly human_rejected, at any amount", () => {
+    const big = evaluateRequirement(baseRequirement({ amount: "50000" }), m, baseCtx({ humanRejected: rejected }));
+    expect(big.status).toBe("DENIED");
+    expect(rules(big)).toEqual(["human_rejected"]);
+    const small = evaluateRequirement(baseRequirement({ amount: "5000" }), m, baseCtx({ humanRejected: rejected }));
+    expect(small.status).toBe("DENIED");
+    expect(rules(small)).toEqual(["human_rejected"]);
+  });
+
+  it("T-POL-15 an approval never lifts human_rejected (INV-12)", () => {
+    const approved = { payTo: PAY_TO, amount: "50000", approvalId: "apr_test" };
+    const r = evaluateRequirement(baseRequirement({ amount: "50000" }), m, baseCtx({ humanRejected: rejected, humanApprovedFor: approved }));
+    expect(r.status).toBe("DENIED");
+    expect(rules(r)).toEqual(["human_rejected"]);
+  });
+
+  it("T-POL-15 human_rejected is collected with the other DENY rules", () => {
+    const r = evaluateRequirement(baseRequirement({ amount: "50000" }), m, baseCtx({ humanRejected: rejected, sessionCommittedAtomic: 90000n }));
+    expect(r.status).toBe("DENIED");
+    expect(rules(r)).toEqual(expect.arrayContaining(["session_budget_exceeded", "human_rejected"]));
+  });
+
+  it("T-POL-15 must fail without the rule: the same request without humanRejected escalates", () => {
+    const r = evaluateRequirement(baseRequirement({ amount: "50000" }), m, baseCtx());
+    expect(r.status).toBe("ESCALATE");
+    expect(rules(r)).toEqual(["human_approval_required"]);
+  });
+
+  it("T-POL-15 the detail carries only the rejectionId, never operator free text (SEC-12)", () => {
+    const r = evaluateRequirement(baseRequirement({ amount: "50000" }), m, baseCtx({ humanRejected: rejected }));
+    expect(r.violations[0]!.detail).toMatch(/^rejected by the operator \(rej_[\w-]+\)$/);
+    expect(decide([baseRequirement({ amount: "50000" })], m, baseCtx({ humanRejected: rejected })).status).toBe("DENIED");
+  });
+});
+
+// ---------------------------------------------------------------------------
 const TOKENS = { control: "t-control", settlement: "t-settlement", operator: "t-operator" };
 
 let dir: string;
@@ -614,8 +655,10 @@ describe("004 US2 operator approves one exact escalation (T-POL-13, in-process)"
     clock = NOW + 1001;
     const expired = await authz(base, intent({ accepts: [req50()], url: `${URL_WEATHER}?city=Lima` }));
     expect(expired.status).toBe("ESCALATE");
+    expect(expired.authorizationId).not.toBe(esc.authorizationId); // 010: esc is approved (final), so this is a new escalation
 
-    expect((await approveCall(base, esc.authorizationId)).status).toBe(200);
+    // 010 FR-011: one approval per escalation, so approve the new escalation rather than re-approving esc.
+    expect((await approveCall(base, expired.authorizationId)).status).toBe(200);
     const quito = await authz(base, intent({ accepts: [req50()], url: `${URL_WEATHER}?city=Quito` }));
     expect(quito.status).toBe("AUTHORIZED");
   });
@@ -630,22 +673,23 @@ describe("004 US2 operator approves one exact escalation (T-POL-13, in-process)"
     expect(refs).toEqual([approvalId]);
   });
 
-  it("004 in-process each approval pays once: two approvals of one escalation → exactly two payments → the third escalates", async () => {
-    // sessionBudget 200000: under the default 100000 the third 50000 request is DENIED before R14 can fire.
+  it("004/010 in-process re-approve returns the existing approval: one escalation pays once; the next request escalates under a new ID (FR-011)", async () => {
+    // sessionBudget 200000: under the default 100000 a second 50000 request would be DENIED before R14 can fire.
     let clock = NOW;
     const { base, ledger } = await startService({ m: mandate({ sessionBudgetAtomic: "200000" }), now: () => clock++ });
     const esc = await authz(base, intent({ accepts: [req50()] }));
-    const a1 = (await (await approveCall(base, esc.authorizationId)).json()) as { approvalId: string };
-    const a2 = (await (await approveCall(base, esc.authorizationId)).json()) as { approvalId: string };
-    expect(a1.approvalId).not.toBe(a2.approvalId);
+    const a1 = (await (await approveCall(base, esc.authorizationId)).json()) as { approvalId: string; expiresAt: string };
+    const a2 = (await (await approveCall(base, esc.authorizationId)).json()) as { approvalId: string; expiresAt: string; alreadyApproved?: boolean };
+    expect(a2).toEqual({ ok: true, approvalId: a1.approvalId, expiresAt: a1.expiresAt, alreadyApproved: true });
+    expect(approvals(ledger)).toHaveLength(1);
     const d1 = await authz(base, intent({ accepts: [req50()] }));
     const d2 = await authz(base, intent({ accepts: [req50()] }));
-    const d3 = await authz(base, intent({ accepts: [req50()] }));
-    expect([d1.status, d2.status]).toEqual(["AUTHORIZED", "AUTHORIZED"]);
-    expect(d3.status).toBe("ESCALATE");
-    if (d3.status !== "AUTHORIZED") expect(d3.violations.map((v) => v.rule)).toEqual(["human_approval_required"]);
+    expect(d1.status).toBe("AUTHORIZED");
+    expect(d2.status).toBe("ESCALATE");
+    expect(d2.authorizationId).not.toBe(esc.authorizationId);
+    if (d2.status !== "AUTHORIZED") expect(d2.violations.map((v) => v.rule)).toEqual(["human_approval_required"]);
     const refs = ledger.entries().filter((e) => e.type === "AUTHORIZED").map((e) => e.data.approvalRef);
-    expect(refs).toEqual([a2.approvalId, a1.approvalId]); // most recent open approval wins
+    expect(refs).toEqual([a1.approvalId]);
   });
 });
 
@@ -741,6 +785,374 @@ describe("004 approve CLI isolation (T031)", () => {
     for (const name of ["PAYER_PRIVATE_KEY", "CONTROL_TOKEN", "VERIFIER_TOKEN", "SETTLEMENT_TOKEN", "ANTHROPIC_API_KEY"]) {
       expect(src, name).not.toContain(name);
     }
+    const imports = [...src.matchAll(/from\s+"([^"]+)"/g)].map((m) => m[1]!);
+    expect(imports.filter((s) => s.startsWith(".")).every((s) => s.startsWith("../src/shared/"))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Feature 010 — escalation lifecycle: operator rejection, final states, expiry, notification
+// (SPEC.md §8.2 L2-4.3, L2-5; contracts/control-api.md). In-process, like the 004 section above.
+
+const rejectCall = (base: string, authorizationId: string, body: unknown = {}, token: string | null = TOKENS.operator) =>
+  fetch(`${base}/v1/rejections/${authorizationId}`, {
+    method: "POST",
+    headers: { "content-type": "application/json", ...(token !== null && { authorization: `Bearer ${token}` }) },
+    body: JSON.stringify(body),
+  });
+const rejections = (ledger: AuditLedger) => ledger.entries().filter((e) => e.type === "HUMAN_REJECTION");
+type RejectBody = { ok: boolean; rejectionId: string; rejectedAt: string; alreadyRejected: boolean };
+
+describe("010 US1 operator rejects a pending escalation", () => {
+  it("010 US1 reject: 200 with rej_ ID; one HUMAN_REJECTION with session, resource, payee and amount copied from ESCALATED", async () => {
+    const { base, ledger } = await startService();
+    const esc = await authz(base, intent({ accepts: [req50()] }));
+    const res = await rejectCall(base, esc.authorizationId, {
+      operator: "alice",
+      reason: "too expensive",
+      payTo: "0x0000000000000000000000000000000000000bad",
+      amount: "1",
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as RejectBody;
+    expect(body).toEqual({ ok: true, rejectionId: expect.stringMatching(/^rej_/), rejectedAt: new Date(NOW).toISOString(), alreadyRejected: false });
+    const [rej] = rejections(ledger);
+    expect(rejections(ledger)).toHaveLength(1);
+    expect(rej!.sessionId).toBe("sess_test");
+    expect(rej!.authorizationId).toBe(esc.authorizationId);
+    expect(rej!.data).toEqual({
+      rejectionId: body.rejectionId,
+      escalationId: esc.authorizationId,
+      resourceKey: URL_WEATHER,
+      payTo: PAY_TO,
+      amount: "50000",
+      operator: "alice",
+      reason: "too expensive",
+    });
+  });
+
+  it("010 US1 reject again: returns the first rejection with alreadyRejected, appends nothing", async () => {
+    const { base, ledger } = await startService();
+    const esc = await authz(base, intent({ accepts: [req50()] }));
+    const first = (await (await rejectCall(base, esc.authorizationId)).json()) as RejectBody;
+    const before = ledger.entries().length;
+    const again = await rejectCall(base, esc.authorizationId, { operator: "bob", reason: "second thoughts" });
+    expect(again.status).toBe(200);
+    expect(await again.json()).toEqual({ ...first, alreadyRejected: true });
+    expect(ledger.entries()).toHaveLength(before);
+    expect(rejections(ledger)[0]!.data.operator).toBe("operator");
+  });
+
+  it("010 US1 reject: 404 for an unknown, AUTHORIZED or DENIED authorization ID; nothing appended", async () => {
+    const { base, ledger } = await startService();
+    const ok = await authz(base, intent());
+    const denied = await authz(base, intent({ accepts: [baseRequirement({ amount: "200000" })] }));
+    expect(ok.status).toBe("AUTHORIZED");
+    expect(denied.status).toBe("DENIED");
+    const before = ledger.entries().length;
+    for (const id of ["auth_missing", ok.authorizationId, denied.authorizationId]) {
+      const r = await rejectCall(base, id);
+      expect(r.status, id).toBe(404);
+      expect(await r.json()).toEqual({ error: "not found" });
+    }
+    expect(ledger.entries()).toHaveLength(before);
+  });
+
+  it("010 US1 reject: 400 for an invalid operator label or reason; exactly 64 and 280 characters are accepted", async () => {
+    const { base, ledger } = await startService();
+    const esc = await authz(base, intent({ accepts: [req50()] }));
+    const before = ledger.entries().length;
+    for (const body of [{ operator: "x".repeat(65) }, { operator: "" }, { operator: 5 }, { reason: "r".repeat(281) }, { reason: 5 }]) {
+      const r = await rejectCall(base, esc.authorizationId, body);
+      expect(r.status, JSON.stringify(body).slice(0, 40)).toBe(400);
+    }
+    expect(ledger.entries()).toHaveLength(before);
+    const edge = await rejectCall(base, esc.authorizationId, { operator: "o".repeat(64), reason: "r".repeat(280) });
+    expect(edge.status).toBe(200);
+  });
+
+  it("010 US1 after a rejection the same session and resource is DENIED human_rejected at any amount; nothing is signed", async () => {
+    let signed = 0;
+    const { base, ledger } = await startService({
+      signer: fakeSigner(async () => {
+        signed++;
+        return { headers: { "PAYMENT-SIGNATURE": "opaque" }, payer: "0x00000000000000000000000000000000000000f1", validBefore: Math.floor(NOW / 1000) + 120 };
+      }),
+    });
+    const esc = await authz(base, intent({ accepts: [req50()] }));
+    await rejectCall(base, esc.authorizationId);
+    for (const amount of ["50000", "60000", "5000"]) {
+      const d = await authz(base, intent({ accepts: [baseRequirement({ amount })], url: `${URL_WEATHER}?city=Lima` }));
+      expect(d.status, amount).toBe("DENIED");
+      if (d.status !== "AUTHORIZED") expect(d.violations.map((v) => v.rule)).toEqual(["human_rejected"]);
+    }
+    expect(signed).toBe(0);
+    expect(ledger.entries().filter((e) => e.type === "DENIED")).toHaveLength(3);
+  });
+
+  it("010 US1 a different session for the same resource still escalates", async () => {
+    const { base } = await startService();
+    const esc = await authz(base, intent({ accepts: [req50()] }));
+    await rejectCall(base, esc.authorizationId);
+    const other = await authz(base, intent({ accepts: [req50()], sessionId: "sess_other" }));
+    expect(other.status).toBe("ESCALATE");
+    if (other.status !== "AUTHORIZED") expect(other.violations.map((v) => v.rule)).toEqual(["human_approval_required"]);
+  });
+});
+
+describe("010 US2 final states are never left", () => {
+  it("010 US2 approve on a denied escalation → 409 state denied with the rejectionId; nothing appended", async () => {
+    const { base, ledger } = await startService();
+    const esc = await authz(base, intent({ accepts: [req50()] }));
+    const rej = (await (await rejectCall(base, esc.authorizationId)).json()) as RejectBody;
+    const before = ledger.entries().length;
+    const r = await approveCall(base, esc.authorizationId);
+    expect(r.status).toBe(409);
+    expect(await r.json()).toEqual({ error: "escalation is denied", state: "denied", rejectionId: rej.rejectionId });
+    expect(ledger.entries()).toHaveLength(before);
+    expect(approvals(ledger)).toHaveLength(0);
+  });
+
+  it("010 US2 reject on an approved escalation → 409 state approved, before and after the approval pays; nothing appended", async () => {
+    const { base, ledger } = await startService();
+    const esc = await authz(base, intent({ accepts: [req50()] }));
+    const { approvalId } = (await (await approveCall(base, esc.authorizationId)).json()) as { approvalId: string };
+    const expectRefused = async () => {
+      const before = ledger.entries().length;
+      const r = await rejectCall(base, esc.authorizationId);
+      expect(r.status).toBe(409);
+      expect(await r.json()).toEqual({ error: "escalation is approved", state: "approved", approvalId });
+      expect(ledger.entries()).toHaveLength(before);
+    };
+    await expectRefused();
+    expect((await authz(base, intent({ accepts: [req50()] }))).status).toBe("AUTHORIZED");
+    await expectRefused();
+    expect(rejections(ledger)).toHaveLength(0);
+  });
+
+  it("010 US2 re-approve ignores a new ttlSeconds and approver; a first approve keeps the v1.2 response shape", async () => {
+    const { base, ledger } = await startService();
+    const esc = await authz(base, intent({ accepts: [req50()] }));
+    const first = (await (await approveCall(base, esc.authorizationId)).json()) as Record<string, unknown>;
+    expect(Object.keys(first).sort()).toEqual(["approvalId", "expiresAt", "ok"]);
+    const again = (await (await approveCall(base, esc.authorizationId, { ttlSeconds: 5, approver: "mallory" })).json()) as Record<string, unknown>;
+    expect(again).toEqual({ ...first, alreadyApproved: true });
+    expect(approvals(ledger)).toHaveLength(1);
+    expect(approvals(ledger)[0]!.data.approver).toBe("operator");
+  });
+});
+
+describe("010 US2 one pending escalation per purchase", () => {
+  it("010 US2 a repeat of the same purchase while pending returns the same ID and records ESCALATION_REPEATED", async () => {
+    const { base, ledger } = await startService();
+    const first = await authz(base, intent({ accepts: [req50()] }));
+    const i2 = intent({ accepts: [req50()] });
+    const second = await authz(base, i2);
+    expect(second.status).toBe("ESCALATE");
+    expect(second.authorizationId).toBe(first.authorizationId);
+    expect(ledger.entries().filter((e) => e.type === "ESCALATED")).toHaveLength(1);
+    const repeats = ledger.entries().filter((e) => e.type === "ESCALATION_REPEATED");
+    expect(repeats).toHaveLength(1);
+    expect(repeats[0]!.intentId).toBe(i2.intentId);
+    expect(repeats[0]!.authorizationId).toBe(first.authorizationId);
+    expect(repeats[0]!.data).toMatchObject({ escalationId: first.authorizationId, resourceKey: URL_WEATHER, payTo: PAY_TO, amount: "50000" });
+    expect((repeats[0]!.data.violations as { rule: string }[]).map((v) => v.rule)).toEqual(["human_approval_required"]);
+  });
+
+  it("010 US2 a different amount for the same resource is a different purchase and escalates separately", async () => {
+    const { base, ledger } = await startService();
+    const first = await authz(base, intent({ accepts: [req50()] }));
+    const other = await authz(base, intent({ accepts: [baseRequirement({ amount: "60000" })] }));
+    expect(other.status).toBe("ESCALATE");
+    expect(other.authorizationId).not.toBe(first.authorizationId);
+    expect(ledger.entries().filter((e) => e.type === "ESCALATED")).toHaveLength(2);
+  });
+
+  it("010 US2 must fail without de-duplication: dedupePendingEscalations false gives two ESCALATED entries", async () => {
+    const ledger = new AuditLedger(join(dir, ".local", "ledger-nodedupe.jsonl"));
+    const svc = createControlService({
+      mandate: mandate(),
+      signer: fakeSigner(),
+      ledger,
+      asset: { address: ASSET, decimals: 6 },
+      tokens: TOKENS,
+      now: () => NOW,
+      dedupePendingEscalations: false,
+    });
+    const server = await new Promise<Server>((r) => {
+      const s = svc.app.listen(0, "127.0.0.1", () => r(s));
+    });
+    servers.push(server);
+    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    const a = await authz(base, intent({ accepts: [req50()] }));
+    const b = await authz(base, intent({ accepts: [req50()] }));
+    expect(a.authorizationId).not.toBe(b.authorizationId);
+    expect(ledger.entries().filter((e) => e.type === "ESCALATED")).toHaveLength(2);
+  });
+});
+
+const operatorGet = (base: string, path: string, token: string | null = TOKENS.operator) =>
+  fetch(`${base}${path}`, { headers: { ...(token !== null && { authorization: `Bearer ${token}` }) } });
+
+describe("010 US4 escalation reads", () => {
+  it("010 US4 GET /v1/escalations: empty ledger → no pending and cursor -1; one escalation → one view and cursor = last seq", async () => {
+    const { base, ledger } = await startService();
+    expect(await (await operatorGet(base, "/v1/escalations")).json()).toEqual({ pending: [], cursor: -1 });
+    const esc = await authz(base, intent({ accepts: [req50()] }));
+    const body = (await (await operatorGet(base, "/v1/escalations")).json()) as { pending: { authorizationId: string }[]; cursor: number };
+    expect(body.pending.map((p) => p.authorizationId)).toEqual([esc.authorizationId]);
+    expect(body.cursor).toBe(ledger.entries().length - 1);
+  });
+
+  it("010 US4 GET /v1/escalations/events: escalated, then only denied after the cursor; after must be an integer >= -1", async () => {
+    const { base } = await startService();
+    const esc = await authz(base, intent({ accepts: [req50()] }));
+    const all = (await (await operatorGet(base, "/v1/escalations/events?after=-1")).json()) as { events: { kind: string }[]; cursor: number };
+    expect(all.events.map((e) => e.kind)).toEqual(["escalated"]);
+    await rejectCall(base, esc.authorizationId, { operator: "alice" });
+    const next = (await (await operatorGet(base, `/v1/escalations/events?after=${all.cursor}`)).json()) as { events: { kind: string; operator?: string }[] };
+    expect(next.events).toEqual([expect.objectContaining({ kind: "denied", authorizationId: esc.authorizationId, operator: "alice" })]);
+    for (const bad of ["abc", "-2", "1.5"]) {
+      const r = await operatorGet(base, `/v1/escalations/events?after=${bad}`);
+      expect(r.status, bad).toBe(400);
+      expect(await r.json()).toEqual({ error: "after must be an integer >= -1" });
+    }
+  });
+
+  it("010 US4 both reads are operator-only: control, settlement, verifier and no token → 401", async () => {
+    const { base } = await startService();
+    for (const path of ["/v1/escalations", "/v1/escalations/events?after=-1"]) {
+      for (const token of [TOKENS.control, TOKENS.settlement, "t-verifier", null]) {
+        const r = await operatorGet(base, path, token);
+        expect(r.status, `${path} ${String(token)}`).toBe(401);
+      }
+    }
+  });
+});
+
+const runScript = async (
+  script: string,
+  args: string[],
+  env: Record<string, string>,
+  opts: { until?: RegExp; timeoutMs?: number; onStart?: () => Promise<void> } = {},
+) => {
+  const { spawn } = await import("node:child_process");
+  const childEnv: Record<string, string> = { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", ...env };
+  for (const [k, v] of Object.entries(process.env)) if (k.startsWith("NODE_") && v !== undefined) childEnv[k] = v;
+  return new Promise<{ code: number | null; stdout: string; stderr: string; matchedAfterMs?: number }>((resolve) => {
+    const p = spawn("node_modules/.bin/tsx", [script, ...args], { env: childEnv });
+    let stdout = "";
+    let stderr = "";
+    let startedAt = 0;
+    let matchedAfterMs: number | undefined;
+    const timer = opts.until ? setTimeout(() => p.kill("SIGINT"), opts.timeoutMs ?? 15_000) : undefined;
+    p.stdout.on("data", async (d) => {
+      stdout += d;
+      if (opts.until && startedAt === 0 && stdout.length > 0) {
+        startedAt = Date.now();
+        await opts.onStart?.();
+      }
+      if (opts.until && matchedAfterMs === undefined && opts.until.test(stdout)) {
+        matchedAfterMs = Date.now() - startedAt;
+        p.kill("SIGINT");
+      }
+    });
+    p.stderr.on("data", (d) => (stderr += d));
+    p.on("close", (code) => {
+      if (timer) clearTimeout(timer);
+      resolve({ code, stdout, stderr, ...(matchedAfterMs !== undefined && { matchedAfterMs }) });
+    });
+  });
+};
+
+describe("010 US4 escalations CLI (scripts/escalations.ts)", () => {
+  it("010 US4 list mode: none pending → message; one pending → a PENDING line; unreachable → exit 1", async () => {
+    const { base } = await startService();
+    const env = { CONTROL_URL: base, OPERATOR_TOKEN: TOKENS.operator };
+    const none = await runScript("scripts/escalations.ts", [], env);
+    expect(none.code, none.stderr).toBe(0);
+    expect(none.stdout.trim()).toBe("no pending escalations");
+    await authz(base, intent({ accepts: [req50()] }));
+    const one = await runScript("scripts/escalations.ts", [], env);
+    expect(one.code, one.stderr).toBe(0);
+    expect(one.stdout.trim()).toMatch(/^PENDING auth_\S+ session=\S+ resource=\S+ payTo=0x\S+ amount=50000 expiresAt=\S+$/);
+    const down = await runScript("scripts/escalations.ts", [], { CONTROL_URL: "http://127.0.0.1:9", OPERATOR_TOKEN: TOKENS.operator });
+    expect(down.code).toBe(1);
+  });
+
+  it("010 US4 watch mode prints a new escalation within 5 s, then exits 0 on SIGINT", async () => {
+    const { base } = await startService();
+    const env = { CONTROL_URL: base, OPERATOR_TOKEN: TOKENS.operator };
+    const r = await runScript("scripts/escalations.ts", ["--watch"], env, {
+      until: /ESCALATED auth_\S+ session=sess_test resource=\S+ amount=50000/,
+      onStart: async () => {
+        await authz(base, intent({ accepts: [req50()] }));
+      },
+    });
+    expect(r.stdout).toMatch(/ESCALATED auth_/);
+    expect(r.matchedAfterMs).toBeLessThan(5_000);
+    expect(r.code).toBe(0);
+  });
+
+  it("010 US4 scripts/escalations.ts imports only src/shared and references no other role's secret", async () => {
+    const { readFileSync } = await import("node:fs");
+    const src = readFileSync("scripts/escalations.ts", "utf8");
+    for (const name of ["PAYER_PRIVATE_KEY", "CONTROL_TOKEN", "VERIFIER_TOKEN", "SETTLEMENT_TOKEN", "ANTHROPIC_API_KEY"]) expect(src, name).not.toContain(name);
+    const imports = [...src.matchAll(/from\s+"([^"]+)"/g)].map((m) => m[1]!);
+    expect(imports.filter((s) => s.startsWith(".")).every((s) => s.startsWith("../src/shared/"))).toBe(true);
+  });
+});
+
+describe("010 US5 only the operator can reject (SEC-8, INV-13)", () => {
+  it("010 US5 control, settlement, verifier and no token → 401 before body validation; ledger unchanged, no HUMAN_REJECTION", async () => {
+    const { base, ledger } = await startService();
+    const esc = await authz(base, intent({ accepts: [req50()] }));
+    const before = ledger.entries().length;
+    for (const token of [TOKENS.control, TOKENS.settlement, "t-verifier", null]) {
+      const r = await rejectCall(base, esc.authorizationId, { reason: 5 }, token);
+      expect(r.status, String(token)).toBe(401); // 401 precedes the 400 body validation
+      expect(await r.json()).toEqual({ error: "unauthorized" });
+    }
+    expect(ledger.entries()).toHaveLength(before);
+    expect(rejections(ledger)).toHaveLength(0);
+  });
+});
+
+describe("010 US6 operator reject CLI (scripts/reject.ts)", () => {
+  it("010 US6 reject <id> alice too expensive → exit 0, recorded; again → alreadyRejected; unknown → exit 1 404; no args → exit 2; unreachable → exit 1", async () => {
+    const { base, ledger } = await startService();
+    const esc = await authz(base, intent({ accepts: [req50()] }));
+    const env = { CONTROL_URL: base, OPERATOR_TOKEN: TOKENS.operator };
+
+    const ok = await runScript("scripts/reject.ts", [esc.authorizationId, "alice", "too", "expensive"], env);
+    expect(ok.code, ok.stderr).toBe(0);
+    const out = JSON.parse(ok.stdout) as RejectBody;
+    expect(out.rejectionId).toMatch(/^rej_/);
+    expect(out.alreadyRejected).toBe(false);
+    expect(rejections(ledger)[0]!.data).toMatchObject({ operator: "alice", reason: "too expensive" });
+
+    const again = await runScript("scripts/reject.ts", [esc.authorizationId, "alice", "too", "expensive"], env);
+    expect(again.code, again.stderr).toBe(0);
+    expect((JSON.parse(again.stdout) as RejectBody).alreadyRejected).toBe(true);
+    expect(rejections(ledger)).toHaveLength(1);
+
+    const missing = await runScript("scripts/reject.ts", ["auth_unknown"], env);
+    expect(missing.code).toBe(1);
+    expect(missing.stderr).toMatch(/^reject: HTTP 404/);
+
+    const usage = await runScript("scripts/reject.ts", [], env);
+    expect(usage.code).toBe(2);
+    expect(usage.stderr).toContain("usage: npm run reject -- <authorizationId> [operator] [reason]");
+
+    const down = await runScript("scripts/reject.ts", [esc.authorizationId], { CONTROL_URL: "http://127.0.0.1:9", OPERATOR_TOKEN: TOKENS.operator });
+    expect(down.code).toBe(1);
+    expect(down.stderr).toContain("reject: control service unreachable at");
+  });
+
+  it("010 US6 scripts/reject.ts imports only src/shared and references no other role's secret", async () => {
+    const { readFileSync } = await import("node:fs");
+    const src = readFileSync("scripts/reject.ts", "utf8");
+    for (const name of ["PAYER_PRIVATE_KEY", "CONTROL_TOKEN", "VERIFIER_TOKEN", "SETTLEMENT_TOKEN", "ANTHROPIC_API_KEY"]) expect(src, name).not.toContain(name);
     const imports = [...src.matchAll(/from\s+"([^"]+)"/g)].map((m) => m[1]!);
     expect(imports.filter((s) => s.startsWith(".")).every((s) => s.startsWith("../src/shared/"))).toBe(true);
   });
