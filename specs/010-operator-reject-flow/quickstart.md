@@ -58,7 +58,7 @@ SESSION_ID=sess_reject1 ENV_FILE=env/l1-agent.base-sepolia.env npm run agent:scr
 | Step | Action | Expected |
 |---|---|---|
 | 1 | agent run with `SESSION_ID=sess_exp1` | `ESCALATED auth_Y` is printed in the watch |
-| 2 | agent run again within 5 minutes, same session | step 4 returns the **same** `auth_Y`, and the watch prints nothing new (`ESCALATION_REPEATED` in the ledger) |
+| 2 | agent run again within 5 minutes, same session | step 4 returns the **same** `auth_Y`, and the watch prints nothing new (`ESCALATION_REPEATED` in the ledger). If you ran §2 just before, wait 60 s first: velocity (R13) counts `AUTHORIZED` entries from every session in the trailing 60 s, and back-to-back runs reach the cap of 10, so step 4 is `DENIED … velocity_limit` instead. |
 | 3 | wait 5 minutes without deciding | the watch prints `EXPIRED auth_Y` within about 5 s of the deadline |
 | 4 | `npm run approve -- auth_Y` and `npm run reject -- auth_Y` | both exit 1 with 409 `"state":"expired"` |
 | 5 | agent run again, same session | step 4 escalates under a **new** ID `auth_Z`, and the watch prints `ESCALATED auth_Z` |
