@@ -402,7 +402,7 @@ validation.
     - in Commands, add `npm run reject` and `npm run escalations -- --watch`;
     - in "What this repo is", change the L2 line to "HITL approvals and rejections".
 - [X] T049 Run quickstart.md §1 (offline gates): `npm run typecheck`, then the targeted `npx vitest run` commands for T-POL-15, T-LED-04, T-E2E-07, T-E2E-08 and the architecture tests, then `npm run check`. Confirm `spent on-chain: 0.006 USDC`, `hash chain ok=true` and the outcomes `FREE, PAID, PAID, ESCALATED, DENIED, DENIED`. Note in this file's Implementation Notes how many `ESCALATION_EXPIRED` entries the first start appended to `.local/ledger-local.jsonl`, as expected by research R10.
-- [ ] T050 Manual, operator-only: run quickstart.md §2–§4 on Base Sepolia (reject flow, expiry and repeat, audit check). Record the results in this file's Implementation Notes. This does not block merge, because offline coverage is complete.
+- [X] T050 Manual, operator-only: run quickstart.md §2–§4 on Base Sepolia (reject flow, expiry and repeat, audit check). Record the results in this file's Implementation Notes. This does not block merge, because offline coverage is complete.
 
 ---
 
@@ -495,7 +495,7 @@ Places where the work differs from the task text, and the validation results.
   - `npm run check` passes: typecheck clean, 15 test files and 346 tests (up from 316 before this feature), and the demo summary `FREE, PAID, PAID, ESCALATED, DENIED, DENIED`, `spent on-chain: 0.006 USDC`, `hash chain ok=true`.
   - As research R10 expected, starting L2 on the existing `.local/ledger-local.jsonl` (inside the `demo.local` test) appended `ESCALATION_EXPIRED` for the old pending escalations: 16 entries before the final check.
   - `.local/ledger-base-sepolia.jsonl` is unchanged until the next L2 start on Base Sepolia.
-- **T050**: partly done. On 2026-10-18 the approval part ran step by step on Base Sepolia through the CDP facilitator (key `…c73f`), session `sess_approve_1792326239`:
+- **T050**: done in two runs. On 2026-10-18 the approval part ran step by step on Base Sepolia through the CDP facilitator (key `…c73f`), session `sess_approve_1792326239`:
   1. L2's startup sweep appended 7 `ESCALATION_EXPIRED` entries for old pending escalations in `.local/ledger-base-sepolia.jsonl` (research R10).
   2. Agent run 1 escalated `/api/premium-report` (50000) as `auth_f429c92c-…`. `npm run escalations` listed it as the only pending escalation, with its 300 s expiry.
   3. `npm run approve` returned `apr_87b21f30-…` (600 s).
@@ -504,4 +504,23 @@ Places where the work differs from the task text, and the validation results.
   6. Afterwards `npm run escalations` printed `no pending escalations`. The ledger trail is `ESCALATED` (seq 154) → `HUMAN_APPROVAL` (159, approver `operator-demo`) → `AUTHORIZED` (167, `approvalRef` = that approval).
   7. `npm run check` stayed green afterwards: 346 tests, demo baseline unchanged.
 
-  Still open: quickstart.md §2 (reject flow), §3 steps 3–7 (expiry, lapse) and §4 (audit check). The offline coverage (T-E2E-07, T-E2E-08) does not depend on them.
+  On 2026-10-21 the rest ran on Base Sepolia through the same CDP key, with the operator watch (`npm run escalations -- --watch`) open throughout. Session IDs carry a timestamp suffix, for example `sess_reject1_1792591675`. Every expected result in quickstart.md §2–§4 held:
+  1. L2's startup sweep appended 1 `ESCALATION_EXPIRED` (seq 211) for the escalation left pending by that morning's `demo:base-sepolia` run (research R10).
+  2. **§2 reject flow** (`sess_reject1_…`):
+     - Run 1 escalated the report as `auth_009b55fe-…`, and the watch printed `ESCALATED … expiresAt=…`.
+     - `npm run reject -- auth_009b55fe-… alice too expensive` exited 0 with `rej_03a1deba-…` and `alreadyRejected: false`. The watch printed `DENIED … operator=alice reason="too expensive"`.
+     - The same reject again returned the same `rejectionId` with `alreadyRejected: true`. The ledger did not grow and the watch printed nothing.
+     - `npm run approve` exited 1 with `HTTP 409 … "state":"denied"`.
+     - Run 2 in the same session got `4. DENIED … rules=human_rejected`, and nothing was signed for it.
+     - A run in `sess_reject2_…` escalated under a new ID (`auth_29e9144e-…`).
+  3. **§3 expiry and repeat** (`sess_exp1_…`):
+     - Run 1 escalated `auth_ee159907-…`.
+     - The first immediate re-run got `4. DENIED … rules=velocity_limit` instead of the repeat. R13 counts `AUTHORIZED` entries from all sessions in the trailing 60 s. The §2 runs and §3 run 1 had already put 10 (the cap) in that window, because they ran back to back. After a 60 s pause the re-run returned the same `auth_ee159907-…`, appended `ESCALATION_REPEATED` (seq 280), and the watch printed nothing new. quickstart.md §3 now notes this.
+     - The watch printed `EXPIRED auth_ee159907-…` about 1 s after its deadline, and `EXPIRED auth_29e9144e-…` for the §2 escalation left undecided.
+     - Approve and reject on the expired ID both exited 1 with 409 `"state":"expired"`, and the ledger did not change.
+     - The next run escalated under a new ID, `auth_9d7ef372-…`. Approving it twice returned the same `apr_22489548-…` and `expiresAt`, the second with `alreadyApproved: true`, and the ledger kept one `HUMAN_APPROVAL`.
+     - The approval was left unused, and the watch printed `APPROVAL_LAPSED auth_9d7ef372-… approvalId=apr_22489548-…` 2 s after its 600 s deadline. To run `demo:local`, L2 and the watch were restarted between the approval and the deadline, so the lapse also held across a restart.
+  4. **§4 audit**: `GET /v1/ledger/verify` returned `{"entries":301,"ok":true}`.
+     - Each of the 5 escalations has its creation and exactly one final-state entry: approval, rejection or expiry. The only later entry for the rejected (session, resource) pair is `DENIED` with `human_rejected` (SC-009). No approval was used.
+     - The 7 agent runs paid only weather and market-brief: 14 `AUTHORIZED` and 14 `SETTLEMENT`, all `CONFIRMED`, 0.042 test USDC in total.
+  5. Afterwards `npm run demo:local` still printed the baseline: `FREE, PAID, PAID, ESCALATED, DENIED, DENIED`, `spent on-chain: 0.006 USDC`, `hash chain ok=true`.
