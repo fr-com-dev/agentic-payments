@@ -21,6 +21,14 @@ Interactive diagrams live in `docs/diagrams/`. Each is a self-contained HTML fil
 | [Paid fetch](docs/diagrams/x402-paid-fetch.html) | 402 challenge, L2 authorization, signed retry, CDP verify/settle, then L3 on-chain verification and reconcile. |
 | [Escalation and approval](docs/diagrams/x402-approval.html) | A payment above 0.02 USDC escalates, an operator approves it, and the agent retries in the same session. |
 
+The L2 HTTP API (authorize, budget, reconcile, approvals, rejections, escalations, ledger verify) is described in OpenAPI 3.1 at [`docs/l2-control.openapi.yaml`](docs/l2-control.openapi.yaml). Open it in any OpenAPI viewer, such as Swagger Editor or the VS Code OpenAPI extensions. `test/openapi.test.ts` keeps it in sync with the service.
+
+To browse it in Swagger UI, start L2 with `API_DOCS=1` and open http://127.0.0.1:4020/docs. Click **Authorize** and enter the token for the routes you want to try: `CONTROL_TOKEN`, `SETTLEMENT_TOKEN` or `OPERATOR_TOKEN` from L2's env file. "Try it out" calls that same L2, so `POST` requests really sign, approve or reject and append to the ledger. The docs routes take no token and are off by default; Swagger UI is served from L2 itself, not a CDN.
+
+```bash
+API_DOCS=1 ENV_FILE=env/l2-control.base-sepolia.env npm run l2:control
+```
+
 ## Quick start
 
 ```bash
@@ -189,6 +197,7 @@ A milestone must pass its exit check before the next one starts.
 | `test/agent.test.ts` | L1 orchestrator, port adapters, T-AGT-01, scripted plan, key refusal |
 | `test/e2e.local.test.ts` | T-E2E-01..05, T-E2E-07 (operator reject) and T-E2E-08 (expiry) on the in-process harness (`test/helpers/harness.ts`) |
 | `test/demo.local.test.ts` | the real six-process demo, port preflight, process-group shutdown |
+| `test/openapi.test.ts` | T-API-01..03: `docs/l2-control.openapi.yaml` matches L2's routes, tokens, statuses and response shapes; T-API-04: the Swagger UI routes are off by default, same-origin and serve fixed files only |
 
 Run one test with `npx vitest run test/policy.test.ts -t "<name>"`.
 

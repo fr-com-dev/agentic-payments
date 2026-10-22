@@ -14,6 +14,7 @@
 | SEC-10 | The CDP API credential leaks to another process, a log or a response, or a misconfiguration silently uses an unauthenticated facilitator | Seller-only credential (rule A8, T-ARCH-ENV); fail-closed startup; no runtime fallback; redaction (amended by 009, SPEC v1.2) | 009, 007 | T-ARCH-A8, T-CDP-02, T-CDP-07, T-CDP-08 |
 | SEC-11 | A facilitator reports failure for a transfer that actually settled, so the budget under-counts | L3 checks any reported hash on-chain (L3-1 step 2, amended by 009, SPEC v1.2) | 009, 005 | T-CDP-06 |
 | SEC-12 | Operator free text (label, reason) reaches the LLM agent and acts as a prompt injection | The R15 `human_rejected` detail carries only the rejection ID; label and reason are stored as data and shown to the operator only (010, SPEC v1.3) | 010, 002 | T-POL-15 |
+| SEC-13 | The token-free API docs routes on L2 expose more than the document, or run third-party code on the signer's origin where operators type tokens | Off unless `API_DOCS=1`; three fixed files and the document, no ledger, mandate or signer access; Swagger UI from the pinned package, never a CDN; CSP limits scripts and requests to the L2 origin (SPEC v1.4) | v1.4 | T-API-04 |
 
 ## Accepted residual risks (v1)
 

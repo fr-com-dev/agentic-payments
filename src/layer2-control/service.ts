@@ -1,6 +1,7 @@
 // L2 Control HTTP service (SPEC.md §8.2 L2-5). Owner of the bootstrap, authorize and budget: feature 002.
 // Reconcile and ledger-verify routes come from ./ledger-routes.ts (003); approvals and rejections from
-// ./approval-routes.ts (004, 010); escalation reads from ./escalation-routes.ts (010).
+// ./approval-routes.ts (004, 010); escalation reads from ./escalation-routes.ts (010); Swagger UI from
+// ./api-docs.ts (v1.4, only with API_DOCS=1).
 // INV-8: the whole authorize body (INTENT → decide → sign → outcome entry) runs in one serialized section.
 import { randomUUID } from "node:crypto";
 import type { Server } from "node:http";
@@ -8,8 +9,9 @@ import { pathToFileURL } from "node:url";
 import express, { type Express } from "express";
 import type { PaymentRequirements } from "@x402/core/types";
 import { requireRole } from "../shared/auth.js";
-import { CONTROL_BIND_HOST, controlPort, loadEnv, networkProfile } from "../shared/config.js";
+import { apiDocsEnabled, CONTROL_BIND_HOST, controlPort, loadEnv, networkProfile } from "../shared/config.js";
 import type { AuthorizationDecision, BudgetStatus, PaymentIntent, PolicyViolation } from "../shared/contracts.js";
+import { mountApiDocs } from "./api-docs.js";
 import { mountApprovalRoutes } from "./approval-routes.js";
 import { mountEscalationRoutes } from "./escalation-routes.js";
 import { findPendingEscalation, findRejection, sweep } from "./escalations.js";
@@ -36,6 +38,8 @@ export interface ControlServiceDeps {
    * even while one is pending for the same purchase. Default true (FR-005).
    */
   dedupePendingEscalations?: boolean;
+  /** v1.4: mounts the token-free Swagger UI routes (`API_DOCS=1` in main()). Default false (SEC-13). */
+  apiDocs?: boolean;
 }
 
 export interface ControlService {
@@ -281,6 +285,8 @@ export function createControlService(deps: ControlServiceDeps): ControlService {
     ...(deps.tokens?.operator !== undefined && { tokens: { operator: deps.tokens.operator } }),
   });
 
+  if (deps.apiDocs) mountApiDocs(app);
+
   return { app, serialize, sweep: () => serialize(() => sweep(ledger, now())) };
 }
 
@@ -306,7 +312,14 @@ export function main(): void {
     throw new Error("PAYER_PRIVATE_KEY is missing or malformed (env/l2-control.env)");
   }
   const signer = new PaymentSigner(key as `0x${string}`, net, mandate.hardCapPerPaymentAtomic);
-  const { app, sweep: sweepNow } = createControlService({ mandate, signer, ledger, asset: { address: net.asset, decimals: net.decimals } });
+  const apiDocs = apiDocsEnabled();
+  const { app, sweep: sweepNow } = createControlService({
+    mandate,
+    signer,
+    ledger,
+    asset: { address: net.asset, decimals: net.decimals },
+    apiDocs,
+  });
   // 010 (L2-4.3): expire escalations and lapse approvals on time even when nobody calls L2. The timer
   // never keeps the process alive; tests never call main(), so they stay deterministic.
   void sweepNow();
@@ -314,6 +327,7 @@ export function main(): void {
   const port = controlPort();
   const server = listenControl(app, port, () => {
     console.log(`l2-control listening on http://${CONTROL_BIND_HOST}:${port} (network ${net.name}, payer ${signer.address})`);
+    if (apiDocs) console.log(`l2-control API docs on http://${CONTROL_BIND_HOST}:${port}/docs (API_DOCS=1, no token)`);
   });
   server.on("error", (err) => {
     console.error(`l2-control: ${err.message}`);

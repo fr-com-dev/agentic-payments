@@ -401,7 +401,7 @@ const TEMPLATES: Record<string, TemplateSpec> = {
   },
   "l2-control": {
     required: ["NETWORK", "PAYER_PRIVATE_KEY", "ALLOWED_PAYEES", "ALLOWED_HOSTS", "CONTROL_TOKEN", "SETTLEMENT_TOKEN", "OPERATOR_TOKEN"],
-    optional: ["CONTROL_PORT"],
+    optional: ["CONTROL_PORT", "API_DOCS"],
   },
   "l3-verifier": {
     required: ["NETWORK", "CONTROL_URL", "VERIFIER_TOKEN", "SETTLEMENT_TOKEN"],
@@ -535,8 +535,8 @@ function missingIds(rows: { sec: string; ids: string[] }[], titles: string[]): s
 }
 
 describe("T-ARCH-TRACE threat matrix → test titles (007 T051)", () => {
-  // SEC-10 and SEC-11 were added by 009 (SPEC v1.2).
-  const SEC_ROWS = Array.from({ length: 12 }, (_, i) => `SEC-${i + 1}`);
+  // SEC-10 and SEC-11 were added by 009 (SPEC v1.2), SEC-12 by 010 (v1.3), SEC-13 by the API docs (v1.4).
+  const SEC_ROWS = Array.from({ length: 13 }, (_, i) => `SEC-${i + 1}`);
   it(`every ${SEC_ROWS[0]}..${SEC_ROWS.at(-1)} row names at least one test, and each named ID is a test title`, () => {
     const rows = matrixRows(readFileSync(THREAT_MATRIX, "utf8"));
     expect(rows.map((r) => r.sec)).toEqual(SEC_ROWS);
