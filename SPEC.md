@@ -3,12 +3,24 @@
 | Field | Value |
 |---|---|
 | Spec ID | X402-3L-SPEC |
-| Version | 1.3 (2026-10-18). v1.0 described the original PoC; v1.1 is the build target for the spec-kit plans in `specs/`; v1.2 adds the CDP facilitator on Base Sepolia (`specs/009`); v1.3 adds the escalation lifecycle: operator rejection, expiry and notification (`specs/010`) |
+| Version | 1.4 (2026-10-21). v1.0 described the original PoC; v1.1 is the build target for the spec-kit plans in `specs/`; v1.2 adds the CDP facilitator on Base Sepolia (`specs/009`); v1.3 adds the escalation lifecycle: operator rejection, expiry and notification (`specs/010`); v1.4 adds an OpenAPI copy of L2-5 and opt-in Swagger UI on L2 (`API_DOCS=1`) |
 | Owner | Fabricio Rojas |
 | Status | Implemented PoC; this spec is the source of truth for changes |
 | Reference | IMF Note 2026/004, *How Agentic AI Will Reshape Payments* (three-layer model) |
 
 ---
+
+## Changes in 1.4
+
+One opt-in behavior change: with `API_DOCS=1`, L2 serves Swagger UI. Without it, L2 behaves exactly as in 1.3. No contract change.
+
+| Area | Change |
+|---|---|
+| L2-5, §6 | `docs/l2-control.openapi.yaml` describes the L2 HTTP API in OpenAPI 3.1, for tools such as Swagger UI, Swagger Editor or Redocly. The L2-5 table and §7 stay normative. |
+| L2-5, CFG-2, §13 | `API_DOCS=1` mounts `GET /docs`, `GET /docs/:asset` and `GET /openapi.yaml` on L2: Swagger UI over that document, with no token. Off by default; a value other than `1`, `0` or empty fails startup. |
+| §5 | `swagger-ui-dist` 5.33.1 (exact) supplies the Swagger UI files. `package.json` sets `scarfSettings.enabled: false`, so its `@scarf/scarf` dependency never reports installs. `yaml` (dev only) parses the document in tests. |
+| §11 | SEC-13 covers the token-free docs routes. |
+| §12 | T-API-01..03 fail when the document and the service disagree on routes, bearer tokens, response statuses, media types or response shapes. T-API-04 checks that the docs routes are off by default, same-origin and limited to fixed files. |
 
 ## Changes in 1.3
 
@@ -209,8 +221,10 @@ Each rule has a fixture under `test/fixtures/arch/` that must trip it (Principle
 | Local chain (dev) | ganache (hardfork `shanghai`) + solc 0.8.24 (`evmVersion: shanghai`, optimizer 200) | 7.9.2 / 0.8.24 |
 | Config | dotenv, one file per process via `ENV_FILE` | ^18 |
 | CDP facilitator auth (seller only) | `@coinbase/cdp-sdk`, `./auth` subpath only | 1.59.0 (exact) |
+| OpenAPI document parsing (tests only) | yaml | ^2.9 |
+| API docs UI (L2, only with `API_DOCS=1`; served by L2, never from a CDN) | swagger-ui-dist | 5.33.1 (exact) |
 
-Resolved versions (v1.1, `package-lock.json`): typescript 7.0.2, tsx 4.23.15, vitest 5.0.5, viem 2.57.7, express 5.3.0, `@x402/*` 2.28.0, `@anthropic-ai/sdk` 0.135.0, dotenv 18.0.8, ganache 7.9.2, solc 0.8.24, `@types/node` 22.x. `engines.node` is `>=22`; development also runs on Node 26. npm ≥ 11 skips dependency install scripts by default. Ganache falls back to its JavaScript implementations, which is harmless.
+Resolved versions (v1.1, `package-lock.json`): typescript 7.0.2, tsx 4.23.15, vitest 5.0.5, viem 2.57.7, express 5.3.0, `@x402/*` 2.28.0, `@anthropic-ai/sdk` 0.135.0, dotenv 18.0.8, ganache 7.9.2, solc 0.8.24, `@types/node` 22.x; v1.4 adds yaml 2.9.1 and swagger-ui-dist 5.33.1. `scarfSettings.enabled: false` in `package.json` turns off the install analytics of swagger-ui-dist's `@scarf/scarf` dependency. `engines.node` is `>=22`; development also runs on Node 26. npm ≥ 11 skips dependency install scripts by default. Ganache falls back to its JavaScript implementations, which is harmless.
 
 SDK entry points in use:
 
@@ -233,6 +247,7 @@ SDK entry points in use:
 ```
 config/mandate.json              spending mandate (CFG-3)
 contracts/MockUSDC.sol           local-only EIP-3009 token (CP-4)
+docs/l2-control.openapi.yaml     OpenAPI 3.1 copy of the L2 HTTP API (L2-5); kept in sync by T-API-01..03; L2 serves it with API_DOCS=1
 env/*.env.example                one env template per process (CFG-2)
 scripts/
   local-chain-lib.ts             start ganache, compile + deploy MockUSDC, mint 10 USDC to payer, localDevKeys()
@@ -262,6 +277,7 @@ src/
     escalations.ts               escalation lifecycle derivations and the sweep (L2-4.3)
     approval-routes.ts           operator approve and reject (L2-5)
     escalation-routes.ts         operator escalation reads (L2-5)
+    api-docs.ts                  Swagger UI and the OpenAPI document, only with API_DOCS=1 (L2-5, SEC-13)
     service.ts                   HTTP API (L2-5)
   layer3-settlement/
     verifier.ts                  chain verification + finality (L3-1)
@@ -276,6 +292,7 @@ test/
   policy.test.ts  ledger.test.ts  architecture.test.ts  agent.test.ts  e2e.local.test.ts
   counterparty.test.ts  verifier.test.ts  settlement-service.test.ts  auth.test.ts  demo.local.test.ts
   cdp-config.test.ts  cdp-auth.test.ts  cdp-isolation.test.ts  cdp-failures.test.ts  escalations.test.ts
+  openapi.test.ts
   helpers/harness.ts             in-process multi-service harness shared by e2e suites
   helpers/fake-public-client.ts  deterministic read-only chain client for L3 unit tests
   helpers/cdp-stub.ts            offline CDP facilitator stub: verifies JWTs, delegates to the local facilitator
@@ -502,6 +519,13 @@ An escalation is created by its `ESCALATED` entry at `createdMs = Date.parse(ts)
 | `GET /v1/escalations` | `OPERATOR_TOKEN` | — | `{ pending: [{ authorizationId, sessionId, resourceKey, payTo, amount, createdAt, expiresAt }], cursor }`, oldest first; `cursor` is the last ledger `seq` (-1 when empty) | 401 |
 | `GET /v1/escalations/events?after=<seq>` | `OPERATOR_TOKEN` | `after`: integer ≥ -1, default -1 | `{ events, cursor }`: one event per lifecycle entry with `seq > after` (`escalated`, `approved`, `denied`, `expired`, `approval_lapsed`), built from a field whitelist; never tokens, payment headers, `accepts` or `purpose` | 400 bad `after`, 401 |
 | `GET /v1/ledger/verify` | `OPERATOR_TOKEN` | — | `{ entries, ok, brokenAt? }` | 401 |
+| `GET /docs` | none; only with `API_DOCS=1` | — | Swagger UI page (HTML) whose CSP limits scripts and requests to the L2 origin | — |
+| `GET /docs/:asset` | none; only with `API_DOCS=1` | — | `swagger-ui.css` or `swagger-ui-bundle.js` from `swagger-ui-dist`, or `swagger-initializer.js` | 404 any other name |
+| `GET /openapi.yaml` | none; only with `API_DOCS=1` | — | `docs/l2-control.openapi.yaml` with `servers` set to `/`, the L2 serving it | — |
+
+`docs/l2-control.openapi.yaml` describes the same API in OpenAPI 3.1, with the request and response schemas from §7. This table stays normative. When a route, token, status or response field changes, update the table, §7 and the document together; T-API-01..03 fail until they match.
+
+With `API_DOCS=1` (CFG-2), L2 also serves that document and Swagger UI over it; without it, those three routes are not mounted and answer 404. They are the only L2 routes without a token. They serve files read at startup (a missing file fails startup) and never touch the ledger, mandate or signer. Swagger UI comes from the pinned `swagger-ui-dist` package, never a CDN. The page's Content-Security-Policy allows scripts and requests to its own origin only, because tokens typed into the page share that origin with the signing API (SEC-13). Swagger UI keeps entered tokens in memory only, and "Try it out" calls the live L2.
 
 Authorize algorithm. The whole body runs inside one serialized critical section (INV-8: a promise-chain mutex):
 1. `t = now()`. Append `INTENT`.
@@ -623,7 +647,7 @@ With `cdp`, a missing or empty `CDP_API_KEY_ID` or `CDP_API_KEY_SECRET`, or a se
 | File | Variables |
 |---|---|
 | `l1-agent.env` | `NETWORK, ANTHROPIC_API_KEY, ANTHROPIC_MODEL?, SELLER_URL, CONTROL_URL, SETTLEMENT_URL, CONTROL_TOKEN, VERIFIER_TOKEN, SESSION_ID?` |
-| `l2-control.env` | `NETWORK, PAYER_PRIVATE_KEY, ALLOWED_PAYEES, ALLOWED_HOSTS, CONTROL_TOKEN, SETTLEMENT_TOKEN, OPERATOR_TOKEN` |
+| `l2-control.env` | `NETWORK, PAYER_PRIVATE_KEY, ALLOWED_PAYEES, ALLOWED_HOSTS, CONTROL_TOKEN, SETTLEMENT_TOKEN, OPERATOR_TOKEN, API_DOCS?` |
 | `l3-verifier.env` | `NETWORK, BASE_SEPOLIA_RPC_URL?, CONTROL_URL, VERIFIER_TOKEN, SETTLEMENT_TOKEN` |
 | `seller.env` | `NETWORK, SELLER_PAY_TO, FACILITATOR?, FACILITATOR_URL?, CDP_API_KEY_ID?, CDP_API_KEY_SECRET?` (the CDP pair is required when the choice is `cdp`) |
 | `facilitator.env` | `NETWORK=local, FACILITATOR_PRIVATE_KEY` |
@@ -632,6 +656,7 @@ With `cdp`, a missing or empty `CDP_API_KEY_ID` or `CDP_API_KEY_SECRET`, or a se
 Token defaults (`dev-control-token`, `dev-settlement-token`, `dev-verifier-token`, `dev-operator-token`) apply only when `NETWORK=local`. On any other network, a missing or empty token is a startup error. An empty token is always a startup error.
 - Each entry point calls `loadEnv()`. `ENV_FILE` defaults to the process's own file (§3.1), and a caller can override it.
 - Templates leave private keys empty (`# set me`).
+- `API_DOCS` (L2 only, read by `apiDocsEnabled()`): `1` mounts the docs routes (L2-5); unset, empty or `0` leaves them off; any other value is a startup error.
 - `npm run demo:local` gives each child only `PATH`, `HOME`, `NODE_*` and its own `ENV_FILE`. On `local`, if `env/l2-control.env` or `env/facilitator.env` is missing or the key is empty, the demo derives that key with `localDevKeys()`. It passes the payer key only to the L2 child and the facilitator key only to the facilitator child.
 - The demo spawns `node_modules/.bin/tsx` directly (not `npx`) and reads each child's env file with a minimal `KEY=value` reader for its fallback decisions; only `src/shared/config.ts` uses dotenv (architecture test). On `local`, when `SELLER_PAY_TO` or `ALLOWED_PAYEES` is empty, the demo sets it to account #3 (CP-5).
 - `npm run approve`, `npm run reject` and `npm run escalations` resolve their bearer token with `tokenFor("operator")`, so on `local` the dev operator token applies when `OPERATOR_TOKEN` is unset. They read only `env/operator.env` (or `ENV_FILE`).
@@ -684,6 +709,7 @@ Only use the SDK helpers to encode and decode these headers. Never hand-roll bas
 | SEC-10 | The CDP API credential leaks to another process, a log or a response, or a misconfiguration silently uses an unauthenticated facilitator | Seller-only credential (A8, T-ARCH-ENV); fail-closed startup; no runtime fallback; redaction | T-ARCH-A8, T-CDP-02, T-CDP-07, T-CDP-08 |
 | SEC-11 | A facilitator reports failure for a transfer that actually settled, so the budget under-counts | L3 checks any reported hash on-chain (L3-1 step 2) | T-CDP-06 |
 | SEC-12 | Operator free text (label, reason) reaches the LLM agent and acts as a prompt injection | The R15 violation detail carries only the rejection ID; label and reason are stored as data and shown to the operator only | T-POL-15 |
+| SEC-13 | The token-free API docs routes expose more than the document, or run third-party code on the signer's origin where operators type tokens | Off unless `API_DOCS=1`; three fixed files and the document, no ledger, mandate or signer access; Swagger UI from the pinned package, never a CDN; CSP `script-src 'self'`, `connect-src 'self'` | T-API-04 |
 
 Residual risks (accepted in v1): bearer tokens over loopback instead of mTLS; key held in an env var; single-node JSONL ledger; facilitator trusted for liveness; no refund path.
 
@@ -695,6 +721,10 @@ Residual risks added in v1.3:
 - The operator label is self-declared, and one shared operator token stands for every operator (EXT-7 would add per-person identity).
 - The escalation reads expose session IDs, resources and amounts to the operator, which is their purpose.
 - A rejection blocks a (session, resource key) for good; buying it again needs a new session. There is no undo by design.
+
+Residual risks added in v1.4:
+- With `API_DOCS=1`, anyone who can reach L2's loopback port reads the API description without a token. It holds nothing that is not in the repository.
+- "Try it out" acts on the live L2: an operator who enters a token there signs, approves or rejects for real, and the ledger keeps every entry.
 
 ---
 
@@ -720,6 +750,10 @@ Residual risks added in v1.3:
 | T-ARCH-BIND | e2e | `listenControl`/`listenSettlement` bind 127.0.0.1 with `CONTROL_PORT`/`SETTLEMENT_PORT` overridden |
 | T-AUTH-01 | e2e | `POST /v1/authorize` with `SETTLEMENT_TOKEN`, `VERIFIER_TOKEN` or `OPERATOR_TOKEN` → 401; the ledger is unchanged |
 | T-AUTH-02 | e2e, settlement-service | `POST /v1/settlements` with `CONTROL_TOKEN` or `SETTLEMENT_TOKEN` → 401; no reconcile reaches L2 |
+| T-API-01 | openapi | the operations in `docs/l2-control.openapi.yaml` equal the routes mounted on the L2 app with `API_DOCS=1`; without it, the mounted routes are exactly the operations not tagged `docs`. **Must fail**: a route missing from the document, or documented but not mounted, is reported |
+| T-API-02 | openapi | for each operation, only the token of its documented security scheme passes the guard; no token and the other tokens get 401. A `security: []` operation passes for every caller. **Must fail**: a document naming the wrong token is reported |
+| T-API-03 | openapi | an in-process scenario reaches every documented status except authorize's 500, and each response's media type is documented and its body conforms to the schema (required fields, types, no undocumented fields). **Must fail**: a missing field, a wrong type and an undocumented field are reported |
+| T-API-04 | openapi | the docs routes (SEC-13): with `API_DOCS` unset, none is mounted and each docs URL answers 404; `API_DOCS` accepts only `1`, `0` or empty; the served document equals the file except `servers` = `/`; the page carries a CSP limiting scripts and requests to `'self'` and names no other origin; `/docs/:asset` serves its three files and 404s anything else. **Must fail**: the same probe gets 200 with `API_DOCS=1`; a document without `servers` is refused |
 | T-AGT-01 | agent | fake model → tool calls → intents carry `purpose`; the tool result contains PAID + CONFIRMED; exactly two tools are offered |
 | T-AGT-KEY | agent | spawning `src/main.ts` with `PAYER_PRIVATE_KEY` set exits 1 with a refusal (the automated form of the manual check below) |
 | T-E2E-01 | e2e | scripted plan outcomes `[FREE, PAID, PAID, ESCALATED, DENIED, DENIED]`; on-chain delta exactly 6000; two CONFIRMED settlements; chain ok; budget `spentOrReserved = 6000` |
@@ -758,6 +792,7 @@ npm test
 npm run demo:local [-- --llm]
 # Base Sepolia, one terminal each:
 npm run seller | npm run l2:control | npm run l3:verifier | npm run agent -- "<goal>"
+API_DOCS=1 npm run l2:control   # L2 plus Swagger UI at http://127.0.0.1:4020/docs (no token, off by default)
 npm run demo:base-sepolia   # opt-in live run through CDP (T-E2E-06); reads env/<role>.base-sepolia.env
 npm run approve -- <authorizationId> [approver]
 npm run reject -- <authorizationId> [operator] [reason]

@@ -21,6 +21,7 @@ npm run demo:base-sepolia      # opt-in live run through the CDP facilitator; ne
 npm run approve -- <id> [approver]           # operator: approve a pending escalation
 npm run reject -- <id> [operator] [reason]   # operator: reject a pending escalation (R15 human_rejected)
 npm run escalations -- --watch               # operator: pending escalations, then each new one and outcome
+API_DOCS=1 npm run l2:control                # L2 plus Swagger UI at http://127.0.0.1:4020/docs (no token; off by default)
 npx vitest run test/policy.test.ts -t "<name>"   # single test
 ```
 
@@ -42,7 +43,8 @@ npx vitest run test/policy.test.ts -t "<name>"   # single test
   2. Add the row to SPEC §8.2 (L2-2).
   3. Add a test in `test/policy.test.ts`.
   4. If it needs new context, add a field to `PolicyContext` and compute it in `service.ts` from the ledger.
-- **New contract field:** edit `src/shared/contracts.ts` and every producer and consumer, update SPEC §7, and extend the e2e assertions.
+- **New contract field:** edit `src/shared/contracts.ts` and every producer and consumer, update SPEC §7, and extend the e2e assertions. If it crosses L2's HTTP API, also update `docs/l2-control.openapi.yaml`.
+- **New or changed L2 route** (path, token, status or response field): update SPEC L2-5 and `docs/l2-control.openapi.yaml` together. `test/openapi.test.ts` (T-API-01..04) fails until both match the service. Swagger UI (`API_DOCS=1`) serves that same file, so it needs no separate update.
 - **New network:**
   1. Add a profile in `src/shared/config.ts`.
   2. Register the scheme in the signer, seller and (if local) facilitator.

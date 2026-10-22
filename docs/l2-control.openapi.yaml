@@ -1,0 +1,824 @@
+# L2 control HTTP API (SPEC.md §8.2 L2-5) as OpenAPI 3.1.
+# SPEC.md and src/shared/contracts.ts stay normative. test/openapi.test.ts (T-API-01..04) fails when this
+# file and the running service disagree on routes, bearer tokens or response shapes, so change both together.
+openapi: 3.1.0
+info:
+  title: L2 control API
+  version: "1.4"
+  summary: Policy, signing and ledger service of the x402 three-layer agent payments PoC.
+  description: |
+    L2 is the only process that holds the payer key. It decides every payment against the spending
+    mandate, signs the approved ones, and records everything in a hash-chained, append-only ledger.
+
+    - **Loopback only.** L2 binds `127.0.0.1` (SPEC §3.1); `CONTROL_PORT` changes the port, never the host.
+    - **One bearer token per caller** (INV-13). Each `/v1` operation accepts exactly one of the three tokens,
+      and a wrong or missing token gets 401 before the body is read, so it never appends a ledger entry.
+    - **Amounts** are decimal strings of atomic units (USDC has 6 decimals: `"1000"` is 0.001 USDC).
+    - **Single writer.** Writes run in one serialized section; run one L2 per ledger file.
+    - **API docs.** With `API_DOCS=1`, L2 also serves this document and Swagger UI at `/docs`. Those
+      routes take no token and are not mounted by default. When served, `servers` points at that L2.
+servers:
+  - url: http://127.0.0.1:4020
+    description: Default local bind (loopback only)
+tags:
+  - name: agent
+    description: Called by the agent process (L1) with `CONTROL_TOKEN`.
+  - name: settlement
+    description: Called by the settlement verifier (L3) with `SETTLEMENT_TOKEN`.
+  - name: operator
+    description: Called by the human operator's CLIs with `OPERATOR_TOKEN`.
+  - name: docs
+    description: Swagger UI and this document. Mounted only when `API_DOCS=1`; no token.
+
+paths:
+  /v1/authorize:
+    post:
+      tags: [agent]
+      operationId: authorize
+      summary: Decide a payment intent and, when authorized, sign it
+      description: |
+        Runs the policy over the x402 challenge and answers AUTHORIZED (with signed payment headers),
+        DENIED or ESCALATE. Every call appends an `INTENT` entry and one outcome entry. `purpose` is
+        recorded for audit only and is never an input to the decision (INV-5).
+      security:
+        - controlToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PaymentIntent"
+      responses:
+        "200":
+          description: The decision.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthorizationDecision"
+        "400":
+          description: Malformed intent (missing ids, `paymentRequired.accepts` not an array, non-http(s) URL).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          description: Unexpected failure inside the decision.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/budget/{sessionId}:
+    get:
+      tags: [agent]
+      operationId: getBudget
+      summary: Session budget, derived from the ledger
+      description: An unknown session returns 200 with zero spend.
+      security:
+        - controlToken: []
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Budget status.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BudgetStatus"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /v1/reconcile:
+    post:
+      tags: [settlement]
+      operationId: reconcile
+      summary: Record a settlement report for an authorization
+      description: |
+        Stores L3's on-chain verdict. A CONFIRMED settlement is final; a later contradicting report
+        is stored with `anomaly: true` and does not change the effective status (INV-11).
+      security:
+        - settlementToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SettlementReport"
+      responses:
+        "200":
+          description: Report recorded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReconcileResult"
+        "400":
+          description: Malformed report (missing `authorizationId` or a `verified` field).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: No AUTHORIZED entry has this `authorizationId`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/approvals/{authorizationId}:
+    post:
+      tags: [operator]
+      operationId: approveEscalation
+      summary: Approve a pending escalation
+      description: |
+        Appends one `HUMAN_APPROVAL`. Payee, amount, resource and session come from the ESCALATED entry,
+        never from this request (INV-12). Approving again returns the existing approval with
+        `alreadyApproved: true` and ignores the request's `ttlSeconds` and `approver`, so an escalation
+        pays at most once.
+      security:
+        - operatorToken: []
+      parameters:
+        - $ref: "#/components/parameters/AuthorizationId"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ApprovalRequest"
+      responses:
+        "200":
+          description: Approved now, or already approved.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApprovalResult"
+        "400":
+          description: "`ttlSeconds` is not a positive integer, or `approver` is empty."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/EscalationNotFound"
+        "409":
+          description: The escalation was rejected or has expired.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/DeniedConflict"
+                  - $ref: "#/components/schemas/ExpiredConflict"
+
+  /v1/rejections/{authorizationId}:
+    post:
+      tags: [operator]
+      operationId: rejectEscalation
+      summary: Reject a pending escalation
+      description: |
+        Appends one `HUMAN_REJECTION`. Later requests for the same (session, resource) are DENIED with
+        `human_rejected` (R15) at any amount. Rejecting again returns the first rejection with
+        `alreadyRejected: true`. `operator` and `reason` stay in the ledger; they never reach the agent.
+      security:
+        - operatorToken: []
+      parameters:
+        - $ref: "#/components/parameters/AuthorizationId"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RejectionRequest"
+      responses:
+        "200":
+          description: Rejected now, or already rejected.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RejectionResult"
+        "400":
+          description: "`operator` is not 1–64 characters, or `reason` is longer than 280."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/EscalationNotFound"
+        "409":
+          description: The escalation was approved or has expired.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/ApprovedConflict"
+                  - $ref: "#/components/schemas/ExpiredConflict"
+
+  /v1/escalations:
+    get:
+      tags: [operator]
+      operationId: listPendingEscalations
+      summary: Pending escalations, oldest first
+      security:
+        - operatorToken: []
+      responses:
+        "200":
+          description: Pending escalations and the ledger cursor.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PendingEscalations"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /v1/escalations/events:
+    get:
+      tags: [operator]
+      operationId: listEscalationEvents
+      summary: Escalation lifecycle events after a ledger cursor
+      description: |
+        One event per lifecycle entry with `seq > after`. Poll with the returned `cursor` to follow new
+        events (`npm run escalations -- --watch` does this every second). Events are built from a field
+        whitelist and never carry tokens, payment headers, `accepts` or `purpose`.
+      security:
+        - operatorToken: []
+      parameters:
+        - name: after
+          in: query
+          required: false
+          description: Ledger `seq` to start after. Integer ≥ -1; defaults to -1 (from the beginning).
+          schema:
+            type: integer
+            minimum: -1
+            default: -1
+      responses:
+        "200":
+          description: Events and the ledger cursor.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EscalationEvents"
+        "400":
+          description: "`after` is not an integer ≥ -1."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /v1/ledger/verify:
+    get:
+      tags: [operator]
+      operationId: verifyLedger
+      summary: Re-read the ledger file and verify its hash chain
+      security:
+        - operatorToken: []
+      responses:
+        "200":
+          description: Chain check result. `ok` is false and `brokenAt` set when an entry was altered.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChainCheck"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /docs:
+    get:
+      tags: [docs]
+      operationId: getApiDocsPage
+      summary: Swagger UI for this document
+      description: |
+        Only with `API_DOCS=1`. The page loads its scripts and styles from L2 itself (`/docs/{asset}`),
+        never from a CDN, and its Content-Security-Policy limits scripts and requests to the L2 origin.
+      security: []
+      responses:
+        "200":
+          description: The Swagger UI page.
+          content:
+            text/html:
+              schema:
+                type: string
+
+  /docs/{asset}:
+    get:
+      tags: [docs]
+      operationId: getApiDocsAsset
+      summary: A Swagger UI file
+      description: Only with `API_DOCS=1`. Serves these three files and nothing else.
+      security: []
+      parameters:
+        - name: asset
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [swagger-ui.css, swagger-ui-bundle.js, swagger-initializer.js]
+      responses:
+        "200":
+          description: The file.
+          content:
+            text/css:
+              schema:
+                type: string
+            text/javascript:
+              schema:
+                type: string
+        "404":
+          description: Not one of the three files.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /openapi.yaml:
+    get:
+      tags: [docs]
+      operationId: getApiDocument
+      summary: This document
+      description: Only with `API_DOCS=1`. Identical to the file, except `servers` is `/`, the L2 serving it.
+      security: []
+      responses:
+        "200":
+          description: The OpenAPI document.
+          content:
+            application/yaml:
+              schema:
+                type: string
+
+components:
+  securitySchemes:
+    controlToken:
+      type: http
+      scheme: bearer
+      description: "`CONTROL_TOKEN`, held by the agent process (L1)."
+    settlementToken:
+      type: http
+      scheme: bearer
+      description: "`SETTLEMENT_TOKEN`, held by the settlement verifier (L3)."
+    operatorToken:
+      type: http
+      scheme: bearer
+      description: "`OPERATOR_TOKEN`, held by the operator CLIs."
+
+  parameters:
+    AuthorizationId:
+      name: authorizationId
+      in: path
+      required: true
+      description: The `authorizationId` of the ESCALATE decision.
+      schema:
+        type: string
+        examples: [auth_009b55fe-307f-43ea-9014-a50e72f5576c]
+
+  responses:
+    Unauthorized:
+      description: Missing or wrong bearer token. Nothing is appended.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    EscalationNotFound:
+      description: No ESCALATED entry has this ID.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+  schemas:
+    Error:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: string
+
+    AtomicAmount:
+      type: string
+      pattern: "^[0-9]+$"
+      description: Decimal string of atomic units.
+      examples: ["50000"]
+
+    IsoTime:
+      type: string
+      format: date-time
+
+    ResourceInfo:
+      type: object
+      required: [url]
+      properties:
+        url:
+          type: string
+        description:
+          type: string
+        mimeType:
+          type: string
+        serviceName:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+        iconUrl:
+          type: string
+
+    PaymentRequirements:
+      type: object
+      description: One x402 v2 payment option (`@x402/core` `PaymentRequirements`).
+      required: [scheme, network, asset, amount, payTo, maxTimeoutSeconds, extra]
+      properties:
+        scheme:
+          type: string
+          examples: [exact]
+        network:
+          type: string
+          description: CAIP-2 network ID.
+          examples: ["eip155:84532"]
+        asset:
+          type: string
+        amount:
+          $ref: "#/components/schemas/AtomicAmount"
+        payTo:
+          type: string
+        maxTimeoutSeconds:
+          type: integer
+        extra:
+          type: object
+          description: Scheme data; for `exact` on EVM, the token's EIP-712 `name` and `version`.
+
+    PaymentRequired:
+      type: object
+      description: The seller's decoded `PAYMENT-REQUIRED` challenge, verbatim (`@x402/core` `PaymentRequired`).
+      required: [x402Version, resource, accepts]
+      properties:
+        x402Version:
+          type: integer
+          examples: [2]
+        error:
+          type: string
+        resource:
+          $ref: "#/components/schemas/ResourceInfo"
+        accepts:
+          type: array
+          items:
+            $ref: "#/components/schemas/PaymentRequirements"
+        extensions:
+          type: object
+
+    PaymentIntent:
+      type: object
+      required: [intentId, sessionId, resourceUrl, paymentRequired, purpose, createdAt]
+      properties:
+        intentId:
+          type: string
+          minLength: 1
+          examples: [int_5d261ce5-d9c0-4e73-a3ec-ce1e79af4be4]
+        sessionId:
+          type: string
+          minLength: 1
+        resourceUrl:
+          type: string
+          format: uri
+          description: The URL L1 requested; http or https only.
+        paymentRequired:
+          $ref: "#/components/schemas/PaymentRequired"
+        purpose:
+          type: string
+          description: The model's stated reason. Audit only; never a decision input (INV-5).
+        createdAt:
+          $ref: "#/components/schemas/IsoTime"
+
+    PolicyViolation:
+      type: object
+      additionalProperties: false
+      required: [rule, detail]
+      properties:
+        rule:
+          type: string
+          description: Snake_case rule ID from SPEC §8.2 L2-2.
+          examples: [human_approval_required]
+        detail:
+          type: string
+
+    AuthorizationDecision:
+      oneOf:
+        - $ref: "#/components/schemas/AuthorizedDecision"
+        - $ref: "#/components/schemas/UnauthorizedDecision"
+      discriminator:
+        propertyName: status
+        mapping:
+          AUTHORIZED: "#/components/schemas/AuthorizedDecision"
+          DENIED: "#/components/schemas/UnauthorizedDecision"
+          ESCALATE: "#/components/schemas/UnauthorizedDecision"
+
+    AuthorizedDecision:
+      type: object
+      additionalProperties: false
+      required: [status, authorizationId, intentId, requirement, paymentHeaders, payer, validBefore, remainingSessionBudgetAtomic]
+      properties:
+        status:
+          const: AUTHORIZED
+        authorizationId:
+          type: string
+        intentId:
+          type: string
+        requirement:
+          $ref: "#/components/schemas/PaymentRequirements"
+        paymentHeaders:
+          type: object
+          description: Headers for the paid retry (`PAYMENT-SIGNATURE`). A signed payment; treat it as a secret.
+          additionalProperties:
+            type: string
+        payer:
+          type: string
+        validBefore:
+          type: integer
+          description: Unix seconds after which the signed authorization is void.
+        remainingSessionBudgetAtomic:
+          $ref: "#/components/schemas/AtomicAmount"
+
+    UnauthorizedDecision:
+      type: object
+      additionalProperties: false
+      required: [status, authorizationId, intentId, violations]
+      properties:
+        status:
+          type: string
+          enum: [DENIED, ESCALATE]
+          description: ESCALATE waits for an operator decision; DENIED is final for this request.
+        authorizationId:
+          type: string
+        intentId:
+          type: string
+        violations:
+          type: array
+          items:
+            $ref: "#/components/schemas/PolicyViolation"
+
+    BudgetStatus:
+      type: object
+      additionalProperties: false
+      required: [sessionId, asset, decimals, sessionCapAtomic, spentOrReservedAtomic, remainingAtomic, perPaymentCapAtomic]
+      properties:
+        sessionId:
+          type: string
+        asset:
+          type: string
+        decimals:
+          type: integer
+        sessionCapAtomic:
+          $ref: "#/components/schemas/AtomicAmount"
+        spentOrReservedAtomic:
+          $ref: "#/components/schemas/AtomicAmount"
+        remainingAtomic:
+          $ref: "#/components/schemas/AtomicAmount"
+        perPaymentCapAtomic:
+          $ref: "#/components/schemas/AtomicAmount"
+          description: The auto-approve limit; larger payments escalate.
+
+    SettlementReport:
+      type: object
+      required: [authorizationId, status, network, finalityClass, detail, observedAt, verified]
+      properties:
+        authorizationId:
+          type: string
+        status:
+          type: string
+          enum: [CONFIRMED, PENDING, MISMATCH, NOT_SETTLED]
+        transaction:
+          type: string
+        network:
+          type: string
+        blockNumber:
+          type: string
+        confirmations:
+          type: integer
+        finalityClass:
+          type: string
+          enum: [included, confirmed-depth, l1-safe]
+        detail:
+          type: string
+        observedAt:
+          $ref: "#/components/schemas/IsoTime"
+        verified:
+          type: object
+          required: [asset, payer, payTo, amount]
+          properties:
+            asset:
+              type: string
+            payer:
+              type: string
+            payTo:
+              type: string
+            amount:
+              $ref: "#/components/schemas/AtomicAmount"
+
+    ReconcileResult:
+      type: object
+      additionalProperties: false
+      required: [ok, anomaly]
+      properties:
+        ok:
+          const: true
+        anomaly:
+          type: boolean
+          description: True when the report contradicts the authorization or an earlier CONFIRMED.
+
+    ApprovalRequest:
+      type: object
+      properties:
+        approver:
+          type: string
+          minLength: 1
+          default: operator
+        ttlSeconds:
+          type: integer
+          minimum: 1
+          default: 600
+          description: How long the approval stays usable before it lapses.
+
+    ApprovalResult:
+      type: object
+      additionalProperties: false
+      required: [ok, approvalId, expiresAt]
+      properties:
+        ok:
+          const: true
+        approvalId:
+          type: string
+          examples: [apr_22489548-bc61-4ebe-87bc-df46de614eca]
+        expiresAt:
+          $ref: "#/components/schemas/IsoTime"
+        alreadyApproved:
+          const: true
+          description: Present only when the escalation was already approved.
+
+    RejectionRequest:
+      type: object
+      properties:
+        operator:
+          type: string
+          minLength: 1
+          maxLength: 64
+          default: operator
+          description: Self-declared label of whoever rejects.
+        reason:
+          type: string
+          maxLength: 280
+
+    RejectionResult:
+      type: object
+      additionalProperties: false
+      required: [ok, rejectionId, rejectedAt, alreadyRejected]
+      properties:
+        ok:
+          const: true
+        rejectionId:
+          type: string
+          examples: [rej_03a1deba-0e67-4642-952d-0baca6103364]
+        rejectedAt:
+          $ref: "#/components/schemas/IsoTime"
+        alreadyRejected:
+          type: boolean
+
+    DeniedConflict:
+      type: object
+      additionalProperties: false
+      required: [error, state, rejectionId]
+      properties:
+        error:
+          type: string
+        state:
+          const: denied
+        rejectionId:
+          type: string
+
+    ApprovedConflict:
+      type: object
+      additionalProperties: false
+      required: [error, state, approvalId]
+      properties:
+        error:
+          type: string
+        state:
+          const: approved
+        approvalId:
+          type: string
+
+    ExpiredConflict:
+      type: object
+      additionalProperties: false
+      required: [error, state, expiresAt]
+      properties:
+        error:
+          type: string
+        state:
+          const: expired
+        expiresAt:
+          $ref: "#/components/schemas/IsoTime"
+
+    PendingEscalation:
+      type: object
+      additionalProperties: false
+      required: [authorizationId, sessionId, resourceKey, payTo, amount, createdAt, expiresAt]
+      properties:
+        authorizationId:
+          type: string
+        sessionId:
+          type: string
+        resourceKey:
+          type: string
+        payTo:
+          type: string
+        amount:
+          $ref: "#/components/schemas/AtomicAmount"
+        createdAt:
+          $ref: "#/components/schemas/IsoTime"
+        expiresAt:
+          $ref: "#/components/schemas/IsoTime"
+
+    PendingEscalations:
+      type: object
+      additionalProperties: false
+      required: [pending, cursor]
+      properties:
+        pending:
+          type: array
+          items:
+            $ref: "#/components/schemas/PendingEscalation"
+        cursor:
+          type: integer
+          description: Last ledger `seq` (-1 when the ledger is empty). Pass it as `after` to the events feed.
+
+    EscalationEvent:
+      type: object
+      additionalProperties: false
+      required: [seq, at, kind, authorizationId, sessionId, resourceKey, payTo, amount]
+      properties:
+        seq:
+          type: integer
+        at:
+          $ref: "#/components/schemas/IsoTime"
+        kind:
+          type: string
+          enum: [escalated, approved, denied, expired, approval_lapsed]
+        authorizationId:
+          type: string
+        sessionId:
+          type: string
+        resourceKey:
+          type: string
+        payTo:
+          type: string
+        amount:
+          $ref: "#/components/schemas/AtomicAmount"
+        expiresAt:
+          $ref: "#/components/schemas/IsoTime"
+        approvalId:
+          type: string
+        approver:
+          type: string
+        approvalExpiresAt:
+          $ref: "#/components/schemas/IsoTime"
+        rejectionId:
+          type: string
+        operator:
+          type: string
+        reason:
+          type: string
+
+    EscalationEvents:
+      type: object
+      additionalProperties: false
+      required: [events, cursor]
+      properties:
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/EscalationEvent"
+        cursor:
+          type: integer
+
+    ChainCheck:
+      type: object
+      additionalProperties: false
+      required: [entries, ok]
+      properties:
+        entries:
+          type: integer
+        ok:
+          type: boolean
+        brokenAt:
+          type: integer
+          description: "`seq` of the first entry that fails verification."
