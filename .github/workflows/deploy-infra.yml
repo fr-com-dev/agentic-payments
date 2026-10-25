@@ -1,0 +1,189 @@
+# Deploy the platform and the sellers from one commit (SPEC.md §3.1 Azure profile; specs/011
+# contracts/deploy-pipeline.md). The platform is infra/main.bicep: network, identities, registry, vaults,
+# storage, Foundry and the environments. The sellers are the counterparty, test infrastructure rather than a
+# layer, so this workflow also builds the x402-seller image and deploys infra/seller.bicep. Each layer
+# deploys its own apps with deploy-l1.yml, deploy-l2.yml and deploy-l3.yml. Once the layers exist, every run
+# also repeats the cloud regression, because a platform change can break them. T-E2E-AZ:
+# test/deploy-workflow.test.ts checks this file's step order and rollback offline.
+#
+# GitHub secrets (store them as repository secrets): AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID
+# (the deploy app's OIDC sign-in), SELLER_PAY_TO and PAYER_ADDRESS (public addresses). They are identifiers,
+# kept as secrets so the logs mask them. No credential is stored in GitHub: Azure sign-in is OIDC, and the
+# application's secrets live only in the Key Vaults, seeded by hand (quickstart §4) after the first,
+# platform-only run. T-E2E-AZ allows no other secret here.
+name: deploy-infra
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment (resource group rg-x402-<environment>)
+        required: true
+        default: dev
+        type: choice
+        options: [dev]
+      platform-only:
+        description: Deploy only the platform (the very first run, before the vaults are seeded; quickstart §4)
+        required: false
+        default: false
+        type: boolean
+  push:
+    tags: ["deploy-infra-*"]
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: deploy-azure
+  cancel-in-progress: false
+
+env:
+  ENVIRONMENT: ${{ inputs.environment || 'dev' }}
+  RG: rg-x402-${{ inputs.environment || 'dev' }}
+  IMAGE_TAG: ${{ github.sha }}
+  BICEP_VERSION: v0.47.16
+  SELLER_PAY_TO: ${{ secrets.SELLER_PAY_TO }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment || 'dev' }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: "1 typecheck and tests"
+        id: tests
+        run: |
+          npm install --no-audit --no-fund
+          npm run typecheck
+          npm test
+
+      - name: "2 T-IAC-01 with the Bicep CLI"
+        id: iac
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/bicep" "https://github.com/Azure/bicep/releases/download/${BICEP_VERSION}/bicep-linux-x64"
+          chmod +x "$RUNNER_TEMP/bicep"
+          export BICEP_PATH="$RUNNER_TEMP/bicep"
+          test -x "$BICEP_PATH"
+          npx vitest run test/infra.test.ts
+
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: "3 what-if, then deploy the platform"
+        id: platform
+        run: |
+          echo "started=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          az group create -n "$RG" -l eastus2 -o none
+          az deployment group what-if -g "$RG" --template-file infra/main.bicep --parameters "infra/params/$ENVIRONMENT.bicepparam"
+          az deployment group create -g "$RG" -n "x402-platform-$IMAGE_TAG" --template-file infra/main.bicep --parameters "infra/params/$ENVIRONMENT.bicepparam" -o none
+          OUT=$(az deployment group show -g "$RG" -n "x402-platform-$IMAGE_TAG" --query properties.outputs -o json)
+          {
+            echo "acr=$(jq -r .registry.value <<<"$OUT")"
+            echo "acr-name=$(az acr list -g "$RG" --query "[0].name" -o tsv)"
+            echo "law=$(jq -r .logWorkspaceCustomerId.value <<<"$OUT")"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: "4 build and push the seller's image tagged with the commit"
+        id: build
+        if: ${{ !inputs.platform-only }}
+        run: |
+          az acr login -n "${{ steps.platform.outputs.acr-name }}"
+          docker build -f Dockerfile -t "${{ steps.platform.outputs.acr }}/x402-seller:$IMAGE_TAG" .
+          docker push "${{ steps.platform.outputs.acr }}/x402-seller:$IMAGE_TAG"
+
+      - name: "4b image secret check (SC-005)"
+        id: image-scan
+        if: ${{ !inputs.platform-only }}
+        run: |
+          IMG="${{ steps.platform.outputs.acr }}/x402-seller:$IMAGE_TAG"
+          if (docker history --no-trunc "$IMG"; docker run --rm "$IMG" env) | grep -E 'PRIVATE_KEY[=]|_SECRET[=]|_TOKEN[=]'; then
+            echo "secret assignment found in $IMG"; exit 1
+          fi
+
+      - name: "5 what-if, then deploy the sellers"
+        id: deploy
+        if: ${{ !inputs.platform-only }}
+        run: |
+          az deployment group what-if -g "$RG" --template-file infra/seller.bicep --parameters "infra/params/$ENVIRONMENT-seller.bicepparam"
+          az deployment group create -g "$RG" -n "x402-seller-$IMAGE_TAG" --template-file infra/seller.bicep --parameters "infra/params/$ENVIRONMENT-seller.bicepparam" -o none
+          OUT=$(az deployment group show -g "$RG" -n "x402-seller-$IMAGE_TAG" --query properties.outputs -o json)
+          {
+            echo "seller=$(jq -r .sellerFqdn.value <<<"$OUT")"
+            echo "alias=$(jq -r .sellerAliasFqdn.value <<<"$OUT")"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: "6 both sellers answer (they scale from zero)"
+        id: health
+        if: ${{ !inputs.platform-only }}
+        run: |
+          for host in "${{ steps.deploy.outputs.seller }}" "${{ steps.deploy.outputs.alias }}"; do
+            ok=""
+            for _ in $(seq 1 18); do
+              if curl -fsS -m 10 -o /dev/null "https://$host/api/catalog"; then ok=1; break; fi
+              sleep 10
+            done
+            if [ -z "$ok" ]; then echo "$host did not answer /api/catalog within 3 minutes"; exit 1; fi
+          done
+
+      # Steps 7–9 need the layers. Before deploy-l1.yml, deploy-l2.yml and deploy-l3.yml have run once
+      # (quickstart §4), they record that they were skipped in the run summary instead.
+      - name: "7 payer balance (read-only)"
+        id: balance
+        if: ${{ !inputs.platform-only }}
+        run: |
+          if ! az containerapp job show -n job-regression -g "$RG" -o none 2>/dev/null; then
+            echo "payer balance skipped: no layers deployed yet" >> "$GITHUB_STEP_SUMMARY"; exit 0
+          fi
+          npm run -s payer-balance -- "${{ secrets.PAYER_ADDRESS }}"
+
+      - name: "8 regression: L1-4 scripted plan with --check-baseline"
+        id: regression
+        if: ${{ !inputs.platform-only }}
+        run: |
+          if ! az containerapp job show -n job-regression -g "$RG" -o none 2>/dev/null; then
+            echo "regression skipped: job-regression doesn't exist until deploy-l1 has run" >> "$GITHUB_STEP_SUMMARY"; exit 0
+          fi
+          infra/run-job.sh "$RG" job-regression
+
+      - name: "9 ledger-verify"
+        id: chain
+        if: ${{ !inputs.platform-only }}
+        run: |
+          if ! az containerapp job show -n job-operator -g "$RG" -o none 2>/dev/null; then
+            echo "ledger-verify skipped: job-operator doesn't exist until deploy-l2 has run" >> "$GITHUB_STEP_SUMMARY"; exit 0
+          fi
+          infra/run-job.sh "$RG" job-operator node dist/scripts/ledger-verify.js
+
+      - name: "10 log secret scan (credential shapes)"
+        id: log-scan
+        if: ${{ !inputs.platform-only }}
+        run: |
+          az monitor log-analytics query -w "${{ steps.platform.outputs.law }}" \
+            --analytics-query "ContainerAppConsoleLogs_CL | where TimeGenerated >= datetime(${{ steps.platform.outputs.started }}) | project Log_s" \
+            --query "[].Log_s" -o tsv | npm run -s scan-logs
+
+      - name: "11 promote the seller's image as last-good"
+        id: promote
+        if: ${{ !inputs.platform-only }}
+        run: az acr import -n "${{ steps.platform.outputs.acr-name }}" --source "${{ steps.platform.outputs.acr }}/x402-seller:$IMAGE_TAG" --image x402-seller:last-good --force
+
+      # A failed platform deployment is fixed forward: there is no previous platform to return to.
+      - name: "rollback the sellers to last-good"
+        id: rollback
+        if: failure() && steps.deploy.outcome == 'success'
+        run: |
+          if ! az acr repository show-tags -n "${{ steps.platform.outputs.acr-name }}" --repository x402-seller -o tsv | grep -qx last-good; then
+            echo "x402-seller has no last-good yet: nothing to roll back to"; exit 1
+          fi
+          IMAGE_TAG=last-good az deployment group create -g "$RG" -n "x402-seller-rollback-${{ github.sha }}" \
+            --template-file infra/seller.bicep --parameters "infra/params/$ENVIRONMENT-seller.bicepparam" -o none

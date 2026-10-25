@@ -144,9 +144,10 @@ scripts/
 ├── ledger-verify.ts        # NEW: operator command for GET /v1/ledger/verify (exit 0 only when ok)
 └── payer-balance.ts        # NEW: read-only Base Sepolia USDC balanceOf(address) for the deploy preflight
 infra/
-├── main.bicep              # NEW: environments, network, registry, logs, storage, vaults, identities, Foundry, apps, jobs
+├── main.bicep              # NEW: the platform: environments, network, registry, logs, storage, vaults, identities, Foundry
+├── l1-agent.bicep, l2-control.bicep, l3-verifier.bicep, seller.bicep   # NEW (2026-10-25): one template per unit
 ├── modules/*.bicep         # NEW: one module per concern
-├── params/dev.bicepparam   # NEW: no secret values; vault secrets are seeded out of band
+├── params/dev*.bicepparam  # NEW: one per template; no secret values; vault secrets are seeded out of band
 ├── proxy/nginx-l2.conf, nginx-l3.conf   # NEW: loopback proxy sidecars with the 401→200 /healthz
 └── entra-app.sh            # NEW: az CLI script for the API app registration and the Agent.Run role
 Dockerfile                  # NEW: the seller's image (research R14, revised 2026-10-25)
@@ -155,7 +156,8 @@ docker/l1-agent.Dockerfile, l2-control.Dockerfile, l3-verifier.Dockerfile   # NE
 .dockerignore               # NEW
 scripts/image-closure.ts    # NEW: each image's files and packages from the import graph (T-IMG-01)
 tsconfig.build.json         # NEW: emits dist/ for src/ and the operator scripts
-.github/workflows/deploy-azure.yml   # NEW: OIDC deploy and regression gate
+.github/workflows/deploy-infra.yml, deploy-l1.yml, deploy-l2.yml, deploy-l3.yml, deploy-layer.yml   # NEW: OIDC deploys
+                            #   (the platform and the sellers; one per layer over shared steps), each gated by the regression
 env/l1-hosted.env.example   # NEW: CFG-2 template
 env/l1-agent.env.example    # MOD: optional SELLER_ALIAS_URL
 test/
@@ -163,7 +165,7 @@ test/
 ├── hosted-access.test.ts   # NEW: T-AGT-03 tokens, roles, limits, no forwarding
 ├── hosted-sessions.test.ts # NEW: T-AGT-04 session references
 ├── hosted-run.test.ts      # NEW: T-AGT-05 deadline, step limit, disconnect, health, response shape, log redaction
-├── deploy-workflow.test.ts # NEW: T-E2E-AZ static checks on .github/workflows/deploy-azure.yml (gate order, rollback)
+├── deploy-workflow.test.ts # NEW: T-E2E-AZ static checks on the four deploy pipelines (gate order, skips, rollback)
 ├── ledger-lock.test.ts     # NEW: T-LED-05
 ├── infra.test.ts           # NEW: T-IAC-01 (skipped without BICEP_PATH)
 ├── agent.test.ts           # MOD: T-AGT-KEY covers the hosted entry point

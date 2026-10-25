@@ -111,7 +111,8 @@ The lock is not a ledger entry and never touches the hash chain.
 
 | Field | Notes |
 |---|---|
-| `commit` | the Git SHA. Every image tag equals it (FR-023). |
+| `unit` | `infra` (the platform and the sellers), `l1-agent`, `l2-control` or `l3-verifier`: one pipeline each (contracts/deploy-pipeline.md) |
+| `commit` | the Git SHA. The unit's image tag equals it (FR-023). Other units may run other commits |
 | `revisions` | the new revision name per app; the agent's carries a label until promoted |
 | `regression` | job exit code, the six outcomes, CONFIRMED count, chain check, secret scan result |
-| `result` | `promoted` or `failed`. When failed, the agent stays on its previous revision and L2/L3 are redeployed at the previous SHA |
+| `result` | `promoted` (the image tagged `last-good`), `failed`, or `unverified` for an L2 or L3 first deployment made before L1 exists. When failed, the agent stays on its previous revision, and the unit is redeployed at its `last-good` |

@@ -31,6 +31,24 @@ deployments. The rules below are what T-IAC-01 asserts on the compiled ARM JSON.
 | `ca-seller` | cp | `seller`: `node dist/src/counterparty/seller.js` | external, target 4021 | min 0, max 1 | `id-seller` (None) | HTTP `/api/catalog` |
 | `ca-seller-alias` | cp | same image and env as `ca-seller` | external | min 0, max 1 | `id-seller` (None) | same |
 
+## Templates and pipelines
+
+The platform and each unit have their own template, deployed by their own pipeline
+([deploy-pipeline](deploy-pipeline.md)):
+
+| Template | Deploys | Pipeline |
+|---|---|---|
+| `infra/main.bicep` | network, logs, identities, registry, vaults, storage, Foundry, `cae-x402`, `cae-x402-cp` | `deploy-infra.yml` |
+| `infra/seller.bicep` | `ca-seller`, `ca-seller-alias` | `deploy-infra.yml` |
+| `infra/l1-agent.bicep` | `ca-l1-agent`, `job-regression` | `deploy-l1.yml` |
+| `infra/l2-control.bicep` | `ca-l2-control`, `job-operator` | `deploy-l2.yml` |
+| `infra/l3-verifier.bicep` | `ca-l3-verifier` | `deploy-l3.yml` |
+
+Each unit template deploys two modules:
+- `modules/platform.bicep` finds the platform's registry, environments and Foundry by name, plus the
+  unit's own identities and vaults. It also provides the pinned nginx image for the sidecars.
+- The unit's own apps: `modules/l1-apps.bicep`, `l2-apps.bicep`, `l3-apps.bicep` or `sellers.bicep`.
+
 Each unit runs from its own layer's image, tagged with the commit SHA (research R14):
 - `x402-l1-agent`: `ca-l1-agent` and `job-regression`;
 - `x402-l2-control`: `ca-l2-control` and `job-operator`;
@@ -118,9 +136,16 @@ both copies, then restarts both units.
 10. Every Key Vault's firewall default is `Deny`, and its VNet rule names only its unit's subnet.
 11. `authAudience` is a required parameter of exactly 36 characters (the API app's client ID, with no
     `api://` default), and the agent's `AUTH_AUDIENCE` comes from it.
-12. Each app and job runs from its own unit's image, `x402-<image>:<imageTag>`, as listed under "Apps
-    and jobs". That image contains the entry point its command runs (`IMAGES` in
-    `scripts/image-closure.ts`).
+12. Each app and job runs from its own unit's image, `x402-<image>:<imageTag>` in the platform's
+    registry, as listed under "Apps and jobs". That image contains the entry point its command runs
+    (`IMAGES` in `scripts/image-closure.ts`). The L2 and L3 sidecars run the platform module's
+    digest-pinned nginx.
+13. A unit template deploys only its `platform-<unit>` lookup and its own apps. It looks up only its
+    own identities and vaults (L1: `id-l1` and `l1`; L2: `id-l2`, `id-op`, `l2` and `op`; L3: `id-l3`
+    and `l3`; the seller: `id-seller` and `seller`), and it uses the platform's `suffix`.
+14. The model is keyless. The Foundry account has `disableLocalAuth: true`, and no container has an
+    `ANTHROPIC_API_KEY` env or an Anthropic secret. The agent runs with `MODEL_PROVIDER=foundry`,
+    signs in as `id-l1` (`AZURE_CLIENT_ID`), and reaches the platform's Foundry endpoint.
 
 **Must fail**: mutated copies of the template, each must trip its check:
 - an extra role assignment of `id-l1` on `kv-x402-l2` (rule 1);
@@ -129,5 +154,8 @@ both copies, then restarts both units.
 - `ALLOWED_HOSTS` pointing at `ca-seller-alias` (rule 9);
 - a vault firewall that allows by default (rule 10);
 - an `api://x402-l1-agent` default for `authAudience` (rule 11);
-- `ca-l2-control` on the L1 image, and `job-operator` running a command the L2 image doesn't
-  contain (rule 12).
+- L2's apps on the L1 image, and `job-operator` running a command the L2 image doesn't contain
+  (rule 12);
+- the L1 template looking up the l2 vault, and a unit template deploying more than its own apps
+  (rule 13);
+- a Foundry account that accepts API keys, and an Anthropic key on the agent (rule 14).

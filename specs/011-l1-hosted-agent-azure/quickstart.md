@@ -15,7 +15,7 @@ rather than repeating them:
 npm install
 npm run typecheck
 npx vitest run test/hosted-agent.test.ts test/hosted-access.test.ts test/hosted-sessions.test.ts test/hosted-run.test.ts   # T-AGT-02..05
-npx vitest run test/deploy-workflow.test.ts   # T-E2E-AZ static gate-order checks on the workflow
+npx vitest run test/deploy-workflow.test.ts   # T-E2E-AZ static checks on the four deploy pipelines
 npx vitest run test/images.test.ts            # T-IMG-01: each image holds only its own layer's code and packages
 npx vitest run test/agent.test.ts -t "T-AGT-KEY"   # both L1 entry points refuse the payer key
 npx vitest run test/ledger-lock.test.ts       # T-LED-05, including the must-fail two-writer case
@@ -34,7 +34,7 @@ npm run check                                 # typecheck + all tests + demo:loc
 
 ```bash
 az bicep install && export BICEP_PATH="$HOME/.azure/bin/bicep"   # Bicep CLI 0.47.16
-npx vitest run test/infra.test.ts             # T-IAC-01: rules 1–12 on the compiled template, plus 8 must-fail mutants
+npx vitest run test/infra.test.ts             # T-IAC-01: rules 1–14 on the five compiled templates, plus 12 must-fail mutants
 # One image per layer and the seller's (research R14). Each build fails if its closure reaches another layer.
 docker build -f docker/l1-agent.Dockerfile -t x402-l1-agent:dev .
 docker build -f docker/l2-control.Dockerfile -t x402-l2-control:dev .
@@ -95,26 +95,53 @@ for Entra ID.
 - the `Microsoft.App` and `Microsoft.CognitiveServices` providers registered;
 - a payer funded with test USDC (faucet.circle.com);
 - a production CDP key for the seller;
-- the deploy app registration with an OIDC federated credential for this repository.
+- the deploy app registration with an OIDC federated credential for this repository, for the
+  `dev` environment;
+- the repository secrets the workflows read, all identifiers or public addresses: set them with
+  `gh secret set <NAME>` (step 0 adds `AGENT_API_CLIENT_ID`):
+
+  ```bash
+  gh secret set AZURE_CLIENT_ID          # the deploy app's client ID
+  gh secret set AZURE_TENANT_ID
+  gh secret set AZURE_SUBSCRIPTION_ID
+  gh secret set SELLER_PAY_TO            # the seller's public payTo address
+  gh secret set PAYER_ADDRESS            # the payer's public address (the balance check)
+  ```
+
+  Never store a credential as a GitHub secret: the payer key, the CDP key and the tokens go only
+  into the Key Vaults (step 3).
 
 0. **Register the API.** Run `infra/entra-app.sh --deploy-sp <deploy app id> --assign-user <you@tenant>`.
    It creates the API registration, `Agent.Run` and the delegated scope `user_impersonation` (the
    Azure CLI is pre-authorized for it), and assigns the role to the deploy service principal for the
    smoke check and to you. That grants the pipeline and you spending through the agent, within the
-   mandate. It prints `AUTH_AUDIENCE`, the app's client ID: store it as the repository variable
-   `AGENT_API_CLIENT_ID`. The deployment doesn't compile without it.
-1. **Check the model.** In the Foundry portal for `eastus2`, confirm `claude-sonnet-5-5` offers
+   mandate. It prints `AUTH_AUDIENCE`, the app's client ID: store it as the repository secret
+   `AGENT_API_CLIENT_ID` (`gh secret set AGENT_API_CLIENT_ID`). The L1 deployment doesn't compile
+   without it.
+1. **Create the platform.** Run the workflow `deploy-infra` with `environment=dev` and
+   `platform-only: true`. It creates the network, identities, registry, the five vaults, storage,
+   Foundry and both environments, and nothing else.
+2. **Check the model.** In the Foundry portal for `eastus2`, confirm `claude-sonnet-5-5` offers
    Global Standard, then create the deployment named exactly `claude-sonnet-5-5`. Record what the
    portal shows (research R2: Anthropic and Learn disagree on deployment types).
-2. **Seed the vaults.** Add a temporary IP rule for your address to each vault
+3. **Seed the vaults.** Add a temporary IP rule for your address to each vault
    (`az keyvault network-rule add --ip-address <you>/32`). Put the secrets in, following
    [cloud-topology](contracts/cloud-topology.md), with `az keyvault secret set` from a trusted
    shell, then remove the rule. Secrets must never pass through GitHub.
-3. **Time it.** Record the minutes from step 0 to a green deployment (SC-008: under 60), and later
-   the minutes per redeploy (under 15).
-4. **Deploy.** Run the workflow `deploy-azure` with `environment=dev`. Expected: every
-   [deploy-pipeline](contracts/deploy-pipeline.md) step is green, and the agent's traffic is on
-   the new revision.
+4. **Deploy the sellers.** Run `deploy-infra` again, without `platform-only`. Expected: both sellers
+   answer, and the run summary records the balance, regression and `ledger-verify` steps as
+   skipped, because no layer exists yet.
+5. **Deploy the layers, in this order.** The [deploy-pipeline](contracts/deploy-pipeline.md) steps
+   should all be green:
+   1. `deploy-l2` with `first-deployment: true`; `ledger-verify` passes.
+   2. `deploy-l3` with `first-deployment: true`.
+   3. `deploy-l1`, with every gate, including the regression and the smoke check. The agent's
+      traffic ends on its new revision.
+6. **Record a last-good for L2 and L3.** Run `deploy-l2` and `deploy-l3` once more without
+   `first-deployment`. Each passes every gate and tags its image `last-good`. Until then, a failed
+   L2 or L3 run has nothing to roll back to.
+7. **Time it.** Record the minutes from step 0 to the green `deploy-l1` run (SC-008: under 60), and
+   later the minutes per layer redeploy (under 15).
 
 Then check the platform facts the research could not confirm:
 
@@ -124,7 +151,7 @@ Then check the platform facts the research could not confirm:
 | Lifecycle `None` blocks tokens inside L2 | `az containerapp exec -n ca-l2-control --container proxy -- sh -c 'wget -qO- "$IDENTITY_ENDPOINT?resource=https://vault.azure.net&api-version=2019-08-01" -H "X-IDENTITY-HEADER: $IDENTITY_HEADER"'` | fails: no endpoint or an error. Key Vault references still resolve, because L2 started |
 | Internal http calls aren't redirected | regression step 6 passes over `http://ca-l2-control.internal…` | no 301 to https |
 | Key Vault references resolve through the VNet rule (firewall default Deny) | all apps start and `ledger-verify` passes | no `secret reference` errors in the revision status |
-| Exclusive create on the NFS share | the L2 log shows `ledger locked … waiting` during the revision overlap, then a clean start | one writer; the chain verifies (step 7) |
+| Exclusive create on the NFS share | during a `deploy-l2` run (step 6), the L2 log shows `ledger locked … waiting` in the revision overlap, then a clean start | one writer; the chain verifies |
 | L2/L3 are private | from your machine: `curl -m 5 https://ca-l2-control.<env-domain>/v1/escalations` | 404 from the environment proxy, or no route; never 401 from L2 |
 | A person can get a token and run the agent | "Calling the agent as a person" below | 200. A consent error (AADSTS65001) means the Azure CLI isn't pre-authorized; 401 means `AUTH_AUDIENCE` isn't the client ID |
 

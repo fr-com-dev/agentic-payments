@@ -1,7 +1,8 @@
 // T-IAC-01 Azure identity, secret and exposure rules (SPEC.md §3.1 Azure profile; specs/011 contracts/
-// cloud-topology.md "T-IAC-01 assertions"). Compiles infra/main.bicep with the Bicep CLI and asserts on the
-// ARM JSON that would actually be deployed. Needs the Bicep CLI: set BICEP_PATH (the deploy workflow always
-// does); without it this suite is skipped. Each rule has a must-fail mutant.
+// cloud-topology.md "T-IAC-01 assertions"). Compiles the platform (infra/main.bicep) and each unit's template
+// (l1-agent, l2-control, l3-verifier, seller) with the Bicep CLI and asserts on the ARM JSON that would
+// actually be deployed, all five together. Needs the Bicep CLI: set BICEP_PATH (every deploy workflow does);
+// without it this suite is skipped. Each rule has a must-fail mutant.
 import { cpSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -30,9 +31,29 @@ const KV_SECRETS_USER = "4633458b-17de-408a-b874-0445c86b69e6";
 const ACR_PULL = "7f951dda-4ed3-4680-a7ca-43fe172d538d";
 const COGNITIVE_SERVICES_USER = "a97b65f3-24c7-4388-baec-2e87135dc908";
 const EXTERNAL_OK = new Set(["ca-l1-agent", "ca-seller", "ca-seller-alias"]);
-/** Unit key → its image (scripts/image-closure.ts), and the unit each app and job belongs to (rule 12). */
-const UNIT_IMAGE: Record<string, ImageName> = { l1: "l1-agent", l2: "l2-control", l3: "l3-verifier", seller: "seller" };
-const APP_UNIT: Record<string, string> = { "ca-l1-agent": "l1", "job-regression": "l1", "ca-l2-control": "l2", "job-operator": "l2", "ca-l3-verifier": "l3", "ca-seller": "seller", "ca-seller-alias": "seller" };
+/** The deployed templates: the platform, and one per unit (each unit's image has the same name). */
+export const TEMPLATES = ["main", "l1-agent", "l2-control", "l3-verifier", "seller"] as const;
+export type Templates = Record<(typeof TEMPLATES)[number], Json>;
+/**
+ * Each unit template's two modules and what it may look up on the platform (rules 12 and 13). Its apps run
+ * from its own image (scripts/image-closure.ts): the template's name.
+ */
+const UNITS: Record<Exclude<(typeof TEMPLATES)[number], "main">, { platform: string; apps: string; identities: string[]; vaults: string[] }> = {
+  "l1-agent": { platform: "platform-l1", apps: "l1-apps", identities: ["id-l1"], vaults: ["l1"] },
+  "l2-control": { platform: "platform-l2", apps: "l2-apps", identities: ["id-l2", "id-op"], vaults: ["l2", "op"] },
+  "l3-verifier": { platform: "platform-l3", apps: "l3-apps", identities: ["id-l3"], vaults: ["l3"] },
+  seller: { platform: "platform-seller", apps: "sellers", identities: ["id-seller"], vaults: ["seller"] },
+};
+/** The unit (template) each app and job belongs to (rule 12). */
+const APP_UNIT: Record<string, ImageName> = {
+  "ca-l1-agent": "l1-agent",
+  "job-regression": "l1-agent",
+  "ca-l2-control": "l2-control",
+  "job-operator": "l2-control",
+  "ca-l3-verifier": "l3-verifier",
+  "ca-seller": "seller",
+  "ca-seller-alias": "seller",
+};
 
 /** `network`, `vault`, `apps`… from a nested deployment's (possibly expression) name. */
 function moduleName(name: string): string {
@@ -68,11 +89,11 @@ const secretsOf = (r: Res) => (configOf(r).secrets ?? []) as { name: string; key
 const deploymentParam = (all: Res[], module: string, param: string) =>
   JSON.stringify(((all.find((r) => r.type === "Microsoft.Resources/deployments" && moduleName(r.name) === module)?.properties.parameters ?? {}) as Json)[param] ?? null);
 
-/** Rules 1–12 of contracts/cloud-topology.md. Returns one message per violation, prefixed `rule N:`. */
-export function violations(arm: Json, infraFiles: Record<string, string>): string[] {
+/** Rules 1–14 of contracts/cloud-topology.md. Returns one message per violation, prefixed `rule N:`. */
+export function violations(arms: Templates, infraFiles: Record<string, string>): string[] {
   const v: string[] = [];
-  const all = flatten(arm);
-  const units = ((arm.variables as Json)?.units ?? []) as { key: string; identity: string; subnet: string }[];
+  const all = TEMPLATES.flatMap((name) => flatten(arms[name], name));
+  const units = ((arms.main.variables as Json)?.units ?? []) as { key: string; identity: string; subnet: string }[];
 
   // Rule 1: role assignments only where the matrix puts them.
   for (const u of units) if (u.identity !== `id-${u.key}`) v.push(`rule 1: unit ${u.key} uses identity ${u.identity}`);
@@ -144,21 +165,15 @@ export function violations(arm: Json, infraFiles: Record<string, string>): strin
     if (settings.length === 0 || settings.some((s) => s.lifecycle !== want)) v.push(`rule 6: ${a.name} identity lifecycle must be ${want}`);
   }
 
-  // Rule 7: sellers live in the counterparty environment and read only the seller vault.
+  // Rule 7: sellers live in the counterparty environment and read only the seller vault (looked up by
+  // platform-seller, which rule 13 limits to the seller vault).
   for (const s of all.filter((r) => r.module === "sellers" && r.type === "Microsoft.App/containerApps")) {
     if (s.properties.environmentId !== "[parameters('cpEnvId')]") v.push(`rule 7: ${s.name} is not in cae-x402-cp`);
   }
-  if (!deploymentParam(all, "sellers", "cpEnvId").includes("cpId")) v.push("rule 7: sellers are not given the counterparty environment");
-  const sellerVault = deploymentParam(all, "sellers", "vaultUri");
-  const sellerIdx = units.findIndex((u) => u.key === "seller");
-  if (!sellerVault.includes(`variables('units')[${sellerIdx}]`)) v.push("rule 7: sellers do not read the seller vault");
-  const appVaults = deploymentParam(all, "apps", "vaultUri");
-  for (const key of ["l1", "l2", "l3", "op"]) {
-    const idx = units.findIndex((u) => u.key === key);
-    if (!new RegExp(`"${key}":"\\[reference\\(resourceId\\('Microsoft\\.Resources/deployments', format\\('vault-\\{0\\}', variables\\('units'\\)\\[${idx}\\]`).test(appVaults)) {
-      v.push(`rule 7: apps vault ${key} is not unit ${key}'s vault`);
-    }
-  }
+  const fromSellerPlatform = (param: string, output: string) =>
+    deploymentParam(all, "sellers", param).includes("'platform-seller'") && deploymentParam(all, "sellers", param).includes(`.outputs.${output}.value`);
+  if (!fromSellerPlatform("cpEnvId", "cpId")) v.push("rule 7: sellers are not given the counterparty environment");
+  if (!fromSellerPlatform("vaultUri", "vaults") || !deploymentParam(all, "sellers", "vaultUri").endsWith(".seller]\"}")) v.push("rule 7: sellers do not read the seller vault");
 
   // Rule 8: no secret value anywhere in the infrastructure sources; secret-named env never takes a literal.
   const SHAPES: [string, RegExp][] = [
@@ -207,34 +222,71 @@ export function violations(arm: Json, infraFiles: Record<string, string>): strin
 
   // Rule 11: the agent's AUTH_AUDIENCE is the API app's client ID, a required 36-character parameter. Entra
   // v2.0 tokens carry it as `aud`; a default such as the api:// URI would refuse every real token.
-  const audience = ((arm.parameters as Json)?.authAudience ?? {}) as Json;
+  const audience = ((arms["l1-agent"].parameters as Json)?.authAudience ?? {}) as Json;
   if ("defaultValue" in audience || audience.minLength !== 36 || audience.maxLength !== 36) {
     v.push("rule 11: authAudience must be a required 36-character parameter (the API app's client ID)");
   }
   const agentEnv = apps(all).filter((r) => r.name === "ca-l1-agent").flatMap((r) => containersOf(r).flatMap((c) => c.env ?? []));
   const audienceEnv = agentEnv.find((e) => e.name === "AUTH_AUDIENCE");
-  if (audienceEnv?.value !== "[parameters('authAudience')]" || deploymentParam(all, "apps", "authAudience") !== JSON.stringify({ value: "[parameters('authAudience')]" })) {
+  if (audienceEnv?.value !== "[parameters('authAudience')]" || deploymentParam(all, "l1-apps", "authAudience") !== JSON.stringify({ value: "[parameters('authAudience')]" })) {
     v.push("rule 11: the agent's AUTH_AUDIENCE must come from the authAudience parameter");
   }
 
-  // Rule 12: each app and job runs from its own unit's image (research R14), x402-<image>:<imageTag>, and that
-  // image contains the entry point its command runs. The proxy sidecars run the pinned nginx image.
-  const passed = (module: string, param: string) => (JSON.parse(deploymentParam(all, module, param)) as { value?: unknown } | null)?.value;
-  const selects = (expr: unknown, unit: string) =>
-    typeof expr === "string" && expr.endsWith(`.${unit}]`) && expr.includes(`'${unit}', format('{0}/x402-${UNIT_IMAGE[unit]}:{1}'`);
-  const appImages = (passed("apps", "images") ?? {}) as Record<string, unknown>;
-  for (const unit of ["l1", "l2", "l3"]) if (!selects(appImages[unit], unit)) v.push(`rule 12: apps image ${unit} is not x402-${UNIT_IMAGE[unit]}:<imageTag>`);
-  if (!selects(passed("sellers", "image"), "seller")) v.push("rule 12: the sellers' image is not x402-seller:<imageTag>");
-  for (const a of apps(all)) {
-    const name = namesOf(a).join("/");
-    for (const c of containersOf(a)) {
-      if (c.image === "[parameters('proxyImage')]") continue;
-      const unit = a.module === "sellers" && c.image === "[parameters('image')]" ? "seller" : /^\[parameters\('images'\)\.(l1|l2|l3)\]$/.exec(String(c.image))?.[1];
-      const entry = c.command?.[1]?.replace(/^dist\//, "").replace(/\.js$/, ".ts");
-      if (unit === undefined) v.push(`rule 12: ${name}/${c.name} runs no layer image`);
-      else if (namesOf(a).some((n) => APP_UNIT[n] !== unit)) v.push(`rule 12: ${name}/${c.name} runs the ${UNIT_IMAGE[unit]} image, not its own unit's`);
-      else if (entry === undefined || !IMAGES[UNIT_IMAGE[unit]].entries.includes(entry)) v.push(`rule 12: ${name}/${c.name} runs ${c.command?.[1]}, which the ${UNIT_IMAGE[unit]} image doesn't contain`);
+  // Rule 12: each app and job runs from its own unit's image, x402-<unit>:<imageTag> in the platform's registry,
+  // and that image contains the entry point its command runs. The proxy sidecars run the platform's pinned nginx.
+  for (const [unit, u] of Object.entries(UNITS) as [ImageName, (typeof UNITS)[keyof typeof UNITS]][]) {
+    const image = deploymentParam(all, u.apps, "image");
+    if (!image.includes(`/x402-${unit}:{1}'`) || !image.includes(`'${u.platform}'`) || !image.includes("parameters('imageTag')")) {
+      v.push(`rule 12: ${u.apps}'s image is not x402-${unit}:<imageTag> from the platform's registry`);
     }
+    for (const a of apps(all).filter((r) => r.module === u.apps)) {
+      const name = namesOf(a).join("/");
+      for (const c of containersOf(a)) {
+        const entry = c.command?.[1]?.replace(/^dist\//, "").replace(/\.js$/, ".ts");
+        if (c.image === "[parameters('proxyImage')]") continue;
+        if (c.image !== "[parameters('image')]") v.push(`rule 12: ${name}/${c.name} doesn't run its unit's image`);
+        else if (namesOf(a).some((n) => APP_UNIT[n] !== unit)) v.push(`rule 12: ${name}/${c.name} runs the ${unit} image, not its own unit's`);
+        else if (entry === undefined || !IMAGES[unit].entries.includes(entry)) v.push(`rule 12: ${name}/${c.name} runs ${c.command?.[1]}, which the ${unit} image doesn't contain`);
+      }
+    }
+  }
+  for (const u of [UNITS["l2-control"], UNITS["l3-verifier"]]) {
+    const lookup = all.find((r) => r.type === "Microsoft.Resources/deployments" && moduleName(r.name) === u.platform);
+    const pin = (((lookup?.properties.template as Json | undefined)?.outputs as Json | undefined)?.proxyImage as Json | undefined)?.value;
+    if (!deploymentParam(all, u.apps, "proxyImage").includes(`'${u.platform}'`) || !/@sha256:[0-9a-f]{64}$/.test(String(pin))) {
+      v.push(`rule 12: ${u.apps}'s proxy image is not the platform's pinned nginx`);
+    }
+  }
+
+  // Rule 13: a unit template deploys only its platform lookup and its own apps, looks up only its own
+  // identities and vaults, and uses the platform's suffix, so it finds the platform's resources by name.
+  for (const [unit, u] of Object.entries(UNITS)) {
+    const top = all.filter((r) => r.module === unit).map((r) => `${r.type} ${r.name}`).sort();
+    if (JSON.stringify(top) !== JSON.stringify([`Microsoft.Resources/deployments ${u.apps}`, `Microsoft.Resources/deployments ${u.platform}`].sort())) {
+      v.push(`rule 13: ${unit} deploys ${top.join(", ")}, not only ${u.platform} and ${u.apps}`);
+    }
+    const asked = (param: string) => (JSON.parse(deploymentParam(all, u.platform, param)) as { value?: string[] } | null)?.value ?? [];
+    if (JSON.stringify(asked("identityNames")) !== JSON.stringify(u.identities)) v.push(`rule 13: ${unit} looks up identities ${asked("identityNames").join(",")}, not its own (${u.identities.join(",")})`);
+    if (JSON.stringify(asked("vaultKeys")) !== JSON.stringify(u.vaults)) v.push(`rule 13: ${unit} looks up vaults ${asked("vaultKeys").join(",")}, not its own (${u.vaults.join(",")})`);
+    const suffix = ((arms[unit as keyof Templates].parameters as Json)?.suffix as Json | undefined)?.defaultValue;
+    if (suffix === undefined || suffix !== ((arms.main.parameters as Json)?.suffix as Json | undefined)?.defaultValue) v.push(`rule 13: ${unit}'s suffix is not the platform's`);
+  }
+
+  // Rule 14: the model is keyless. Foundry refuses API keys, no container gets an Anthropic key, and the agent
+  // reaches Foundry with its own managed identity (id-l1) at the platform's endpoint.
+  const ais = all.find((r) => r.module === "foundry" && r.type === "Microsoft.CognitiveServices/accounts");
+  if (ais?.properties.disableLocalAuth !== true) v.push("rule 14: Foundry accepts API keys (disableLocalAuth must be true)");
+  for (const a of apps(all)) {
+    for (const c of containersOf(a)) if ((c.env ?? []).some((e) => e.name === "ANTHROPIC_API_KEY")) v.push(`rule 14: ANTHROPIC_API_KEY in ${namesOf(a).join("/")}/${c.name}`);
+    for (const s of secretsOf(a)) if (/anthropic/i.test(s.name)) v.push(`rule 14: ${namesOf(a).join("/")} has an Anthropic secret (${s.name})`);
+  }
+  const agentApp = all.find((r) => r.name === "ca-l1-agent");
+  const agentVars = Object.fromEntries((agentApp ? (containersOf(agentApp).find((c) => c.name === "agent")?.env ?? []) : []).map((e) => [e.name, e.value]));
+  if (agentVars.MODEL_PROVIDER !== "foundry") v.push("rule 14: the agent's MODEL_PROVIDER must be foundry");
+  if (agentVars.AZURE_CLIENT_ID !== "[parameters('identities')['id-l1'].clientId]") v.push("rule 14: the agent must sign in to Foundry as id-l1");
+  const endpoint = deploymentParam(all, "l1-apps", "foundryBaseUrl");
+  if (agentVars.FOUNDRY_BASE_URL !== "[parameters('foundryBaseUrl')]" || !endpoint.includes("'platform-l1'") || !endpoint.includes(".outputs.anthropicBaseUrl.value")) {
+    v.push("rule 14: the agent's FOUNDRY_BASE_URL is not the platform's Foundry endpoint");
   }
 
   return v;
@@ -264,12 +316,17 @@ describe.skipIf(!BICEP_PATH)("T-IAC-01 Azure identity, secret and exposure rules
     for (const d of tmp) rmSync(d, { recursive: true, force: true });
   });
 
-  async function compile(infraDir: string): Promise<Json> {
-    const r = await bicep.compile({ path: resolve(infraDir, "main.bicep") });
-    const errors = r.diagnostics.filter((d) => d.level === "Error");
-    expect(errors.map((d) => `${d.code} ${d.message}`)).toEqual([]);
-    expect(r.success).toBe(true);
-    return JSON.parse(r.contents!) as Json;
+  /** The platform and the four unit templates in `infraDir`, compiled. */
+  async function compile(infraDir: string): Promise<Templates> {
+    const out: Partial<Templates> = {};
+    for (const name of TEMPLATES) {
+      const r = await bicep.compile({ path: resolve(infraDir, `${name}.bicep`) });
+      const errors = r.diagnostics.filter((d) => d.level === "Error");
+      expect(errors.map((d) => `${name}: ${d.code} ${d.message}`)).toEqual([]);
+      expect(r.success).toBe(true);
+      out[name] = JSON.parse(r.contents!) as Json;
+    }
+    return out as Templates;
   }
 
   /** A copy of infra/ with one edit, compiled. */
@@ -284,7 +341,7 @@ describe.skipIf(!BICEP_PATH)("T-IAC-01 Azure identity, secret and exposure rules
     return violations(await compile(dir), infraSources(dir));
   }
 
-  it("T-IAC-01 the real template passes rules 1–12", async () => {
+  it("T-IAC-01 the real templates pass rules 1–14", async () => {
     expect(violations(await compile("infra"), infraSources("infra"))).toEqual([]);
   }, 60_000);
 
@@ -299,22 +356,22 @@ resource extraRead 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   }
 }
 `;
-    const v = await mutant("main.bicep", "var images = ", `${extra}\nvar images = `);
+    const v = await mutant("main.bicep", "module envs 'modules/environments.bicep' = {", `${extra}\nmodule envs 'modules/environments.bicep' = {`);
     expect(v.some((m) => m.startsWith("rule 1:"))).toBe(true);
   }, 60_000);
 
   it("T-IAC-01 must-fail rule 2: PAYER_PRIVATE_KEY on the agent is reported", async () => {
-    const v = await mutant("modules/apps.bicep", "            { name: 'CONTROL_TOKEN', secretRef: 'control-token' }\n            { name: 'VERIFIER_TOKEN'", "            { name: 'PAYER_PRIVATE_KEY', secretRef: 'control-token' }\n            { name: 'CONTROL_TOKEN', secretRef: 'control-token' }\n            { name: 'VERIFIER_TOKEN'");
+    const v = await mutant("modules/l1-apps.bicep", "            { name: 'CONTROL_TOKEN', secretRef: 'control-token' }\n            { name: 'VERIFIER_TOKEN'", "            { name: 'PAYER_PRIVATE_KEY', secretRef: 'control-token' }\n            { name: 'CONTROL_TOKEN', secretRef: 'control-token' }\n            { name: 'VERIFIER_TOKEN'");
     expect(v).toContain("rule 2: PAYER_PRIVATE_KEY in ca-l1-agent/agent");
   }, 60_000);
 
   it("T-IAC-01 must-fail rule 3: external ingress on ca-l2-control is reported", async () => {
-    const v = await mutant("modules/apps.bicep", "ingress: { external: false, targetPort: 8080", "ingress: { external: true, targetPort: 8080");
+    const v = await mutant("modules/l2-apps.bicep", "ingress: { external: false, targetPort: 8080", "ingress: { external: true, targetPort: 8080");
     expect(v).toContain("rule 3: ca-l2-control has external ingress");
   }, 60_000);
 
   it("T-IAC-01 must-fail rule 9: ALLOWED_HOSTS pointing at the alias seller is reported", async () => {
-    const v = await mutant("modules/apps.bicep", "value: 'ca-seller.${cpDomain}'", "value: 'ca-seller-alias.${cpDomain}'");
+    const v = await mutant("modules/l2-apps.bicep", "value: 'ca-seller.${cpDomain}'", "value: 'ca-seller-alias.${cpDomain}'");
     expect(v).toContain("rule 9: ALLOWED_HOSTS must be the ca-seller FQDN, not the alias");
   }, 60_000);
 
@@ -324,17 +381,43 @@ resource extraRead 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   }, 60_000);
 
   it("T-IAC-01 must-fail rule 11: an api:// default for the agent's audience is reported", async () => {
-    const v = await mutant("main.bicep", "@minLength(36)\n@maxLength(36)\nparam authAudience string\n", "param authAudience string = 'api://x402-l1-agent'\n");
+    const v = await mutant("l1-agent.bicep", "@minLength(36)\n@maxLength(36)\nparam authAudience string\n", "param authAudience string = 'api://x402-l1-agent'\n");
     expect(v).toContain("rule 11: authAudience must be a required 36-character parameter (the API app's client ID)");
   }, 60_000);
 
-  it("T-IAC-01 must-fail rule 12: L2 running from the L1 image is reported", async () => {
-    const v = await mutant("modules/apps.bicep", "image: images.l2\n          command: ['node', 'dist/src/layer2-control/service.js']", "image: images.l1\n          command: ['node', 'dist/src/layer2-control/service.js']");
-    expect(v).toContain("rule 12: ca-l2-control/l2 runs the l1-agent image, not its own unit's");
+  it("T-IAC-01 must-fail rule 12: L2's apps on the L1 image are reported", async () => {
+    const v = await mutant("l2-control.bicep", "/x402-l2-control:${imageTag}", "/x402-l1-agent:${imageTag}");
+    expect(v).toContain("rule 12: l2-apps's image is not x402-l2-control:<imageTag> from the platform's registry");
   }, 60_000);
 
   it("T-IAC-01 must-fail rule 12: an operator command the L2 image doesn't contain is reported", async () => {
-    const v = await mutant("modules/apps.bicep", "command: ['node', 'dist/scripts/escalations.js']", "command: ['node', 'dist/src/main.js']");
+    const v = await mutant("modules/l2-apps.bicep", "command: ['node', 'dist/scripts/escalations.js']", "command: ['node', 'dist/src/main.js']");
     expect(v).toContain("rule 12: job-operator/operator runs dist/src/main.js, which the l2-control image doesn't contain");
+  }, 60_000);
+
+  it("T-IAC-01 must-fail rule 13: the L1 template looking up the l2 vault is reported", async () => {
+    const v = await mutant("l1-agent.bicep", "vaultKeys: ['l1']", "vaultKeys: ['l1', 'l2']");
+    expect(v).toContain("rule 13: l1-agent looks up vaults l1,l2, not its own (l1)");
+  }, 60_000);
+
+  it("T-IAC-01 must-fail rule 13: a unit template deploying more than its own apps is reported", async () => {
+    const extra = "\nresource extra 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {\n  name: 'id-extra'\n  location: location\n}\n";
+    const v = await mutant("l3-verifier.bicep", "\nmodule apps 'modules/l3-apps.bicep' = {", `${extra}\nmodule apps 'modules/l3-apps.bicep' = {`);
+    expect(v.some((m) => m.startsWith("rule 13: l3-verifier deploys"))).toBe(true);
+  }, 60_000);
+
+  it("T-IAC-01 must-fail rule 14: a Foundry account that accepts API keys is reported", async () => {
+    const v = await mutant("modules/foundry.bicep", "disableLocalAuth: true", "disableLocalAuth: false");
+    expect(v).toContain("rule 14: Foundry accepts API keys (disableLocalAuth must be true)");
+  }, 60_000);
+
+  it("T-IAC-01 must-fail rule 14: an Anthropic key on the agent is reported", async () => {
+    const v = await mutant(
+      "modules/l1-apps.bicep",
+      "            { name: 'MODEL_PROVIDER', value: 'foundry' }\n",
+      "            { name: 'MODEL_PROVIDER', value: 'anthropic' }\n            { name: 'ANTHROPIC_API_KEY', secretRef: 'control-token' }\n",
+    );
+    expect(v).toContain("rule 14: ANTHROPIC_API_KEY in ca-l1-agent/agent");
+    expect(v).toContain("rule 14: the agent's MODEL_PROVIDER must be foundry");
   }, 60_000);
 });

@@ -1,5 +1,6 @@
 // The demo seller, an external party, in its own environment cae-x402-cp (FR-022). It can't reach the
-// internal apps of cae-x402, and it holds only its own CDP credential (A8), from its own vault.
+// internal apps of cae-x402, and it holds only its own CDP credential (A8), from its own vault. Deployed by
+// seller.bicep (deploy-infra.yml).
 param location string
 param cpEnvId string
 param image string

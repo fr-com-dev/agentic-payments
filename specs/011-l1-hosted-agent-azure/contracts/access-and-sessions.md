@@ -28,7 +28,7 @@ It runs on every request except `GET /healthz` and `GET /readyz`, before the bod
     (`04b07795-8ddb-461a-bbee-02f9e1bf7b46`) pre-authorized for it;
   - `--deploy-sp <app id>` and `--assign-user <user>` assign `Agent.Run`, once per principal.
   - It prints `AUTH_TENANT_ID` and `AUTH_AUDIENCE`, the app's client ID. The pipeline reads the
-    latter from the repository variable `AGENT_API_CLIENT_ID`.
+    latter from the repository secret `AGENT_API_CLIENT_ID`.
 - **Getting a token** (both carry the client ID as `aud` and `Agent.Run` in `roles`):
   - a person assigned `Agent.Run`:
     `az account get-access-token --scope api://x402-l1-agent/user_impersonation --query accessToken -o tsv`;

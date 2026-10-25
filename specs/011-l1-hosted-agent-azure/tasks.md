@@ -496,11 +496,14 @@ plan.md map onto these phases: A → Phases 2–5 and 7, B and C → Phase 6, D 
 
   T052 must pass.
 - [ ] T060 [US6] Manual first deployment (needs your Azure subscription, a payer funded with test USDC and the seller's CDP key). Follow quickstart.md §4:
-  - step 0: run infra/entra-app.sh with `--deploy-sp` and `--assign-user`, and store the printed `AUTH_AUDIENCE` as the repository variable `AGENT_API_CLIENT_ID`;
-  - step 1: check the Foundry model and deployment type;
-  - step 2: seed the vaults by hand, with a temporary IP rule removed afterwards. Never script `PAYER_PRIVATE_KEY`; hard rule 2;
-  - step 3: record the timings (SC-008: setup under 60 min, redeploy under 15 min);
-  - step 4: run the workflow.
+  - step 0: run infra/entra-app.sh with `--deploy-sp` and `--assign-user`, and store the printed `AUTH_AUDIENCE` as the repository secret `AGENT_API_CLIENT_ID`, with the other five secrets from the quickstart's prerequisites;
+  - step 1: run `deploy-infra` with `platform-only: true`;
+  - step 2: check the Foundry model and deployment type;
+  - step 3: seed the vaults by hand, with a temporary IP rule removed afterwards. Never script `PAYER_PRIVATE_KEY`; hard rule 2;
+  - step 4: run `deploy-infra` again, for the sellers;
+  - step 5: run `deploy-l2` and `deploy-l3` with `first-deployment: true`, then `deploy-l1`;
+  - step 6: run `deploy-l2` and `deploy-l3` once more, to record their `last-good`;
+  - step 7: record the timings (SC-008: setup under 60 min, a layer redeploy under 15 min).
 
   Then run the seven "platform facts" checks. Record every result under "Implementation Notes", including whether `STRIP_ANTHROPIC_BETA` had to be enabled.
 
@@ -579,6 +582,23 @@ plan.md map onto these phases: A → Phases 2–5 and 7, B and C → Phase 6, D 
 - [X] T076 infra: main.bicep `var images` (`x402-l1-agent`, `x402-l2-control`, `x402-l3-verifier`, `x402-seller`, each tagged `imageTag`). apps.bicep takes `images` and runs the agent and job-regression from L1's, L2 and job-operator from L2's, and L3 from L3's; the sellers get the seller image. T-IAC-01 rule 12, with two must-fail mutants, in test/infra.test.ts.
 - [X] T077 .github/workflows/deploy-azure.yml: env `IMAGES`, and steps 3, 3b and 10 build, scan and promote (`last-good`) every image. test/deploy-workflow.test.ts checks `IMAGES` against `IMAGES` in the closure script, that the three steps cover it, and that `job-operator` is started only with an L2 entry point, with two must-fail cases.
 - [X] T078 test/images.test.ts (T-IMG-01) with three must-fail cases. Update research.md R14, contracts/cloud-topology.md (images, rule 12, the full mutant list), contracts/deploy-pipeline.md (steps 3, 3b, 10, rollback), quickstart.md §1, §2, §3 and §5, plan.md, SPEC.md (§3.1, §5, §6, §12, §13), README.md and CLAUDE.md.
+- [X] T079 Split the Bicep into the platform and one template per unit (research R16, revised 2026-10-25). infra/main.bicep keeps only the platform. modules/platform.bicep looks up the registry, both environments, Foundry and the unit's own identities and vaults by name, and provides the pinned nginx image. modules/apps.bicep becomes l1-apps.bicep, l2-apps.bicep and l3-apps.bicep. New top-level templates l1-agent.bicep, l2-control.bicep, l3-verifier.bicep and seller.bicep, each with its params/dev-<unit>.bicepparam.
+- [X] T080 T-IAC-01 compiles all five templates and checks them together. Rules 7, 11 and 12 move to the unit templates. New rule 13: a unit template deploys only its lookup and its own apps, looks up only its own identities and vaults, and shares the platform's suffix. Ten must-fail mutants in total, two for rule 13.
+- [X] T081 Replace .github/workflows/deploy-azure.yml:
+  - deploy-infra.yml deploys the platform, then the seller's image and the sellers. It repeats the regression and `ledger-verify` once the layers exist, and offers `platform-only` for the very first run.
+  - deploy-layer.yml (reusable) holds one layer's steps 1–10 and its rollback.
+  - deploy-l1.yml, deploy-l2.yml and deploy-l3.yml call it, by hand or on `deploy-<layer>-*` tags, with `first-deployment` offered for L2 and L3 only.
+  - All four share the concurrency group `deploy-azure`.
+- [X] T082 test/deploy-workflow.test.ts covers the four pipelines:
+  - each one's order and rollback;
+  - steps skipped only by `first-deployment` (layers) or `platform-only` (infra);
+  - the callers' triggers, group and images;
+  - each image built by exactly one pipeline.
+
+  It has six must-fail cases.
+- [X] T083 Update contracts/deploy-pipeline.md (rewritten), contracts/cloud-topology.md (templates and pipelines, rule 13), research.md R16, quickstart.md §1, §2 and §4 (the new first-deployment order), spec.md FR-024 (amended for per-unit deployments) and the Deployment entity, data-model.md, plan.md, SPEC.md (§3.1, §6, §12), README.md and CLAUDE.md.
+- [X] T084 GitHub secrets instead of variables. The deploy workflows read `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `AGENT_API_CLIENT_ID`, `SELLER_PAY_TO` and `PAYER_ADDRESS` from `secrets.*`. deploy-layer.yml declares exactly those six, and the layer callers pass them with `secrets: inherit`. test/deploy-workflow.test.ts allows no other secret and no `vars.*`, requires an OIDC-only `azure/login`, and has a must-fail case for each. The application's credentials stay out of GitHub, in the Key Vaults. Update contracts/deploy-pipeline.md, contracts/access-and-sessions.md, research.md R16, quickstart.md §4 (the secrets as a prerequisite) and CLAUDE.md.
+- [X] T085 T-IAC-01 rule 14, the keyless model. The Foundry account has `disableLocalAuth: true`; no container has `ANTHROPIC_API_KEY` or an Anthropic secret; the agent runs with `MODEL_PROVIDER=foundry`, signs in as `id-l1`, and uses the platform's Foundry endpoint. Two must-fail mutants: keys enabled on Foundry, and an Anthropic key on the agent. Update contracts/cloud-topology.md, contracts/model-access.md, quickstart.md §2, SPEC.md (the T-IAC-01 row) and the foundry.bicep header.
 
 ---
 
@@ -750,4 +770,11 @@ Places where the work differs from the task text, and the validation results.
     - the in-image module check with `viem` deleted → `ERR_MODULE_NOT_FOUND`, exit 1;
     - rule 12's mutants and T-IMG-01's and T-E2E-AZ's must-fail cases.
   - The workflow now runs four Docker builds, each with its own `npm install`. That is slower than one, and the first live run (T060) measures it.
+- **T079–T083 (2026-10-25), one pipeline for the platform and one per layer**:
+  - All five templates compile with no diagnostics. Each parameter file builds against its template, and `dev-l1-agent.bicepparam` still fails with BCP333 without `AUTH_AUDIENCE`.
+  - T-IAC-01 passes 11 of 11 with `BICEP_PATH`; with rule 14 (T085), 13 of 13.
+  - Rule 7's rewritten seller-vault check isn't vacuous. With the sellers pointed at another vault, both rule 7 and rule 13 reported it.
+  - `actionlint` (with shellcheck) is clean on all five workflows.
+  - The vaults exist only after the first infra run, and the sellers can't start until their CDP secrets are in, hence `platform-only`. Before L1 exists, there is no regression or agent for an L2 or L3 run to check, hence `first-deployment`. Such a run is reported as unverified and records no `last-good`; FR-024 is amended for it.
+  - Not yet run live: the reusable workflow's OIDC sign-in, the cross-workflow concurrency group and the new first-deployment order, until T060.
 - **Open**: T060 needs an Azure subscription, a funded payer and the seller's CDP key, for the first deployment and the seven platform-fact checks.

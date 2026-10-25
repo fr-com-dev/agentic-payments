@@ -35,7 +35,7 @@ R2).
 |---|---|---|
 | Base URL | provider default (`https://api.anthropic.com/v1`) | `FOUNDRY_BASE_URL` (must end in `/anthropic/v1`) |
 | Auth | `apiKey: ANTHROPIC_API_KEY` → `x-api-key` | `authToken` placeholder, plus a custom `fetch` that sets `Authorization: Bearer <token>` per request. Token from `ManagedIdentityCredential(AZURE_CLIENT_ID)` for scope `https://ai.azure.com/.default` (cached by `@azure/identity`, refreshed before expiry). |
-| Azure role | — | `id-l1`: Cognitive Services User on the Foundry resource |
+| Azure role | — | `id-l1`: Cognitive Services User on the Foundry resource. The resource has `disableLocalAuth: true`, so it refuses API keys; no Foundry key exists anywhere (T-IAC-01 rule 14) |
 | Never sent | `temperature`, `top_k` (not supported by Sonnet 5.5 on Foundry; the agent sets neither) | same |
 
 The provider choice never changes at run time. A model error fails the run (`status: failed`),

@@ -465,27 +465,45 @@ anything depends on them.
 
 ## R16. Deployment pipeline (FR-023, FR-024)
 
-- **Decision**: A GitHub Actions workflow, `.github/workflows/deploy-azure.yml`, triggered
-  manually or on a tag. It signs in to Azure with OIDC (federated credential, no stored secret).
-  Steps:
-  1. typecheck and `npm test`;
-  2. T-IAC-01 with the Bicep CLI;
-  3. `az acr build`, with the image tagged by commit SHA;
-  4. `az deployment group what-if`, then `create` with that tag;
-  5. wait for L2's lock handover;
-  6. start `job-regression` and require exit 0;
-  7. the hosted smoke check and the Log Analytics secret scan;
-  8. shift `ca-l1-agent` traffic to the new revision.
+- **Decision** (revised 2026-10-25 at the owner's request: one pipeline for the platform and one per
+  layer; first decided as one workflow, `deploy-azure.yml`, for everything):
+  - **Four GitHub Actions workflows**, each run by hand or by its own tag, all signing in to Azure
+    with OIDC (a federated credential, no stored credential) and sharing one concurrency group.
+    They read six GitHub secrets, all identifiers or public addresses, so the logs mask them; the
+    application's credentials stay in the Key Vaults (contracts/deploy-pipeline.md). The workflows:
+    - **`deploy-infra.yml`** deploys the platform (`infra/main.bicep`). It then builds the seller's
+      image and deploys the sellers (`infra/seller.bicep`); the seller is the counterparty, test
+      infrastructure rather than a layer.
+    - **`deploy-l1.yml`, `deploy-l2.yml` and `deploy-l3.yml`** call the shared `deploy-layer.yml`,
+      which builds that layer's image and deploys that layer's template (`infra/<image>.bicep`).
+  - **Platform only in `main.bicep`.** Each unit template finds the platform's resources by name
+    through `modules/platform.bicep`, and asks for its own identities and vaults only (T-IAC-01
+    rule 13). An app's configuration and its code therefore ship together, from one commit.
+  - **Layer steps:**
+    1. typecheck and `npm test`;
+    2. T-IAC-01 on every template;
+    3. the layer's image, tagged with the commit SHA;
+    4. `az deployment group what-if`, then `create` of its template with that tag;
+    5. wait for the layer (L2: its lock handover);
+    6. start `job-regression` and require exit 0;
+    7. the hosted smoke check and the Log Analytics secret scan;
+    8. promote: the agent's traffic for L1, and the image's `last-good` tag for every layer.
   - **The agent app** runs in multiple-revision mode. A new revision gets 0% traffic and a label
     until checks pass, so the previous agent keeps serving.
-  - **L2, L3 and the seller** run in single-revision mode. On failure the workflow redeploys the
-    previous SHA's images (FR-024 as amended).
+  - **L2, L3 and the seller** run in single-revision mode. On failure their pipeline redeploys that
+    unit's `last-good` image (FR-024 as amended).
 - **Rationale**:
-  - Every deployment is reproducible from one commit.
-  - The baseline gates the release.
+  - Every deployment is reproducible from one commit, and each unit records its own `last-good`.
+  - A layer ships without rebuilding or restarting the others. That matters most for L2, whose
+    lock handover makes every deployment a short standby.
+  - The layers can run different commits, so each layer run repeats the regression through all of
+    them; the infra run repeats it too once the layers exist. The baseline still gates every release.
   - The agent can stay blue-green, but L2 cannot, because only one copy may write (R12).
-- **Alternatives considered**: deploying from a developer machine with `azd`, which isn't
-  reproducible or gated.
+- **Alternatives considered**:
+  - One workflow for everything (the first decision): every change redeploys every unit.
+  - Infra owns all the Bicep and layer pipelines only roll images: an app's configuration would then
+    ship apart from its code.
+  - Deploying from a developer machine with `azd`, which isn't reproducible or gated.
 
 ## R17. How does the baseline plan run in the cloud (FR-024, T-E2E-AZ)?
 

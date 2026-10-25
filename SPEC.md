@@ -23,7 +23,7 @@ The hosted agent service: L1 as an HTTP service built on Mastra, deployable to A
 | L1-4 | Optional seller alias for step 6, and `--check-baseline` (exit 2 on a mismatch). |
 | L2-6 | One ledger writer: L2 takes an exclusive lock beside the ledger before loading it, and waits in standby while another holder's heartbeat is fresh. |
 | §11 | SEC-14, SEC-15 and SEC-16, plus v1.5 residual risks. |
-| §5, §6, §12, §13 | Mastra and its libraries (Node ≥ 22.13), the Azure layout under `infra/`, `docker/` and `.github/workflows/`, tests T-AGT-02..05, T-LED-05, T-E2E-09, T-IAC-01, T-IMG-01 and T-E2E-AZ, and the new commands. |
+| §5, §6, §12, §13 | Mastra and its libraries (Node ≥ 22.13), the Azure layout under `infra/` (the platform and one template per unit), `docker/` and `.github/workflows/` (one pipeline for the platform, one per layer), tests T-AGT-02..05, T-LED-05, T-E2E-09, T-IAC-01, T-IMG-01 and T-E2E-AZ, and the new commands. |
 
 ## Changes in 1.4
 
@@ -163,6 +163,10 @@ Ports are overridable with `CONTROL_PORT`, `SELLER_PORT`, `FACILITATOR_PORT`, `S
   - `x402-seller`: the sellers.
 
   Each image holds only its own unit's code and the packages that code imports, so only L2's image contains the signer (T-IMG-01). Each app and job runs from its own unit's image (T-IAC-01 rule 12).
+- **Templates and pipelines.** `infra/main.bicep` is the platform: network, identities, registry, vaults, storage, Foundry and both environments, with no apps.
+  - Each unit has its own template (`l1-agent`, `l2-control`, `l3-verifier`, `seller`). It looks up the platform by name and gets only its own identities and vaults (T-IAC-01 rule 13).
+  - `deploy-infra.yml` deploys the platform and the sellers. `deploy-l1.yml`, `deploy-l2.yml` and `deploy-l3.yml` each deploy one layer's image and template.
+  - All four run by hand or on their own tag, one at a time, and each repeats the cloud regression before promoting (T-E2E-AZ).
 
 ### 3.2 Data flow
 
@@ -287,7 +291,8 @@ SDK entry points in use:
 ## 6. Repository layout
 
 ```
-.github/workflows/deploy-azure.yml   OIDC deploy of one commit, gated by the cloud regression (T-E2E-AZ, v1.5)
+.github/workflows/               OIDC deploys, each gated by the cloud regression (T-E2E-AZ, v1.5): deploy-infra.yml
+                                 (platform, sellers), deploy-l1/l2/l3.yml (one layer each) over deploy-layer.yml
 Dockerfile                       the seller's image, x402-seller (v1.5)
 docker/                          one image per layer: l1-agent.Dockerfile, l2-control.Dockerfile, l3-verifier.Dockerfile;
                                  each holds only its layer's code and packages (T-IMG-01, v1.5)
@@ -297,7 +302,8 @@ config/mandate.json              spending mandate (CFG-3)
 contracts/MockUSDC.sol           local-only EIP-3009 token (CP-4)
 docs/l2-control.openapi.yaml     OpenAPI 3.1 copy of the L2 HTTP API (L2-5); kept in sync by T-API-01..03; L2 serves it with API_DOCS=1
 env/*.env.example                one env template per process (CFG-2)
-infra/                           Azure profile (§3.1, v1.5): main.bicep, modules/*.bicep, params/dev.bicepparam,
+infra/                           Azure profile (§3.1, v1.5): main.bicep (the platform), l1-agent.bicep, l2-control.bicep,
+                                 l3-verifier.bicep, seller.bicep (one per unit), modules/*.bicep, params/dev*.bicepparam,
                                  proxy/nginx-l{2,3}.conf (loopback sidecars), entra-app.sh, run-job.sh (T-IAC-01)
 scripts/
   local-chain-lib.ts             start ganache, compile + deploy MockUSDC, mint 10 USDC to payer, localDevKeys()
@@ -872,9 +878,9 @@ Residual risks added in v1.4:
 | T-E2E-08 | e2e | expiry on L2's clock: a repeat while pending reuses the ID; after 300 s the escalation expires, approve and reject are 409, the next request escalates under a new ID, and re-approving returns the same approval so one payment happens |
 | T-E2E-09 | e2e | the hosted service on the harness: FREE, PAID, PAID, ESCALATED with both payments CONFIRMED and 6000 spent; continuation after an operator approval pays once with `approvalRef`, and another requester's use of the reference → 404 with the ledger unchanged |
 | T-LED-05 | ledger-lock | one ledger writer (L2-6): a second acquirer waits while a fresh lock is held and takes it within 2 s of SIGTERM; a 31 s stale lock is taken over; a lost lock is reported; `main()` locks before loading. **Must fail**: two unlocked writers fork the chain and the reload throws `integrity` |
-| T-IAC-01 | infra (needs `BICEP_PATH`) | the compiled `infra/main.bicep`: role assignments only per the identity–vault matrix; the payer key only in `ca-l2-control/l2` from the l2 vault; internal-only L2/L3; one L2 replica on NFS; sidecars without env or secrets; identity lifecycle `Main` only for the agent; sellers in their own environment; no secret literals; `ALLOWED_HOSTS` is the seller, not the alias; vault firewalls deny by default; the agent's audience is a required client ID; each app and job on its own unit's image, which contains its command's entry point. **Must fail**: eight mutants (rules 1, 2, 3, 9, 10, 11, and two for rule 12) |
+| T-IAC-01 | infra (needs `BICEP_PATH`) | the compiled `infra/main.bicep`: role assignments only per the identity–vault matrix; the payer key only in `ca-l2-control/l2` from the l2 vault; internal-only L2/L3; one L2 replica on NFS; sidecars without env or secrets; identity lifecycle `Main` only for the agent; sellers in their own environment; no secret literals; `ALLOWED_HOSTS` is the seller, not the alias; vault firewalls deny by default; the agent's audience is a required client ID; each app and job on its own unit's image, which contains its command's entry point; each unit template deploys only its own apps and looks up only its own identities and vaults; the model is keyless (Foundry refuses API keys, no container gets an Anthropic key, the agent signs in as `id-l1`). All five templates (platform and units) are compiled together. **Must fail**: twelve mutants (rules 1, 2, 3, 9, 10, 11, and two each for rules 12, 13 and 14) |
 | T-IMG-01 | images | each image's import graph (`scripts/image-closure.ts`) stays in its own folders and uses only runtime dependencies; only the L2 image holds the signer; only the L1 image holds Mastra and the model SDKs; every Dockerfile builds its own image from the same pinned base and loads every module once. **Must fail**: L1 reaching the signer; a package resolved at run time but not listed; an imported package missing from `dependencies` |
-| T-E2E-AZ | deploy-workflow (static) and the live workflow | OIDC only; every gate (tests, T-IAC-01, image scan, deploy, L2 handover, balance, `--check-baseline` regression, chain, smoke ≤ 120 s, log scan) before promotion; every image built, scanned and promoted to `last-good`; `job-operator` started only with commands of the L2 image; rollback to `last-good` on failure without touching the agent's traffic. **Must fail**: promoting before the regression; building only some of the images; a `job-operator` command the L2 image doesn't contain |
+| T-E2E-AZ | deploy-workflow (static) and the live workflows | the four pipelines (`deploy-infra.yml`; `deploy-l1/l2/l3.yml` over `deploy-layer.yml`): OIDC only, one concurrency group, manual or tag triggers; every gate (tests, T-IAC-01, image scan, deploy, wait, balance, `--check-baseline` regression, chain, smoke ≤ 120 s, log scan) before promotion; gates skipped only by an explicit first deployment of L2 or L3, or by the infra run's first, platform-only run; every image built by exactly one pipeline; `job-operator` started only with commands of the L2 image; rollback of the unit to `last-good` on failure without touching the agent's traffic. **Must fail**: promoting before the regression; a regression skipped by another condition (layer and infra); a first deployment of L1; a layer pipeline deploying another layer's image; an infra run that doesn't build the seller's image; a `job-operator` command the L2 image doesn't contain |
 | T-CDP-01 | cdp-config | the `facilitatorChoice` matrix (CP-3), and the public path sends no credential |
 | T-CDP-02 | cdp-isolation | seller startup fails closed: missing ID or secret, malformed secret, conflicts; the log line format; the unused-credential warning |
 | T-CDP-03 | cdp-auth | JWT headers (EdDSA, ES256 from PKCS#8 and SEC1); the scripted plan through a JWT-verifying CDP stub matches T-E2E-01 |

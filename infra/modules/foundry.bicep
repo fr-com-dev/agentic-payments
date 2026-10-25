@@ -1,5 +1,6 @@
-// Microsoft Foundry resource for Claude (MODEL_PROVIDER=foundry), keyless: only the agent's identity may call it.
-// The model deployment is created in the portal (quickstart §4 step 1) and must be named exactly the model id.
+// Microsoft Foundry resource for Claude (MODEL_PROVIDER=foundry), keyless: API keys are disabled, and only the
+// agent's identity may call it (T-IAC-01 rules 1 and 14).
+// The model deployment is created in the portal (quickstart §4 step 2) and must be named exactly the model id.
 param location string
 param suffix string
 param agentPrincipalId string

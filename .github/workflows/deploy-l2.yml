@@ -1,0 +1,38 @@
+# Deploy L2 (the control service and job-operator) from one commit (specs/011 contracts/deploy-pipeline.md).
+# It builds the x402-l2-control image and deploys infra/l2-control.bicep through the shared steps of
+# deploy-layer.yml. Every deploy workflow shares one concurrency group, so deployments never overlap.
+name: deploy-l2
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment (resource group rg-x402-<environment>)
+        required: true
+        default: dev
+        type: choice
+        options: [dev]
+      first-deployment:
+        description: The other layers don't exist yet (quickstart §4); skips the cloud checks and records no last-good
+        required: false
+        default: false
+        type: boolean
+  push:
+    tags: ["deploy-l2-*"]
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: deploy-azure
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    uses: ./.github/workflows/deploy-layer.yml
+    secrets: inherit
+    with:
+      image: l2-control
+      environment: ${{ inputs.environment || 'dev' }}
+      first-deployment: ${{ inputs.first-deployment || false }}

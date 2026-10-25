@@ -185,12 +185,18 @@ To run the agent's container image instead, see [quickstart §3](specs/011-l1-ho
 - The sellers run in a separate environment.
 - Requesters sign in with Entra ID (`infra/entra-app.sh`). A person assigned `Agent.Run` gets a token with `az account get-access-token --scope api://x402-l1-agent/user_impersonation`.
 
-**Deployment**: `.github/workflows/deploy-azure.yml` deploys one commit with OIDC. It promotes the new agent revision only after these all pass:
+**Deployment**: four GitHub Actions workflows sign in with OIDC and run one at a time, by hand or on their own tag:
+- `deploy-infra.yml` deploys the platform (`infra/main.bicep`) and the sellers.
+- `deploy-l1.yml`, `deploy-l2.yml` and `deploy-l3.yml` each deploy one layer's image and its own apps' template.
+
+Each run deploys from one commit and records its image as `last-good` only after these all pass:
 - the infrastructure rules (T-IAC-01);
-- a secret check on each image;
+- a secret check on the image;
 - the L1-4 baseline in the cloud (`--check-baseline`);
 - a hosted smoke run;
 - a log secret scan.
+
+An L1 run moves the agent's traffic to the new revision only then.
 
 The first deployment, vault seeding and the operator job are in `specs/011-l1-hosted-agent-azure/quickstart.md`.
 
@@ -242,7 +248,7 @@ A milestone must pass its exit check before the next one starts.
 | `test/infra.test.ts` | T-IAC-01: the compiled Bicep keeps identities, secrets and ingress per the Azure matrix (needs `BICEP_PATH`) |
 | `test/entra-app.test.ts` | T-AGT-03: `infra/entra-app.sh` against a fake `az`: client ID as the audience, people's scope with the Azure CLI pre-authorized, idempotent re-runs |
 | `test/images.test.ts` | T-IMG-01: each image holds only its own layer's code and packages (only L2's has the signer) |
-| `test/deploy-workflow.test.ts` | T-E2E-AZ: the deploy workflow's gates and rollback |
+| `test/deploy-workflow.test.ts` | T-E2E-AZ: the four deploy pipelines' gates, skips and rollback |
 | `test/openapi.test.ts` | T-API-01..03: `docs/l2-control.openapi.yaml` matches L2's routes, tokens, statuses and response shapes; T-API-04: the Swagger UI routes are off by default, same-origin and serve fixed files only |
 
 Run one test with `npx vitest run test/policy.test.ts -t "<name>"`.
