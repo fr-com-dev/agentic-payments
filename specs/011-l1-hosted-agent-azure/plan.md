@@ -149,7 +149,11 @@ infra/
 ├── params/dev.bicepparam   # NEW: no secret values; vault secrets are seeded out of band
 ├── proxy/nginx-l2.conf, nginx-l3.conf   # NEW: loopback proxy sidecars with the 401→200 /healthz
 └── entra-app.sh            # NEW: az CLI script for the API app registration and the Agent.Run role
-Dockerfile, .dockerignore   # NEW: build stage (tsc) → node:22-bookworm-slim runtime, non-root
+Dockerfile                  # NEW: the seller's image (research R14, revised 2026-10-25)
+docker/l1-agent.Dockerfile, l2-control.Dockerfile, l3-verifier.Dockerfile   # NEW: one image per layer: build stage (tsc,
+                            #   scripts/image-closure.ts) → node:22-bookworm-slim runtime, non-root, only that layer's code
+.dockerignore               # NEW
+scripts/image-closure.ts    # NEW: each image's files and packages from the import graph (T-IMG-01)
 tsconfig.build.json         # NEW: emits dist/ for src/ and the operator scripts
 .github/workflows/deploy-azure.yml   # NEW: OIDC deploy and regression gate
 env/l1-hosted.env.example   # NEW: CFG-2 template

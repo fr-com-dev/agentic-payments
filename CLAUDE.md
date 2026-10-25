@@ -26,7 +26,8 @@ npm run stack:local [-- --docker]            # chain, facilitator, seller, L2, L
 npm run agent:hosted                         # hosted agent service (L1-6) on 127.0.0.1:4024; env/l1-hosted.env
 npm run dev-token -- --subject alice         # local dev issuer token for the hosted service (NETWORK=local only)
 npm run ledger-verify                        # operator: exit 0 only when the hash chain verifies
-npm run build                                # dist/ for the container image (tsconfig.build.json)
+npm run build                                # dist/ (tsconfig.build.json); each image's build stage runs it
+docker build -f docker/l1-agent.Dockerfile -t x402-l1-agent .   # one image per layer (docker/); the seller's is the root Dockerfile
 BICEP_PATH=~/.azure/bin/bicep npx vitest run test/infra.test.ts   # T-IAC-01 on the compiled Bicep
 npx vitest run test/policy.test.ts -t "<name>"   # single test
 ```
@@ -56,6 +57,7 @@ npx vitest run test/policy.test.ts -t "<name>"   # single test
   2. Register the scheme in the signer, seller and (if local) facilitator.
   3. Check the token's EIP-712 domain (`name`/`version`).
 - **New paid route:** add it to `CATALOG` in `src/counterparty/seller.ts`. If the scripted plan changes, update SPEC §8.1 L1-4 and T-E2E-01.
+- **New container entry point or runtime-resolved package:** add it to `IMAGES` in `scripts/image-closure.ts` (the entry point, or `extraPackages`), and give the app or job its own unit's image in `infra/`. T-IMG-01 and T-IAC-01 rule 12 fail until they match. Never point an app at another layer's image.
 - **Extensions** (AP2 mandate, remote signer, `upto`, Solana, MCP, SQLite, mTLS, OTel, refunds): follow SPEC §15. Implement one EXT-* per PR.
 
 ## Definition of done

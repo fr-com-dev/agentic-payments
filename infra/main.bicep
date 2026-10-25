@@ -87,7 +87,14 @@ module envs 'modules/environments.bicep' = {
   }
 }
 
-var image = '${registry.outputs.loginServer}/x402:${imageTag}'
+// One image per layer, and the seller's (research R14), all tagged with the commit. Each app and job runs
+// from its own unit's image, so a process carries only its own code. T-IAC-01 rule 12 asserts on this.
+var images = {
+  l1: '${registry.outputs.loginServer}/x402-l1-agent:${imageTag}'
+  l2: '${registry.outputs.loginServer}/x402-l2-control:${imageTag}'
+  l3: '${registry.outputs.loginServer}/x402-l3-verifier:${imageTag}'
+  seller: '${registry.outputs.loginServer}/x402-seller:${imageTag}'
+}
 
 module apps 'modules/apps.bicep' = if (deployApps) {
   name: 'apps'
@@ -97,7 +104,7 @@ module apps 'modules/apps.bicep' = if (deployApps) {
     mainDomain: envs.outputs.mainDomain
     cpDomain: envs.outputs.cpDomain
     ledgerStorageName: envs.outputs.ledgerStorageName
-    image: image
+    images: { l1: images.l1, l2: images.l2, l3: images.l3 }
     proxyImage: proxyImage
     acrServer: registry.outputs.loginServer
     identities: identity
@@ -115,7 +122,7 @@ module sellers 'modules/sellers.bicep' = if (deployApps) {
   params: {
     location: location
     cpEnvId: envs.outputs.cpId
-    image: image
+    image: images.seller
     acrServer: registry.outputs.loginServer
     identity: identity['id-seller']
     vaultUri: vaults[4].outputs.uri

@@ -574,6 +574,11 @@ plan.md map onto these phases: A → Phases 2–5 and 7, B and C → Phase 6, D 
 
   test/entra-app.test.ts runs it against a fake `az` (test/fixtures/fake-az.mjs), with two must-fail mutants.
 - [X] T073 Update contracts/access-and-sessions.md, research.md R6, quickstart.md §4 (step 0, a seventh platform check, calling the agent as a person), SPEC.md L1-6 and the T-AGT-03/T-IAC-01 rows, README.md and CLAUDE.md. Then run `npm run check`.
+- [X] T074 One image per layer, plus the seller's (research R14 revised 2026-10-25, at the owner's request). scripts/image-closure.ts holds the table `IMAGES` (Dockerfile, entry points, allowed folders, `extraPackages`). It walks each image's import graph with esbuild (pinned 0.28.2 as a dev dependency, already installed through tsx), fails on a file outside the image's folders or an undeclared package, and writes the image's compiled files, a pruned package.json and `dist/image-modules.json`.
+- [X] T075 Add docker/l1-agent.Dockerfile, docker/l2-control.Dockerfile and docker/l3-verifier.Dockerfile, and trim the root Dockerfile to the seller. Each has the same pinned base and build stage, runs the closure script, installs only its own packages against the full lockfile, imports every module once, and runs as `node`. Only the L2 image gets `config/`, the OpenAPI file and `/app/.local`.
+- [X] T076 infra: main.bicep `var images` (`x402-l1-agent`, `x402-l2-control`, `x402-l3-verifier`, `x402-seller`, each tagged `imageTag`). apps.bicep takes `images` and runs the agent and job-regression from L1's, L2 and job-operator from L2's, and L3 from L3's; the sellers get the seller image. T-IAC-01 rule 12, with two must-fail mutants, in test/infra.test.ts.
+- [X] T077 .github/workflows/deploy-azure.yml: env `IMAGES`, and steps 3, 3b and 10 build, scan and promote (`last-good`) every image. test/deploy-workflow.test.ts checks `IMAGES` against `IMAGES` in the closure script, that the three steps cover it, and that `job-operator` is started only with an L2 entry point, with two must-fail cases.
+- [X] T078 test/images.test.ts (T-IMG-01) with three must-fail cases. Update research.md R14, contracts/cloud-topology.md (images, rule 12, the full mutant list), contracts/deploy-pipeline.md (steps 3, 3b, 10, rollback), quickstart.md §1, §2, §3 and §5, plan.md, SPEC.md (§3.1, §5, §6, §12, §13), README.md and CLAUDE.md.
 
 ---
 
@@ -720,4 +725,29 @@ Places where the work differs from the task text, and the validation results.
     - the config check removed → its test fails;
     - the script printing the identifier URI, or skipping the pre-authorization → reported;
     - an `api://` default for `authAudience` → rule 11 is reported.
+- **T074–T078 (2026-10-25), one image per layer**:
+  - Closures:
+    - **L1**: 16 modules, with Mastra, both model SDKs, `@azure/identity`, `jose`, `express`, `zod`, `@x402/core` and `dotenv`, and no `viem`.
+    - **L2**: 17 modules, the only image with the signer.
+    - **L3**: 4 modules.
+    - **Seller**: 4 modules, the only image with the CDP SDK.
+  - Image sizes:
+
+    | Image | Size | `node_modules` |
+    |---|---|---|
+    | L1 | 640 MB | 242 MB |
+    | L2 | 539 MB | 156 MB |
+    | L3 | 512 MB | 135 MB |
+    | Seller | 585 MB | 201 MB |
+    | The one shared image, before | 874 MB | n/a |
+  - Run from the images against `stack:local -- --docker`:
+    - the L1 image's hosted agent paid for the weather and the market brief, both `CONFIRMED`;
+    - its `main.js --scripted --check-baseline` printed `baseline: ok`. Step 6 used a `--add-host seller-alias:host-gateway` alias, since `gateway.docker.internal` doesn't resolve here;
+    - the L2 image's `ledger-verify` and `escalations` ran against the local L2.
+  - The secret check found nothing in any image's history or env. A runtime user can't change `node_modules`, which is owned by root.
+  - Must-fail proofs observed:
+    - the closure script with L1 wired to L2's service → exit 1, nothing written;
+    - the in-image module check with `viem` deleted → `ERR_MODULE_NOT_FOUND`, exit 1;
+    - rule 12's mutants and T-IMG-01's and T-E2E-AZ's must-fail cases.
+  - The workflow now runs four Docker builds, each with its own `npm install`. That is slower than one, and the first live run (T060) measures it.
 - **Open**: T060 needs an Azure subscription, a funded payer and the seller's CDP key, for the first deployment and the seven platform-fact checks.

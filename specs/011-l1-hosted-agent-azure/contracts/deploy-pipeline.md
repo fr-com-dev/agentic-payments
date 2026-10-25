@@ -10,9 +10,9 @@ deploy app registration. No Azure secret is stored in GitHub.
 |---|---|---|
 | 1 | `npm install`, `npm run typecheck`, `npm test` | green |
 | 2 | Install Bicep CLI 0.47.16, `BICEP_PATH=…`, `npx vitest run test/infra.test.ts` (T-IAC-01) | green, not skipped |
-| 3a | Base infrastructure without apps (`deployApps=false`), so the registry exists before the image | succeeded |
-| 3 | `docker build` and `docker push` of `x402:<sha>` to the registry | image pushed |
-| 3b | Image secret check: `docker history --no-trunc` and `docker run … env` hold no `PRIVATE_KEY`, `_SECRET` or `_TOKEN` assignment (SC-005) | no match |
+| 3a | Base infrastructure without apps (`deployApps=false`), so the registry exists before the images | succeeded |
+| 3 | `docker build` and `docker push` of each image in `IMAGES` as `x402-<image>:<sha>`: `l1-agent`, `l2-control` and `l3-verifier` from `docker/<image>.Dockerfile`, `seller` from `Dockerfile` (research R14). Each build fails when its closure reaches another layer's file or a module doesn't load | four images pushed |
+| 3b | Image secret check on each image: `docker history --no-trunc` and `docker run … env` hold no `PRIVATE_KEY`, `_SECRET` or `_TOKEN` assignment (SC-005) | no match |
 | 4 | `az deployment group what-if`, then `create` with `imageTag=<sha>` | succeeded |
 | 5 | Wait for the `ca-l2-control` and `ca-l3-verifier` revisions `<sha>` to be running. Then start `job-operator` with `ledger-verify` every 15 s until it exits 0 | within 5 min (lock handover, research R12) |
 | 5b | From the runner: `npm run payer-balance -- <payer address>`, a read-only `balanceOf` on Base Sepolia USDC. The address is public and no key is involved | balance ≥ 50000 atomic (0.05 test USDC), otherwise fail with "fund the payer" |
@@ -20,13 +20,13 @@ deploy app registration. No Azure secret is stored in GitHub.
 | 7 | `job-operator` → `ledger-verify` | exit 0 (`ok: true`) |
 | 8 | Hosted smoke: get a token for the deploy service principal (assigned `Agent.Run` by `infra/entra-app.sh --deploy-sp`), `POST /v1/runs` with the default goal to the new `ca-l1-agent` revision's label URL, and time the call | 200, `status: completed`, steps include `/api/weather` and `/api/market-brief` with `outcome: PAID`, settlement `CONFIRMED`; duration ≤ 120 s, written to the job summary (SC-009) |
 | 9 | Secret scan: `az monitor log-analytics query` over the container logs of steps 5–8, piped to `npm run scan-logs` (credential-shape patterns from `scripts/secret-scan-lib.ts`: JWTs, `Bearer` values, PEM blocks, `PAYMENT-SIGNATURE`/`x-api-key` values, `*_PRIVATE_KEY=`/`*_SECRET=`/`*_TOKEN=` assignments) | no match. Exact-value completeness is proven offline by T-AGT-05 (research R13) |
-| 10 | Shift `ca-l1-agent` traffic 100% to revision `<sha>` | done |
+| 10 | Shift `ca-l1-agent` traffic 100% to revision `<sha>`, then tag each image `<sha>` as `x402-<image>:last-good` | done |
 
 ## Rollback
 
 - **Steps 6–9 fail**: the agent's traffic stays on the previous revision. The workflow redeploys
   `ca-l2-control`, `ca-l3-verifier` and the sellers at the previous successful SHA (recorded as
-  the `last-good` tag in the registry). It then reruns steps 5–7. A failure there leaves the run
+  each image's `last-good` tag in the registry). It then reruns steps 5–7. A failure there leaves the run
   red for a human.
 - **Steps 1–4 fail**: nothing changed in Azure, or what-if showed the change and create failed
   atomically per resource. The run is red. A partial create is fixed forward by rerunning.

@@ -31,6 +31,8 @@ concurrency:
 env:
   RG: rg-x402-${{ inputs.environment || 'dev' }}
   IMAGE_TAG: ${{ github.sha }}
+  # name:Dockerfile of each image, one per layer and the seller's (scripts/image-closure.ts IMAGES, research R14).
+  IMAGES: l1-agent:docker/l1-agent.Dockerfile l2-control:docker/l2-control.Dockerfile l3-verifier:docker/l3-verifier.Dockerfile seller:Dockerfile
   BICEP_VERSION: v0.47.16
   SELLER_PAY_TO: ${{ vars.SELLER_PAY_TO }}
   # The agent's token audience; infra/params/dev.bicepparam reads it, and the build fails when it is empty.
@@ -70,7 +72,7 @@ jobs:
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
-      - name: "3a base infrastructure (no apps yet, so the registry exists before the image)"
+      - name: "3a base infrastructure (no apps yet, so the registry exists before the images)"
         id: base
         run: |
           az group create -n "$RG" -l eastus2 -o none
@@ -78,20 +80,25 @@ jobs:
             --template-file infra/main.bicep --parameters infra/params/dev.bicepparam --parameters deployApps=false -o none
           echo "acr=$(az deployment group show -g "$RG" -n "x402-base-$IMAGE_TAG" --query properties.outputs.registry.value -o tsv)" >> "$GITHUB_OUTPUT"
 
-      - name: "3 build and push the image tagged with the commit"
+      - name: "3 build and push the images tagged with the commit"
         id: build
         run: |
-          az acr login -n "${{ steps.base.outputs.acr }}"
-          docker build -t "${{ steps.base.outputs.acr }}/x402:$IMAGE_TAG" .
-          docker push "${{ steps.base.outputs.acr }}/x402:$IMAGE_TAG"
+          ACR="${{ steps.base.outputs.acr }}"
+          az acr login -n "$ACR"
+          for spec in $IMAGES; do
+            docker build -f "${spec#*:}" -t "$ACR/x402-${spec%%:*}:$IMAGE_TAG" .
+            docker push "$ACR/x402-${spec%%:*}:$IMAGE_TAG"
+          done
 
       - name: "3b image secret check (SC-005)"
         id: image-scan
         run: |
-          IMG="${{ steps.base.outputs.acr }}/x402:$IMAGE_TAG"
-          if (docker history --no-trunc "$IMG"; docker run --rm "$IMG" env) | grep -E 'PRIVATE_KEY[=]|_SECRET[=]|_TOKEN[=]'; then
-            echo "secret assignment found in the image"; exit 1
-          fi
+          for spec in $IMAGES; do
+            IMG="${{ steps.base.outputs.acr }}/x402-${spec%%:*}:$IMAGE_TAG"
+            if (docker history --no-trunc "$IMG"; docker run --rm "$IMG" env) | grep -E 'PRIVATE_KEY[=]|_SECRET[=]|_TOKEN[=]'; then
+              echo "secret assignment found in $IMG"; exit 1
+            fi
+          done
 
       - name: "4 what-if, then deploy everything"
         id: deploy
@@ -157,7 +164,9 @@ jobs:
         id: promote
         run: |
           az containerapp ingress traffic set -n ca-l1-agent -g "$RG" --revision-weight latest=100 -o none
-          az acr import -n "${{ steps.base.outputs.acr }}" --source "${{ steps.base.outputs.acr }}/x402:$IMAGE_TAG" --image x402:last-good --force
+          for spec in $IMAGES; do
+            az acr import -n "${{ steps.base.outputs.acr }}" --source "${{ steps.base.outputs.acr }}/x402-${spec%%:*}:$IMAGE_TAG" --image "x402-${spec%%:*}:last-good" --force
+          done
 
       - name: "rollback L2, L3 and sellers to last-good (the agent keeps its previous revision)"
         id: rollback

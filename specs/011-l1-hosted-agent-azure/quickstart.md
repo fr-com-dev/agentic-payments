@@ -16,6 +16,7 @@ npm install
 npm run typecheck
 npx vitest run test/hosted-agent.test.ts test/hosted-access.test.ts test/hosted-sessions.test.ts test/hosted-run.test.ts   # T-AGT-02..05
 npx vitest run test/deploy-workflow.test.ts   # T-E2E-AZ static gate-order checks on the workflow
+npx vitest run test/images.test.ts            # T-IMG-01: each image holds only its own layer's code and packages
 npx vitest run test/agent.test.ts -t "T-AGT-KEY"   # both L1 entry points refuse the payer key
 npx vitest run test/ledger-lock.test.ts       # T-LED-05, including the must-fail two-writer case
 npx vitest run test/e2e.local.test.ts -t "T-E2E-09"   # hosted agent on the in-process harness: escalate → approve → continue session
@@ -33,10 +34,17 @@ npm run check                                 # typecheck + all tests + demo:loc
 
 ```bash
 az bicep install && export BICEP_PATH="$HOME/.azure/bin/bicep"   # Bicep CLI 0.47.16
-npx vitest run test/infra.test.ts             # T-IAC-01: role, secret, ingress, replica and lifecycle rules, plus 3 must-fail mutants
-docker build -t x402:dev .                    # one image; check: no env/*.env and no .local/ inside
-docker run --rm x402:dev sh -c 'ls dist/src/hosted-main.js dist/src/layer1-intent/hosted && test ! -e env/l2-control.env'
-docker history --no-trunc x402:dev | grep -E 'PRIVATE_KEY|_SECRET=|_TOKEN=' && echo LEAK || echo clean   # SC-005 for the image
+npx vitest run test/infra.test.ts             # T-IAC-01: rules 1–12 on the compiled template, plus 8 must-fail mutants
+# One image per layer and the seller's (research R14). Each build fails if its closure reaches another layer.
+docker build -f docker/l1-agent.Dockerfile -t x402-l1-agent:dev .
+docker build -f docker/l2-control.Dockerfile -t x402-l2-control:dev .
+docker build -f docker/l3-verifier.Dockerfile -t x402-l3-verifier:dev .
+docker build -t x402-seller:dev .
+docker run --rm x402-l1-agent:dev sh -c 'ls dist/src/hosted-main.js && test ! -e dist/src/layer2-control && test ! -e env'
+docker run --rm x402-l3-verifier:dev sh -c 'test ! -e dist/src/layer2-control/signer.js && test ! -e node_modules/@mastra'
+for i in l1-agent l2-control l3-verifier seller; do
+  docker history --no-trunc x402-$i:dev | grep -E 'PRIVATE_KEY|_SECRET=|_TOKEN=' && echo "LEAK in $i" || echo "$i clean"   # SC-005
+done
 ```
 
 ## 3. The hosted agent locally (against the local stack)
@@ -63,17 +71,17 @@ curl -s -H "Authorization: Bearer $(cat .local/alice.jwt)" -H 'content-type: app
 2. Run `npm run approve -- <authorizationId>`.
 3. Repeat the request with `"sessionRef": "<from step 1>"`. The step is `PAID`, `CONFIRMED`.
 
-**The same image as Azure** (Docker Desktop). A container reaches the host at `host.docker.internal`,
+**The same L1 image as Azure** (Docker Desktop). A container reaches the host at `host.docker.internal`,
 and L2 only pays sellers whose host its mandate lists (R6), so start the stack with `--docker`:
 
 ```bash
 npm run stack:local -- --docker     # L2 also allows host.docker.internal:4021
-docker build -t x402:dev .
+docker build -f docker/l1-agent.Dockerfile -t x402-l1-agent:dev .
 docker run --rm -p 127.0.0.1:4024:4024 --env-file env/l1-hosted.env \
   -e AGENT_BIND_HOST=0.0.0.0 -e SELLER_URL=http://host.docker.internal:4021 \
   -e CONTROL_URL=http://host.docker.internal:4020 -e SETTLEMENT_URL=http://host.docker.internal:4023 \
   -v "$PWD/.local/dev-issuer/jwks.json:/app/.local/dev-issuer/jwks.json:ro" \
-  x402:dev node dist/src/hosted-main.js
+  x402-l1-agent:dev node dist/src/hosted-main.js
 ```
 
 The same `curl` then works against `127.0.0.1:4024`. Two cloud pieces stay cloud-only: Foundry signs in with
@@ -131,7 +139,7 @@ curl -s -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
 ## 5. Operator flow in Azure
 
 ```bash
-az containerapp job start -n job-operator -g rg-x402-dev --container-name operator --image <acr>/x402:<sha> \
+az containerapp job start -n job-operator -g rg-x402-dev --container-name operator --image <acr>/x402-l2-control:<sha> \
   --command node --args dist/scripts/escalations.js --env-vars OPERATOR_TOKEN=secretref:operator-token CONTROL_URL=http://ca-l2-control.internal.<env-domain>
 az containerapp job logs show -n job-operator -g rg-x402-dev --follow
 ```

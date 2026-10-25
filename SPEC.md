@@ -17,13 +17,13 @@ The hosted agent service: L1 as an HTTP service built on Mastra, deployable to A
 | Area | Change |
 |---|---|
 | §3.1, L1-6 | A second L1 entry point, `src/hosted-main.ts` (`npm run agent:hosted`), serves `POST /v1/runs` to requesters with Entra ID tokens carrying `Agent.Run`. Same two tools, prompt and limits as L1-3. |
-| §3.1 Azure profile | One Container Apps environment. The agent has public ingress; L2 and L3 have internal-only ingress through a loopback-forwarding sidecar. One identity and one Key Vault per runtime unit, and the sellers live in a separate environment. |
+| §3.1 Azure profile | One Container Apps environment. The agent has public ingress; L2 and L3 have internal-only ingress through a loopback-forwarding sidecar. One identity and one Key Vault per runtime unit, and the sellers live in a separate environment. One image per layer, plus the seller's, each holding only that unit's code. |
 | §3.3, CFG-2 | New credentials: the requester's Entra token (verified by L1 only), `SESSION_REF_SECRET` (L1 only) and the agent identity's Foundry access. New env file `env/l1-hosted.env`; `env/l1-agent.env` gains optional `SELLER_ALIAS_URL`. |
 | INV-3 | Names both L1 entry points; both load env and then refuse. |
 | L1-4 | Optional seller alias for step 6, and `--check-baseline` (exit 2 on a mismatch). |
 | L2-6 | One ledger writer: L2 takes an exclusive lock beside the ledger before loading it, and waits in standby while another holder's heartbeat is fresh. |
 | §11 | SEC-14, SEC-15 and SEC-16, plus v1.5 residual risks. |
-| §5, §6, §12, §13 | Mastra and its libraries (Node ≥ 22.13), the Azure layout under `infra/` and `.github/workflows/`, tests T-AGT-02..05, T-LED-05, T-E2E-09, T-IAC-01 and T-E2E-AZ, and the new commands. |
+| §5, §6, §12, §13 | Mastra and its libraries (Node ≥ 22.13), the Azure layout under `infra/`, `docker/` and `.github/workflows/`, tests T-AGT-02..05, T-LED-05, T-E2E-09, T-IAC-01, T-IMG-01 and T-E2E-AZ, and the new commands. |
 
 ## Changes in 1.4
 
@@ -156,6 +156,13 @@ Ports are overridable with `CONTROL_PORT`, `SELLER_PORT`, `FACILITATOR_PORT`, `S
 - **Loopback kept.** L2 and L3 still bind 127.0.0.1. A proxy sidecar in the same app forwards from port 8080 to the loopback port; it gets no env and no secrets.
 - **Identity and secrets.** Each runtime unit has its own user-assigned identity and Key Vault. The identity lifecycle is `None` everywhere except the agent, so no container in L2 or L3 can request a token at run time. Secrets reach containers only as Key Vault references.
 - **Ledger.** L2's ledger lives on an NFS Azure Files share mounted at `/app/.local`, with the L2-6 lock.
+- **Images.** One image per layer, plus the seller's, all tagged with the commit:
+  - `x402-l1-agent`: the agent and `job-regression`;
+  - `x402-l2-control`: L2 and `job-operator`;
+  - `x402-l3-verifier`: L3;
+  - `x402-seller`: the sellers.
+
+  Each image holds only its own unit's code and the packages that code imports, so only L2's image contains the signer (T-IMG-01). Each app and job runs from its own unit's image (T-IAC-01 rule 12).
 
 ### 3.2 Data flow
 
@@ -257,7 +264,7 @@ Each rule has a fixture under `test/fixtures/arch/` that must trip it (Principle
 | Hosted agent service (L1-6, v1.5): Mastra `Agent` as a library only, no Mastra server, CLI or instance | `@mastra/core`, `@ai-sdk/anthropic` | 1.75.0 / 3.0.128 (exact) |
 | Hosted agent service: tool schemas, requester tokens, Foundry identity | zod, jose, `@azure/identity` | ^4.6.5 / ^6.2.12 / ^4.13.3 |
 | Hosted agent and infrastructure tests (dev only) | `ai` (`MockLanguageModelV3`), `@ai-sdk/provider`, `@azure/bicep-rpc-client`; Bicep CLI | ^6.0.302 / ^3.0.18 / ^0.4.1; 0.47.16 |
-| Azure profile images | `node:22-bookworm-slim`, `nginxinc/nginx-unprivileged:1.29-alpine` | pinned by digest (Dockerfile, `infra/main.bicep`) |
+| Azure profile images | `node:22-bookworm-slim`, `nginxinc/nginx-unprivileged:1.29-alpine` | pinned by digest (the four Dockerfiles, `infra/main.bicep`) |
 
 Resolved versions (v1.1, `package-lock.json`): typescript 7.0.2, tsx 4.23.15, vitest 5.0.5, viem 2.57.7, express 5.3.0, `@x402/*` 2.28.0, `@anthropic-ai/sdk` 0.135.0, dotenv 18.0.8, ganache 7.9.2, solc 0.8.24, `@types/node` 22.x; v1.4 adds yaml 2.9.1 and swagger-ui-dist 5.33.1. `scarfSettings.enabled: false` in `package.json` turns off the install analytics of swagger-ui-dist's `@scarf/scarf` dependency. `engines.node` is `>=22`; development also runs on Node 26. npm ≥ 11 skips dependency install scripts by default. Ganache falls back to its JavaScript implementations, which is harmless. v1.5 adds `@mastra/core` 1.75.0, `@ai-sdk/anthropic` 3.0.128, zod 4.6.5, jose 6.2.12 and `@azure/identity` 4.13.3 (runtime), and `ai` 6.0.302, `@ai-sdk/provider` 3.0.18 and `@azure/bicep-rpc-client` 0.4.1 (dev). In library use Mastra sends no telemetry; the image also sets `MASTRA_TELEMETRY_DISABLED=1`.
 
@@ -281,7 +288,10 @@ SDK entry points in use:
 
 ```
 .github/workflows/deploy-azure.yml   OIDC deploy of one commit, gated by the cloud regression (T-E2E-AZ, v1.5)
-Dockerfile, .dockerignore        one image for every process; no env file or key inside (v1.5)
+Dockerfile                       the seller's image, x402-seller (v1.5)
+docker/                          one image per layer: l1-agent.Dockerfile, l2-control.Dockerfile, l3-verifier.Dockerfile;
+                                 each holds only its layer's code and packages (T-IMG-01, v1.5)
+.dockerignore                    no env file, key or local state in any build context (v1.5)
 tsconfig.build.json              emits dist/ for src/ and the operator commands (v1.5)
 config/mandate.json              spending mandate (CFG-3)
 contracts/MockUSDC.sol           local-only EIP-3009 token (CP-4)
@@ -303,6 +313,9 @@ scripts/
   payer-balance.ts               read-only payer USDC balance, the deploy preflight (v1.5)
   secret-scan-lib.ts, scan-logs.ts   credential-shape scan of logs (SEC-16, v1.5)
   dev-issuer-lib.ts, dev-token.ts    local dev issuer and tokens for the hosted service (NETWORK=local only, v1.5)
+  stack-local.ts                 the local stack without an agent, for the hosted service (v1.5)
+  image-closure.ts               each image's files and packages from the import graph; fails the build on another
+                                 layer's file (T-IMG-01, v1.5)
   solc.d.ts                      type shim
 src/
   shared/contracts.ts            ALL cross-layer types and ports (§7)
@@ -343,9 +356,10 @@ test/
   cdp-config.test.ts  cdp-auth.test.ts  cdp-isolation.test.ts  cdp-failures.test.ts  escalations.test.ts
   openapi.test.ts
   hosted-agent.test.ts  hosted-access.test.ts  hosted-sessions.test.ts  hosted-run.test.ts   (L1-6, v1.5)
-  ledger-lock.test.ts  infra.test.ts  deploy-workflow.test.ts                                (L2-6, Azure, v1.5)
+  ledger-lock.test.ts  infra.test.ts  images.test.ts  entra-app.test.ts  deploy-workflow.test.ts   (L2-6, Azure, v1.5)
   helpers/hosted.ts              in-process hosted service: dev issuer, mock model, fake or harness ports
   fixtures/lock-holder.ts        child process holding the ledger lock until SIGTERM (T-LED-05)
+  fixtures/fake-az.mjs           fake `az` with Graph state in a file, for infra/entra-app.sh (T-AGT-03)
   helpers/harness.ts             in-process multi-service harness shared by e2e suites
   helpers/fake-public-client.ts  deterministic read-only chain client for L3 unit tests
   helpers/cdp-stub.ts            offline CDP facilitator stub: verifies JWTs, delegates to the local facilitator
@@ -858,8 +872,9 @@ Residual risks added in v1.4:
 | T-E2E-08 | e2e | expiry on L2's clock: a repeat while pending reuses the ID; after 300 s the escalation expires, approve and reject are 409, the next request escalates under a new ID, and re-approving returns the same approval so one payment happens |
 | T-E2E-09 | e2e | the hosted service on the harness: FREE, PAID, PAID, ESCALATED with both payments CONFIRMED and 6000 spent; continuation after an operator approval pays once with `approvalRef`, and another requester's use of the reference → 404 with the ledger unchanged |
 | T-LED-05 | ledger-lock | one ledger writer (L2-6): a second acquirer waits while a fresh lock is held and takes it within 2 s of SIGTERM; a 31 s stale lock is taken over; a lost lock is reported; `main()` locks before loading. **Must fail**: two unlocked writers fork the chain and the reload throws `integrity` |
-| T-IAC-01 | infra (needs `BICEP_PATH`) | the compiled `infra/main.bicep`: role assignments only per the identity–vault matrix; the payer key only in `ca-l2-control/l2` from the l2 vault; internal-only L2/L3; one L2 replica on NFS; sidecars without env or secrets; identity lifecycle `Main` only for the agent; sellers in their own environment; no secret literals; `ALLOWED_HOSTS` is the seller, not the alias; vault firewalls deny by default; the agent's audience is a required client ID. **Must fail**: six mutants (rules 1, 2, 3, 9, 10, 11) |
-| T-E2E-AZ | deploy-workflow (static) and the live workflow | OIDC only; every gate (tests, T-IAC-01, image scan, deploy, L2 handover, balance, `--check-baseline` regression, chain, smoke ≤ 120 s, log scan) before promotion; rollback to `last-good` on failure without touching the agent's traffic. **Must fail**: promoting before the regression is reported |
+| T-IAC-01 | infra (needs `BICEP_PATH`) | the compiled `infra/main.bicep`: role assignments only per the identity–vault matrix; the payer key only in `ca-l2-control/l2` from the l2 vault; internal-only L2/L3; one L2 replica on NFS; sidecars without env or secrets; identity lifecycle `Main` only for the agent; sellers in their own environment; no secret literals; `ALLOWED_HOSTS` is the seller, not the alias; vault firewalls deny by default; the agent's audience is a required client ID; each app and job on its own unit's image, which contains its command's entry point. **Must fail**: eight mutants (rules 1, 2, 3, 9, 10, 11, and two for rule 12) |
+| T-IMG-01 | images | each image's import graph (`scripts/image-closure.ts`) stays in its own folders and uses only runtime dependencies; only the L2 image holds the signer; only the L1 image holds Mastra and the model SDKs; every Dockerfile builds its own image from the same pinned base and loads every module once. **Must fail**: L1 reaching the signer; a package resolved at run time but not listed; an imported package missing from `dependencies` |
+| T-E2E-AZ | deploy-workflow (static) and the live workflow | OIDC only; every gate (tests, T-IAC-01, image scan, deploy, L2 handover, balance, `--check-baseline` regression, chain, smoke ≤ 120 s, log scan) before promotion; every image built, scanned and promoted to `last-good`; `job-operator` started only with commands of the L2 image; rollback to `last-good` on failure without touching the agent's traffic. **Must fail**: promoting before the regression; building only some of the images; a `job-operator` command the L2 image doesn't contain |
 | T-CDP-01 | cdp-config | the `facilitatorChoice` matrix (CP-3), and the public path sends no credential |
 | T-CDP-02 | cdp-isolation | seller startup fails closed: missing ID or secret, malformed secret, conflicts; the log line format; the unused-credential warning |
 | T-CDP-03 | cdp-auth | JWT headers (EdDSA, ES256 from PKCS#8 and SEC1); the scripted plan through a JWT-verifying CDP stub matches T-E2E-01 |
@@ -903,7 +918,8 @@ npm run agent:scripted -- --check-baseline   # L1-4 plan; exit 2 unless the base
 npm run ledger-verify       # operator chain check
 npm run payer-balance -- <address> [--min <atomic>]   # read-only Base Sepolia USDC balance
 ... | npm run scan-logs     # credential-shape scan of log lines
-npm run build               # dist/ for the image
+npm run build               # dist/ (each image's build stage runs it)
+docker build -f docker/l1-agent.Dockerfile -t x402-l1-agent .   # one per layer in docker/; the seller's: docker build -t x402-seller .
 BICEP_PATH=~/.azure/bin/bicep npx vitest run test/infra.test.ts   # T-IAC-01
 ```
 

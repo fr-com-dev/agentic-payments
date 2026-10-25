@@ -31,6 +31,14 @@ deployments. The rules below are what T-IAC-01 asserts on the compiled ARM JSON.
 | `ca-seller` | cp | `seller`: `node dist/src/counterparty/seller.js` | external, target 4021 | min 0, max 1 | `id-seller` (None) | HTTP `/api/catalog` |
 | `ca-seller-alias` | cp | same image and env as `ca-seller` | external | min 0, max 1 | `id-seller` (None) | same |
 
+Each unit runs from its own layer's image, tagged with the commit SHA (research R14):
+- `x402-l1-agent`: `ca-l1-agent` and `job-regression`;
+- `x402-l2-control`: `ca-l2-control` and `job-operator`;
+- `x402-l3-verifier`: `ca-l3-verifier`;
+- `x402-seller`: `ca-seller` and `ca-seller-alias`.
+
+The `proxy` sidecars run the pinned nginx image.
+
 `ledger-verify.js` is a new small operator command, `npm run ledger-verify`. It calls
 `GET /v1/ledger/verify` with `OPERATOR_TOKEN` and exits 0 only when `ok` is true. The cloud
 regression uses it for the chain check.
@@ -110,9 +118,16 @@ both copies, then restarts both units.
 10. Every Key Vault's firewall default is `Deny`, and its VNet rule names only its unit's subnet.
 11. `authAudience` is a required parameter of exactly 36 characters (the API app's client ID, with no
     `api://` default), and the agent's `AUTH_AUDIENCE` comes from it.
+12. Each app and job runs from its own unit's image, `x402-<image>:<imageTag>`, as listed under "Apps
+    and jobs". That image contains the entry point its command runs (`IMAGES` in
+    `scripts/image-closure.ts`).
 
-**Must fail**: three mutated copies of the template, each must trip its check:
-- an extra role assignment of `id-l1` on `kv-x402-l2`;
-- a `PAYER_PRIVATE_KEY` env on `ca-l1-agent`;
-- `external: true` on `ca-l2-control`.
-- an `api://x402-l1-agent` default for `authAudience` (rule 11).
+**Must fail**: mutated copies of the template, each must trip its check:
+- an extra role assignment of `id-l1` on `kv-x402-l2` (rule 1);
+- a `PAYER_PRIVATE_KEY` env on `ca-l1-agent` (rule 2);
+- `external: true` on `ca-l2-control` (rule 3);
+- `ALLOWED_HOSTS` pointing at `ca-seller-alias` (rule 9);
+- a vault firewall that allows by default (rule 10);
+- an `api://x402-l1-agent` default for `authAudience` (rule 11);
+- `ca-l2-control` on the L1 image, and `job-operator` running a command the L2 image doesn't
+  contain (rule 12).

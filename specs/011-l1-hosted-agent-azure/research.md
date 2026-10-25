@@ -392,28 +392,51 @@ anything depends on them.
 - **Sources**: https://mastra.ai/reference/observability/tracing/configuration,
   https://mastra.ai/reference/cli/mastra#telemetry, `packages/core/src/telemetry/*` at 1.75.0.
 
-## R14. Build and container image
+## R14. Build and container images
 
-- **Decision**:
-  - **One image for every process**, with a different `command` per app.
-  - **Build stage**: `npm install` then `tsc -p tsconfig.build.json` (emits `dist/` for `src/`
-    and the operator scripts).
-  - **Runtime stage**: `node:22-bookworm-slim` pinned by digest, a non-root user,
-    `npm install --omit=dev`, `dist/`, `config/`, and `docs/` copied to `dist/docs/` (the API-docs
-    module resolves the OpenAPI file relative to itself).
+- **Decision** (revised 2026-10-25: one image per layer, at the owner's request; first decided as one image
+  for every process):
+  - **One image per layer, plus the seller's.** Each app and job runs from its own unit's image
+    (T-IAC-01 rule 12):
+
+    | Image | Dockerfile | Entry points | Runs in |
+    |---|---|---|---|
+    | `x402-l1-agent` | `docker/l1-agent.Dockerfile` | `src/hosted-main.ts`, `src/main.ts` | `ca-l1-agent`, `job-regression` |
+    | `x402-l2-control` | `docker/l2-control.Dockerfile` | `src/layer2-control/service.ts`, the four operator scripts | `ca-l2-control`, `job-operator` |
+    | `x402-l3-verifier` | `docker/l3-verifier.Dockerfile` | `src/layer3-settlement/service.ts` | `ca-l3-verifier` |
+    | `x402-seller` | `Dockerfile` (root) | `src/counterparty/seller.ts` | `ca-seller`, `ca-seller-alias` |
+
+  - **What an image holds.** `scripts/image-closure.ts` is the table above. esbuild walks the import
+    graph of the image's entry points in the TypeScript sources, and the script copies only those
+    compiled files and writes a `package.json` with only the packages they import. Each image's
+    packages are installed with `npm install --omit=dev` against the full lockfile, so versions match
+    the repository. The build fails when the graph reaches a file outside the image's folders, or a
+    package that isn't a runtime dependency. A package resolved at run time (`createRequire`) must be
+    listed in the image's `extraPackages`; L2 lists `swagger-ui-dist`. The runtime stage then imports
+    every module once, so a missing file or package fails the build, not a revision start.
+  - **Build stage**: `npm install`, `tsc -p tsconfig.build.json`, then the closure script.
+  - **Runtime stage**: `node:22-bookworm-slim` pinned by digest (the same digest in all four), a
+    non-root user. Only the L2 image adds `config/`, `docs/l2-control.openapi.yaml` (as
+    `dist/docs/`, where the API-docs module looks for it) and `/app/.local` for the NFS ledger.
   - `engines.node` becomes `>=22.13`, Mastra's floor.
 - **Rationale**:
   - The services run TypeScript through `tsx` today, and `tsx` is a dev dependency. A compiled
-    `dist/` keeps dev tools (ganache, solc, vitest) out of the image.
+    `dist/` keeps dev tools (ganache, solc, vitest) out of the images.
   - `npm install`, not `npm ci`, because of the lockfile quirk (CLAUDE.md). On Linux, darwin-only
     `fsevents` is skipped.
-  - One image keeps builds simple. Isolation comes from identities, env and network, not from
-    which code is in the image; the image holds no key.
+  - Identities, env and network remain the primary isolation, and no image holds a key. Per-layer
+    images add code isolation on top: the L1 and L3 images don't contain the signer, and the L2 and
+    L3 images contain no agent framework or model SDK (T-IMG-01). Each image is also smaller. On
+    2026-10-25 the one shared image was 874 MB; the four are L1 640 MB, L2 539 MB, L3 512 MB and the
+    seller 585 MB.
 - **Alternatives considered**:
   - `tsx` in production: ships a dev toolchain.
   - Node's built-in type stripping: the code imports `.js` specifiers that point at `.ts` files,
     which type stripping doesn't rewrite.
-  - One image per layer: more pipelines for no isolation gain.
+  - One image for every process (the first decision): simpler builds, but every process carries
+    every layer's code and packages.
+  - Bundling each entry point into one file: smaller still, but production would then run bundled
+    copies of Mastra and the SDKs instead of the same modules the tests and the demo load.
 
 ## R15. Infrastructure as code and its test (FR-010, FR-023, T-IAC-01)
 

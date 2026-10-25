@@ -3,13 +3,16 @@
 // - secrets reach only the container that needs them, as Key Vault references from the unit's own vault;
 // - L2 and L3 have internal-only ingress through a loopback proxy sidecar that has no env and no secrets;
 // - identity lifecycle is Main only for the agent (Foundry tokens); None everywhere else;
-// - L2 runs exactly one replica with the NFS ledger at /app/.local (L2-6).
+// - L2 runs exactly one replica with the NFS ledger at /app/.local (L2-6);
+// - each app and job runs from its own layer's image: the agent and job-regression from L1's, L2 and
+//   job-operator from L2's, L3 from L3's.
 param location string
 param mainEnvId string
 param mainDomain string
 param cpDomain string
 param ledgerStorageName string
-param image string
+@description('Unit key (l1, l2, l3) → that layer\'s image (research R14).')
+param images object
 param proxyImage string
 param acrServer string
 @description('Identity name → { id, clientId }.')
@@ -60,7 +63,7 @@ resource agent 'Microsoft.App/containerApps@2025-01-01' = {
       containers: [
         {
           name: 'agent'
-          image: image
+          image: images.l1
           command: ['node', 'dist/src/hosted-main.js']
           resources: { cpu: json('0.5'), memory: '1Gi' }
           env: [
@@ -121,7 +124,7 @@ resource control 'Microsoft.App/containerApps@2025-01-01' = {
       containers: [
         {
           name: 'l2'
-          image: image
+          image: images.l2
           command: ['node', 'dist/src/layer2-control/service.js']
           resources: { cpu: json('0.5'), memory: '1Gi' }
           env: [
@@ -182,7 +185,7 @@ resource verifier 'Microsoft.App/containerApps@2025-01-01' = {
       containers: [
         {
           name: 'l3'
-          image: image
+          image: images.l3
           command: ['node', 'dist/src/layer3-settlement/service.js']
           resources: { cpu: json('0.5'), memory: '1Gi' }
           env: [
@@ -233,7 +236,7 @@ resource operatorJob 'Microsoft.App/jobs@2025-01-01' = {
       containers: [
         {
           name: 'operator'
-          image: image
+          image: images.l2
           command: ['node', 'dist/scripts/escalations.js']
           resources: { cpu: json('0.25'), memory: '0.5Gi' }
           env: [
@@ -275,7 +278,7 @@ resource regressionJob 'Microsoft.App/jobs@2025-01-01' = {
       containers: [
         {
           name: 'regression'
-          image: image
+          image: images.l1
           command: ['node', 'dist/src/main.js', '--scripted', '--check-baseline']
           resources: { cpu: json('0.25'), memory: '0.5Gi' }
           env: [

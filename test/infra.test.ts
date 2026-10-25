@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Bicep } from "@azure/bicep-rpc-client";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { IMAGES, type ImageName } from "../scripts/image-closure.js";
 
 const BICEP_PATH = process.env.BICEP_PATH;
 
@@ -29,6 +30,9 @@ const KV_SECRETS_USER = "4633458b-17de-408a-b874-0445c86b69e6";
 const ACR_PULL = "7f951dda-4ed3-4680-a7ca-43fe172d538d";
 const COGNITIVE_SERVICES_USER = "a97b65f3-24c7-4388-baec-2e87135dc908";
 const EXTERNAL_OK = new Set(["ca-l1-agent", "ca-seller", "ca-seller-alias"]);
+/** Unit key → its image (scripts/image-closure.ts), and the unit each app and job belongs to (rule 12). */
+const UNIT_IMAGE: Record<string, ImageName> = { l1: "l1-agent", l2: "l2-control", l3: "l3-verifier", seller: "seller" };
+const APP_UNIT: Record<string, string> = { "ca-l1-agent": "l1", "job-regression": "l1", "ca-l2-control": "l2", "job-operator": "l2", "ca-l3-verifier": "l3", "ca-seller": "seller", "ca-seller-alias": "seller" };
 
 /** `network`, `vault`, `apps`… from a nested deployment's (possibly expression) name. */
 function moduleName(name: string): string {
@@ -57,14 +61,14 @@ function namesOf(r: Res): string[] {
 }
 
 const apps = (all: Res[]) => all.filter((r) => r.type === "Microsoft.App/containerApps" || r.type === "Microsoft.App/jobs");
-type Container = { name: string; env?: { name: string; value?: string; secretRef?: string }[]; volumeMounts?: { volumeName: string; mountPath: string }[] };
+type Container = { name: string; image?: string; command?: string[]; env?: { name: string; value?: string; secretRef?: string }[]; volumeMounts?: { volumeName: string; mountPath: string }[] };
 const containersOf = (r: Res) => ((r.properties.template as Json)?.containers ?? []) as Container[];
 const configOf = (r: Res) => (r.properties.configuration ?? {}) as Json;
 const secretsOf = (r: Res) => (configOf(r).secrets ?? []) as { name: string; keyVaultUrl?: string; value?: string }[];
 const deploymentParam = (all: Res[], module: string, param: string) =>
   JSON.stringify(((all.find((r) => r.type === "Microsoft.Resources/deployments" && moduleName(r.name) === module)?.properties.parameters ?? {}) as Json)[param] ?? null);
 
-/** Rules 1–11 of contracts/cloud-topology.md. Returns one message per violation, prefixed `rule N:`. */
+/** Rules 1–12 of contracts/cloud-topology.md. Returns one message per violation, prefixed `rule N:`. */
 export function violations(arm: Json, infraFiles: Record<string, string>): string[] {
   const v: string[] = [];
   const all = flatten(arm);
@@ -213,6 +217,26 @@ export function violations(arm: Json, infraFiles: Record<string, string>): strin
     v.push("rule 11: the agent's AUTH_AUDIENCE must come from the authAudience parameter");
   }
 
+  // Rule 12: each app and job runs from its own unit's image (research R14), x402-<image>:<imageTag>, and that
+  // image contains the entry point its command runs. The proxy sidecars run the pinned nginx image.
+  const passed = (module: string, param: string) => (JSON.parse(deploymentParam(all, module, param)) as { value?: unknown } | null)?.value;
+  const selects = (expr: unknown, unit: string) =>
+    typeof expr === "string" && expr.endsWith(`.${unit}]`) && expr.includes(`'${unit}', format('{0}/x402-${UNIT_IMAGE[unit]}:{1}'`);
+  const appImages = (passed("apps", "images") ?? {}) as Record<string, unknown>;
+  for (const unit of ["l1", "l2", "l3"]) if (!selects(appImages[unit], unit)) v.push(`rule 12: apps image ${unit} is not x402-${UNIT_IMAGE[unit]}:<imageTag>`);
+  if (!selects(passed("sellers", "image"), "seller")) v.push("rule 12: the sellers' image is not x402-seller:<imageTag>");
+  for (const a of apps(all)) {
+    const name = namesOf(a).join("/");
+    for (const c of containersOf(a)) {
+      if (c.image === "[parameters('proxyImage')]") continue;
+      const unit = a.module === "sellers" && c.image === "[parameters('image')]" ? "seller" : /^\[parameters\('images'\)\.(l1|l2|l3)\]$/.exec(String(c.image))?.[1];
+      const entry = c.command?.[1]?.replace(/^dist\//, "").replace(/\.js$/, ".ts");
+      if (unit === undefined) v.push(`rule 12: ${name}/${c.name} runs no layer image`);
+      else if (namesOf(a).some((n) => APP_UNIT[n] !== unit)) v.push(`rule 12: ${name}/${c.name} runs the ${UNIT_IMAGE[unit]} image, not its own unit's`);
+      else if (entry === undefined || !IMAGES[UNIT_IMAGE[unit]].entries.includes(entry)) v.push(`rule 12: ${name}/${c.name} runs ${c.command?.[1]}, which the ${UNIT_IMAGE[unit]} image doesn't contain`);
+    }
+  }
+
   return v;
 }
 
@@ -260,7 +284,7 @@ describe.skipIf(!BICEP_PATH)("T-IAC-01 Azure identity, secret and exposure rules
     return violations(await compile(dir), infraSources(dir));
   }
 
-  it("T-IAC-01 the real template passes rules 1–11", async () => {
+  it("T-IAC-01 the real template passes rules 1–12", async () => {
     expect(violations(await compile("infra"), infraSources("infra"))).toEqual([]);
   }, 60_000);
 
@@ -275,7 +299,7 @@ resource extraRead 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   }
 }
 `;
-    const v = await mutant("main.bicep", "var image = ", `${extra}\nvar image = `);
+    const v = await mutant("main.bicep", "var images = ", `${extra}\nvar images = `);
     expect(v.some((m) => m.startsWith("rule 1:"))).toBe(true);
   }, 60_000);
 
@@ -302,5 +326,15 @@ resource extraRead 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   it("T-IAC-01 must-fail rule 11: an api:// default for the agent's audience is reported", async () => {
     const v = await mutant("main.bicep", "@minLength(36)\n@maxLength(36)\nparam authAudience string\n", "param authAudience string = 'api://x402-l1-agent'\n");
     expect(v).toContain("rule 11: authAudience must be a required 36-character parameter (the API app's client ID)");
+  }, 60_000);
+
+  it("T-IAC-01 must-fail rule 12: L2 running from the L1 image is reported", async () => {
+    const v = await mutant("modules/apps.bicep", "image: images.l2\n          command: ['node', 'dist/src/layer2-control/service.js']", "image: images.l1\n          command: ['node', 'dist/src/layer2-control/service.js']");
+    expect(v).toContain("rule 12: ca-l2-control/l2 runs the l1-agent image, not its own unit's");
+  }, 60_000);
+
+  it("T-IAC-01 must-fail rule 12: an operator command the L2 image doesn't contain is reported", async () => {
+    const v = await mutant("modules/apps.bicep", "command: ['node', 'dist/scripts/escalations.js']", "command: ['node', 'dist/src/main.js']");
+    expect(v).toContain("rule 12: job-operator/operator runs dist/src/main.js, which the l2-control image doesn't contain");
   }, 60_000);
 });
