@@ -249,6 +249,7 @@ A milestone must pass its exit check before the next one starts.
 | `test/entra-app.test.ts` | T-AGT-03: `infra/entra-app.sh` against a fake `az`: client ID as the audience, people's scope with the Azure CLI pre-authorized, idempotent re-runs |
 | `test/images.test.ts` | T-IMG-01: each image holds only its own layer's code and packages (only L2's has the signer) |
 | `test/deploy-workflow.test.ts` | T-E2E-AZ: the four deploy pipelines' gates, skips and rollback |
+| `test/github-setup.test.ts` | T-E2E-AZ: `infra/github-setup.sh` against a fake `gh`: exactly the declared secrets, on stdin and never printed; a credential or a value of the wrong shape sends nothing |
 | `test/openapi.test.ts` | T-API-01..03: `docs/l2-control.openapi.yaml` matches L2's routes, tokens, statuses and response shapes; T-API-04: the Swagger UI routes are off by default, same-origin and serve fixed files only |
 
 Run one test with `npx vitest run test/policy.test.ts -t "<name>"`.

@@ -23,7 +23,9 @@ Four pipelines deploy the Azure profile (revised 2026-10-25; first one workflow,
   - `SELLER_PAY_TO`, `PAYER_ADDRESS`: public addresses.
 
   The layer callers pass them with `secrets: inherit`. They are identifiers, kept as secrets so the
-  logs mask them. No credential is stored in GitHub: the payer key, the CDP key and the service
+  logs mask them. `infra/github-setup.sh` sets them, and creates the GitHub environment, from
+  `env/infra.env` (gitignored; template `env/infra.env.example`). It sends nothing if the file holds
+  any other key or a value of the wrong shape. No credential is stored in GitHub: the payer key, the CDP key and the service
   tokens live only in the Key Vaults, seeded by hand. T-E2E-AZ reports any other secret, and any
   `azure/login` input other than the three OIDC identifiers.
 - **Mixed commits.** Each deployment comes from one commit (FR-023), but the layers can run different

@@ -18,7 +18,7 @@ The hosted agent service: L1 as an HTTP service built on Mastra, deployable to A
 |---|---|
 | §3.1, L1-6 | A second L1 entry point, `src/hosted-main.ts` (`npm run agent:hosted`), serves `POST /v1/runs` to requesters with Entra ID tokens carrying `Agent.Run`. Same two tools, prompt and limits as L1-3. |
 | §3.1 Azure profile | One Container Apps environment. The agent has public ingress; L2 and L3 have internal-only ingress through a loopback-forwarding sidecar. One identity and one Key Vault per runtime unit, and the sellers live in a separate environment. One image per layer, plus the seller's, each holding only that unit's code. |
-| §3.3, CFG-2 | New credentials: the requester's Entra token (verified by L1 only), `SESSION_REF_SECRET` (L1 only) and the agent identity's Foundry access. New env file `env/l1-hosted.env`; `env/l1-agent.env` gains optional `SELLER_ALIAS_URL`. |
+| §3.3, CFG-2 | New credentials: the requester's Entra token (verified by L1 only), `SESSION_REF_SECRET` (L1 only) and the agent identity's Foundry access. New env file `env/l1-hosted.env`; `env/l1-agent.env` gains optional `SELLER_ALIAS_URL`. `env/infra.env` holds the deploy identifiers that `infra/github-setup.sh` sets as GitHub secrets. |
 | INV-3 | Names both L1 entry points; both load env and then refuse. |
 | L1-4 | Optional seller alias for step 6, and `--check-baseline` (exit 2 on a mismatch). |
 | L2-6 | One ledger writer: L2 takes an exclusive lock beside the ledger before loading it, and waits in standby while another holder's heartbeat is fresh. |
@@ -301,10 +301,11 @@ tsconfig.build.json              emits dist/ for src/ and the operator commands 
 config/mandate.json              spending mandate (CFG-3)
 contracts/MockUSDC.sol           local-only EIP-3009 token (CP-4)
 docs/l2-control.openapi.yaml     OpenAPI 3.1 copy of the L2 HTTP API (L2-5); kept in sync by T-API-01..03; L2 serves it with API_DOCS=1
-env/*.env.example                one env template per process (CFG-2)
-infra/                           Azure profile (§3.1, v1.5): main.bicep (the platform), l1-agent.bicep, l2-control.bicep,
-                                 l3-verifier.bicep, seller.bicep (one per unit), modules/*.bicep, params/dev*.bicepparam,
-                                 proxy/nginx-l{2,3}.conf (loopback sidecars), entra-app.sh, run-job.sh (T-IAC-01)
+env/*.env.example                one env template per process, plus infra.env.example for infra/github-setup.sh (CFG-2)
+infra/                           Azure profile (§3.1, v1.5; T-IAC-01): main.bicep (the platform), l1-agent.bicep,
+                                 l2-control.bicep, l3-verifier.bicep, seller.bicep (one per unit), modules/*.bicep,
+                                 params/dev*.bicepparam, proxy/nginx-l{2,3}.conf (loopback sidecars), entra-app.sh,
+                                 run-job.sh, github-setup.sh (the GitHub environment and secrets, from env/infra.env)
 scripts/
   local-chain-lib.ts             start ganache, compile + deploy MockUSDC, mint 10 USDC to payer, localDevKeys()
   facilitator.ts                 facilitator entry point: loads env, derives its account, starts the factory
@@ -362,10 +363,12 @@ test/
   cdp-config.test.ts  cdp-auth.test.ts  cdp-isolation.test.ts  cdp-failures.test.ts  escalations.test.ts
   openapi.test.ts
   hosted-agent.test.ts  hosted-access.test.ts  hosted-sessions.test.ts  hosted-run.test.ts   (L1-6, v1.5)
-  ledger-lock.test.ts  infra.test.ts  images.test.ts  entra-app.test.ts  deploy-workflow.test.ts   (L2-6, Azure, v1.5)
+  ledger-lock.test.ts  infra.test.ts  images.test.ts  entra-app.test.ts  deploy-workflow.test.ts
+  github-setup.test.ts   (L2-6, Azure, v1.5)
   helpers/hosted.ts              in-process hosted service: dev issuer, mock model, fake or harness ports
   fixtures/lock-holder.ts        child process holding the ledger lock until SIGTERM (T-LED-05)
   fixtures/fake-az.mjs           fake `az` with Graph state in a file, for infra/entra-app.sh (T-AGT-03)
+  fixtures/fake-gh.mjs           fake `gh` recording each call and its stdin, for infra/github-setup.sh (T-E2E-AZ)
   helpers/harness.ts             in-process multi-service harness shared by e2e suites
   helpers/fake-public-client.ts  deterministic read-only chain client for L3 unit tests
   helpers/cdp-stub.ts            offline CDP facilitator stub: verifies JWTs, delegates to the local facilitator
@@ -751,6 +754,7 @@ With `cdp`, a missing or empty `CDP_API_KEY_ID` or `CDP_API_KEY_SECRET`, or a se
 | `seller.env` | `NETWORK, SELLER_PAY_TO, FACILITATOR?, FACILITATOR_URL?, CDP_API_KEY_ID?, CDP_API_KEY_SECRET?` (the CDP pair is required when the choice is `cdp`) |
 | `facilitator.env` | `NETWORK=local, FACILITATOR_PRIVATE_KEY` |
 | `operator.env` | `CONTROL_URL, OPERATOR_TOKEN` |
+| `infra.env` (v1.5) | `GITHUB_REPO, GITHUB_ENVIRONMENT, AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID, AGENT_API_CLIENT_ID?, SELLER_PAY_TO, PAYER_ADDRESS`. Not a process's file: `infra/github-setup.sh` reads it to set the deploy workflows' GitHub secrets, and refuses any other key. Identifiers and public addresses only |
 
 Token defaults (`dev-control-token`, `dev-settlement-token`, `dev-verifier-token`, `dev-operator-token`) apply only when `NETWORK=local`. On any other network, a missing or empty token is a startup error. An empty token is always a startup error.
 - Each entry point calls `loadEnv()`. `ENV_FILE` defaults to the process's own file (§3.1), and a caller can override it.
@@ -854,7 +858,7 @@ Residual risks added in v1.4:
 | T-LED-03 | ledger | anomaly reports are ignored for the effective status |
 | T-LED-04 | escalations | L2-4.3 state derivation and the 300 s boundary; `findRejection`, `findPendingEscalation`; the sweep appends each expiry and lapse once, also after a restart; operator views and events carry no secret-bearing keys. **Must fail without the clock check**: with no sweep, the state is already expired at 300 s |
 | T-ARCH-* | architecture | rules A1–A7 (§4.1). Each fixture under `test/fixtures/arch/` trips its rule. |
-| T-ARCH-ENV | architecture | each `env/*.env.example` holds only its process's variables; private keys are empty |
+| T-ARCH-ENV | architecture | each `env/*.env.example` holds only its process's variables, and `infra.env.example` only the deploy identifiers; private keys are empty |
 | T-ARCH-TRACE | architecture | every test ID named in the §11 threat matrix (specs/007 contracts) appears in a test title; a row naming a missing test fails |
 | T-ARCH-BIND | e2e | `listenControl`/`listenSettlement` bind 127.0.0.1 with `CONTROL_PORT`/`SETTLEMENT_PORT` overridden |
 | T-AUTH-01 | e2e | `POST /v1/authorize` with `SETTLEMENT_TOKEN`, `VERIFIER_TOKEN` or `OPERATOR_TOKEN` → 401; the ledger is unchanged |
@@ -880,7 +884,7 @@ Residual risks added in v1.4:
 | T-LED-05 | ledger-lock | one ledger writer (L2-6): a second acquirer waits while a fresh lock is held and takes it within 2 s of SIGTERM; a 31 s stale lock is taken over; a lost lock is reported; `main()` locks before loading. **Must fail**: two unlocked writers fork the chain and the reload throws `integrity` |
 | T-IAC-01 | infra (needs `BICEP_PATH`) | the compiled `infra/main.bicep`: role assignments only per the identity–vault matrix; the payer key only in `ca-l2-control/l2` from the l2 vault; internal-only L2/L3; one L2 replica on NFS; sidecars without env or secrets; identity lifecycle `Main` only for the agent; sellers in their own environment; no secret literals; `ALLOWED_HOSTS` is the seller, not the alias; vault firewalls deny by default; the agent's audience is a required client ID; each app and job on its own unit's image, which contains its command's entry point; each unit template deploys only its own apps and looks up only its own identities and vaults; the model is keyless (Foundry refuses API keys, no container gets an Anthropic key, the agent signs in as `id-l1`). All five templates (platform and units) are compiled together. **Must fail**: twelve mutants (rules 1, 2, 3, 9, 10, 11, and two each for rules 12, 13 and 14) |
 | T-IMG-01 | images | each image's import graph (`scripts/image-closure.ts`) stays in its own folders and uses only runtime dependencies; only the L2 image holds the signer; only the L1 image holds Mastra and the model SDKs; every Dockerfile builds its own image from the same pinned base and loads every module once. **Must fail**: L1 reaching the signer; a package resolved at run time but not listed; an imported package missing from `dependencies` |
-| T-E2E-AZ | deploy-workflow (static) and the live workflows | the four pipelines (`deploy-infra.yml`; `deploy-l1/l2/l3.yml` over `deploy-layer.yml`): OIDC only, one concurrency group, manual or tag triggers; every gate (tests, T-IAC-01, image scan, deploy, wait, balance, `--check-baseline` regression, chain, smoke ≤ 120 s, log scan) before promotion; gates skipped only by an explicit first deployment of L2 or L3, or by the infra run's first, platform-only run; every image built by exactly one pipeline; `job-operator` started only with commands of the L2 image; rollback of the unit to `last-good` on failure without touching the agent's traffic. **Must fail**: promoting before the regression; a regression skipped by another condition (layer and infra); a first deployment of L1; a layer pipeline deploying another layer's image; an infra run that doesn't build the seller's image; a `job-operator` command the L2 image doesn't contain |
+| T-E2E-AZ | deploy-workflow (static) and the live workflows | the four pipelines (`deploy-infra.yml`; `deploy-l1/l2/l3.yml` over `deploy-layer.yml`): OIDC only, one concurrency group, manual or tag triggers; every gate (tests, T-IAC-01, image scan, deploy, wait, balance, `--check-baseline` regression, chain, smoke ≤ 120 s, log scan) before promotion; gates skipped only by an explicit first deployment of L2 or L3, or by the infra run's first, platform-only run; every image built by exactly one pipeline; `job-operator` started only with commands of the L2 image; rollback of the unit to `last-good` on failure without touching the agent's traffic; `infra/github-setup.sh` (against a fake `gh`) sets exactly the declared secrets from `env/infra.env`, on stdin and never printed, and sends nothing for an unknown key, a credential or a value of the wrong shape. **Must fail**: promoting before the regression; a regression skipped by another condition (layer and infra); a first deployment of L1; a layer pipeline deploying another layer's image; an infra run that doesn't build the seller's image; a `job-operator` command the L2 image doesn't contain; the setup script with a looser address check (a private key reaches GitHub) or with the values in `gh`'s arguments |
 | T-CDP-01 | cdp-config | the `facilitatorChoice` matrix (CP-3), and the public path sends no credential |
 | T-CDP-02 | cdp-isolation | seller startup fails closed: missing ID or secret, malformed secret, conflicts; the log line format; the unused-credential warning |
 | T-CDP-03 | cdp-auth | JWT headers (EdDSA, ES256 from PKCS#8 and SEC1); the scripted plan through a JWT-verifying CDP stub matches T-E2E-01 |

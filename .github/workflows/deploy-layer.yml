@@ -4,7 +4,7 @@
 # repeats the cloud regression through all of them before it promotes anything. T-E2E-AZ:
 # test/deploy-workflow.test.ts checks this file's step order and rollback offline.
 #
-# GitHub secrets, passed by the callers with `secrets: inherit` (store them as repository secrets):
+# GitHub secrets, passed by the callers with `secrets: inherit` (repository secrets; infra/github-setup.sh sets them):
 # - AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID: the deploy app's OIDC sign-in;
 # - AGENT_API_CLIENT_ID: the API app's client ID, which infra/entra-app.sh prints as AUTH_AUDIENCE;
 # - SELLER_PAY_TO, PAYER_ADDRESS: public addresses.

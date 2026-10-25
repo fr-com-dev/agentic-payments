@@ -433,6 +433,11 @@ const TEMPLATES: Record<string, TemplateSpec> = {
   },
   facilitator: { required: ["NETWORK", "FACILITATOR_PRIVATE_KEY"], optional: ["FACILITATOR_PORT"] },
   operator: { required: ["CONTROL_URL", "OPERATOR_TOKEN"], optional: [] },
+  // Not a process: infra/github-setup.sh's input on an operator's machine. Identifiers and public addresses only.
+  infra: {
+    required: ["GITHUB_REPO", "GITHUB_ENVIRONMENT", "AZURE_CLIENT_ID", "AZURE_TENANT_ID", "AZURE_SUBSCRIPTION_ID", "SELLER_PAY_TO", "PAYER_ADDRESS"],
+    optional: ["AGENT_API_CLIENT_ID"],
+  },
 };
 
 interface TemplateEntry {
@@ -469,7 +474,7 @@ export function checkTemplate(name: string, entries: TemplateEntry[]): string[] 
 }
 
 describe("T-ARCH-ENV per-process env templates (US4)", () => {
-  it("7 of 7 templates exist and match the CFG-2 matrix", () => {
+  it("8 of 8 templates exist and match the CFG-2 matrix", () => {
     const errors = Object.keys(TEMPLATES).flatMap((name) => {
       const file = `env/${name}.env.example`;
       if (!existsSync(file)) return [`${file} missing`];

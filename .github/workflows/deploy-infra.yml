@@ -6,7 +6,7 @@
 # also repeats the cloud regression, because a platform change can break them. T-E2E-AZ:
 # test/deploy-workflow.test.ts checks this file's step order and rollback offline.
 #
-# GitHub secrets (store them as repository secrets): AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID
+# GitHub secrets (repository secrets; infra/github-setup.sh sets them): AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID
 # (the deploy app's OIDC sign-in), SELLER_PAY_TO and PAYER_ADDRESS (public addresses). They are identifiers,
 # kept as secrets so the logs mask them. No credential is stored in GitHub: Azure sign-in is OIDC, and the
 # application's secrets live only in the Key Vaults, seeded by hand (quickstart §4) after the first,

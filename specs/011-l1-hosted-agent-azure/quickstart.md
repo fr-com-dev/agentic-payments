@@ -97,17 +97,19 @@ for Entra ID.
 - a production CDP key for the seller;
 - the deploy app registration with an OIDC federated credential for this repository, for the
   `dev` environment;
-- the repository secrets the workflows read, all identifiers or public addresses: set them with
-  `gh secret set <NAME>` (step 0 adds `AGENT_API_CLIENT_ID`):
+- the `dev` GitHub environment and the repository secrets the workflows read, all identifiers or
+  public addresses. Fill in `env/infra.env` (gitignored), then run `infra/github-setup.sh`. Step 0
+  adds `AGENT_API_CLIENT_ID`:
 
   ```bash
-  gh secret set AZURE_CLIENT_ID          # the deploy app's client ID
-  gh secret set AZURE_TENANT_ID
-  gh secret set AZURE_SUBSCRIPTION_ID
-  gh secret set SELLER_PAY_TO            # the seller's public payTo address
-  gh secret set PAYER_ADDRESS            # the payer's public address (the balance check)
+  cp env/infra.env.example env/infra.env   # GITHUB_REPO, GITHUB_ENVIRONMENT, the deploy app's
+                                           # AZURE_* IDs, SELLER_PAY_TO, PAYER_ADDRESS
+  infra/github-setup.sh --dry-run          # checks the file and sends nothing
+  infra/github-setup.sh                    # creates the environment and sets the secrets
   ```
 
+  The script accepts only those keys, checks each value's shape (a GUID, or a 0x address of 40 hex
+  digits) and sends nothing if any check fails. Values reach `gh` on stdin and are never printed.
   Never store a credential as a GitHub secret: the payer key, the CDP key and the tokens go only
   into the Key Vaults (step 3).
 
@@ -115,8 +117,8 @@ for Entra ID.
    It creates the API registration, `Agent.Run` and the delegated scope `user_impersonation` (the
    Azure CLI is pre-authorized for it), and assigns the role to the deploy service principal for the
    smoke check and to you. That grants the pipeline and you spending through the agent, within the
-   mandate. It prints `AUTH_AUDIENCE`, the app's client ID: store it as the repository secret
-   `AGENT_API_CLIENT_ID` (`gh secret set AGENT_API_CLIENT_ID`). The L1 deployment doesn't compile
+   mandate. It prints `AUTH_AUDIENCE`, the app's client ID: put it in `env/infra.env` as
+   `AGENT_API_CLIENT_ID` and run `infra/github-setup.sh` again. The L1 deployment doesn't compile
    without it.
 1. **Create the platform.** Run the workflow `deploy-infra` with `environment=dev` and
    `platform-only: true`. It creates the network, identities, registry, the five vaults, storage,

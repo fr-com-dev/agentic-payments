@@ -29,6 +29,7 @@ npm run ledger-verify                        # operator: exit 0 only when the ha
 npm run build                                # dist/ (tsconfig.build.json); each image's build stage runs it
 docker build -f docker/l1-agent.Dockerfile -t x402-l1-agent .   # one image per layer (docker/); the seller's is the root Dockerfile
 BICEP_PATH=~/.azure/bin/bicep npx vitest run test/infra.test.ts   # T-IAC-01 on the compiled Bicep
+infra/github-setup.sh [--dry-run]            # GitHub environment and the six deploy secrets, from env/infra.env
 npx vitest run test/policy.test.ts -t "<name>"   # single test
 ```
 
@@ -80,7 +81,7 @@ npx vitest run test/policy.test.ts -t "<name>"   # single test
 - Mastra (`@mastra/core`) needs Node ≥ 22.13. Use it as a library only: no Mastra server, CLI or instance. Its own logger is silenced because a provider error can carry the request body.
 - A Foundry deployment name must equal the model id (`claude-sonnet-5-5`); with any other id the AI SDK's Anthropic provider can add a third `json` tool, so the service refuses unknown ids.
 - Entra v2.0 access tokens carry the API app's client ID as `aud`, never `api://x402-l1-agent`. In Azure, `AUTH_AUDIENCE` is that GUID (`infra/entra-app.sh` prints it; GitHub secret `AGENT_API_CLIENT_ID`), and the agent refuses anything else unless it uses the local dev issuer.
-- The deploy workflows read six GitHub repository secrets, all identifiers or public addresses: `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `AGENT_API_CLIENT_ID`, `SELLER_PAY_TO`, `PAYER_ADDRESS`. Never add a credential (payer key, CDP key, tokens) as a GitHub secret: those live only in the Key Vaults, seeded by hand. T-E2E-AZ fails on any other secret, and on a sign-in that isn't OIDC.
+- The deploy workflows read six GitHub repository secrets, all identifiers or public addresses: `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `AGENT_API_CLIENT_ID`, `SELLER_PAY_TO`, `PAYER_ADDRESS`. `infra/github-setup.sh` sets them from `env/infra.env` and refuses any other key. Never add a credential (payer key, CDP key, tokens) as a GitHub secret: those live only in the Key Vaults, seeded by hand. T-E2E-AZ fails on any other secret, and on a sign-in that isn't OIDC.
 - In Azure, `deploy-infra.yml` owns the platform (`infra/main.bicep`) and the sellers. Each layer's pipeline owns its own template (`infra/<image>.bicep`). The first deployment runs in order: infra with `platform-only`, seed the vaults, infra, L2 and L3 with `first-deployment`, then L1 (quickstart §4).
 - In Azure, L2 waits in standby for the ledger lock during a revision update (L2-6). Calls get 502 from its sidecar until the old revision releases the lock; L1 reports ERROR and nothing is paid.
 - A CDP **Sandbox** key also shows up as `facilitator authentication` (401). Keys are environment-scoped, and the Sandbox has no x402 facilitator. Use a production key; it still settles on Base Sepolia.
