@@ -176,6 +176,7 @@ It exits with code 1 and a refusal message (SPEC §12 manual check).
 **Composition root (L1-5)**
 
 - **FR-019**: The agent entry point MUST exit with code 1 if the payer private key variable is present in its environment. *(SPEC: L1-5, INV-3)*
+  *Extended by 011 (SPEC v1.5): a second L1 entry point, `src/hosted-main.ts` (L1-6), obeys the same rule. Both roots load their env file first and then refuse, so a key placed in the env file is refused too; the shared refusal text lives in `src/refusal.ts`.*
 - **FR-020**: The session ID MUST be the configured `SESSION_ID`, or else a generated `sess_<8 hex>`. *(SPEC: L1-5)*
 - **FR-021**: A `--scripted` switch MUST select the scripted agent. Otherwise the LLM agent runs, with the goal taken from the command arguments or a default goal. *(SPEC: L1-5)*
 - **FR-022**: On completion, the entry point MUST print the session's final budget status. *(SPEC: L1-5)*

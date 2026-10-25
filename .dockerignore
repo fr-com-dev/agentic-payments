@@ -1,0 +1,16 @@
+# Never send local state, env files or keys to the build context (specs/011 SC-005).
+.git
+.local
+env
+node_modules
+dist
+test
+specs
+infra
+.github
+.claude
+.specify
+coverage
+*.log
+.DS_Store
+.env*

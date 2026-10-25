@@ -292,7 +292,8 @@ describe("T-ARCH scanner on the real tree (T006)", () => {
   });
 
   it("010 US5 L1 never references operator routes or the operator token (SEC-8, INV-13)", () => {
-    const l1Files = [...walk("src/layer1-intent"), "src/main.ts"];
+    // Both L1 entry points (011 adds src/hosted-main.ts, which builds the L1 port adapters).
+    const l1Files = [...walk("src/layer1-intent"), "src/main.ts", "src/hosted-main.ts"];
     expect(l1Files.length).toBeGreaterThan(1);
     for (const f of l1Files) {
       // Comments may document the absence (ports-http.ts does); only code counts, as for A8.
@@ -300,6 +301,21 @@ describe("T-ARCH scanner on the real tree (T006)", () => {
         .replace(/\/\*[\s\S]*?\*\//g, "")
         .replace(/(^|[^:])\/\/.*$/gm, "$1");
       for (const needle of ["/v1/rejections", "/v1/approvals", "/v1/escalations", "OPERATOR_TOKEN"]) {
+        expect(src.includes(needle), `${f} references ${needle}`).toBe(false);
+      }
+    }
+  });
+});
+
+describe("011 US2 hosted agent service (SEC-8, INV-13)", () => {
+  it("011 US2 the hosted root offers no operator path", () => {
+    const files = [...walk("src/layer1-intent/hosted"), "src/hosted-main.ts"];
+    expect(files.length).toBeGreaterThan(5);
+    for (const f of files) {
+      const src = readFileSync(f, "utf8")
+        .replace(/\/\*[\s\S]*?\*\//g, "")
+        .replace(/(^|[^:])\/\/.*$/gm, "$1");
+      for (const needle of ["OPERATOR_TOKEN", "/v1/approvals", "/v1/rejections", "/v1/escalations", "/v1/ledger/verify", "operator"]) {
         expect(src.includes(needle), `${f} references ${needle}`).toBe(false);
       }
     }
@@ -397,7 +413,11 @@ interface TemplateSpec {
 const TEMPLATES: Record<string, TemplateSpec> = {
   "l1-agent": {
     required: ["NETWORK", "ANTHROPIC_API_KEY", "SELLER_URL", "CONTROL_URL", "SETTLEMENT_URL", "CONTROL_TOKEN", "VERIFIER_TOKEN"],
-    optional: ["ANTHROPIC_MODEL", "SESSION_ID"],
+    optional: ["ANTHROPIC_MODEL", "SESSION_ID", "SELLER_ALIAS_URL"],
+  },
+  "l1-hosted": {
+    required: ["NETWORK", "SELLER_URL", "CONTROL_URL", "SETTLEMENT_URL", "CONTROL_TOKEN", "VERIFIER_TOKEN", "MODEL_PROVIDER", "AUTH_TENANT_ID", "AUTH_AUDIENCE", "SESSION_REF_SECRET"],
+    optional: ["ANTHROPIC_MODEL", "ANTHROPIC_API_KEY", "FOUNDRY_BASE_URL", "AZURE_CLIENT_ID", "AUTH_JWKS_FILE", "AGENT_PORT", "AGENT_BIND_HOST"],
   },
   "l2-control": {
     required: ["NETWORK", "PAYER_PRIVATE_KEY", "ALLOWED_PAYEES", "ALLOWED_HOSTS", "CONTROL_TOKEN", "SETTLEMENT_TOKEN", "OPERATOR_TOKEN"],
@@ -440,7 +460,7 @@ export function checkTemplate(name: string, entries: TemplateEntry[]): string[] 
     if (!entries.some((e) => e.key === k && !e.commented)) errors.push(`${name}: missing required key ${k}`);
   }
   for (const e of entries) {
-    if (/PRIVATE_KEY$|_SECRET$/.test(e.key) && e.value !== "") errors.push(`${name}: ${e.key} must be empty in a template`);
+    if (/PRIVATE_KEY$|_SECRET$|_API_KEY$/.test(e.key) && e.value !== "") errors.push(`${name}: ${e.key} must be empty in a template`);
   }
   if (name === "facilitator" && !entries.some((e) => e.key === "NETWORK" && e.value === "local")) {
     errors.push("facilitator: NETWORK must be local");
@@ -449,7 +469,7 @@ export function checkTemplate(name: string, entries: TemplateEntry[]): string[] 
 }
 
 describe("T-ARCH-ENV per-process env templates (US4)", () => {
-  it("6 of 6 templates exist and match the CFG-2 matrix", () => {
+  it("7 of 7 templates exist and match the CFG-2 matrix", () => {
     const errors = Object.keys(TEMPLATES).flatMap((name) => {
       const file = `env/${name}.env.example`;
       if (!existsSync(file)) return [`${file} missing`];
@@ -535,8 +555,9 @@ function missingIds(rows: { sec: string; ids: string[] }[], titles: string[]): s
 }
 
 describe("T-ARCH-TRACE threat matrix → test titles (007 T051)", () => {
-  // SEC-10 and SEC-11 were added by 009 (SPEC v1.2), SEC-12 by 010 (v1.3), SEC-13 by the API docs (v1.4).
-  const SEC_ROWS = Array.from({ length: 13 }, (_, i) => `SEC-${i + 1}`);
+  // SEC-10 and SEC-11 were added by 009 (SPEC v1.2), SEC-12 by 010 (v1.3), SEC-13 by the API docs (v1.4),
+  // SEC-14..16 by 011 (v1.5, hosted agent service).
+  const SEC_ROWS = Array.from({ length: 16 }, (_, i) => `SEC-${i + 1}`);
   it(`every ${SEC_ROWS[0]}..${SEC_ROWS.at(-1)} row names at least one test, and each named ID is a test title`, () => {
     const rows = matrixRows(readFileSync(THREAT_MATRIX, "utf8"));
     expect(rows.map((r) => r.sec)).toEqual(SEC_ROWS);

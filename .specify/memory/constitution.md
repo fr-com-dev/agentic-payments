@@ -1,5 +1,17 @@
 <!--
 Sync Impact Report
+- Version change: 1.1.1 → 1.2.0 (MINOR, 2026-10-22, feature 011-l1-hosted-agent-azure)
+- Modified principles: V. Least-Privilege Credentials (adds the requester credential, and the
+  cloud reachability rule: loopback bind kept, reached through a same-app proxy sidecar inside one
+  private environment). No principle is redefined or removed.
+- Modified sections: Technology & Scope Constraints (the stack adds Mastra and its model, schema,
+  token and identity libraries for the hosted agent service only; the testnet Azure profile; Node
+  floor 22.13; residual risks for v1.5)
+- Templates reviewed: plan-template.md, spec-template.md, tasks-template.md (no change)
+- Source: SPEC.md v1.5 (Changes in 1.5, §3.1 Azure profile, §3.3, INV-3, L1-6, L2-6, §11 SEC-14..16)
+- Deferred TODOs: none
+
+Previous report (1.1.1)
 - Version change: 1.1.0 → 1.1.1 (PATCH, 2026-10-18, feature 010-operator-reject-flow)
 - Modified principles: I. Separation of Payment Authority (clarification: the agent never gets a tool
   that rejects, alongside signs, approves or edits policy). No principle is redefined or removed.
@@ -88,7 +100,13 @@ Rationale: authorization must be reproducible, auditable and race-free.
 - A third-party API credential (for example, the seller's CDP facilitator key) is held by
   exactly one process and confined to one file by an architecture rule. It must never become
   payment authority.
-- Internal control and verifier services listen only on the loopback interface.
+- A requester credential (the Entra ID token a person or system presents to the hosted agent
+  service) authenticates the requester to L1 only. It MUST NOT be forwarded to L2 or L3, and it
+  never replaces a role credential.
+- Internal control and verifier services listen only on the loopback interface. In the Azure
+  profile they keep that bind and are reached only through a proxy sidecar in the same app, on an
+  internal-only ingress inside one private environment. The sidecar holds no secrets and no
+  usable identity.
 
 ### VI. Exact Money Arithmetic
 
@@ -114,8 +132,11 @@ Rationale: authorization must be reproducible, auditable and race-free.
 - Stack (pinned, SPEC.md §5): Node.js 22 ESM, strict TypeScript, x402 SDK 2.28.0, viem,
   express, Anthropic SDK and vitest. Ganache and solc are used for the local chain only. The
   CDP SDK 1.59.0 is used by the seller only, through its auth subpath, to sign facilitator JWTs.
+  Added in 1.2.0, for the hosted agent service (L1) only: Mastra 1.75.0 used as a library,
+  `@ai-sdk/anthropic`, zod, jose and `@azure/identity`. The Node floor is 22.13.
 - Networks in scope: `local` (dev chain with a mock EIP-3009 USDC) and `base-sepolia`
-  (testnet USDC). Mainnet is out of scope.
+  (testnet USDC). Mainnet is out of scope. The Azure profile (Container Apps, Key Vault, Microsoft
+  Foundry) is in scope on testnet only.
 - Out of scope for v1: refunds and disputes, the `upto` and `batch-settlement` schemes,
   Solana, AP2, ACP, Visa TAP, Mastercard Agent Pay, multi-tenancy, a persistent DB beyond
   JSONL, and mTLS. Each extension (EXT-1..EXT-9) is delivered one per change and MUST
@@ -125,7 +146,12 @@ Rationale: authorization must be reproducible, auditable and race-free.
 - Accepted residual risks (v1): bearer tokens over loopback, key in an environment variable,
   single-node JSONL ledger, facilitator trusted for liveness, no refund path. Added in 1.1.0:
   the hosted facilitator sees payment metadata (payer, payee, amount, resource), and a settle
-  timeout without a transaction hash is indeterminate.
+  timeout without a transaction hash is indeterminate. Added in 1.2.0:
+  - the payer key in Azure Key Vault trusts that vault's RBAC holders;
+  - starting an operator or regression job grants that job's credentials;
+  - L2/L3 are reachable from the whole private environment, with roles enforced by bearer tokens;
+  - the single L2 instance has a lock-handover window;
+  - requester limits are per replica.
 
 ## Development Workflow & Quality Gates
 
@@ -154,4 +180,4 @@ New policy rules get a snake_case rule ID, a row in the SPEC rule table and a po
   design and again before implementation. Every review verifies the quality gates above.
 - Runtime guidance for agents lives in `CLAUDE.md`.
 
-**Version**: 1.1.1 | **Ratified**: 2026-10-16 | **Last Amended**: 2026-10-18
+**Version**: 1.2.0 | **Ratified**: 2026-10-16 | **Last Amended**: 2026-10-22
