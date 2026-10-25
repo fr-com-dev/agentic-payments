@@ -15,6 +15,9 @@
 | SEC-11 | A facilitator reports failure for a transfer that actually settled, so the budget under-counts | L3 checks any reported hash on-chain (L3-1 step 2, amended by 009, SPEC v1.2) | 009, 005 | T-CDP-06 |
 | SEC-12 | Operator free text (label, reason) reaches the LLM agent and acts as a prompt injection | The R15 `human_rejected` detail carries only the rejection ID; label and reason are stored as data and shown to the operator only (010, SPEC v1.3) | 010, 002 | T-POL-15 |
 | SEC-13 | The token-free API docs routes on L2 expose more than the document, or run third-party code on the signer's origin where operators type tokens | Off unless `API_DOCS=1`; three fixed files and the document, no ledger, mandate or signer access; Swagger UI from the pinned package, never a CDN; CSP limits scripts and requests to the L2 origin (SPEC v1.4) | v1.4 | T-API-04 |
+| SEC-14 | Anyone who can reach the public hosted agent endpoint spends from the budget | Entra ID token with `Agent.Run` checked before any model or L2 call; per-requester limits; L2's rules and budgets unchanged (SPEC v1.5 L1-6) | 011 | T-AGT-03 |
+| SEC-15 | A requester continues another requester's session and uses its approvals or budget | HMAC-bound session references; raw session IDs refused; a foreign reference → 404 (SPEC v1.5 L1-6) | 011 | T-AGT-04 |
+| SEC-16 | Secrets, requester tokens or payment headers reach logs or telemetry | Whitelisted JSON run log; Mastra logger silenced and no telemetry export; known-value tests offline and a shape scan of cloud logs (SPEC v1.5) | 011 | T-AGT-05, T-E2E-AZ |
 
 ## Accepted residual risks (v1)
 

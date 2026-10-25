@@ -22,12 +22,18 @@ npm run approve -- <id> [approver]           # operator: approve a pending escal
 npm run reject -- <id> [operator] [reason]   # operator: reject a pending escalation (R15 human_rejected)
 npm run escalations -- --watch               # operator: pending escalations, then each new one and outcome
 API_DOCS=1 npm run l2:control                # L2 plus Swagger UI at http://127.0.0.1:4020/docs (no token; off by default)
+npm run stack:local [-- --docker]            # chain, facilitator, seller, L2, L3 without an agent, until Ctrl-C
+npm run agent:hosted                         # hosted agent service (L1-6) on 127.0.0.1:4024; env/l1-hosted.env
+npm run dev-token -- --subject alice         # local dev issuer token for the hosted service (NETWORK=local only)
+npm run ledger-verify                        # operator: exit 0 only when the hash chain verifies
+npm run build                                # dist/ for the container image (tsconfig.build.json)
+BICEP_PATH=~/.azure/bin/bicep npx vitest run test/infra.test.ts   # T-IAC-01 on the compiled Bicep
 npx vitest run test/policy.test.ts -t "<name>"   # single test
 ```
 
 ## Hard rules (SPEC §4). Never break these to make something pass.
 1. A layer imports only `../shared/*` and its own folder. Cross-layer wiring happens only in `src/main.ts`, `scripts/` and `test/`.
-2. Within `src/`, only `src/layer2-control/signer.ts` touches payment key material (`scripts/` may derive local dev keys only). The seller's CDP API credential is an auth credential confined to `src/counterparty/cdp-facilitator.ts` (A8). L1 never references `PAYER_PRIVATE_KEY`. L3 never gets a wallet client.
+2. Within `src/`, only `src/layer2-control/signer.ts` touches payment key material (`scripts/` may derive local dev keys only). The seller's CDP API credential is an auth credential confined to `src/counterparty/cdp-facilitator.ts` (A8). L1 never references `PAYER_PRIVATE_KEY`. L3 never gets a wallet client. Both L1 entry points (`src/main.ts`, `src/hosted-main.ts`) sit outside `src/layer1-intent/` (rule A5 bans the key's name there), load their env file and then refuse if the key is visible. The hosted agent offers only `fetch_resource` and `check_budget`; never add a Mastra memory, workspace, sub-agent or tool to it.
 3. `policy.ts` stays pure: time is an input, no I/O, and the LLM `purpose` text is never an input to a decision.
 4. Budgets come from the ledger. Never add a mutable spend counter.
 5. Authorize stays inside the serialized section (check → sign → append).
@@ -69,4 +75,8 @@ npx vitest run test/policy.test.ts -t "<name>"   # single test
 - Concurrency tests need `signerLatencyMs`; local signing is too fast to expose races.
 - Kill demo children by process group; otherwise ganache keeps port 8545 open.
 - CDP JWTs expire in 120 s; a skewed host clock shows up as `facilitator authentication` errors.
+- Mastra (`@mastra/core`) needs Node ≥ 22.13. Use it as a library only: no Mastra server, CLI or instance. Its own logger is silenced because a provider error can carry the request body.
+- A Foundry deployment name must equal the model id (`claude-sonnet-5-5`); with any other id the AI SDK's Anthropic provider can add a third `json` tool, so the service refuses unknown ids.
+- Entra v2.0 access tokens carry the API app's client ID as `aud`, never `api://x402-l1-agent`. In Azure, `AUTH_AUDIENCE` is that GUID (`infra/entra-app.sh` prints it; repository variable `AGENT_API_CLIENT_ID`), and the agent refuses anything else unless it uses the local dev issuer.
+- In Azure, L2 waits in standby for the ledger lock during a revision update (L2-6). Calls get 502 from its sidecar until the old revision releases the lock; L1 reports ERROR and nothing is paid.
 - A CDP **Sandbox** key also shows up as `facilitator authentication` (401). Keys are environment-scoped, and the Sandbox has no x402 facilitator. Use a production key; it still settles on Base Sepolia.

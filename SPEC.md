@@ -3,12 +3,27 @@
 | Field | Value |
 |---|---|
 | Spec ID | X402-3L-SPEC |
-| Version | 1.4 (2026-10-21). v1.0 described the original PoC; v1.1 is the build target for the spec-kit plans in `specs/`; v1.2 adds the CDP facilitator on Base Sepolia (`specs/009`); v1.3 adds the escalation lifecycle: operator rejection, expiry and notification (`specs/010`); v1.4 adds an OpenAPI copy of L2-5 and opt-in Swagger UI on L2 (`API_DOCS=1`) |
+| Version | 1.5 (2026-10-22). v1.0 described the original PoC; v1.1 is the build target for the spec-kit plans in `specs/`; v1.2 adds the CDP facilitator on Base Sepolia (`specs/009`); v1.3 adds the escalation lifecycle: operator rejection, expiry and notification (`specs/010`); v1.4 adds an OpenAPI copy of L2-5 and opt-in Swagger UI on L2 (`API_DOCS=1`); v1.5 adds the hosted agent service on Mastra and Azure (`specs/011`) |
 | Owner | Fabricio Rojas |
 | Status | Implemented PoC; this spec is the source of truth for changes |
 | Reference | IMF Note 2026/004, *How Agentic AI Will Reshape Payments* (three-layer model) |
 
 ---
+
+## Changes in 1.5
+
+The hosted agent service: L1 as an HTTP service built on Mastra, deployable to Azure Container Apps with L2 and L3 kept private (`specs/011`). Without the new entry point and the Azure profile, every existing process behaves as in 1.4, except L2's new ledger lock (L2-6).
+
+| Area | Change |
+|---|---|
+| §3.1, L1-6 | A second L1 entry point, `src/hosted-main.ts` (`npm run agent:hosted`), serves `POST /v1/runs` to requesters with Entra ID tokens carrying `Agent.Run`. Same two tools, prompt and limits as L1-3. |
+| §3.1 Azure profile | One Container Apps environment. The agent has public ingress; L2 and L3 have internal-only ingress through a loopback-forwarding sidecar. One identity and one Key Vault per runtime unit, and the sellers live in a separate environment. |
+| §3.3, CFG-2 | New credentials: the requester's Entra token (verified by L1 only), `SESSION_REF_SECRET` (L1 only) and the agent identity's Foundry access. New env file `env/l1-hosted.env`; `env/l1-agent.env` gains optional `SELLER_ALIAS_URL`. |
+| INV-3 | Names both L1 entry points; both load env and then refuse. |
+| L1-4 | Optional seller alias for step 6, and `--check-baseline` (exit 2 on a mismatch). |
+| L2-6 | One ledger writer: L2 takes an exclusive lock beside the ledger before loading it, and waits in standby while another holder's heartbeat is fresh. |
+| §11 | SEC-14, SEC-15 and SEC-16, plus v1.5 residual risks. |
+| §5, §6, §12, §13 | Mastra and its libraries (Node ≥ 22.13), the Azure layout under `infra/` and `.github/workflows/`, tests T-AGT-02..05, T-LED-05, T-E2E-09, T-IAC-01 and T-E2E-AZ, and the new commands. |
 
 ## Changes in 1.4
 
@@ -94,7 +109,7 @@ Show, as runnable code, that an LLM agent can buy HTTP resources with x402 stabl
 - Spending mandate, human-in-the-loop (HITL) escalation, hash-chained audit ledger, on-chain settlement verification.
 
 ### 1.3 Out of scope (v1)
-Mainnet. Refunds and disputes. Schemes `upto` and `batch-settlement`. Solana. AP2 / ACP / Visa TAP / Mastercard Agent Pay integration. Multi-tenant users. Persistent DB beyond JSONL. Production authentication (mTLS). These are covered in §15.
+Mainnet. Refunds and disputes. Schemes `upto` and `batch-settlement`. Solana. AP2 / ACP / Visa TAP / Mastercard Agent Pay integration. Multi-tenant users. Persistent DB beyond JSONL. Production authentication (mTLS). These are covered in §15. The Azure profile (§3.1, v1.5) is in scope on testnet only.
 
 ---
 
@@ -121,6 +136,7 @@ Mainnet. Refunds and disputes. Schemes `upto` and `batch-settlement`. Solana. AP
 | Process | Entry point | Port (bind) | npm script | Env file |
 |---|---|---|---|---|
 | L1 agent | `src/main.ts` | none (client) | `agent`, `agent:scripted` | `env/l1-agent.env` |
+| L1 hosted agent service (v1.5) | `src/hosted-main.ts` | 4024 (127.0.0.1; `0.0.0.0` in a container) | `agent:hosted` | `env/l1-hosted.env` |
 | L2 control | `src/layer2-control/service.ts` | 4020 (127.0.0.1) | `l2:control` | `env/l2-control.env` |
 | L3 verifier | `src/layer3-settlement/service.ts` | 4023 (127.0.0.1) | `l3:verifier` | `env/l3-verifier.env` |
 | Seller (counterparty) | `src/counterparty/seller.ts` | 4021 (all interfaces) | `seller` | `env/seller.env` |
@@ -128,6 +144,18 @@ Mainnet. Refunds and disputes. Schemes `upto` and `batch-settlement`. Solana. AP
 | Local chain | `scripts/local-chain.ts` | 8545 | `local:chain` | none |
 
 Ports are overridable with `CONTROL_PORT`, `SELLER_PORT`, `FACILITATOR_PORT`, `SETTLEMENT_PORT`. The chain port 8545 is fixed. Each entry point loads its env with `loadEnv()` from `src/shared/config.ts`. When `ENV_FILE` is unset, it defaults to the file in the last column. Ports are read through getter functions (`controlPort()`, `sellerPort()`, `facilitatorPort()`, `settlementPort()`) at call time, so env loaded at startup applies. L2 and L3 bind only through `listenControl()` and `listenSettlement()`, which always use `127.0.0.1`.
+
+**Azure profile (v1.5, `specs/011` contracts/cloud-topology.md).**
+
+- **Environments.** One workload-profiles Container Apps environment, `cae-x402`, on a custom VNet with peer-to-peer encryption. The sellers live in a second environment, `cae-x402-cp`, so they can't reach internal-only apps.
+- **Apps and jobs** in `cae-x402`:
+  - `ca-l1-agent`: the hosted agent service, external ingress on 4024, 0–1 replicas;
+  - `ca-l2-control` and `ca-l3-verifier`: internal-only ingress, exactly one replica each;
+  - `job-regression`: the scripted baseline with `--check-baseline`;
+  - `job-operator`: the operator commands.
+- **Loopback kept.** L2 and L3 still bind 127.0.0.1. A proxy sidecar in the same app forwards from port 8080 to the loopback port; it gets no env and no secrets.
+- **Identity and secrets.** Each runtime unit has its own user-assigned identity and Key Vault. The identity lifecycle is `None` everywhere except the agent, so no container in L2 or L3 can request a token at run time. Secrets reach containers only as Key Vault references.
+- **Ledger.** L2's ledger lives on an NFS Azure Files share mounted at `/app/.local`, with the L2-6 lock.
 
 ### 3.2 Data flow
 
@@ -164,6 +192,9 @@ sequenceDiagram
 | `VERIFIER_TOKEN` (L1→L3) | ✅ | — | ✅ verifies | — | — | — |
 | `SETTLEMENT_TOKEN` (L3→L2) | — | ✅ verifies | ✅ | — | — | — |
 | `OPERATOR_TOKEN` (human→L2) | — | ✅ verifies | — | — | — | ✅ |
+| Requester Entra token (requester→L1 hosted, v1.5) | ✅ verifies, never forwards | — | — | — | — | — |
+| `SESSION_REF_SECRET` (v1.5) | ✅ (hosted only) | — | — | — | — | — |
+| Agent identity's Foundry access (v1.5, `MODEL_PROVIDER=foundry`) | ✅ (managed identity, no secret) | — | — | — | — | — |
 | `FACILITATOR_PRIVATE_KEY` | — | — | — | — | ✅ (local) | — |
 | `CDP_API_KEY_ID` / `CDP_API_KEY_SECRET` | — | — | — | ✅ (`FACILITATOR=cdp`) | — | — |
 
@@ -177,7 +208,7 @@ The CDP API credential authenticates the seller to the CDP facilitator. It canno
 |---|---|---|
 | INV-1 | A layer imports only `src/shared/**` and its own folder. Only `src/main.ts`, `scripts/**` and `test/**` may import across layers. | `test/architecture.test.ts` |
 | INV-2 | Only `src/layer2-control/signer.ts` turns key material into an account (`privateKeyToAccount`, `mnemonicToAccount`). | architecture test |
-| INV-3 | L1 code never references `PAYER_PRIVATE_KEY`. `src/main.ts` exits with code 1 if that variable is present in its environment. | architecture test, manual check (§12) |
+| INV-3 | L1 code never references `PAYER_PRIVATE_KEY`. Both L1 entry points, `src/main.ts` and `src/hosted-main.ts` (v1.5), sit outside `src/layer1-intent/`. Each loads its env file and then exits with code 1 if that variable is present, from the process environment or from the file. | architecture test, manual check (§12) |
 | INV-4 | L3 has no signing or write capability (no `createWalletClient`, `signTypedData`, `writeContract`, `sendTransaction`, `privateKeyToAccount`). | architecture test |
 | INV-5 | The L2 decision is a pure function of (accepts[], mandate, context). No I/O, no clock reads (time is passed in), no LLM text. `PaymentIntent.purpose` is logged, never evaluated. | `policy.ts` design, T-POL-02 |
 | INV-6 | L2 signs **exactly one** requirement: the one the policy chose. The SDK receives a challenge whose `accepts` holds only that entry. | `signer.ts` |
@@ -210,7 +241,7 @@ Each rule has a fixture under `test/fixtures/arch/` that must trip it (Principle
 
 | Concern | Choice | Version |
 |---|---|---|
-| Runtime | Node.js, ESM (`"type": "module"`) | 22.x |
+| Runtime | Node.js, ESM (`"type": "module"`) | 22.x, at least 22.13 since v1.5 (Mastra's floor) |
 | Language | TypeScript (`module`/`moduleResolution: NodeNext`, `strict`) | ^7.0 |
 | Runner | tsx | ^4.23 |
 | x402 | `@x402/core`, `@x402/evm`, `@x402/express` | 2.28.0 |
@@ -223,8 +254,12 @@ Each rule has a fixture under `test/fixtures/arch/` that must trip it (Principle
 | CDP facilitator auth (seller only) | `@coinbase/cdp-sdk`, `./auth` subpath only | 1.59.0 (exact) |
 | OpenAPI document parsing (tests only) | yaml | ^2.9 |
 | API docs UI (L2, only with `API_DOCS=1`; served by L2, never from a CDN) | swagger-ui-dist | 5.33.1 (exact) |
+| Hosted agent service (L1-6, v1.5): Mastra `Agent` as a library only, no Mastra server, CLI or instance | `@mastra/core`, `@ai-sdk/anthropic` | 1.75.0 / 3.0.128 (exact) |
+| Hosted agent service: tool schemas, requester tokens, Foundry identity | zod, jose, `@azure/identity` | ^4.6.5 / ^6.2.12 / ^4.13.3 |
+| Hosted agent and infrastructure tests (dev only) | `ai` (`MockLanguageModelV3`), `@ai-sdk/provider`, `@azure/bicep-rpc-client`; Bicep CLI | ^6.0.302 / ^3.0.18 / ^0.4.1; 0.47.16 |
+| Azure profile images | `node:22-bookworm-slim`, `nginxinc/nginx-unprivileged:1.29-alpine` | pinned by digest (Dockerfile, `infra/main.bicep`) |
 
-Resolved versions (v1.1, `package-lock.json`): typescript 7.0.2, tsx 4.23.15, vitest 5.0.5, viem 2.57.7, express 5.3.0, `@x402/*` 2.28.0, `@anthropic-ai/sdk` 0.135.0, dotenv 18.0.8, ganache 7.9.2, solc 0.8.24, `@types/node` 22.x; v1.4 adds yaml 2.9.1 and swagger-ui-dist 5.33.1. `scarfSettings.enabled: false` in `package.json` turns off the install analytics of swagger-ui-dist's `@scarf/scarf` dependency. `engines.node` is `>=22`; development also runs on Node 26. npm ≥ 11 skips dependency install scripts by default. Ganache falls back to its JavaScript implementations, which is harmless.
+Resolved versions (v1.1, `package-lock.json`): typescript 7.0.2, tsx 4.23.15, vitest 5.0.5, viem 2.57.7, express 5.3.0, `@x402/*` 2.28.0, `@anthropic-ai/sdk` 0.135.0, dotenv 18.0.8, ganache 7.9.2, solc 0.8.24, `@types/node` 22.x; v1.4 adds yaml 2.9.1 and swagger-ui-dist 5.33.1. `scarfSettings.enabled: false` in `package.json` turns off the install analytics of swagger-ui-dist's `@scarf/scarf` dependency. `engines.node` is `>=22`; development also runs on Node 26. npm ≥ 11 skips dependency install scripts by default. Ganache falls back to its JavaScript implementations, which is harmless. v1.5 adds `@mastra/core` 1.75.0, `@ai-sdk/anthropic` 3.0.128, zod 4.6.5, jose 6.2.12 and `@azure/identity` 4.13.3 (runtime), and `ai` 6.0.302, `@ai-sdk/provider` 3.0.18 and `@azure/bicep-rpc-client` 0.4.1 (dev). In library use Mastra sends no telemetry; the image also sets `MASTRA_TELEMETRY_DISABLED=1`.
 
 SDK entry points in use:
 
@@ -245,10 +280,15 @@ SDK entry points in use:
 ## 6. Repository layout
 
 ```
+.github/workflows/deploy-azure.yml   OIDC deploy of one commit, gated by the cloud regression (T-E2E-AZ, v1.5)
+Dockerfile, .dockerignore        one image for every process; no env file or key inside (v1.5)
+tsconfig.build.json              emits dist/ for src/ and the operator commands (v1.5)
 config/mandate.json              spending mandate (CFG-3)
 contracts/MockUSDC.sol           local-only EIP-3009 token (CP-4)
 docs/l2-control.openapi.yaml     OpenAPI 3.1 copy of the L2 HTTP API (L2-5); kept in sync by T-API-01..03; L2 serves it with API_DOCS=1
 env/*.env.example                one env template per process (CFG-2)
+infra/                           Azure profile (§3.1, v1.5): main.bicep, modules/*.bicep, params/dev.bicepparam,
+                                 proxy/nginx-l{2,3}.conf (loopback sidecars), entra-app.sh, run-job.sh (T-IAC-01)
 scripts/
   local-chain-lib.ts             start ganache, compile + deploy MockUSDC, mint 10 USDC to payer, localDevKeys()
   facilitator.ts                 facilitator entry point: loads env, derives its account, starts the factory
@@ -259,6 +299,10 @@ scripts/
   approve.ts                     HITL operator CLI
   reject.ts                      operator reject CLI (L2-4.3)
   escalations.ts                 operator list and watch CLI (L2-4.3)
+  ledger-verify.ts               operator chain check, exit 0 only when ok (v1.5)
+  payer-balance.ts               read-only payer USDC balance, the deploy preflight (v1.5)
+  secret-scan-lib.ts, scan-logs.ts   credential-shape scan of logs (SEC-16, v1.5)
+  dev-issuer-lib.ts, dev-token.ts    local dev issuer and tokens for the hosted service (NETWORK=local only, v1.5)
   solc.d.ts                      type shim
 src/
   shared/contracts.ts            ALL cross-layer types and ports (§7)
@@ -268,12 +312,15 @@ src/
     orchestrator.ts              402 transport loop (L1-1)
     ports-http.ts                HTTP adapters for L2/L3 ports (L1-2)
     agent.ts                     Claude tool-use loop (L1-3)
-    scripted.ts                  deterministic plan (L1-4)
+    scripted.ts                  deterministic plan, seller alias and checkBaseline (L1-4)
+    hosted/                      hosted agent service parts (L1-6, v1.5): server.ts (createHostedApp only), agent.ts,
+                                 model.ts, config.ts, requester-auth.ts, session-ref.ts, run-limits.ts, run-log.ts
   layer2-control/
     mandate.ts                   mandate type + loader (L2-1)
     policy.ts                    pure rule engine (L2-2)
     signer.ts                    sole key holder (L2-3)
     ledger.ts                    hash-chained ledger (L2-4)
+    ledger-lock.ts               one ledger writer: exclusive lock, standby, heartbeat (L2-6, v1.5)
     escalations.ts               escalation lifecycle derivations and the sweep (L2-4.3)
     approval-routes.ts           operator approve and reject (L2-5)
     escalation-routes.ts         operator escalation reads (L2-5)
@@ -288,11 +335,17 @@ src/
     cdp-facilitator.ts           CDP JWT-authenticated facilitator client; the only reader of the CDP credential (A8)
     facilitator.ts               local facilitator factory, takes a ready account (CP-2)
   main.ts                        composition root for the agent process
+  hosted-main.ts                 composition root for the hosted agent service: loadEnv → INV-3 refusal → listen (L1-6)
+  refusal.ts                     the INV-3 refusal text both L1 roots print (outside the layer: rule A5)
 test/
   policy.test.ts  ledger.test.ts  architecture.test.ts  agent.test.ts  e2e.local.test.ts
   counterparty.test.ts  verifier.test.ts  settlement-service.test.ts  auth.test.ts  demo.local.test.ts
   cdp-config.test.ts  cdp-auth.test.ts  cdp-isolation.test.ts  cdp-failures.test.ts  escalations.test.ts
   openapi.test.ts
+  hosted-agent.test.ts  hosted-access.test.ts  hosted-sessions.test.ts  hosted-run.test.ts   (L1-6, v1.5)
+  ledger-lock.test.ts  infra.test.ts  deploy-workflow.test.ts                                (L2-6, Azure, v1.5)
+  helpers/hosted.ts              in-process hosted service: dev issuer, mock model, fake or harness ports
+  fixtures/lock-holder.ts        child process holding the ledger lock until SIGTERM (T-LED-05)
   helpers/harness.ts             in-process multi-service harness shared by e2e suites
   helpers/fake-public-client.ts  deterministic read-only chain client for L3 unit tests
   helpers/cdp-stub.ts            offline CDP facilitator stub: verifies JWTs, delegates to the local facilitator
@@ -411,11 +464,26 @@ All amounts are **decimal strings of atomic units**. Use `BigInt` for arithmetic
 | 5 | `/api/dataset-export` | 500000 | DENIED (`hard_cap_exceeded`, plus budget rules) |
 | 6 | same as #2 via host `localhost` | 1000 | DENIED (`host_not_allowed`) |
 
-**L1-5 Composition root** (`src/main.ts`)
+- **Step 6 alias (v1.5).** With `SELLER_ALIAS_URL` set, step 6 requests `<SELLER_ALIAS_URL>/api/weather?city=Lima` instead of the `localhost` rewrite: a second seller host that L2 doesn't allow, as in the cloud regression. Unset, the plan is unchanged.
+- **`--check-baseline` (v1.5).** `npm run agent:scripted -- --check-baseline` compares the six outcomes with this table and requires both PAID results `CONFIRMED`. It prints `baseline: ok` or `baseline: mismatch <detail>` and exits 2 on a mismatch.
+
+**L1-5 Composition root** (`src/main.ts`; v1.5 adds `src/hosted-main.ts`, see L1-6)
 - Exits with code 1 if `PAYER_PRIVATE_KEY` is set (INV-3).
 - `sessionId = SESSION_ID` or `sess_<8 hex>`.
 - `--scripted` selects L1-4; otherwise L1-3 runs, with the goal taken from argv or a default.
 - Prints the final budget.
+
+**L1-6 Hosted agent service** (v1.5, `specs/011` contracts/hosted-agent-api.md, access-and-sessions.md, model-access.md)
+
+- **Code layout.** The parts live in `src/layer1-intent/hosted/`. The entry point, `src/hosted-main.ts`, sits outside the layer (rule A5) and runs in this order: `loadEnv("l1-hosted")` → INV-3 refusal (the shared text in `src/refusal.ts`, also outside the layer because it names the key) → config → ports and model → listen.
+- **Logs (outcomes).** A step's `outcome` is the fetch outcome, `ok` for a budget read, or `error` when a tool threw; Mastra's own logger is silenced (`noopLogger`), because a provider error object can carry the request body.
+- **Routes.** `POST /v1/runs` runs a goal. `GET /healthz` and `GET /readyz` report health. Every other path returns 404 after auth, and unauthenticated callers get 401 everywhere except the health routes. No Mastra server, Studio or tool-execute route exists.
+- **Auth.** An Entra ID v2.0 access token, verified with the tenant's JWKS: issuer, `tid`, `aud` (the API app's client ID: v2.0 tokens never carry the `api://` URI, so with Entra any other `AUTH_AUDIENCE` is a startup error), `exp`/`nbf` (60 s tolerance), `oid`, and role `Agent.Run` (else 403). People and service principals are both allowed; people get a token from the Azure CLI for `api://x402-l1-agent/user_impersonation`, which `infra/entra-app.sh` pre-authorizes. After verification the `Authorization` header is deleted, so it never reaches L2 or L3. With `NETWORK=local` only, `AUTH_JWKS_FILE` selects the dev issuer (`npm run dev-token`).
+- **Limits.** Goal 1–4,000 characters; body ≤ 16 KB (413); 2 concurrent runs and 20 starts per sliding hour per requester (429 with `Retry-After`); a 200 s deadline per run, under the ingress's 240 s idle timeout; client disconnect aborts. An abort stops the run before its next step, and a paid fetch in progress completes.
+- **Agent.** A Mastra `Agent` used as a library, with exactly `fetch_resource` and `check_budget`. The descriptions are L1-3's, and the JSON schema adds `additionalProperties: false`. It has no memory, workspace, sub-agents, workflows or processors. Limits: `maxSteps` 10, `maxOutputTokens` 2048. Tool results use the L1-3 format.
+- **Model.** `MODEL_PROVIDER=foundry` (Microsoft Foundry, keyless Entra token for scope `https://ai.azure.com/.default`) or `anthropic` (API key). The model id must be on the allow-list (`claude-sonnet-5-5` by default), and the Foundry deployment name must equal it; otherwise the AI SDK provider would add a third `json` tool.
+- **Sessions.** `sessionRef = sr1.<sessionId>.<HMAC-SHA256(SESSION_REF_SECRET, "sr1|tid|oid|sessionId")>`, issued per new run and verified per requester. Another requester's reference → 404; a raw `sess_…` → 400.
+- **Logs.** One JSON line per step and one per run, carrying `runId`, `tid:oid`, `sessionId`, tool, outcome, `intentId`, `authorizationId` and duration. Never headers, tokens, the MAC, the goal, `purpose` or response bodies.
 
 ### 8.2 Layer 2 — Control & Authorization
 
@@ -543,6 +611,16 @@ Reconcile algorithm. It runs inside the same serialized section as authorize, so
 3. Else, if a non-anomalous `CONFIRMED` already exists and the new report is not CONFIRMED for the same tx, store it with `anomaly: true`.
 4. Else store it with `anomaly: false`.
 
+**L2-6 One ledger writer** (v1.5, `specs/011` contracts/ledger-lock.md)
+
+- **Startup order.** `main()` runs env → **acquire the ledger lock** → ledger load and integrity check → profile → mandate → signer → listen. `createControlService` never takes the lock.
+- **Lock file.** `<ledger>.lock`, created with an exclusive create, holding `{holder, pid, host, acquiredAt, heartbeatAt}`.
+- **Heartbeat.** The holder refreshes `heartbeatAt` every 5 s with an atomic write-then-rename. If it ever finds the lock missing or owned by another holder, it exits 1 (`lost the ledger lock`).
+- **Standby.** While another holder's heartbeat is less than 30 s old, L2 waits in standby, polling every 1 s and logging once. After 30 s without a heartbeat it renames the stale lock away and takes over.
+- **Shutdown.** SIGTERM and SIGINT release the lock.
+- **Not a ledger entry.** The lock never touches the hash chain.
+- **Accepted limit.** Two contenders taking over the same stale lock at the same instant could both succeed. One replica (`maxReplicas: 1`) and a stopped or crashed old holder make that impossible in the Azure profile.
+
 ### 8.3 Layer 3 — Settlement verification
 
 **L3-1 Verifier** `verify(claim) → SettlementReport`, with the read-only viem public client on `net.rpcUrl`:
@@ -646,7 +724,8 @@ With `cdp`, a missing or empty `CDP_API_KEY_ID` or `CDP_API_KEY_SECRET`, or a se
 
 | File | Variables |
 |---|---|
-| `l1-agent.env` | `NETWORK, ANTHROPIC_API_KEY, ANTHROPIC_MODEL?, SELLER_URL, CONTROL_URL, SETTLEMENT_URL, CONTROL_TOKEN, VERIFIER_TOKEN, SESSION_ID?` |
+| `l1-agent.env` | `NETWORK, ANTHROPIC_API_KEY, ANTHROPIC_MODEL?, SELLER_URL, CONTROL_URL, SETTLEMENT_URL, CONTROL_TOKEN, VERIFIER_TOKEN, SESSION_ID?, SELLER_ALIAS_URL? (v1.5)` |
+| `l1-hosted.env` (v1.5) | `NETWORK, SELLER_URL, CONTROL_URL, SETTLEMENT_URL, CONTROL_TOKEN, VERIFIER_TOKEN, MODEL_PROVIDER, ANTHROPIC_MODEL?, ANTHROPIC_API_KEY? (anthropic only), FOUNDRY_BASE_URL? and AZURE_CLIENT_ID? (foundry only), AUTH_TENANT_ID, AUTH_AUDIENCE, AUTH_JWKS_FILE? (local only), SESSION_REF_SECRET, AGENT_PORT?, AGENT_BIND_HOST?` |
 | `l2-control.env` | `NETWORK, PAYER_PRIVATE_KEY, ALLOWED_PAYEES, ALLOWED_HOSTS, CONTROL_TOKEN, SETTLEMENT_TOKEN, OPERATOR_TOKEN, API_DOCS?` |
 | `l3-verifier.env` | `NETWORK, BASE_SEPOLIA_RPC_URL?, CONTROL_URL, VERIFIER_TOKEN, SETTLEMENT_TOKEN` |
 | `seller.env` | `NETWORK, SELLER_PAY_TO, FACILITATOR?, FACILITATOR_URL?, CDP_API_KEY_ID?, CDP_API_KEY_SECRET?` (the CDP pair is required when the choice is `cdp`) |
@@ -710,6 +789,9 @@ Only use the SDK helpers to encode and decode these headers. Never hand-roll bas
 | SEC-11 | A facilitator reports failure for a transfer that actually settled, so the budget under-counts | L3 checks any reported hash on-chain (L3-1 step 2) | T-CDP-06 |
 | SEC-12 | Operator free text (label, reason) reaches the LLM agent and acts as a prompt injection | The R15 violation detail carries only the rejection ID; label and reason are stored as data and shown to the operator only | T-POL-15 |
 | SEC-13 | The token-free API docs routes expose more than the document, or run third-party code on the signer's origin where operators type tokens | Off unless `API_DOCS=1`; three fixed files and the document, no ledger, mandate or signer access; Swagger UI from the pinned package, never a CDN; CSP `script-src 'self'`, `connect-src 'self'` | T-API-04 |
+| SEC-14 | Anyone who can reach the public agent endpoint spends from the budget | Entra ID token with `Agent.Run` checked before any model or L2 call; per-requester limits; L2's budgets and rules unchanged | T-AGT-03 |
+| SEC-15 | A requester continues another requester's session and uses its approvals or budget | HMAC-bound session references; a raw session ID is refused; a foreign reference → 404 | T-AGT-04 |
+| SEC-16 | Secrets, requester tokens or payment headers reach logs or telemetry | Whitelisted JSON run logs; no Mastra observability or OTel export; known-value tests offline and a shape scan of cloud logs | T-AGT-05, T-E2E-AZ |
 
 Residual risks (accepted in v1): bearer tokens over loopback instead of mTLS; key held in an env var; single-node JSONL ledger; facilitator trusted for liveness; no refund path.
 
@@ -721,6 +803,13 @@ Residual risks added in v1.3:
 - The operator label is self-declared, and one shared operator token stands for every operator (EXT-7 would add per-person identity).
 - The escalation reads expose session IDs, resources and amounts to the operator, which is their purpose.
 - A rejection blocks a (session, resource key) for good; buying it again needs a new session. There is no undo by design.
+
+Residual risks added in v1.5:
+- The payer key is stored in Azure Key Vault, so the subscription's RBAC holders for that vault are trusted.
+- Anyone allowed to start `job-operator` or `job-regression` holds that job's credentials, because a start can override the template.
+- L2 and L3 are reachable from every app in the private environment. Bearer tokens, not the network, enforce each role.
+- L2 runs as one instance. During a revision update or after a crash, calls get 502 for up to 30 s while the lock is handed over; L1 reports ERROR and nothing is paid.
+- Requester limits are held in memory by the single agent replica. Scaling out would need shared storage.
 
 Residual risks added in v1.4:
 - With `API_DOCS=1`, anyone who can reach L2's loopback port reads the API description without a token. It holds nothing that is not in the repository.
@@ -755,7 +844,11 @@ Residual risks added in v1.4:
 | T-API-03 | openapi | an in-process scenario reaches every documented status except authorize's 500, and each response's media type is documented and its body conforms to the schema (required fields, types, no undocumented fields). **Must fail**: a missing field, a wrong type and an undocumented field are reported |
 | T-API-04 | openapi | the docs routes (SEC-13): with `API_DOCS` unset, none is mounted and each docs URL answers 404; `API_DOCS` accepts only `1`, `0` or empty; the served document equals the file except `servers` = `/`; the page carries a CSP limiting scripts and requests to `'self'` and names no other origin; `/docs/:asset` serves its three files and 404s anything else. **Must fail**: the same probe gets 200 with `API_DOCS=1`; a document without `servers` is refused |
 | T-AGT-01 | agent | fake model → tool calls → intents carry `purpose`; the tool result contains PAID + CONFIRMED; exactly two tools are offered |
-| T-AGT-KEY | agent | spawning `src/main.ts` with `PAYER_PRIVATE_KEY` set exits 1 with a refusal (the automated form of the manual check below) |
+| T-AGT-KEY | agent | spawning `src/main.ts`, or `src/hosted-main.ts` with the key in the process env or only in `ENV_FILE` (v1.5), with `PAYER_PRIVATE_KEY` set exits 1 with a refusal (the automated form of the manual check below) |
+| T-AGT-02 | hosted-agent | every model call offers exactly `fetch_resource` and `check_budget` with the L1-3 descriptions and schemas; 2048 max output tokens; 10 steps; both providers' HTTP requests (Foundry: Entra bearer, no `x-api-key`); config rules. **Must fail**: an injected extra tool appears as a third name; an unrecognized model id is refused |
+| T-AGT-03 | hosted-access | 401 for missing, invalid, expired, wrong-audience, wrong-issuer or wrong-tenant tokens; 403 without `Agent.Run`; each refusal under 1 s with 0 model and 0 L2 calls; 2 concurrent and 20 hourly runs per requester (429 with `Retry-After`); L2/L3 never see the requester's token; with Entra a non-GUID `AUTH_AUDIENCE` is a startup error; `infra/entra-app.sh` (against a fake `az`) prints the client ID as the audience and pre-authorizes the Azure CLI for `user_impersonation`. **Must fail**: with `bypassAuth`, an unauthenticated run reaches the model; the `api://` audience loads without the check; the script's identifier-URI audience or missing pre-authorization is reported |
+| T-AGT-04 | hosted-sessions | a reference continues its requester's session; another requester's use → 404; a raw `sess_…` or malformed reference → 400; a tampered or non-canonical MAC → 404. **Must fail**: with `skipSessionMac`, requester B uses requester A's session |
+| T-AGT-05 | hosted-run | response shape; the 200 s deadline (a fetch in progress completes, no model call after); step limit; body limits; readiness; failure keeps finished steps; run-log lines are whitelisted JSON and planted secrets never appear; the cloud scan's credential shapes |
 | T-E2E-01 | e2e | scripted plan outcomes `[FREE, PAID, PAID, ESCALATED, DENIED, DENIED]`; on-chain delta exactly 6000; two CONFIRMED settlements; chain ok; budget `spentOrReserved = 6000` |
 | T-E2E-02 | e2e | HITL: escalate → agent-token approval returns 401 → operator approval → PAID+CONFIRMED → the same request escalates again |
 | T-E2E-03 | e2e | forged `PAYMENT-RESPONSE` → L3 returns MISMATCH; L2 keeps the first CONFIRMED and records an anomaly naming `amount` |
@@ -763,6 +856,10 @@ Residual risks added in v1.4:
 | T-E2E-05 | e2e (must-fail proof in auth) | `/v1/reconcile` with the agent token returns 401; the ledger is unchanged |
 | T-E2E-07 | e2e | operator reject: the retry is DENIED `human_rejected` with no operator text in the detail, another session still escalates, the ledger trail is ESCALATED → HUMAN_REJECTION → DENIED; a concurrent approve and reject yield exactly one final entry; the events feed reports escalated, denied and approved |
 | T-E2E-08 | e2e | expiry on L2's clock: a repeat while pending reuses the ID; after 300 s the escalation expires, approve and reject are 409, the next request escalates under a new ID, and re-approving returns the same approval so one payment happens |
+| T-E2E-09 | e2e | the hosted service on the harness: FREE, PAID, PAID, ESCALATED with both payments CONFIRMED and 6000 spent; continuation after an operator approval pays once with `approvalRef`, and another requester's use of the reference → 404 with the ledger unchanged |
+| T-LED-05 | ledger-lock | one ledger writer (L2-6): a second acquirer waits while a fresh lock is held and takes it within 2 s of SIGTERM; a 31 s stale lock is taken over; a lost lock is reported; `main()` locks before loading. **Must fail**: two unlocked writers fork the chain and the reload throws `integrity` |
+| T-IAC-01 | infra (needs `BICEP_PATH`) | the compiled `infra/main.bicep`: role assignments only per the identity–vault matrix; the payer key only in `ca-l2-control/l2` from the l2 vault; internal-only L2/L3; one L2 replica on NFS; sidecars without env or secrets; identity lifecycle `Main` only for the agent; sellers in their own environment; no secret literals; `ALLOWED_HOSTS` is the seller, not the alias; vault firewalls deny by default; the agent's audience is a required client ID. **Must fail**: six mutants (rules 1, 2, 3, 9, 10, 11) |
+| T-E2E-AZ | deploy-workflow (static) and the live workflow | OIDC only; every gate (tests, T-IAC-01, image scan, deploy, L2 handover, balance, `--check-baseline` regression, chain, smoke ≤ 120 s, log scan) before promotion; rollback to `last-good` on failure without touching the agent's traffic. **Must fail**: promoting before the regression is reported |
 | T-CDP-01 | cdp-config | the `facilitatorChoice` matrix (CP-3), and the public path sends no credential |
 | T-CDP-02 | cdp-isolation | seller startup fails closed: missing ID or secret, malformed secret, conflicts; the log line format; the unused-credential warning |
 | T-CDP-03 | cdp-auth | JWT headers (EdDSA, ES256 from PKCS#8 and SEC1); the scripted plan through a JWT-verifying CDP stub matches T-E2E-01 |
@@ -798,11 +895,27 @@ npm run approve -- <authorizationId> [approver]
 npm run reject -- <authorizationId> [operator] [reason]
 npm run escalations [-- --watch]   # pending escalations; --watch reports every new escalation and outcome
 npm run check               # typecheck && test && demo:local (definition of done in one command)
+# v1.5 hosted agent service and Azure profile:
+npm run stack:local [-- --docker]   # chain, facilitator, seller, L2, L3 for agent:hosted, until Ctrl-C
+npm run agent:hosted        # L1-6 on 127.0.0.1:4024 (env/l1-hosted.env)
+npm run dev-token -- [--subject <name>] [--no-role] [--expired] [--service]   # local dev issuer (NETWORK=local only)
+npm run agent:scripted -- --check-baseline   # L1-4 plan; exit 2 unless the baseline matches
+npm run ledger-verify       # operator chain check
+npm run payer-balance -- <address> [--min <atomic>]   # read-only Base Sepolia USDC balance
+... | npm run scan-logs     # credential-shape scan of log lines
+npm run build               # dist/ for the image
+BICEP_PATH=~/.azure/bin/bicep npx vitest run test/infra.test.ts   # T-IAC-01
 ```
 
 Exit codes:
 - `demo:local`: 0 when the scripted baseline matches (or an `--llm` run completes with a valid chain); 2 on a baseline mismatch; 1 on a busy port, readiness timeout or child crash.
 - `approve`, `reject`: 0 on success; 1 on an HTTP or network error (409 included); 2 on a missing argument.
+- `ledger-verify`: 0 when the chain verifies; 1 on an HTTP or network error or `ok: false`.
+- `payer-balance`: 0 at or above the minimum; 2 below it ("fund the payer") or on a bad argument; 1 on an RPC error.
+- `scan-logs`: 0 clean; 1 when a line holds a credential shape (only pattern names are printed).
+- `agent:scripted -- --check-baseline`: 2 on a baseline mismatch.
+- `stack:local`: 0 when stopped by Ctrl-C or SIGTERM; 1 on a busy port, readiness timeout or child crash.
+- `dev-token`: 2 when `NETWORK` is not `local`.
 - `escalations`: list mode exits 0, or 1 on an HTTP or network error. `--watch` polls every 1 s from a ledger cursor, prints errors once per failure streak and keeps polling, and exits 0 on SIGINT or SIGTERM.
 - `demo:base-sepolia`: 0 when the baseline matches and there are 2 CONFIRMED settlements, 0 payer gas and a clean secret scan; 2 on a failed preflight or a mismatch; 1 on a readiness timeout or child crash.
 
@@ -835,8 +948,8 @@ Each item must preserve every `INV-*` invariant.
 | EXT-4 | **Solana (SVM)** | Network profile `solana-devnet`. `ExactSvmScheme` signer in L2. L3 verifies an SPL `TransferChecked` via RPC `getTransaction` with `finalized` commitment. | config, L2-3, L3-1 |
 | EXT-5 | **MCP server front-end** | Expose `fetch_resource` and `check_budget` as MCP tools from a new L1 process. It is just another L1 composition root; same ports. | new `src/layer1-intent/mcp.ts` |
 | EXT-6 | **Durable ledger** | SQLite with the same entry schema and hash chain; `committedAtomic` as a SQL view; WAL mode. | L2-4 |
-| EXT-7 | **mTLS between layers** | Replace bearer tokens with client certificates; pin the CN per caller. | L1-2, L2-5, L3-2 |
-| EXT-8 | **Observability** | OpenTelemetry spans with `intentId`/`authorizationId` as attributes across L1→L2→L3; metrics for decisions by rule and settlement latency by finality class. | all services |
+| EXT-7 | **mTLS between layers** | Replace bearer tokens with client certificates; pin the CN per caller. v1.5: in the Azure profile, the L2/L3 proxy sidecars are where mTLS would terminate. | L1-2, L2-5, L3-2 |
+| EXT-8 | **Observability** | OpenTelemetry spans with `intentId`/`authorizationId` as attributes across L1→L2→L3; metrics for decisions by rule and settlement latency by finality class. v1.5 adds a partial step: the hosted service's whitelisted run log correlates runs with the ledger by IDs. | all services |
 | EXT-9 | **Refund / revert-grant handling** | When the seller returns non-2xx after a CONFIRMED settlement, L1 reports `PAID_NOT_SERVED`. L2 opens a dispute record; a refund flow uses the escrow scheme. | contracts, L1-1, L2-4 |
 
 ---

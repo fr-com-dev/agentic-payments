@@ -2,10 +2,10 @@
 // holds no key material. It refuses to start if the payer key is visible (INV-3, SEC-2).
 import { randomBytes } from "node:crypto";
 import { pathToFileURL } from "node:url";
+import { REFUSAL } from "./refusal.js";
 import { loadEnv, serviceUrls, tokenFor } from "./shared/config.js";
 
-export const REFUSAL =
-  "refusing to start: PAYER_PRIVATE_KEY is visible to the agent process. The payer key belongs only to L2 (INV-3).";
+export { REFUSAL };
 
 export const DEFAULT_GOAL =
   "Get today's weather for Lima and a short market brief, then give me a receipt list of what you bought.";
@@ -35,8 +35,15 @@ async function main(argv: string[]): Promise<void> {
 
   const scripted = argv.includes("--scripted");
   if (scripted) {
-    const { runScriptedAgent } = await import("./layer1-intent/scripted.js");
-    await runScriptedAgent({ orchestrator, sellerUrl: urls.seller });
+    const { checkBaseline, runScriptedAgent } = await import("./layer1-intent/scripted.js");
+    const aliasUrl = process.env.SELLER_ALIAS_URL;
+    const results = await runScriptedAgent({ orchestrator, sellerUrl: urls.seller, ...(aliasUrl ? { aliasUrl } : {}) });
+    if (argv.includes("--check-baseline")) {
+      // v1.5 L1-4: the cloud regression job gates on this exit code (exit 2 on a mismatch).
+      const check = checkBaseline(results);
+      console.log(check.ok ? "baseline: ok" : `baseline: mismatch ${check.detail}`);
+      if (!check.ok) process.exitCode = 2;
+    }
   } else {
     const { runClaudeAgent } = await import("./layer1-intent/agent.js");
     const goal = argv.filter((a) => !a.startsWith("--")).join(" ").trim() || DEFAULT_GOAL;

@@ -5,13 +5,14 @@
   "type": "module",
   "description": "x402 agent payments with three-layer separation of payment authority (PoC)",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.13"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "check": "npm run typecheck && npm test && npm run demo:local",
     "demo:local": "tsx scripts/demo-local.ts",
+    "stack:local": "tsx scripts/stack-local.ts",
     "demo:base-sepolia": "tsx scripts/demo-base-sepolia.ts",
     "local:chain": "tsx scripts/local-chain.ts",
     "facilitator": "tsx scripts/facilitator.ts",
@@ -22,22 +23,36 @@
     "agent:scripted": "tsx src/main.ts --scripted",
     "approve": "tsx scripts/approve.ts",
     "reject": "tsx scripts/reject.ts",
-    "escalations": "tsx scripts/escalations.ts"
+    "escalations": "tsx scripts/escalations.ts",
+    "agent:hosted": "tsx src/hosted-main.ts",
+    "dev-token": "tsx scripts/dev-token.ts",
+    "ledger-verify": "tsx scripts/ledger-verify.ts",
+    "payer-balance": "tsx scripts/payer-balance.ts",
+    "scan-logs": "tsx scripts/scan-logs.ts",
+    "build": "tsc -p tsconfig.build.json"
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "3.0.128",
     "@anthropic-ai/sdk": "^0.135.0",
+    "@azure/identity": "^4.13.3",
     "@coinbase/cdp-sdk": "1.59.0",
+    "@mastra/core": "1.75.0",
     "@x402/core": "2.28.0",
     "@x402/evm": "2.28.0",
     "@x402/express": "2.28.0",
     "dotenv": "^18.0.0",
     "express": "^5.3.0",
+    "jose": "^6.2.12",
     "swagger-ui-dist": "5.33.1",
-    "viem": "^2.57.0"
+    "viem": "^2.57.0",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
+    "@ai-sdk/provider": "^3.0.18",
+    "@azure/bicep-rpc-client": "^0.4.1",
     "@types/express": "^5.0.0",
     "@types/node": "^22.0.0",
+    "ai": "^6.0.302",
     "ganache": "7.9.2",
     "solc": "0.8.24",
     "tsx": "^4.23.0",

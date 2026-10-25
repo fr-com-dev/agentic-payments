@@ -16,6 +16,7 @@ import { mountApprovalRoutes } from "./approval-routes.js";
 import { mountEscalationRoutes } from "./escalation-routes.js";
 import { findPendingEscalation, findRejection, sweep } from "./escalations.js";
 import { AuditLedger, resourceKey } from "./ledger.js";
+import { acquireLedgerLock } from "./ledger-lock.js";
 import { mountLedgerRoutes, type Serialize } from "./ledger-routes.js";
 import { loadMandate, type SpendingMandate } from "./mandate.js";
 import { decide, type PolicyContext } from "./policy.js";
@@ -300,9 +301,14 @@ export function listenControl(app: Express, port: number = controlPort(), onList
   return app.listen(port, CONTROL_BIND_HOST, onListen);
 }
 
-/** Entry point (`npm run l2:control`). Order: env → ledger integrity → profile → mandate → signer → listen. */
-export function main(): void {
+/**
+ * Entry point (`npm run l2:control`). Order: env → ledger lock (L2-6) → ledger integrity → profile →
+ * mandate → signer → listen.
+ */
+export async function main(): Promise<void> {
   loadEnv("l2-control");
+  // L2-6: one writer. Wait in standby while another L2 holds the ledger, then read it only once ours.
+  const lock = await acquireLedgerLock(ledgerPathFor());
   // The ledger loads and verifies first, so an integrity failure is reported before anything else.
   const ledger = new AuditLedger(ledgerPathFor());
   const net = networkProfile();
@@ -331,15 +337,22 @@ export function main(): void {
   });
   server.on("error", (err) => {
     console.error(`l2-control: ${err.message}`);
+    lock.release();
     process.exit(1);
   });
+  // L2-6: release the lock on shutdown so a replacement revision takes over at once.
+  const stop = () => {
+    server.close();
+    lock.release();
+    process.exit(0);
+  };
+  process.on("SIGTERM", stop);
+  process.on("SIGINT", stop);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  try {
-    main();
-  } catch (err) {
+  main().catch((err: unknown) => {
     console.error(`l2-control: ${err instanceof Error ? err.message : String(err)}`);
     process.exit(1);
-  }
+  });
 }

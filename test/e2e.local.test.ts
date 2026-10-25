@@ -2,6 +2,7 @@
 // seller, L2 control and L3 verifier, driven through L1's HTTP ports.
 // T-E2E-01 is owned by 008 (T024, sole writer). T-E2E-02 by 004, T-E2E-03 by 003/005,
 // T-E2E-04 by 002, T-E2E-05 by 003/007.
+import { spawn } from "node:child_process";
 import type { AddressInfo } from "node:net";
 import express from "express";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -11,6 +12,7 @@ import {
   encodePaymentResponseHeader,
 } from "@x402/core/http";
 import { startHarness, RegressionBaseline, type Harness } from "./helpers/harness.js";
+import { mockModel, startHostedApp, text, toolCall } from "./helpers/hosted.js";
 import { HttpAuthorizationGate, HttpSettlementVerifier } from "../src/layer1-intent/ports-http.js";
 import { PaidResourceOrchestrator, type PaidFetchResult } from "../src/layer1-intent/orchestrator.js";
 import { runScriptedAgent } from "../src/layer1-intent/scripted.js";
@@ -565,4 +567,121 @@ describe("T-E2E-08 expiry and re-escalation", () => {
     expect(paid.outcome).toBe("PAID");
     expect(payer0 - (await h.balanceOf(h.addresses.payer))).toBe(50000n);
   });
+});
+
+// ---------------------------------------------------------------------------
+// T-E2E-09 hosted agent service (011 US1, US5): the real L2/L3/seller/chain behind the hosted HTTP API,
+// with a scripted mock model in place of Claude.
+// ---------------------------------------------------------------------------
+
+describe("T-E2E-09 hosted agent", () => {
+  let h: Harness;
+  beforeAll(async () => {
+    h = await startHarness();
+  }, 120_000);
+  afterAll(async () => {
+    await h?.close();
+  });
+
+  type Step = { tool: string; result: { outcome: string; authorizationId: string | null; payment: { settlement: { status: string | null } } | null } };
+
+  async function runScript(script: string, env: NodeJS.ProcessEnv, args: string[] = []) {
+    const child = spawn(process.execPath, ["--import", "tsx", script, ...args], { env: { PATH: process.env.PATH, HOME: process.env.HOME, ENV_FILE: "/dev/null", ...env }, stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    child.stdout.on("data", (d) => (out += String(d)));
+    child.stderr.on("data", (d) => (out += String(d)));
+    const code = await new Promise<number | null>((r) => child.on("close", r));
+    return { code, out };
+  }
+
+  it("011 US6 agent:scripted --check-baseline exits 0 and prints baseline: ok against the harness", async () => {
+    const r = await runScript("src/main.ts", {
+      NETWORK: "local",
+      SELLER_URL: h.urls.seller,
+      CONTROL_URL: h.urls.control,
+      SETTLEMENT_URL: h.urls.settlement,
+      CONTROL_TOKEN: h.tokens.control,
+      VERIFIER_TOKEN: h.tokens.verifier,
+    }, ["--scripted", "--check-baseline"]);
+    expect(r.out).toContain("baseline: ok");
+    expect(r.code).toBe(0);
+  }, 120_000);
+
+  it("011 US4 ledger-verify exits 0 on a clean chain and 1 on a wrong token", async () => {
+    const ok = await runScript("scripts/ledger-verify.ts", { NETWORK: "local", CONTROL_URL: h.urls.control, OPERATOR_TOKEN: h.tokens.operator });
+    expect(ok.code).toBe(0);
+    expect(ok.out).toMatch(/^entries=\d+ ok=true$/m);
+    const bad = await runScript("scripts/ledger-verify.ts", { NETWORK: "local", CONTROL_URL: h.urls.control, OPERATOR_TOKEN: "wrong" });
+    expect(bad.code).toBe(1);
+    expect(bad.out).toContain("HTTP 401");
+  }, 60_000);
+  const sessionOf = (ref: unknown) => String(ref).split(".")[1]!;
+
+  it("default goal pays weather and market brief; the premium report escalates", async () => {
+    const s = h.urls.seller;
+    const model = mockModel([
+      toolCall("fetch_resource", { url: `${s}/api/catalog`, purpose: "read the catalog" }),
+      toolCall("fetch_resource", { url: `${s}/api/weather?city=Lima`, purpose: "weather for Lima" }),
+      toolCall("fetch_resource", { url: `${s}/api/market-brief`, purpose: "market brief" }),
+      toolCall("fetch_resource", { url: `${s}/api/premium-report`, purpose: "premium report" }),
+      text("Receipts: weather, market brief. The premium report needs approval."),
+    ]);
+    const a = await startHostedApp({ harness: h, model });
+    try {
+      const r = await a.run("alice", { goal: "Get today's weather for Lima and a short market brief" });
+      expect(r.status).toBe(200);
+      expect(r.body.status).toBe("completed");
+      const steps = r.body.steps as Step[];
+      expect(steps.map((x) => x.result.outcome)).toEqual(["FREE", "PAID", "PAID", "ESCALATED"]);
+      expect(steps.filter((x) => x.result.outcome === "PAID").map((x) => x.result.payment?.settlement.status)).toEqual(["CONFIRMED", "CONFIRMED"]);
+      const escalated = steps[3]!.result.authorizationId;
+      expect(escalated).toMatch(/^auth_/);
+      expect(h.ledgerEntries().some((e) => e.type === "AUTHORIZED" && e.authorizationId === escalated)).toBe(false);
+
+      const sessionId = sessionOf(r.body.sessionRef);
+      const budget = (await (await fetch(`${h.urls.control}/v1/budget/${sessionId}`, { headers: { authorization: `Bearer ${h.tokens.control}` } })).json()) as {
+        spentOrReservedAtomic: string;
+      };
+      expect(budget.spentOrReservedAtomic).toBe("6000");
+    } finally {
+      await a.close();
+    }
+  }, 120_000);
+
+  it("T-E2E-09 continuation: escalate, approve, continue the same session, pay once", async () => {
+    const s = h.urls.seller;
+    const report = () => toolCall("fetch_resource", { url: `${s}/api/premium-report`, purpose: "premium report" });
+    const model = mockModel([report(), text("needs approval"), report(), text("bought it")]);
+    const a = await startHostedApp({ harness: h, model });
+    try {
+      const run1 = await a.run("carol", { goal: "Buy the premium report" });
+      const step1 = (run1.body.steps as Step[])[0]!;
+      expect(step1.result.outcome).toBe("ESCALATED");
+      const authorizationId = step1.result.authorizationId!;
+
+      const approved = await fetch(`${h.urls.control}/v1/approvals/${authorizationId}`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${h.tokens.operator}`, "content-type": "application/json" },
+        body: JSON.stringify({ approver: "e2e-operator" }),
+      });
+      expect(approved.status).toBe(200);
+
+      const run2 = await a.run("carol", { goal: "Buy the premium report", sessionRef: run1.body.sessionRef });
+      expect(run2.status).toBe(200);
+      const step2 = (run2.body.steps as Step[])[0]!;
+      expect(step2.result.outcome).toBe("PAID");
+      expect(step2.result.payment?.settlement.status).toBe("CONFIRMED");
+      const sessionId = sessionOf(run1.body.sessionRef);
+      const paid = h.ledgerEntries().filter((e) => e.type === "AUTHORIZED" && e.sessionId === sessionId);
+      expect(paid).toHaveLength(1);
+      expect((paid[0]!.data as { approvalRef: string | null }).approvalRef).toMatch(/^apr_/);
+
+      const before = h.ledgerEntries().length;
+      const stolen = await a.run("mallory", { goal: "Buy the premium report", sessionRef: run1.body.sessionRef });
+      expect(stolen.status).toBe(404);
+      expect(h.ledgerEntries().length).toBe(before);
+    } finally {
+      await a.close();
+    }
+  }, 120_000);
 });

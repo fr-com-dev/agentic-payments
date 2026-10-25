@@ -178,7 +178,7 @@ export function formatAtomic(amountAtomic: string, decimals: number): string {
 // CFG-2 environment loading (007)
 // ---------------------------------------------------------------------------
 
-export type EnvRole = "l1-agent" | "l2-control" | "l3-verifier" | "seller" | "facilitator" | "operator";
+export type EnvRole = "l1-agent" | "l1-hosted" | "l2-control" | "l3-verifier" | "seller" | "facilitator" | "operator";
 
 /**
  * Loads exactly one env file: `ENV_FILE`, or `env/<role>.env` by default (SPEC §3.1, CFG-2).

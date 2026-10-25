@@ -1,0 +1,17 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": "dist",
+    "rootDir": ".",
+    "sourceMap": false
+  },
+  "include": [
+    "src/**/*.ts",
+    "scripts/approve.ts",
+    "scripts/reject.ts",
+    "scripts/escalations.ts",
+    "scripts/ledger-verify.ts"
+  ],
+  "exclude": ["test", "node_modules", "dist"]
+}

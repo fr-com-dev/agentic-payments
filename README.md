@@ -154,6 +154,44 @@ Facilitator failures reach the agent in two ways:
 
 A CDP JWT is valid for 120 s, so a skewed clock on the seller host shows up as `authentication`.
 
+## Hosted agent service (Azure)
+
+The agent can also run as an HTTP service (SPEC L1-6, `specs/011`): `POST /v1/runs` takes a goal from a requester with an Entra ID token that carries the `Agent.Run` role. It uses the same two tools, prompt and limits as the command-line agent, and gains no payment authority:
+- it refuses to start if it can see the payer key;
+- it never calls operator routes;
+- it never forwards the requester's token to L2 or L3.
+
+Sessions are bound to their requester by a signed `sessionRef`, so a requester can continue a session after an operator approves an escalation.
+
+Locally, against the local stack:
+
+```bash
+npm run stack:local                                 # terminal 1: chain, facilitator, seller, L2, L3
+cp env/l1-hosted.env.example env/l1-hosted.env     # set ANTHROPIC_API_KEY and SESSION_REF_SECRET (openssl rand -hex 32)
+npm run agent:hosted                                # 127.0.0.1:4024
+TOKEN=$(npm run -s dev-token -- --subject alice)    # local dev issuer, NETWORK=local only
+curl -s -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"goal":"Get the weather for Lima"}' http://127.0.0.1:4024/v1/runs | jq '.status, [.steps[].result.outcome]'
+```
+
+To run the container image instead, see [quickstart §3](specs/011-l1-hosted-agent-azure/quickstart.md) (`stack:local -- --docker`).
+
+**Azure layout** (`infra/`, Bicep):
+- One Container Apps environment holds the agent (public ingress), L2 and L3. L2 and L3 have internal-only ingress through a loopback proxy sidecar, so they still bind 127.0.0.1.
+- Each runtime unit has its own managed identity and Key Vault. The payer key is readable only by L2's identity.
+- The ledger lives on an NFS share. L2 holds a lock on it (L2-6), so only one L2 writes during a revision update.
+- The sellers run in a separate environment.
+- Requesters sign in with Entra ID (`infra/entra-app.sh`). A person assigned `Agent.Run` gets a token with `az account get-access-token --scope api://x402-l1-agent/user_impersonation`.
+
+**Deployment**: `.github/workflows/deploy-azure.yml` deploys one commit with OIDC. It promotes the new agent revision only after these all pass:
+- the infrastructure rules (T-IAC-01);
+- an image secret check;
+- the L1-4 baseline in the cloud (`--check-baseline`);
+- a hosted smoke run;
+- a log secret scan.
+
+The first deployment, vault seeding and the operator job are in `specs/011-l1-hosted-agent-azure/quickstart.md`.
+
 ## Definition of done
 
 | # | Gate | Command / check | Pass condition |
@@ -197,6 +235,11 @@ A milestone must pass its exit check before the next one starts.
 | `test/agent.test.ts` | L1 orchestrator, port adapters, T-AGT-01, scripted plan, key refusal |
 | `test/e2e.local.test.ts` | T-E2E-01..05, T-E2E-07 (operator reject) and T-E2E-08 (expiry) on the in-process harness (`test/helpers/harness.ts`) |
 | `test/demo.local.test.ts` | the real six-process demo, port preflight, process-group shutdown |
+| `test/hosted-agent.test.ts`, `test/hosted-access.test.ts`, `test/hosted-sessions.test.ts`, `test/hosted-run.test.ts` | T-AGT-02..05: the hosted service's exact two tools, requester access and limits, session binding, run semantics and log redaction |
+| `test/ledger-lock.test.ts` | T-LED-05: one ledger writer across processes (L2-6) |
+| `test/infra.test.ts` | T-IAC-01: the compiled Bicep keeps identities, secrets and ingress per the Azure matrix (needs `BICEP_PATH`) |
+| `test/entra-app.test.ts` | T-AGT-03: `infra/entra-app.sh` against a fake `az`: client ID as the audience, people's scope with the Azure CLI pre-authorized, idempotent re-runs |
+| `test/deploy-workflow.test.ts` | T-E2E-AZ: the deploy workflow's gates and rollback |
 | `test/openapi.test.ts` | T-API-01..03: `docs/l2-control.openapi.yaml` matches L2's routes, tokens, statuses and response shapes; T-API-04: the Swagger UI routes are off by default, same-origin and serve fixed files only |
 
 Run one test with `npx vitest run test/policy.test.ts -t "<name>"`.

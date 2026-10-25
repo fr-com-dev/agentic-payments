@@ -4,7 +4,7 @@
 import type { AddressInfo } from "node:net";
 import { createServer, type Server } from "node:http";
 import { spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import express from "express";
@@ -23,9 +23,10 @@ import {
   toToolResult,
   type MessagesClient,
 } from "../src/layer1-intent/agent.js";
-import { runScriptedAgent, scriptedPlan } from "../src/layer1-intent/scripted.js";
+import { checkBaseline, runScriptedAgent, scriptedPlan } from "../src/layer1-intent/scripted.js";
 import { REFUSAL, resolveSessionId } from "../src/main.js";
 import { formatAtomic } from "../src/shared/config.js";
+import { checkBalance } from "../scripts/payer-balance.js";
 import type {
   AuthorizationDecision,
   AuthorizationGatePort,
@@ -454,6 +455,69 @@ describe("L1-5 composition root (001 T017, T019)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// 011 hosted entry point (src/hosted-main.ts): INV-3 in both env sources
+// ---------------------------------------------------------------------------
+
+describe("T-AGT-KEY hosted (INV-3)", () => {
+  async function runHosted(extraEnv: NodeJS.ProcessEnv) {
+    let connections = 0;
+    const counter = createServer((_req, res) => res.end("{}"));
+    counter.on("connection", () => connections++);
+    servers.push(counter);
+    await new Promise<void>((r) => counter.listen(0, "127.0.0.1", () => r()));
+    const url = `http://127.0.0.1:${(counter.address() as AddressInfo).port}`;
+    const env: NodeJS.ProcessEnv = {
+      PATH: process.env.PATH,
+      HOME: process.env.HOME,
+      NETWORK: "local",
+      CONTROL_URL: url,
+      SETTLEMENT_URL: url,
+      SELLER_URL: url,
+      ...extraEnv,
+    };
+    const child = spawn(process.execPath, ["--import", "tsx", "src/hosted-main.ts"], { env, stdio: ["ignore", "pipe", "pipe"] });
+    let stderr = "";
+    child.stderr.on("data", (d) => (stderr += String(d)));
+    const code = await new Promise<number | null>((r) => child.on("close", r));
+    return { code, stderr, connections };
+  }
+
+  it("T-AGT-KEY hosted: with PAYER_PRIVATE_KEY in the process env, hosted-main exits 1 with the refusal and makes no network call", async () => {
+    const r = await runHosted({ PAYER_PRIVATE_KEY: "0x1", ENV_FILE: "/dev/null" });
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain(REFUSAL);
+    expect(r.connections).toBe(0);
+  });
+
+  it("T-AGT-KEY hosted: a payer key present only in ENV_FILE is refused too (the check runs after loadEnv)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "hosted-key-"));
+    try {
+      const file = join(dir, "l1-hosted.env");
+      writeFileSync(file, "PAYER_PRIVATE_KEY=0x1\n");
+      const r = await runHosted({ ENV_FILE: file });
+      expect(r.code).toBe(1);
+      expect(r.stderr).toContain(REFUSAL);
+      expect(r.connections).toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("the refusal check is the first statement after loadEnv in hosted-main.ts", () => {
+    const src = readFileSync("src/hosted-main.ts", "utf8");
+    const body = src.slice(src.indexOf("async function main"));
+    const load = body.indexOf('loadEnv("l1-hosted")');
+    const check = body.indexOf("PAYER_PRIVATE_KEY !== undefined");
+    expect(load).toBeGreaterThan(0);
+    expect(check).toBeGreaterThan(load);
+    for (const later of ["loadHostedConfig(", "keysFor(", "import(", "listen("]) {
+      const at = body.indexOf(later);
+      if (at >= 0) expect(at).toBeGreaterThan(check);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // L1-3 Claude agent (T023–T026, T-AGT-01)
 // ---------------------------------------------------------------------------
 
@@ -591,5 +655,65 @@ describe("L1-4 scripted agent (001 T031)", () => {
     ]);
     expect(results).toHaveLength(6);
     expect(scriptedPlan("http://127.0.0.1:4021")).toHaveLength(6);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L1-4 seller alias and baseline check (011 US6): step 6 in the cloud, and the regression job's gate
+// ---------------------------------------------------------------------------
+
+describe("L1-4 seller alias (011 US6)", () => {
+  it("without an alias, the plan is unchanged: step 6 is step 2 through localhost", () => {
+    const plan = scriptedPlan("http://127.0.0.1:4021");
+    expect(plan[5]!.url).toBe("http://localhost:4021/api/weather?city=Lima");
+  });
+
+  it("with an alias, step 6 is the alias seller's weather; steps 1–5 are identical", () => {
+    const plain = scriptedPlan("https://seller.example");
+    const aliased = scriptedPlan("https://seller.example", "https://alias.example");
+    expect(aliased[5]!.url).toBe("https://alias.example/api/weather?city=Lima");
+    expect(aliased.slice(0, 5)).toEqual(plain.slice(0, 5));
+  });
+
+  const result = (outcome: PaidFetchResult["outcome"], settlement?: "CONFIRMED" | "PENDING"): PaidFetchResult => ({
+    outcome,
+    url: "u",
+    ...(outcome === "PAID" && {
+      payment: { authorizationId: "a", amountAtomic: "1", asset: "x", network: "n", payTo: "p", settlement: { status: settlement ?? "CONFIRMED" } as never },
+    }),
+  });
+  const baseline = () => [result("FREE"), result("PAID"), result("PAID"), result("ESCALATED"), result("DENIED"), result("DENIED")];
+
+  it("checkBaseline accepts the L1-4 outcomes with both payments CONFIRMED", () => {
+    expect(checkBaseline(baseline())).toEqual({ ok: true, detail: "FREE, PAID, PAID, ESCALATED, DENIED, DENIED" });
+  });
+
+  it("checkBaseline rejects a different outcome, a missing step or a PENDING payment", () => {
+    const changed = baseline();
+    changed[4] = result("PAID");
+    expect(checkBaseline(changed).ok).toBe(false);
+    expect(checkBaseline(baseline().slice(0, 5)).ok).toBe(false);
+    const pending = baseline();
+    pending[2] = result("PAID", "PENDING");
+    expect(checkBaseline(pending)).toMatchObject({ ok: false });
+    expect(checkBaseline(pending).detail).toContain("PENDING");
+  });
+});
+
+describe("011 US6 payer-balance preflight", () => {
+  const asset = "0x036CbD53842c5426634e7929541eC2318f3dCF7e" as const;
+  const payer = "0x0048A66969cE8886A5e9bC00059Cb8c5D3989516" as const;
+  const reader = (balance: bigint) => {
+    const calls: unknown[] = [];
+    return { calls, readContract: async (args: unknown) => (calls.push(args), balance) };
+  };
+
+  it("011 US6 payer-balance preflight: at or above the minimum passes; below it asks to fund the payer", async () => {
+    const enough = reader(50_000n);
+    expect(await checkBalance(enough, asset, payer, 50_000n)).toEqual({ code: 0, line: "balance=50000" });
+    expect(enough.calls[0]).toMatchObject({ address: asset, functionName: "balanceOf", args: [payer] });
+    const low = await checkBalance(reader(49_999n), asset, payer, 50_000n);
+    expect(low.code).toBe(2);
+    expect(low.line).toContain("fund the payer");
   });
 });
