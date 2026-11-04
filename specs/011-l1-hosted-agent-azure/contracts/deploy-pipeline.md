@@ -56,7 +56,7 @@ its own image.
 
 | # | Step | Pass condition |
 |---|---|---|
-| 0 | Right after the checkout: Bicep CLI 0.47.16, first on `PATH` and in `BICEP_PATH`; it compiles `infra/main.<environment>.bicepparam`, and the step reads `tenantId`, `subscriptionId` and `deployClientId` (for `SIGN_IN`), `authAudience`, `payerAddress` and the names the steps use (`RG`, `CR_X402`, `LOG_X402`, `CA_L1`, `CA_L3`, `CA_SELLER`, `CA_SELLER_ALIAS`, `CAJ_L1`, `CAJ_L2`) | every value read |
+| 0 | Right after the checkout. First it refuses `seed-ip` or `recover-vaults` without `platform-only`, before it downloads or deploys anything (the inputs come in as `INPUT_*`, never pasted into the script). Then Bicep CLI 0.47.16, first on `PATH` and in `BICEP_PATH`; it compiles `infra/main.<environment>.bicepparam`, and the step reads `tenantId`, `subscriptionId` and `deployClientId` (for `SIGN_IN`), `authAudience`, `payerAddress` and the names the steps use (`RG`, `CR_X402`, `LOG_X402`, `CA_L1`, `CA_L3`, `CA_SELLER`, `CA_SELLER_ALIAS`, `CAJ_L1`, `CAJ_L2`) | no refused inputs; every value read |
 | 1 | `npm install`, `npm run typecheck`, `npm test`, with T-IAC-01 (`BICEP_PATH` is set) | green, nothing skipped |
 | — | Every step below that calls Azure (2–5, 7–11, rollback) first signs in (`SIGN_IN`): a fresh GitHub OIDC token, the client ID, tenant and subscription from step 0 | signed in |
 | 2 | `az deployment group what-if`, then `create` of `main.bicep` with `PLATFORM_ONLY=true` (and `SEED_IP`, `RECOVER_VAULTS` from the inputs): the platform, without any app | succeeded |
@@ -75,7 +75,9 @@ its own image.
 vaults must exist before they can be seeded, and the apps can't start without their secrets
 (quickstart §4). `seed-ip` opens the vaults to an operator's IP for the seeding; the next run without
 it closes them again. `recover-vaults` (with `platform-only`, after `infra/cleanup.sh`) makes Bicep
-recover the soft-deleted vaults, secrets included, instead of creating them.
+recover the soft-deleted vaults, secrets included, instead of creating them. Both belong to a
+platform-only run: without `platform-only`, step 0 refuses them and nothing is deployed (revised
+2026-11-04: a run with `seed-ip` and `platform-only` unchecked went on to build the images).
 
 ## Rollback
 

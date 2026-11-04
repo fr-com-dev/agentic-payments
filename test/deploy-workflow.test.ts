@@ -9,12 +9,15 @@
 //   (github-setup.sh, cleanup.sh);
 // - the gate order: nothing is promoted before the regression, chain check, smoke run and log scan pass, and a
 //   step is skipped only by the first, platform-only run; a failure inside a pipe fails its step;
+// - step 0 first refuses seed-ip or recover-vaults without platform-only (the guard itself is run, for every
+//   combination of the three inputs);
 // - each job runs its own command: the deploy identity never starts the operator job with another;
 // - the rollback;
 // - every image of scripts/image-closure.ts built;
 // - no resource name hard-coded;
 // - no secret-shaped literal.
 // The live part of T-E2E-AZ is the workflow runs themselves (quickstart §4).
+import { spawnSync } from "node:child_process";
 import { readFileSync, readdirSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
@@ -62,6 +65,26 @@ const TARGET_SIGN_IN = [
   ["DEPLOY_CLIENT_ID", "deployClientId"],
 ];
 const TARGET_NAMES = ["RG=", "LOG_X402=", "CR_X402=", "CA_L1=", "CA_L3=", "CA_SELLER=", "CA_SELLER_ALIAS=", "CAJ_L1=", "CAJ_L2="];
+/** The inputs step 0's guard reads, as environment variables: an input is never pasted into a script. */
+const TARGET_INPUTS = JSON.stringify({
+  INPUT_PLATFORM_ONLY: "${{ inputs.platform-only || false }}",
+  INPUT_SEED_IP: "${{ inputs.seed-ip }}",
+  INPUT_RECOVER_VAULTS: "${{ inputs.recover-vaults || false }}",
+});
+/**
+ * Every combination of platform-only, seed-ip and recover-vaults, and whether step 0 refuses it: seed-ip and
+ * recover-vaults belong to a platform-only run. A `deploy-*` tag has no inputs, so it is the first case.
+ */
+const GUARD_CASES: [platformOnly: string, seedIp: string, recoverVaults: string, refused: boolean][] = [
+  ["false", "", "false", false],
+  ["false", "203.0.113.7", "false", true],
+  ["false", "", "true", true],
+  ["false", "203.0.113.7", "true", true],
+  ["true", "", "false", false],
+  ["true", "203.0.113.7", "false", false],
+  ["true", "", "true", false],
+  ["true", "203.0.113.7", "true", false],
+];
 /** The only shell scripts in infra/: what Bicep can't do (the GitHub environment) and the clean-up. */
 const INFRA_SCRIPTS = ["cleanup.sh", "github-setup.sh"];
 /**
@@ -160,6 +183,29 @@ export function workflowProblems(w: Workflow): string[] {
   return out;
 }
 
+/**
+ * Step 0 starts by refusing seed-ip or recover-vaults without platform-only, before it downloads or deploys anything
+ * (2026-11-04: a run with seed-ip and platform-only unchecked went on to build the images). The guard is the run's
+ * first `if … fi`; it is run in bash for every case of GUARD_CASES.
+ */
+export function platformOnlyGuardProblems(w: Workflow): string[] {
+  const target = stepsOf(w).find((s) => s.id === "target");
+  const out: string[] = [];
+  if (JSON.stringify(target?.env) !== TARGET_INPUTS) out.push("the target step must take platform-only, seed-ip and recover-vaults as INPUT_* environment variables, never pasted into its script");
+  const run = target?.run ?? "";
+  const end = run.indexOf("\nfi\n");
+  if (!run.startsWith("if [[") || end < 0) return [...out, "the target step must start by refusing seed-ip or recover-vaults without platform-only"];
+  const guard = run.slice(0, end + "\nfi\n".length);
+  for (const [platformOnly, seedIp, recoverVaults, refused] of GUARD_CASES) {
+    const env = { PATH: process.env.PATH ?? "", INPUT_PLATFORM_ONLY: platformOnly, INPUT_SEED_IP: seedIp, INPUT_RECOVER_VAULTS: recoverVaults };
+    const r = spawnSync("bash", ["--noprofile", "--norc", "-eo", "pipefail", "-c", guard], { env, encoding: "utf8" });
+    if ((r.status !== 0) !== refused) {
+      out.push(`with platform-only=${platformOnly}, seed-ip=${seedIp || "(empty)"} and recover-vaults=${recoverVaults}, the target step must ${refused ? "refuse" : "go on"}`);
+    }
+  }
+  return out;
+}
+
 /** No GitHub secret or variable: every value comes from the parameter files. */
 export function secretProblems(file: string, text: string): string[] {
   const out: string[] = [];
@@ -196,6 +242,28 @@ describe("T-E2E-AZ deployment workflow gates", () => {
   it("T-E2E-AZ one workflow deploys everything: OIDC from the parameter file in each step that calls Azure, what-if before each deployment, every gate before promoting, rollback on failure", () => {
     expect(readdirSync(DIR)).toEqual([FILE]);
     expect(workflowProblems(w)).toEqual([]);
+  });
+
+  it("T-E2E-AZ step 0 refuses seed-ip or recover-vaults without platform-only, before anything else runs", () => {
+    expect(platformOnlyGuardProblems(w)).toEqual([]);
+  });
+
+  it("T-E2E-AZ must-fail: no platform-only guard, a guard that misses recover-vaults, or the inputs pasted into the script, is reported", () => {
+    const withTarget = (f: (s: Step) => Step): Workflow => ({ ...w, jobs: { deploy: { ...Object.values(w.jobs)[0], steps: stepsOf(w).map((s) => (s.id === "target" ? f(s) : s)) } } });
+    const run = stepsOf(w).find((s) => s.id === "target")!.run!;
+    const guard = run.slice(0, run.indexOf("\nfi\n") + "\nfi\n".length);
+    expect(platformOnlyGuardProblems(withTarget((s) => ({ ...s, run: run.slice(guard.length) })))).toEqual([
+      "the target step must start by refusing seed-ip or recover-vaults without platform-only",
+    ]);
+    const seedOnly = guard.replace(' && ( -n "$INPUT_SEED_IP" || "$INPUT_RECOVER_VAULTS" == true )', ' && -n "$INPUT_SEED_IP"');
+    expect(seedOnly).not.toBe(guard);
+    expect(platformOnlyGuardProblems(withTarget((s) => ({ ...s, run: seedOnly + run.slice(guard.length) })))).toEqual([
+      "with platform-only=false, seed-ip=(empty) and recover-vaults=true, the target step must refuse",
+    ]);
+    const pasted = guard.replace('-n "$INPUT_SEED_IP"', '-n "${{ inputs.seed-ip }}"');
+    expect(platformOnlyGuardProblems(withTarget((s) => ({ ...s, env: undefined, run: pasted + run.slice(guard.length) })))).toContain(
+      "the target step must take platform-only, seed-ip and recover-vaults as INPUT_* environment variables, never pasted into its script",
+    );
   });
 
   it("T-E2E-AZ the workflow reads no GitHub secret or variable, holds no secret-shaped literal, and starts every job with its own command", () => {
