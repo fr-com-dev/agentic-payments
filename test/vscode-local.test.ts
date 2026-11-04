@@ -5,7 +5,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 import { parseEnvFile, type EnvFile } from "../scripts/demo-lib.js";
-import { localRunEnv, PASSTHROUGH, RUN_ROLES, runWarnings, type RunRole } from "../scripts/vscode-local.js";
+import { localRunEnv, PASSTHROUGH, RUN_ROLES, runWarnings, stackAction, type RunRole } from "../scripts/vscode-local.js";
 
 /** VS Code's JSON with comments: these files use whole-line `//` comments only. */
 const jsonc = (path: string) => JSON.parse(readFileSync(path, "utf8").replace(/^\s*\/\/.*$/gm, "")) as Record<string, unknown>;
@@ -23,6 +23,8 @@ type Compound = { name: string; configurations: string[]; preLaunchTask?: string
 type Input = { id: string };
 
 const RUNNER = "${workspaceFolder}/scripts/vscode-local.ts";
+/** The stack's services: the compound "Local stack" starts them, so they have no pre-launch task of their own. */
+const SERVICES = ["facilitator", "seller", "l2", "l3"];
 const VITEST = "${workspaceFolder}/node_modules/vitest/vitest.mjs";
 
 const launch = () => jsonc(".vscode/launch.json") as { configurations: LaunchConfig[]; compounds: Compound[]; inputs: Input[] };
@@ -45,6 +47,9 @@ function launchProblems(l = launch(), t = tasks()): string[] {
     } else {
       out.push(`${c.name}: runs ${c.program}, not the local runner`);
     }
+    const role = c.program === RUNNER && (c.args?.[1] ?? "") in RUN_ROLES ? c.args![1] : undefined;
+    if (role !== undefined && SERVICES.includes(role) && c.preLaunchTask !== undefined) out.push(`${c.name}: a stack service starts with the compound, not a pre-launch task`);
+    if (role !== undefined && !SERVICES.includes(role) && c.preLaunchTask !== "local: stack") out.push(`${c.name}: must run task "local: stack" first`);
     if (c.preLaunchTask !== undefined && !labels.has(c.preLaunchTask)) out.push(`${c.name}: no task "${c.preLaunchTask}"`);
   }
   for (const k of l.compounds) {
@@ -70,17 +75,20 @@ describe("T-DEV-01 every VS Code configuration runs locally, through the runner"
     for (const t of tasks().tasks) for (const a of t.args ?? []) if (/^scripts\/.*\.ts$/.test(a)) expect(existsSync(a), a).toBe(true);
   });
 
-  it("T-DEV-01 must-fail: another program, an unknown role, an env the runner drops, a missing task and a shared pre-launch task are reported", () => {
+  it("T-DEV-01 must-fail: another program, an unknown role, an env the runner drops, a missing or misplaced pre-launch task and a shared one are reported", () => {
     const l = launch();
     const t = tasks();
     l.configurations.push({ name: "Raw L2", program: "${workspaceFolder}/src/layer2-control/service.ts", env: { NETWORK: "base-sepolia" } });
     l.configurations.find((c) => c.name === "L3 verifier")!.args = ["run", "l4"];
     l.configurations.find((c) => c.name === "Seller")!.env = { API_DOCS: "1", NETWORK: "base-sepolia" };
     l.configurations.find((c) => c.name === "L1 hosted agent")!.preLaunchTask = "nope";
+    l.configurations.find((c) => c.name === "L2 control")!.preLaunchTask = "local: stack";
     l.compounds[0]!.configurations.push("L1 agent: scripted plan", "Operator: ledger-verify");
     expect(launchProblems(l, t)).toEqual([
       'Seller: sets NETWORK, which the runner drops',
+      "L2 control: a stack service starts with the compound, not a pre-launch task",
       'L3 verifier: not "run <role>" with a known role',
+      'L1 hosted agent: must run task "local: stack" first',
       'L1 hosted agent: no task "nope"',
       "Raw L2: runs ${workspaceFolder}/src/layer2-control/service.ts, not the local runner",
       "compound Local stack: two members share a pre-launch task",
@@ -145,5 +153,11 @@ describe("T-DEV-02 each process gets its own env file, its own local key and NET
     expect(runWarnings("agent", agent, ["Get the weather"])).toEqual([
       "env/l1-agent.env has no ANTHROPIC_API_KEY: the Claude agent needs one (the scripted plan doesn't)",
     ]);
+  });
+});
+
+describe("T-DEV-03 \"local: stack\" reuses what answers, waits for what's starting, and starts only what's missing", () => {
+  it("T-DEV-03 each stack process: reuse when it answers, wait when its port is taken, start when it's free", () => {
+    expect([stackAction(true, true), stackAction(true, false), stackAction(false, true), stackAction(false, false)]).toEqual(["reuse", "reuse", "wait", "start"]);
   });
 });
