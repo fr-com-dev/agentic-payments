@@ -1,0 +1,88 @@
+{
+  // Tasks for the local launch configurations (.vscode/launch.json) and the usual checks. Everything runs in local
+  // mode; scripts/vscode-local.ts describes the runner.
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "local: chain",
+      "detail": "Start the local chain (ganache on 8545, MockUSDC, .local/deployment.json), or reuse the one running",
+      "type": "process",
+      "command": "node",
+      "args": ["--import", "tsx", "scripts/vscode-local.ts", "chain"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "isBackground": true,
+      "problemMatcher": {
+        "owner": "local-chain",
+        "pattern": { "regexp": "^local chain: error: (.*)$", "file": 2, "message": 1 },
+        "background": {
+          "activeBegins": true,
+          "beginsPattern": "^local chain: checking",
+          "endsPattern": "^local chain: (ready|already running|error)"
+        }
+      },
+      "presentation": { "reveal": "silent", "panel": "dedicated", "group": "local" }
+    },
+    {
+      "label": "local: wait for stack",
+      "detail": "Wait until the chain, facilitator, seller, L2 and L3 answer (60 s)",
+      "type": "process",
+      "command": "node",
+      "args": ["--import", "tsx", "scripts/vscode-local.ts", "wait"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": [],
+      "presentation": { "reveal": "silent", "panel": "shared", "group": "local" }
+    },
+    {
+      "label": "local: stop chain",
+      "detail": "Stop the local chain started by \"local: chain\"",
+      "type": "shell",
+      "command": "echo local chain stopped ${input:terminateChain}",
+      "problemMatcher": [],
+      "presentation": { "reveal": "silent" }
+    },
+    {
+      "label": "local: dev token",
+      "detail": "Print a dev-issuer access token for the L1 hosted agent (Swagger UI: Authorize)",
+      "type": "process",
+      "command": "node",
+      "args": ["--import", "tsx", "scripts/dev-token.ts", "--subject", "${input:subject}"],
+      "options": { "cwd": "${workspaceFolder}", "env": { "NETWORK": "local" } },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "new" }
+    },
+    {
+      "label": "typecheck",
+      "type": "npm",
+      "script": "typecheck",
+      "problemMatcher": "$tsc",
+      "group": "build"
+    },
+    {
+      "label": "test",
+      "detail": "Every suite; stop the local stack first (the e2e suites use the same ports)",
+      "type": "npm",
+      "script": "test",
+      "problemMatcher": [],
+      "group": { "kind": "test", "isDefault": true }
+    },
+    {
+      "label": "demo:local",
+      "detail": "The 6-process local demo; stop the local stack first",
+      "type": "npm",
+      "script": "demo:local",
+      "problemMatcher": []
+    },
+    {
+      "label": "check",
+      "detail": "Definition of done: typecheck, every suite, demo:local; stop the local stack first",
+      "type": "npm",
+      "script": "check",
+      "problemMatcher": [],
+      "group": "test"
+    }
+  ],
+  "inputs": [
+    { "id": "terminateChain", "type": "command", "command": "workbench.action.tasks.terminate", "args": "local: chain" },
+    { "id": "subject", "type": "promptString", "description": "The token's subject (the requester)", "default": "alice" }
+  ]
+}

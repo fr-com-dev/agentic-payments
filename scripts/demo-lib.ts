@@ -5,7 +5,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { connect } from "node:net";
 import { resolve } from "node:path";
 import { createInterface } from "node:readline";
-import { formatAtomic } from "../src/shared/config.js";
+import { CHAIN_PORT, DEFAULT_DEPLOYMENT_FILE, DEFAULT_PORTS, DEV_TOKENS, formatAtomic } from "../src/shared/config.js";
 import { GANACHE_NOISE, localAddress, localDevKeys } from "./local-chain-lib.js";
 import { RegressionBaseline } from "../test/helpers/baseline.js";
 
@@ -211,6 +211,70 @@ export async function getJson<T>(url: string, token: string): Promise<T | null> 
   } catch {
     return null;
   }
+}
+
+// ---------------------------------------------------------------------------
+// The local stack (stack:local, demo:local's services, the VS Code runner): one definition of its processes,
+// their ports from their env files, and the readiness probes.
+// ---------------------------------------------------------------------------
+
+export type StackRole = "chain" | "facilitator" | "seller" | "l2" | "l3";
+
+/** In start order: each one is ready before the next starts. */
+export const LOCAL_STACK: readonly (DemoProcess & { role: StackRole })[] = [
+  { role: "chain", tag: "chain", entry: "scripts/local-chain.ts", args: [], envFile: null },
+  { role: "facilitator", tag: "fac", entry: "scripts/facilitator.ts", args: [], envFile: "env/facilitator.env" },
+  { role: "seller", tag: "seller", entry: "src/counterparty/seller.ts", args: [], envFile: "env/seller.env" },
+  { role: "l2", tag: "l2", entry: "src/layer2-control/service.ts", args: [], envFile: "env/l2-control.env" },
+  { role: "l3", tag: "l3", entry: "src/layer3-settlement/service.ts", args: [], envFile: "env/l3-verifier.env" },
+];
+
+export interface LocalStack {
+  /** Each process's env file (its own, or the `.example`); null for the chain. */
+  files: Map<StackRole, EnvFile | null>;
+  ports: Record<StackRole, number>;
+  /** L2's NETWORK, `local` by default. */
+  network: string;
+  controlToken: string;
+  deploymentPath: string;
+  /** True once the process answers: the chain with this run's deployment record, then each service. */
+  ready: Record<StackRole, () => Promise<boolean>>;
+}
+
+export function localStack(): LocalStack {
+  const files = new Map(LOCAL_STACK.map((p) => [p.role, envFileFor(p)]));
+  const fileValue = (role: StackRole, key: string) => files.get(role)?.values[key] || undefined;
+  const portOf = (role: StackRole, key: string, fallback: number) => Number(fileValue(role, key) ?? fallback);
+  const ports: Record<StackRole, number> = {
+    chain: CHAIN_PORT,
+    facilitator: portOf("facilitator", "FACILITATOR_PORT", DEFAULT_PORTS.facilitator),
+    seller: portOf("seller", "SELLER_PORT", DEFAULT_PORTS.seller),
+    l2: portOf("l2", "CONTROL_PORT", DEFAULT_PORTS.control),
+    l3: portOf("l3", "SETTLEMENT_PORT", DEFAULT_PORTS.settlement),
+  };
+  const controlToken = fileValue("l2", "CONTROL_TOKEN") ?? DEV_TOKENS.CONTROL_TOKEN!;
+  const deploymentPath = resolve(ROOT, DEFAULT_DEPLOYMENT_FILE);
+  const ready: Record<StackRole, () => Promise<boolean>> = {
+    chain: async () => {
+      try {
+        const res = await fetch(`http://127.0.0.1:${ports.chain}`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_chainId", params: [] }),
+          signal: AbortSignal.timeout(1_000),
+        });
+        const body = (await res.json()) as { result?: string };
+        return body.result === "0x7a69" && existsSync(deploymentPath);
+      } catch {
+        return false;
+      }
+    },
+    facilitator: () => httpOk(`http://127.0.0.1:${ports.facilitator}/supported`),
+    seller: () => httpOk(`http://127.0.0.1:${ports.seller}/api/catalog`),
+    l2: () => httpOk(`http://127.0.0.1:${ports.l2}/v1/budget/sess_stackready`, { authorization: `Bearer ${controlToken}` }),
+    l3: () => portInUse(ports.l3),
+  };
+  return { files, ports, network: fileValue("l2", "NETWORK") ?? "local", controlToken, deploymentPath, ready };
 }
 
 // ---------------------------------------------------------------------------

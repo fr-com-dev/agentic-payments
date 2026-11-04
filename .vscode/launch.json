@@ -1,0 +1,220 @@
+{
+  // Debug or run (Ctrl+F5) every process of the PoC, always in local mode: NETWORK=local, the local chain and
+  // facilitator, the dev issuer. Each configuration starts through scripts/vscode-local.ts, which gives the process
+  // its own env file (env/<role>.env, or the .example template) and, on local, only its own dev key, then runs it as
+  // a child the debugger attaches to. Breakpoints in src/ and scripts/ work as usual.
+  //
+  // Start with the compound "Local stack": it starts the chain (task "local: chain") and the facilitator, seller, L2
+  // and L3. The L1 and operator configurations wait for that stack (task "local: wait for stack"). The chain keeps
+  // running after a debug session, for the next one; task "local: stop chain" stops it.
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Facilitator",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/scripts/vscode-local.ts",
+      "args": ["run", "facilitator"],
+      "runtimeArgs": ["--import", "tsx"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "autoAttachChildProcesses": true,
+      "skipFiles": ["<node_internals>/**", "${workspaceFolder}/node_modules/**"],
+      "presentation": { "group": "1 local stack", "order": 1 }
+    },
+    {
+      "name": "Seller",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/scripts/vscode-local.ts",
+      "args": ["run", "seller"],
+      "runtimeArgs": ["--import", "tsx"],
+      "cwd": "${workspaceFolder}",
+      "env": { "API_DOCS": "1" },
+      "console": "integratedTerminal",
+      "autoAttachChildProcesses": true,
+      "skipFiles": ["<node_internals>/**", "${workspaceFolder}/node_modules/**"],
+      "presentation": { "group": "1 local stack", "order": 2 }
+    },
+    {
+      "name": "L2 control",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/scripts/vscode-local.ts",
+      "args": ["run", "l2"],
+      "runtimeArgs": ["--import", "tsx"],
+      "cwd": "${workspaceFolder}",
+      "env": { "API_DOCS": "1" },
+      "console": "integratedTerminal",
+      "autoAttachChildProcesses": true,
+      "skipFiles": ["<node_internals>/**", "${workspaceFolder}/node_modules/**"],
+      "presentation": { "group": "1 local stack", "order": 3 }
+    },
+    {
+      "name": "L3 verifier",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/scripts/vscode-local.ts",
+      "args": ["run", "l3"],
+      "runtimeArgs": ["--import", "tsx"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "autoAttachChildProcesses": true,
+      "skipFiles": ["<node_internals>/**", "${workspaceFolder}/node_modules/**"],
+      "presentation": { "group": "1 local stack", "order": 4 }
+    },
+    {
+      "name": "L1 agent: scripted plan",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/scripts/vscode-local.ts",
+      "args": ["run", "agent", "--scripted"],
+      "runtimeArgs": ["--import", "tsx"],
+      "cwd": "${workspaceFolder}",
+      "preLaunchTask": "local: wait for stack",
+      "console": "integratedTerminal",
+      "autoAttachChildProcesses": true,
+      "skipFiles": ["<node_internals>/**", "${workspaceFolder}/node_modules/**"],
+      "presentation": { "group": "2 L1", "order": 1 }
+    },
+    {
+      "name": "L1 agent: Claude, your goal",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/scripts/vscode-local.ts",
+      "args": ["run", "agent", "${input:goal}"],
+      "runtimeArgs": ["--import", "tsx"],
+      "cwd": "${workspaceFolder}",
+      "preLaunchTask": "local: wait for stack",
+      "console": "integratedTerminal",
+      "autoAttachChildProcesses": true,
+      "skipFiles": ["<node_internals>/**", "${workspaceFolder}/node_modules/**"],
+      "presentation": { "group": "2 L1", "order": 2 }
+    },
+    {
+      "name": "L1 hosted agent",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/scripts/vscode-local.ts",
+      "args": ["run", "hosted"],
+      "runtimeArgs": ["--import", "tsx"],
+      "cwd": "${workspaceFolder}",
+      "env": { "API_DOCS": "1" },
+      "preLaunchTask": "local: wait for stack",
+      "console": "integratedTerminal",
+      "autoAttachChildProcesses": true,
+      "skipFiles": ["<node_internals>/**", "${workspaceFolder}/node_modules/**"],
+      "presentation": { "group": "2 L1", "order": 3 }
+    },
+    {
+      "name": "Operator: watch escalations",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/scripts/vscode-local.ts",
+      "args": ["run", "escalations", "--watch"],
+      "runtimeArgs": ["--import", "tsx"],
+      "cwd": "${workspaceFolder}",
+      "preLaunchTask": "local: wait for stack",
+      "console": "integratedTerminal",
+      "autoAttachChildProcesses": true,
+      "skipFiles": ["<node_internals>/**", "${workspaceFolder}/node_modules/**"],
+      "presentation": { "group": "3 operator", "order": 1 }
+    },
+    {
+      "name": "Operator: approve",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/scripts/vscode-local.ts",
+      "args": ["run", "approve", "${input:authorizationId}", "${input:approver}"],
+      "runtimeArgs": ["--import", "tsx"],
+      "cwd": "${workspaceFolder}",
+      "preLaunchTask": "local: wait for stack",
+      "console": "integratedTerminal",
+      "autoAttachChildProcesses": true,
+      "skipFiles": ["<node_internals>/**", "${workspaceFolder}/node_modules/**"],
+      "presentation": { "group": "3 operator", "order": 2 }
+    },
+    {
+      "name": "Operator: reject",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/scripts/vscode-local.ts",
+      "args": ["run", "reject", "${input:authorizationId}", "${input:approver}", "${input:reason}"],
+      "runtimeArgs": ["--import", "tsx"],
+      "cwd": "${workspaceFolder}",
+      "preLaunchTask": "local: wait for stack",
+      "console": "integratedTerminal",
+      "autoAttachChildProcesses": true,
+      "skipFiles": ["<node_internals>/**", "${workspaceFolder}/node_modules/**"],
+      "presentation": { "group": "3 operator", "order": 3 }
+    },
+    {
+      "name": "Operator: ledger-verify",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/scripts/vscode-local.ts",
+      "args": ["run", "ledger-verify"],
+      "runtimeArgs": ["--import", "tsx"],
+      "cwd": "${workspaceFolder}",
+      "preLaunchTask": "local: wait for stack",
+      "console": "integratedTerminal",
+      "autoAttachChildProcesses": true,
+      "skipFiles": ["<node_internals>/**", "${workspaceFolder}/node_modules/**"],
+      "presentation": { "group": "3 operator", "order": 4 }
+    },
+    {
+      // The open test file. Its suites start their own local chain and services: stop the local stack first, because
+      // the e2e suites use the same ports (8545, 4020-4023).
+      "name": "Vitest: current file",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/node_modules/vitest/vitest.mjs",
+      "args": ["run", "${relativeFile}"],
+      "cwd": "${workspaceFolder}",
+      "env": { "NETWORK": "local" },
+      "console": "integratedTerminal",
+      "autoAttachChildProcesses": true,
+      "smartStep": true,
+      "skipFiles": ["<node_internals>/**", "${workspaceFolder}/node_modules/**"],
+      "presentation": { "group": "4 tests", "order": 1 }
+    }
+  ],
+  "compounds": [
+    {
+      "name": "Local stack",
+      "configurations": ["Facilitator", "Seller", "L2 control", "L3 verifier"],
+      "preLaunchTask": "local: chain",
+      "stopAll": true,
+      "presentation": { "group": "0 compounds", "order": 1 }
+    },
+    {
+      "name": "Local stack + L1 scripted plan",
+      "configurations": ["Facilitator", "Seller", "L2 control", "L3 verifier", "L1 agent: scripted plan"],
+      "preLaunchTask": "local: chain",
+      "stopAll": true,
+      "presentation": { "group": "0 compounds", "order": 2 }
+    },
+    {
+      "name": "Local stack + L1 hosted agent",
+      "configurations": ["Facilitator", "Seller", "L2 control", "L3 verifier", "L1 hosted agent"],
+      "preLaunchTask": "local: chain",
+      "stopAll": true,
+      "presentation": { "group": "0 compounds", "order": 3 }
+    }
+  ],
+  "inputs": [
+    {
+      "id": "goal",
+      "type": "promptString",
+      "description": "The agent's goal",
+      "default": "Get today's weather for Lima and a short market brief, then give me a receipt list of what you bought."
+    },
+    {
+      "id": "authorizationId",
+      "type": "promptString",
+      "description": "The escalation's authorizationId (auth_…), from the agent's output or \"Operator: watch escalations\""
+    },
+    { "id": "approver", "type": "promptString", "description": "Operator name", "default": "vscode-operator" },
+    { "id": "reason", "type": "promptString", "description": "Reason for the rejection", "default": "rejected from VS Code" }
+  ]
+}
