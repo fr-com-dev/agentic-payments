@@ -5,9 +5,9 @@
 # smoke run and the log scan pass; a failure rolls everything back to last-good. T-E2E-AZ:
 # test/deploy-workflow.test.ts checks this file offline.
 #
-# No GitHub secrets: the sign-in (OIDC, as pre-deploy.bicep's deploy app), the target (tenant, subscription,
-# resource group) and every resource name come from infra/main.<environment>.bicepparam, which holds every value
-# main.bicep uses; the pinned Bicep CLI compiles it, and every deployment uses that CLI. The first run is
+# No GitHub secrets: the sign-in (OIDC, as pre-deploy.bicep's deploy app, in each step that calls Azure), the target
+# (tenant, subscription, resource group) and every resource name come from infra/main.<environment>.bicepparam, which
+# holds every value main.bicep uses; the pinned Bicep CLI compiles it, and every deployment uses that CLI. The first run is
 # platform-only, before the vaults are seeded (quickstart §4); seed-ip lets an operator's IP through the vault
 # firewalls for that, and the next run removes it.
 name: deploy
@@ -58,6 +58,15 @@ env:
   PARAMS: infra/main.${{ inputs.environment || 'dev' }}.bicepparam
   IMAGE_TAG: ${{ github.sha }}
   BICEP_VERSION: v0.47.16
+  # The sign-in, as the deploy app (OIDC), that every step calling Azure starts with: `eval "$SIGN_IN"`. GitHub's
+  # token is valid for 5 minutes and az can't renew it, so after one azure/login the first new token request past
+  # that fails with AADSTS700024 (the registry's, after the platform's 17-minute deployment; 2026-11-04). Each step
+  # gets a fresh GitHub token, and clears the CLI's cached tokens so its own Azure tokens last the whole step.
+  SIGN_IN: |
+    oidc=$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=api://AzureADTokenExchange" | jq -er .value)
+    az account clear
+    az login --service-principal -u "$DEPLOY_CLIENT_ID" -t "$TENANT_ID" --federated-token "$oidc" -o none
+    az account set -s "$SUBSCRIPTION_ID"
   # One execution of a manual job ($1) with the job's own command: waits for it (at most $2 seconds, 900 by
   # default), prints its logs and returns 0 only when it Succeeded. A step runs it as `eval "$RUN_JOB"; run_job …`.
   RUN_JOB: |
@@ -97,8 +106,9 @@ jobs:
           echo "BICEP_PATH=$RUNNER_TEMP/bicep/bicep" >> "$GITHUB_ENV"
           "$RUNNER_TEMP/bicep/bicep" build-params "$PARAMS" --stdout | jq '.parametersJson | fromjson | .parameters | map_values(.value)' > "$RUNNER_TEMP/params.json"
           jq -r 'def v(p): getpath(p) // error("the parameter file has no \(p | join("."))");
-            "tenantId=\(v(["tenantId"]))", "subscriptionId=\(v(["subscriptionId"]))", "deployClientId=\(v(["deployClientId"]))",
             "authAudience=\(v(["authAudience"]))", "payerAddress=\(v(["payerAddress"]))"' "$RUNNER_TEMP/params.json" >> "$GITHUB_OUTPUT"
+          jq -r 'def v(p): getpath(p) // error("the parameter file has no \(p | join("."))");
+            "TENANT_ID=\(v(["tenantId"]))", "SUBSCRIPTION_ID=\(v(["subscriptionId"]))", "DEPLOY_CLIENT_ID=\(v(["deployClientId"]))"' "$RUNNER_TEMP/params.json" >> "$GITHUB_ENV"
           jq -r 'def v(p): getpath(["names"] + p) // error("the parameter file has no names.\(p | join("."))");
             "RG=\(v(["resourceGroup"]))", "LOG_X402=\(v(["logs"]))", "CR_X402=\(v(["registry"]))",
             "CA_L1=\(v(["apps", "l1"]))", "CA_L3=\(v(["apps", "l3"]))", "CA_SELLER=\(v(["apps", "seller"]))",
@@ -116,12 +126,6 @@ jobs:
           npm run typecheck
           npm test
 
-      - uses: azure/login@v2
-        with:
-          client-id: ${{ steps.target.outputs.deployClientId }}
-          tenant-id: ${{ steps.target.outputs.tenantId }}
-          subscription-id: ${{ steps.target.outputs.subscriptionId }}
-
       - name: "2 what-if, then deploy the platform"
         id: platform
         env:
@@ -129,6 +133,7 @@ jobs:
           SEED_IP: ${{ inputs.seed-ip }}
           RECOVER_VAULTS: ${{ inputs.recover-vaults || false }}
         run: |
+          eval "$SIGN_IN"
           echo "started=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
           az deployment group what-if -g "$RG" -p "$PARAMS"
           az deployment group create -g "$RG" -n "x402-platform-$IMAGE_TAG" -p "$PARAMS" -o none
@@ -138,6 +143,7 @@ jobs:
         id: build
         if: ${{ !inputs.platform-only }}
         run: |
+          eval "$SIGN_IN"
           az acr login -n "$CR_X402"
           SERVER=$(az acr show -n "$CR_X402" --query loginServer -o tsv)
           for image in l1-agent l2-control l3-verifier; do
@@ -164,6 +170,7 @@ jobs:
         id: deploy
         if: ${{ !inputs.platform-only }}
         run: |
+          eval "$SIGN_IN"
           STABLE=$(az containerapp revision list -n "$CA_L1" -g "$RG" --query "[?properties.trafficWeight==\`100\`].name | [0]" -o tsv 2>/dev/null || true)
           echo "stable=$STABLE" >> "$GITHUB_OUTPUT"
           export AGENT_STABLE_REVISION="$STABLE"
@@ -175,6 +182,7 @@ jobs:
         id: wait
         if: ${{ !inputs.platform-only }}
         run: |
+          eval "$SIGN_IN"
           eval "$RUN_JOB"
           ok=""
           for _ in $(seq 1 20); do
@@ -211,6 +219,7 @@ jobs:
         id: regression
         if: ${{ !inputs.platform-only }}
         run: |
+          eval "$SIGN_IN"
           eval "$RUN_JOB"
           run_job "$CAJ_L1"
 
@@ -218,6 +227,7 @@ jobs:
         id: chain
         if: ${{ !inputs.platform-only }}
         run: |
+          eval "$SIGN_IN"
           eval "$RUN_JOB"
           run_job "$CAJ_L2"
 
@@ -226,6 +236,7 @@ jobs:
         id: smoke
         if: ${{ !inputs.platform-only }}
         run: |
+          eval "$SIGN_IN"
           AGENT=$(az containerapp show -n "$CA_L1" -g "$RG" --query properties.configuration.ingress.fqdn -o tsv)
           if [ -n "${{ steps.deploy.outputs.stable }}" ]; then AGENT="${AGENT/$CA_L1/$CA_L1---candidate}"; fi
           ACCESS=$(az account get-access-token --resource "${{ steps.target.outputs.authAudience }}" --query accessToken -o tsv)
@@ -244,6 +255,7 @@ jobs:
         id: log-scan
         if: ${{ !inputs.platform-only }}
         run: |
+          eval "$SIGN_IN"
           az monitor log-analytics query -w "${{ steps.platform.outputs.law }}" \
             --analytics-query "ContainerAppConsoleLogs_CL | where TimeGenerated >= datetime(${{ steps.platform.outputs.started }}) | project Log_s" \
             --query "[].Log_s" -o tsv | npm run -s scan-logs
@@ -253,6 +265,7 @@ jobs:
         id: promote
         if: ${{ !inputs.platform-only }}
         run: |
+          eval "$SIGN_IN"
           AGENT_STABLE_REVISION="" az deployment group create -g "$RG" -n "x402-promote-$IMAGE_TAG" -p "$PARAMS" -o none
           for image in l1-agent l2-control l3-verifier seller; do
             az acr import -n "$CR_X402" --source "${{ steps.build.outputs.acr }}/x402-$image:$IMAGE_TAG" --image "x402-$image:last-good" --force
@@ -264,6 +277,7 @@ jobs:
         id: rollback
         if: failure() && (steps.deploy.outcome == 'success' || steps.deploy.outcome == 'failure')
         run: |
+          eval "$SIGN_IN"
           eval "$RUN_JOB"
           for image in l1-agent l2-control l3-verifier seller; do
             if ! az acr repository show-tags -n "$CR_X402" --repository "x402-$image" -o tsv | grep -x last-good > /dev/null; then

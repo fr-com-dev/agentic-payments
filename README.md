@@ -188,7 +188,7 @@ To run the agent's container image instead, see [quickstart §3](specs/011-l1-ho
 - Every value is in a parameter file: `infra/pre-deploy.<env>.bicepparam` and `infra/main.<env>.bicepparam`, the tenant, subscription and resource group included. Each template refuses to run anywhere else.
 - Requesters sign in with Entra ID (the API app `app-l1-<location>-<env>`). A person assigned `Agent.Run` gets a token with `az account get-access-token --scope api://app-l1-eastus2-dev/user_impersonation`.
 
-**Deployment**: one GitHub Actions workflow, `.github/workflows/deploy.yml`, run by hand or on a `deploy-*` tag. It signs in with OIDC as the deploy app and reads its target from `infra/main.<env>.bicepparam`, not from GitHub secrets. It deploys the platform, builds the four images, previews and deploys `infra/main.bicep`, and records every image as `last-good` only after these all pass:
+**Deployment**: one GitHub Actions workflow, `.github/workflows/deploy.yml`, run by hand or on a `deploy-*` tag. It signs in with OIDC as the deploy app, again in each step that calls Azure (GitHub's token is valid for 5 minutes), and reads its target from `infra/main.<env>.bicepparam`, not from GitHub secrets. It deploys the platform, builds the four images, previews and deploys `infra/main.bicep`, and records every image as `last-good` only after these all pass:
 - the infrastructure rules (T-IAC-01);
 - a secret check on the image;
 - the L1-4 baseline in the cloud (`--check-baseline`);
