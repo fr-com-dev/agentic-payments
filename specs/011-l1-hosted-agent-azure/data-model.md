@@ -100,18 +100,19 @@ The lock is not a ledger entry and never touches the hash chain.
 
 | Unit | Environment | Ingress | Replicas | Identity (lifecycle) | Secrets from its own vault |
 |---|---|---|---|---|---|
-| `ca-l1-agent` | main | external :4024 | 0–1, multiple revisions | `id-l1` (Main) | `CONTROL_TOKEN`, `VERIFIER_TOKEN`, `SESSION_REF_SECRET`, `ANTHROPIC_API_KEY` (only with `MODEL_PROVIDER=anthropic`) |
-| `ca-l2-control` | main | internal :8080 → 127.0.0.1:4020 | exactly 1 | `id-l2` (None) | `PAYER_PRIVATE_KEY`, `CONTROL_TOKEN`, `SETTLEMENT_TOKEN`, `OPERATOR_TOKEN` (main container only) |
-| `ca-l3-verifier` | main | internal :8080 → 127.0.0.1:4023 | exactly 1 | `id-l3` (None) | `VERIFIER_TOKEN`, `SETTLEMENT_TOKEN`, `BASE_SEPOLIA_RPC_URL` (optional) |
-| `job-regression` | main | none | per run | `id-l1` (None) | `CONTROL_TOKEN`, `VERIFIER_TOKEN`; `OPERATOR_TOKEN` is not given (the chain check runs through `job-operator`) |
-| `job-operator` | main | none | per run | `id-op` (None) | `OPERATOR_TOKEN` |
-| `ca-seller`, `ca-seller-alias` | counterparty | external | 0–1 | `id-seller` (None) | `CDP_API_KEY_ID`, `CDP_API_KEY_SECRET` |
+| `ca-l1-eastus2-dev` | main | external :4024 | 0–1, multiple revisions | `id-l1-eastus2-dev` (Main) | `CONTROL_TOKEN`, `VERIFIER_TOKEN`, `SESSION_REF_SECRET`, `ANTHROPIC_API_KEY` (only with `MODEL_PROVIDER=anthropic`) |
+| `ca-l2-eastus2-dev` | main | internal :8080 → 127.0.0.1:4020 | exactly 1 | `id-l2-eastus2-dev` (None) | `PAYER_PRIVATE_KEY`, `CONTROL_TOKEN`, `SETTLEMENT_TOKEN`, `OPERATOR_TOKEN` (main container only) |
+| `ca-l3-eastus2-dev` | main | internal :8080 → 127.0.0.1:4023 | exactly 1 | `id-l3-eastus2-dev` (None) | `VERIFIER_TOKEN`, `SETTLEMENT_TOKEN`, `BASE_SEPOLIA_RPC_URL` (optional) |
+| `caj-l1-eastus2-dev` | main | none | per run | `id-l1-eastus2-dev` (None) | `CONTROL_TOKEN`, `VERIFIER_TOKEN`; `OPERATOR_TOKEN` is not given (the chain check runs through `caj-l2-eastus2-dev`) |
+| `caj-l2-eastus2-dev` | main | none | per run | `id-op-eastus2-dev` (None) | `OPERATOR_TOKEN` |
+| `ca-seller-eastus2-dev`, `ca-seller-alias-eastus2-dev` | counterparty | external | 0–1 | `id-seller-eastus2-dev` (None) | `CDP_API_KEY_ID`, `CDP_API_KEY_SECRET` |
 
 ## Deployment
 
 | Field | Notes |
 |---|---|
-| `commit` | the Git SHA. Every image tag equals it (FR-023). |
+| `environment` | the deploy environment (`dev`): one run of `deploy.yml` deploys everything in it (contracts/deploy-pipeline.md) |
+| `commit` | the Git SHA. Every image's tag equals it (FR-023) |
 | `revisions` | the new revision name per app; the agent's carries a label until promoted |
 | `regression` | job exit code, the six outcomes, CONFIRMED count, chain check, secret scan result |
-| `result` | `promoted` or `failed`. When failed, the agent stays on its previous revision and L2/L3 are redeployed at the previous SHA |
+| `result` | `promoted` (every image tagged `last-good`), `failed`, or `platform-only` (the first run, before the vaults are seeded). When failed, the agent stays on its previous revision, and everything is redeployed at `last-good` |

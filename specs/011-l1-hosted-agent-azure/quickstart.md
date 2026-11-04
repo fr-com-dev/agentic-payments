@@ -15,7 +15,8 @@ rather than repeating them:
 npm install
 npm run typecheck
 npx vitest run test/hosted-agent.test.ts test/hosted-access.test.ts test/hosted-sessions.test.ts test/hosted-run.test.ts   # T-AGT-02..05
-npx vitest run test/deploy-workflow.test.ts   # T-E2E-AZ static gate-order checks on the workflow
+npx vitest run test/deploy-workflow.test.ts test/github-setup.test.ts test/cleanup.test.ts   # T-E2E-AZ static checks: deploy.yml and the infra scripts
+npx vitest run test/images.test.ts            # T-IMG-01: each image holds only its own layer's code and packages
 npx vitest run test/agent.test.ts -t "T-AGT-KEY"   # both L1 entry points refuse the payer key
 npx vitest run test/ledger-lock.test.ts       # T-LED-05, including the must-fail two-writer case
 npx vitest run test/e2e.local.test.ts -t "T-E2E-09"   # hosted agent on the in-process harness: escalate → approve → continue session
@@ -25,7 +26,8 @@ npm run check                                 # typecheck + all tests + demo:loc
 
 **Expected**:
 - every test passes;
-- T-IAC-01 reports "skipped: BICEP_PATH not set" unless the Bicep CLI is installed (section 2);
+- T-IAC-01 and the `infra/cleanup.sh` and `infra/github-setup.sh` tests are skipped unless `BICEP_PATH`
+  names the Bicep CLI (section 2): only Bicep reads a parameter file;
 - `npm run check` ends with `spent on-chain: 0.006 USDC` and `hash chain ok=true`, with outcomes
   unchanged.
 
@@ -33,10 +35,23 @@ npm run check                                 # typecheck + all tests + demo:loc
 
 ```bash
 az bicep install && export BICEP_PATH="$HOME/.azure/bin/bicep"   # Bicep CLI 0.47.16
-npx vitest run test/infra.test.ts             # T-IAC-01: role, secret, ingress, replica and lifecycle rules, plus 3 must-fail mutants
-docker build -t x402:dev .                    # one image; check: no env/*.env and no .local/ inside
-docker run --rm x402:dev sh -c 'ls dist/src/hosted-main.js dist/src/layer1-intent/hosted && test ! -e env/l2-control.env'
-docker history --no-trunc x402:dev | grep -E 'PRIVATE_KEY|_SECRET=|_TOKEN=' && echo LEAK || echo clean   # SC-005 for the image
+npx vitest run test/infra.test.ts             # T-IAC-01: rules 1–17 on main.bicep, pre-deploy.bicep and their parameter files, plus 22 must-fail mutant tests
+# Preview against Azure (reads only). Graph resources aren't previewed; main.bicep needs pre-deploy's resource group.
+# v prints one value of a parameter file, as Bicep compiles it.
+v() { az bicep build-params -f "$1" --stdout --only-show-errors | jq -r --arg p "$2" '.parametersJson | fromjson | .parameters | map_values(.value) | getpath($p | split("."))'; }
+P=infra/pre-deploy.dev.bicepparam; M=infra/main.dev.bicepparam
+az deployment sub what-if -n pre-deploy-dev -p $P --subscription "$(v $P subscriptionId)" -l "$(v $P location)"
+PLATFORM_ONLY=false az deployment group what-if -p $M --subscription "$(v $M subscriptionId)" -g "$(v $M names.resourceGroup)"
+# One image per layer and the seller's (research R14). Each build fails if its closure reaches another layer.
+docker build -f docker/l1-agent.Dockerfile -t x402-l1-agent:dev .
+docker build -f docker/l2-control.Dockerfile -t x402-l2-control:dev .
+docker build -f docker/l3-verifier.Dockerfile -t x402-l3-verifier:dev .
+docker build -t x402-seller:dev .
+docker run --rm x402-l1-agent:dev sh -c 'ls dist/src/hosted-main.js && test ! -e dist/src/layer2-control && test ! -e env'
+docker run --rm x402-l3-verifier:dev sh -c 'test ! -e dist/src/layer2-control/signer.js && test ! -e node_modules/@mastra'
+for i in l1-agent l2-control l3-verifier seller; do
+  docker history --no-trunc x402-$i:dev | grep -E 'PRIVATE_KEY|_SECRET=|_TOKEN=' && echo "LEAK in $i" || echo "$i clean"   # SC-005
+done
 ```
 
 ## 3. The hosted agent locally (against the local stack)
@@ -63,17 +78,17 @@ curl -s -H "Authorization: Bearer $(cat .local/alice.jwt)" -H 'content-type: app
 2. Run `npm run approve -- <authorizationId>`.
 3. Repeat the request with `"sessionRef": "<from step 1>"`. The step is `PAID`, `CONFIRMED`.
 
-**The same image as Azure** (Docker Desktop). A container reaches the host at `host.docker.internal`,
+**The same L1 image as Azure** (Docker Desktop). A container reaches the host at `host.docker.internal`,
 and L2 only pays sellers whose host its mandate lists (R6), so start the stack with `--docker`:
 
 ```bash
 npm run stack:local -- --docker     # L2 also allows host.docker.internal:4021
-docker build -t x402:dev .
+docker build -f docker/l1-agent.Dockerfile -t x402-l1-agent:dev .
 docker run --rm -p 127.0.0.1:4024:4024 --env-file env/l1-hosted.env \
   -e AGENT_BIND_HOST=0.0.0.0 -e SELLER_URL=http://host.docker.internal:4021 \
   -e CONTROL_URL=http://host.docker.internal:4020 -e SETTLEMENT_URL=http://host.docker.internal:4023 \
   -v "$PWD/.local/dev-issuer/jwks.json:/app/.local/dev-issuer/jwks.json:ro" \
-  x402:dev node dist/src/hosted-main.js
+  x402-l1-agent:dev node dist/src/hosted-main.js
 ```
 
 The same `curl` then works against `127.0.0.1:4024`. Two cloud pieces stay cloud-only: Foundry signs in with
@@ -87,43 +102,65 @@ for Entra ID.
 - the `Microsoft.App` and `Microsoft.CognitiveServices` providers registered;
 - a payer funded with test USDC (faucet.circle.com);
 - a production CDP key for the seller;
-- the deploy app registration with an OIDC federated credential for this repository.
+- an administrator who can create app registrations and groups in the tenant, and role assignments in
+  the subscription (Owner or User Access Administrator);
+- `infra/pre-deploy.dev.bicepparam` and `infra/main.dev.bicepparam` filled in: the target (tenant,
+  subscription, location), every resource name (`names`), the GitHub repository, `agentUsers` and
+  `operators`, the seller's and payer's public addresses, and the Claude attestation (organization,
+  country, industry). Deploying the model accepts Anthropic's Azure Marketplace terms with those
+  values. No secret goes in either file.
 
-0. **Register the API.** Run `infra/entra-app.sh --deploy-sp <deploy app id> --assign-user <you@tenant>`.
-   It creates the API registration, `Agent.Run` and the delegated scope `user_impersonation` (the
-   Azure CLI is pre-authorized for it), and assigns the role to the deploy service principal for the
-   smoke check and to you. That grants the pipeline and you spending through the agent, within the
-   mandate. It prints `AUTH_AUDIENCE`, the app's client ID: store it as the repository variable
-   `AGENT_API_CLIENT_ID`. The deployment doesn't compile without it.
-1. **Check the model.** In the Foundry portal for `eastus2`, confirm `claude-sonnet-5-5` offers
-   Global Standard, then create the deployment named exactly `claude-sonnet-5-5`. Record what the
-   portal shows (research R2: Anthropic and Learn disagree on deployment types).
-2. **Seed the vaults.** Add a temporary IP rule for your address to each vault
-   (`az keyvault network-rule add --ip-address <you>/32`). Put the secrets in, following
-   [cloud-topology](contracts/cloud-topology.md), with `az keyvault secret set` from a trusted
-   shell, then remove the rule. Secrets must never pass through GitHub.
-3. **Time it.** Record the minutes from step 0 to a green deployment (SC-008: under 60), and later
+0. **Pre-deploy, by hand.** Preview, then deploy `pre-deploy.bicep`:
+
+   ```bash
+   P=infra/pre-deploy.dev.bicepparam
+   v() { az bicep build-params -f "$1" --stdout --only-show-errors | jq -r --arg p "$2" '.parametersJson | fromjson | .parameters | map_values(.value) | getpath($p | split("."))'; }
+   SUB=$(v $P subscriptionId); LOC=$(v $P location)
+   az deployment sub what-if -n pre-deploy-dev -l "$LOC" --subscription "$SUB" -p $P
+   az deployment sub create -n pre-deploy-dev -l "$LOC" --subscription "$SUB" -p $P \
+     --query properties.outputs.mainParameters.value -o tsv
+   ```
+
+   It creates the resource group; the API app `app-l1-eastus2-dev` (`Agent.Run`, `user_impersonation`
+   with the Azure CLI pre-authorized, assignment required); the deploy app `app-deploy-eastus2-dev`,
+   with a federated credential for this repository's `dev` environment and no secret; `Agent.Run` for
+   the deploy app (the smoke check) and `agentUsers`; the operators' group `grp-op-eastus2-dev`; and the
+   deploy app's roles on the resource group. what-if previews only the resource group: the Graph
+   resources and their role assignments can't be previewed. Copy the three `param` lines it prints (the
+   deploy app's client ID, `authAudience` and `operatorsGroupId`) into `main.dev.bicepparam`. Run
+   against another subscription or tenant than the file names, it fails validation and creates nothing.
+1. **GitHub environment.** Run `infra/github-setup.sh` (`--dry-run` first). It creates the `dev`
+   environment `deploy.yml` runs in, and sets no secret: `deploy.yml` reads every value from
+   `main.dev.bicepparam`.
+2. **Create the platform.** Run `deploy.yml` with `environment=dev`, `platform-only: true` and
+   `seed-ip` set to your public IP. It creates the network, identities, registry, the five vaults (open
+   to your IP), storage, Foundry with the `claude-sonnet-5-5` deployment, and both environments.
+3. **Seed the vaults.** Put the secrets in, following [cloud-topology](contracts/cloud-topology.md),
+   with `az keyvault secret set` from a trusted shell. This is data, not provisioning: the secrets
+   never appear in a template, a parameter file or GitHub.
+4. **Deploy everything.** Run `deploy.yml` without `platform-only`. It closes the vaults to your IP
+   again, builds the four images, deploys every app, and passes every gate of the
+   [deploy-pipeline](contracts/deploy-pipeline.md): the regression, the chain check and the smoke
+   check. The agent's traffic ends on its new revision, and each image is tagged `last-good`.
+5. **Time it.** Record the minutes from step 0 to the green run of step 4 (SC-008: under 60), and later
    the minutes per redeploy (under 15).
-4. **Deploy.** Run the workflow `deploy-azure` with `environment=dev`. Expected: every
-   [deploy-pipeline](contracts/deploy-pipeline.md) step is green, and the agent's traffic is on
-   the new revision.
 
 Then check the platform facts the research could not confirm:
 
 | Check | How | Expected |
 |---|---|---|
-| Foundry accepts the provider's `anthropic-beta` header | the hosted smoke check (step 8) succeeds; otherwise the 400 names the header | 200. If it fails, enable header stripping in the Foundry `fetch` (research R2) |
-| Lifecycle `None` blocks tokens inside L2 | `az containerapp exec -n ca-l2-control --container proxy -- sh -c 'wget -qO- "$IDENTITY_ENDPOINT?resource=https://vault.azure.net&api-version=2019-08-01" -H "X-IDENTITY-HEADER: $IDENTITY_HEADER"'` | fails: no endpoint or an error. Key Vault references still resolve, because L2 started |
-| Internal http calls aren't redirected | regression step 6 passes over `http://ca-l2-control.internal…` | no 301 to https |
+| Foundry accepts the provider's `anthropic-beta` header | the hosted smoke check (deploy.yml step 9) succeeds; otherwise the 400 names the header | 200. If it fails, enable header stripping in the Foundry `fetch` (research R2) |
+| Lifecycle `None` blocks tokens inside L2 | `az containerapp exec -n ca-l2-eastus2-dev --container proxy -- sh -c 'wget -qO- "$IDENTITY_ENDPOINT?resource=https://vault.azure.net&api-version=2019-08-01" -H "X-IDENTITY-HEADER: $IDENTITY_HEADER"'` | fails: no endpoint or an error. Key Vault references still resolve, because L2 started |
+| Internal http calls aren't redirected | regression step 6 passes over `http://ca-l2-eastus2-dev.internal…` | no 301 to https |
 | Key Vault references resolve through the VNet rule (firewall default Deny) | all apps start and `ledger-verify` passes | no `secret reference` errors in the revision status |
-| Exclusive create on the NFS share | the L2 log shows `ledger locked … waiting` during the revision overlap, then a clean start | one writer; the chain verifies (step 7) |
-| L2/L3 are private | from your machine: `curl -m 5 https://ca-l2-control.<env-domain>/v1/escalations` | 404 from the environment proxy, or no route; never 401 from L2 |
+| Exclusive create on the NFS share | during a `deploy.yml` run that changes L2 (step 5, the wait), the L2 log shows `ledger locked … waiting` in the revision overlap, then a clean start | one writer; the chain verifies |
+| L2/L3 are private | from your machine: `curl -m 5 https://ca-l2-eastus2-dev.<env-domain>/v1/escalations` | 404 from the environment proxy, or no route; never 401 from L2 |
 | A person can get a token and run the agent | "Calling the agent as a person" below | 200. A consent error (AADSTS65001) means the Azure CLI isn't pre-authorized; 401 means `AUTH_AUDIENCE` isn't the client ID |
 
-**Calling the agent as a person** (assigned `Agent.Run` with `--assign-user`):
+**Calling the agent as a person** (listed in `agentUsers`, so assigned `Agent.Run`):
 
 ```bash
-TOKEN=$(az account get-access-token --scope api://x402-l1-agent/user_impersonation --query accessToken -o tsv)
+TOKEN=$(az account get-access-token --scope api://app-l1-eastus2-dev/user_impersonation --query accessToken -o tsv)
 curl -s -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
   -d '{"goal":"Get the weather for Lima"}' https://<agent fqdn>/v1/runs | jq '.status, [.steps[].result.outcome]'
 ```
@@ -131,16 +168,45 @@ curl -s -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
 ## 5. Operator flow in Azure
 
 ```bash
-az containerapp job start -n job-operator -g rg-x402-dev --container-name operator --image <acr>/x402:<sha> \
-  --command node --args dist/scripts/escalations.js --env-vars OPERATOR_TOKEN=secretref:operator-token CONTROL_URL=http://ca-l2-control.internal.<env-domain>
-az containerapp job logs show -n job-operator -g rg-x402-dev --follow
+az containerapp job start -n caj-l2-eastus2-dev -g rg-x402-eastus2-dev --container-name operator --image <acr>/x402-l2-control:<sha> \
+  --command node --args dist/scripts/escalations.js --env-vars OPERATOR_TOKEN=secretref:operator-token CONTROL_URL=http://ca-l2-eastus2-dev.internal.<env-domain>
+az containerapp job logs show -n caj-l2-eastus2-dev -g rg-x402-eastus2-dev --follow
 ```
 
-To approve, run the same command with `--args dist/scripts/approve.js <authorizationId>`. Only
-members of the operators' group can start the job.
+To approve, run the same command with `--args dist/scripts/approve.js <authorizationId>`. A start
+without `--command` runs the job's own command, `ledger-verify`. Only members of the operators' group
+(and the deploy identity, which `deploy.yml` uses for `ledger-verify` only) can start the job.
 
 ## 6. Cleanup
 
-`az group delete -n rg-x402-dev` removes everything except the Key Vaults. They stay in a
-recoverable soft-deleted state, because purge protection is on; that is intended, since the
-payer key lives there.
+`infra/cleanup.sh` deletes everything `pre-deploy.bicep`, `main.bicep` and `infra/github-setup.sh`
+created for an environment, with the target from `infra/pre-deploy.<env>.bicepparam`, in this order:
+1. the GitHub environment;
+2. the deploy app's role assignments, anywhere in the subscription. Azure keeps a deleted principal's
+   role assignments, so they go before the app does;
+3. the resource group `rg-x402-eastus2-dev`, with everything in it;
+4. the app registrations (the API app, and the deploy app with its federated credential) and the
+   operators' group.
+
+```bash
+infra/cleanup.sh --dry-run   # reads only: prints what it would delete, and deletes nothing
+infra/cleanup.sh             # asks you to type rg-x402-eastus2-dev, then deletes
+infra/cleanup.sh --purge     # also purges the soft-deleted Foundry account and app registrations
+```
+
+It refuses, and deletes nothing, when `az` is signed in to another tenant than the file names, or when
+the file's resource group isn't the one `main.<env>.bicepparam` deploys to. It leaves any GitHub secret,
+and lists it.
+
+After a run without `--purge`, soft delete keeps two things, and their names stay taken:
+- the Foundry account, for 48 hours;
+- the app registrations, restorable for 30 days. The API app's identifier URI stays taken, so
+  `pre-deploy.bicep` can't create the app again until it is purged.
+
+The operators' group is a security group: it is deleted for good.
+
+The vaults stay soft-deleted for 90 days, with their secrets, even with `--purge`. Purge protection
+forbids purging them, which is intended, since the payer key lives there. To deploy the same
+environment again within that time, deploy `pre-deploy.bicep` (step 0), then run `deploy.yml` with
+`platform-only` and `recover-vaults`: Bicep recovers the vaults (`createMode: recover`) with their
+secrets, so step 3 can be skipped. Then run `deploy.yml` without inputs.

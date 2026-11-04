@@ -1,15 +1,13 @@
 // Two Container Apps environments (specs/011 contracts/cloud-topology.md, research R10).
-// cae-x402: the agent, L2, L3 and the jobs; internal-only ingress here is reachable only from this
-// environment. cae-x402-cp: the sellers, an external party that must not reach the internal apps.
+// names.environments.x402: the agent, L2, L3 and the jobs; internal-only ingress here is reachable only from this
+// environment. names.environments.seller: the sellers, an external party that must not reach the internal apps.
+// Its inputs are names, never another module's outputs, so what-if previews it on a first deployment (main.bicep).
 param location string
-param mainSubnetId string
-param cpSubnetId string
-param logWorkspaceName string
-param nfsServer string
-param nfsShareName string
+@description('Every resource name (main.<environment>.bicepparam).')
+param names object
 
 resource law 'Microsoft.OperationalInsights/workspaces@2023-09-01' existing = {
-  name: logWorkspaceName
+  name: names.logs
 }
 
 var logs = {
@@ -21,11 +19,11 @@ var logs = {
 }
 
 resource main 'Microsoft.App/managedEnvironments@2025-01-01' = {
-  name: 'cae-x402'
+  name: names.environments.x402
   location: location
   properties: {
     workloadProfiles: [{ name: 'Consumption', workloadProfileType: 'Consumption' }]
-    vnetConfiguration: { infrastructureSubnetId: mainSubnetId, internal: false }
+    vnetConfiguration: { infrastructureSubnetId: resourceId('Microsoft.Network/virtualNetworks/subnets', names.network, names.subnets.x402), internal: false }
     peerTrafficConfiguration: { encryption: { enabled: true } }
     appLogsConfiguration: logs
   }
@@ -36,25 +34,25 @@ resource ledger 'Microsoft.App/managedEnvironments/storages@2025-01-01' = {
   name: 'ledger'
   properties: {
     nfsAzureFile: {
-      server: nfsServer
-      shareName: nfsShareName
+      server: '${names.storage}.file.${az.environment().suffixes.storage}'
+      shareName: '/${names.storage}/ledger'
       accessMode: 'ReadWrite'
     }
   }
 }
 
-resource cp 'Microsoft.App/managedEnvironments@2025-01-01' = {
-  name: 'cae-x402-cp'
+resource seller 'Microsoft.App/managedEnvironments@2025-01-01' = {
+  name: names.environments.seller
   location: location
   properties: {
     workloadProfiles: [{ name: 'Consumption', workloadProfileType: 'Consumption' }]
-    vnetConfiguration: { infrastructureSubnetId: cpSubnetId, internal: false }
+    vnetConfiguration: { infrastructureSubnetId: resourceId('Microsoft.Network/virtualNetworks/subnets', names.network, names.subnets.seller), internal: false }
     appLogsConfiguration: logs
   }
 }
 
 output mainId string = main.id
 output mainDomain string = main.properties.defaultDomain
-output cpId string = cp.id
-output cpDomain string = cp.properties.defaultDomain
+output sellerId string = seller.id
+output sellerDomain string = seller.properties.defaultDomain
 output ledgerStorageName string = ledger.name
