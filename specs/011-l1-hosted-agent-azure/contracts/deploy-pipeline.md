@@ -34,6 +34,13 @@ its own image.
   refuses to set anything up when the two differ. `main.bicep` fails validation anywhere
   but the parameter file's tenant, subscription and resource group. No credential is stored in
   GitHub: the payer key, the CDP key and the service tokens live only in the Key Vaults, seeded by hand.
+- **Signed in in each step** (revised 2026-11-04). GitHub's OIDC token is valid for 5 minutes, and az
+  can't renew it: after a single `azure/login`, the first token request past that (the registry's, after
+  the platform's 17-minute first deployment) failed with AADSTS700024. So there is no `azure/login`:
+  every step that calls Azure starts with `eval "$SIGN_IN"`, which asks GitHub for a fresh token
+  (audience `api://AzureADTokenExchange`), clears the CLI's cached tokens (`az account clear`, so the
+  step's own Azure tokens last the step), and signs in as the deploy app (`az login --service-principal
+  --federated-token`, then `az account set`) with the client ID, tenant and subscription step 0 read.
 - **Per-run values.** The workflow sets the only parameters a parameter file may read from the
   environment: `IMAGE_TAG` (the commit, or `last-good`), `PLATFORM_ONLY`, `SEED_IP`,
   `RECOVER_VAULTS` and `AGENT_STABLE_REVISION`.
@@ -49,9 +56,9 @@ its own image.
 
 | # | Step | Pass condition |
 |---|---|---|
-| 0 | Right after the checkout: Bicep CLI 0.47.16, first on `PATH` and in `BICEP_PATH`; it compiles `infra/main.<environment>.bicepparam`, and the step reads `tenantId`, `subscriptionId`, `deployClientId`, `authAudience`, `payerAddress` and the names the steps use (`RG`, `CR_X402`, `LOG_X402`, `CA_L1`, `CA_L3`, `CA_SELLER`, `CA_SELLER_ALIAS`, `CAJ_L1`, `CAJ_L2`) | every value read |
+| 0 | Right after the checkout: Bicep CLI 0.47.16, first on `PATH` and in `BICEP_PATH`; it compiles `infra/main.<environment>.bicepparam`, and the step reads `tenantId`, `subscriptionId` and `deployClientId` (for `SIGN_IN`), `authAudience`, `payerAddress` and the names the steps use (`RG`, `CR_X402`, `LOG_X402`, `CA_L1`, `CA_L3`, `CA_SELLER`, `CA_SELLER_ALIAS`, `CAJ_L1`, `CAJ_L2`) | every value read |
 | 1 | `npm install`, `npm run typecheck`, `npm test`, with T-IAC-01 (`BICEP_PATH` is set) | green, nothing skipped |
-| — | `azure/login` with OIDC: client ID, tenant and subscription from step 0 | signed in |
+| — | Every step below that calls Azure (2–5, 7–11, rollback) first signs in (`SIGN_IN`): a fresh GitHub OIDC token, the client ID, tenant and subscription from step 0 | signed in |
 | 2 | `az deployment group what-if`, then `create` of `main.bicep` with `PLATFORM_ONLY=true` (and `SEED_IP`, `RECOVER_VAULTS` from the inputs): the platform, without any app | succeeded |
 | 3 | `docker build` and `docker push` of the four images, `x402-<image>:<sha>` (research R14). A build fails when its closure reaches another layer's file or a module doesn't load | pushed |
 | 3b | Image secret check: `docker history --no-trunc` and `docker run … env` hold no `PRIVATE_KEY`, `_SECRET` or `_TOKEN` assignment (SC-005) | no match |

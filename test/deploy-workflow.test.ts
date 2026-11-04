@@ -2,7 +2,8 @@
 // deploy-pipeline.md). Offline checks on .github/workflows/deploy.yml, which deploys everything (infra/main.bicep)
 // from one commit, and on the infra scripts. Checked:
 // - OIDC only, with the sign-in, target and resource names compiled from infra/main.<environment>.bicepparam by the
-//   pinned Bicep CLI: no GitHub secret or variable;
+//   pinned Bicep CLI: no GitHub secret or variable; each step that calls Azure signs in first with a fresh GitHub
+//   token, which is valid for 5 minutes (one azure/login failed with AADSTS700024 after the platform's deployment);
 // - Azure provisioned by Bicep only: every az command is a Bicep deployment (each previewed with what-if), a read,
 //   a job start, an image copy or (in infra/cleanup.sh) a deletion, and infra/ holds two scripts only
 //   (github-setup.sh, cleanup.sh);
@@ -41,23 +42,34 @@ const ORDER = ["target", "tests", "platform", "build", "image-scan", "deploy", "
 const PLATFORM_ONLY_SKIPS = ORDER.slice(ORDER.indexOf("build"));
 const PLATFORM_ONLY_IF = "${{ !inputs.platform-only }}";
 const PERMISSIONS = JSON.stringify({ "id-token": "write", contents: "read" });
-/** azure/login's inputs: OIDC, from the parameter file through the target step. */
-const LOGIN = JSON.stringify({
-  "client-id": "${{ steps.target.outputs.deployClientId }}",
-  "tenant-id": "${{ steps.target.outputs.tenantId }}",
-  "subscription-id": "${{ steps.target.outputs.subscriptionId }}",
-});
-/** What the target step reads from the compiled parameter file: the sign-in, and the names the steps use. */
-const TARGET_OUTPUTS = ["tenantId", "subscriptionId", "deployClientId", "authAudience", "payerAddress"];
+/**
+ * The sign-in every step that calls Azure starts with (`eval "$SIGN_IN"`): a fresh GitHub OIDC token (GitHub's are
+ * valid for 5 minutes, and az can't renew one), the CLI's cached tokens cleared, then the deploy app, tenant and
+ * subscription the target step read from the parameter file. No secret, no password.
+ */
+const SIGN_IN = [
+  'oidc=$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=api://AzureADTokenExchange" | jq -er .value)',
+  "az account clear",
+  'az login --service-principal -u "$DEPLOY_CLIENT_ID" -t "$TENANT_ID" --federated-token "$oidc" -o none',
+  'az account set -s "$SUBSCRIPTION_ID"',
+  "",
+].join("\n");
+/** What the target step reads from the compiled parameter file: its outputs, the sign-in, and the names the steps use. */
+const TARGET_OUTPUTS = ["authAudience", "payerAddress"];
+const TARGET_SIGN_IN = [
+  ["TENANT_ID", "tenantId"],
+  ["SUBSCRIPTION_ID", "subscriptionId"],
+  ["DEPLOY_CLIENT_ID", "deployClientId"],
+];
 const TARGET_NAMES = ["RG=", "LOG_X402=", "CR_X402=", "CA_L1=", "CA_L3=", "CA_SELLER=", "CA_SELLER_ALIAS=", "CAJ_L1=", "CAJ_L2="];
 /** The only shell scripts in infra/: what Bicep can't do (the GitHub environment) and the clean-up. */
 const INFRA_SCRIPTS = ["cleanup.sh", "github-setup.sh"];
 /**
  * The az commands a workflow or infra script may run: Bicep deployments, reads, job runs, image copies, the
- * runner's sign-in, and (in infra/cleanup.sh only) deletions. Anything that creates or changes a resource
- * otherwise is provisioning outside Bicep.
+ * runner's sign-in (login, and the CLI's own account cache: set, clear), and (in infra/cleanup.sh only) deletions.
+ * Anything that creates or changes a resource otherwise is provisioning outside Bicep.
  */
-const AZ_READS = /^az (account (show|get-access-token)|login|bicep build-params|acr (login|show|repository show-tags|import)|containerapp (show|revision (list|show)|job (show|start|execution show|logs show))|monitor log-analytics (query|workspace show)|deployment group (what-if|create)|group exists|resource list|keyvault (list|list-deleted)|cognitiveservices account (list|list-deleted)|ad (app|sp|group) list|role assignment list|rest --method GET)\b/;
+const AZ_READS = /^az (account (show|get-access-token|set|clear)|login|bicep build-params|acr (login|show|repository show-tags|import)|containerapp (show|revision (list|show)|job (show|start|execution show|logs show))|monitor log-analytics (query|workspace show)|deployment group (what-if|create)|group exists|resource list|keyvault (list|list-deleted)|cognitiveservices account (list|list-deleted)|ad (app|sp|group) list|role assignment list|rest --method GET)\b/;
 const AZ_DELETIONS = /^az (group delete|role assignment delete|ad (app|group) delete|cognitiveservices account purge|rest --method DELETE)\b/;
 
 /** Every `az …` command line in a script, from the `az` on (comments and echoed text excluded). */
@@ -99,10 +111,14 @@ export function workflowProblems(w: Workflow): string[] {
     out.push("the target step must put the pinned Bicep CLI first on PATH (and in BICEP_PATH) and compile the parameter file with it");
   }
   for (const p of TARGET_OUTPUTS) if (!target.includes(`"${p}=\\(v(["${p}"]))"`)) out.push(`the target step must read ${p} from the parameter file`);
+  for (const [e, p] of TARGET_SIGN_IN) if (!target.includes(`"${e}=\\(v(["${p}"]))"`)) out.push(`the target step must read ${p} from the parameter file (${e}, for the sign-in)`);
   for (const n of TARGET_NAMES) if (!target.includes(`"${n}\\(v([`)) out.push(`the target step must read ${n.slice(0, -1)} from the parameter file's names`);
-  const logins = steps.filter((s) => s.uses?.startsWith("azure/login@"));
-  if (logins.length !== 1 || JSON.stringify(logins[0]!.with) !== LOGIN) out.push("azure/login must sign in with OIDC only, from the parameter file (client-id, tenant-id, subscription-id)");
-  if (steps.indexOf(logins[0]!) < at("target")) out.push("azure/login must come after the target step");
+  if (w.env?.SIGN_IN !== SIGN_IN) out.push("SIGN_IN must sign in with OIDC only: a fresh GitHub token, then the deploy app, tenant and subscription from the parameter file");
+  if (steps.some((s) => s.uses?.startsWith("azure/login@"))) out.push("no azure/login: it signs in once, and GitHub's token is valid for 5 minutes; each step that calls Azure signs in itself (SIGN_IN)");
+  for (const s of steps) {
+    const callsAzure = azCommands(s.run ?? "").length > 0 || (s.run ?? "").includes("run_job ");
+    if (callsAzure && !s.run!.startsWith('eval "$SIGN_IN"\n')) out.push(`${s.id} calls Azure, so it must sign in first (eval "$SIGN_IN"): GitHub's token is valid for 5 minutes`);
+  }
   for (const id of ORDER) if (at(id) < 0) out.push(`missing step ${id}`);
   for (let i = 1; i < ORDER.length; i++) {
     if (at(ORDER[i - 1]!) >= 0 && at(ORDER[i]!) >= 0 && at(ORDER[i - 1]!) > at(ORDER[i]!)) out.push(`${ORDER[i - 1]} must run before ${ORDER[i]}`);
@@ -126,7 +142,10 @@ export function workflowProblems(w: Workflow): string[] {
   if (w.env?.IMAGE_TAG !== "${{ github.sha }}") out.push("the images must be tagged with the commit");
   if (!step("regression")?.run?.includes('run_job "$CAJ_L1"')) out.push("the regression must run L1's regression job ($CAJ_L1)");
   if (!step("chain")?.run?.includes('run_job "$CAJ_L2"')) out.push("the chain check must run the operator job ($CAJ_L2), whose own command is ledger-verify");
-  for (const s of steps) if (s.run?.includes("run_job ") && !s.run.startsWith('eval "$RUN_JOB"\n')) out.push(`${s.id} must define run_job first (eval "$RUN_JOB")`);
+  for (const s of steps) {
+    const defined = s.run?.indexOf('eval "$RUN_JOB"\n') ?? -1;
+    if (s.run?.includes("run_job ") && (defined < 0 || defined > s.run.indexOf("run_job "))) out.push(`${s.id} must define run_job before calling it (eval "$RUN_JOB")`);
+  }
   if (!step("smoke")?.run?.includes('az account get-access-token --resource "${{ steps.target.outputs.authAudience }}"')) out.push("the smoke run's token must be for the API app's client ID (authAudience), the audience the agent accepts");
   const promote = step("promote")?.run ?? "";
   if (!promote.includes('AGENT_STABLE_REVISION="" az deployment group create')) out.push("promote must give the agent's latest revision its traffic through main.bicep");
@@ -174,7 +193,7 @@ describe("T-E2E-AZ deployment workflow gates", () => {
   const w = read();
   const text = readFileSync(`${DIR}/${FILE}`, "utf8");
 
-  it("T-E2E-AZ one workflow deploys everything: OIDC from the parameter file, what-if before each deployment, every gate before promoting, rollback on failure", () => {
+  it("T-E2E-AZ one workflow deploys everything: OIDC from the parameter file in each step that calls Azure, what-if before each deployment, every gate before promoting, rollback on failure", () => {
     expect(readdirSync(DIR)).toEqual([FILE]);
     expect(workflowProblems(w)).toEqual([]);
   });
@@ -210,13 +229,28 @@ describe("T-E2E-AZ deployment workflow gates", () => {
   });
 
   it("T-E2E-AZ must-fail: a GitHub secret, or a sign-in that isn't OIDC from the parameter file, is reported", () => {
-    const secret = text.replace("${{ steps.target.outputs.deployClientId }}", "${{ secrets.AZURE_CLIENT_ID }}");
+    const secret = text.replace('-u "$DEPLOY_CLIENT_ID"', '-u "${{ secrets.AZURE_CLIENT_ID }}"');
     expect(secretProblems(FILE, secret)).toEqual([`${FILE} reads secrets.AZURE_CLIENT_ID: values come from infra/main.<environment>.bicepparam`]);
-    const creds = { creds: '{"clientId":"x","clientSecret":"${{ secrets.AZURE_CLIENT_SECRET }}"}' };
-    const steps = stepsOf(w).map((s) => (s.uses?.startsWith("azure/login@") ? { ...s, with: creds } : s));
-    expect(workflowProblems({ ...w, jobs: { deploy: { ...Object.values(w.jobs)[0], steps } } })).toContain(
-      "azure/login must sign in with OIDC only, from the parameter file (client-id, tenant-id, subscription-id)",
+    const password = text.replace('--federated-token "$oidc"', '-p "${{ secrets.AZURE_CLIENT_SECRET }}"');
+    expect(secretProblems(FILE, password)).toEqual([`${FILE} reads secrets.AZURE_CLIENT_SECRET: values come from infra/main.<environment>.bicepparam`]);
+    expect(workflowProblems(parse(password) as Workflow)).toContain(
+      "SIGN_IN must sign in with OIDC only: a fresh GitHub token, then the deploy app, tenant and subscription from the parameter file",
     );
+  });
+
+  it("T-E2E-AZ must-fail: one azure/login for the whole job (the run that failed with AADSTS700024), or a step calling Azure without signing in first, is reported", () => {
+    const login = { uses: "azure/login@v2", with: { "client-id": "${{ env.DEPLOY_CLIENT_ID }}", "tenant-id": "${{ env.TENANT_ID }}", "subscription-id": "${{ env.SUBSCRIPTION_ID }}" } };
+    const once = stepsOf(w).map((s) => (s.run?.startsWith('eval "$SIGN_IN"\n') ? { ...s, run: s.run.slice('eval "$SIGN_IN"\n'.length) } : s));
+    once.splice(once.findIndex((s) => s.id === "platform"), 0, login);
+    const problems = workflowProblems({ ...w, jobs: { deploy: { ...Object.values(w.jobs)[0], steps: once } } });
+    expect(problems).toContain("no azure/login: it signs in once, and GitHub's token is valid for 5 minutes; each step that calls Azure signs in itself (SIGN_IN)");
+    for (const id of ["platform", "build", "deploy", "wait", "regression", "chain", "smoke", "log-scan", "promote", "rollback"]) {
+      expect(problems).toContain(`${id} calls Azure, so it must sign in first (eval "$SIGN_IN"): GitHub's token is valid for 5 minutes`);
+    }
+    const late = stepsOf(w).map((s) => (s.id === "smoke" ? { ...s, run: s.run!.replace('eval "$SIGN_IN"\n', "") + 'eval "$SIGN_IN"\n' } : s));
+    expect(workflowProblems({ ...w, jobs: { deploy: { ...Object.values(w.jobs)[0], steps: late } } })).toEqual([
+      `smoke calls Azure, so it must sign in first (eval "$SIGN_IN"): GitHub's token is valid for 5 minutes`,
+    ]);
   });
 
   it("T-E2E-AZ must-fail: provisioning outside Bicep (a resource group made with az, traffic moved with az) is reported", () => {
