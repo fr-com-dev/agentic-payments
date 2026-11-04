@@ -15,8 +15,8 @@ rather than repeating them:
 npm install
 npm run typecheck
 npx vitest run test/hosted-agent.test.ts test/hosted-access.test.ts test/hosted-sessions.test.ts test/hosted-run.test.ts   # T-AGT-02..05
-npx vitest run test/deploy-workflow.test.ts test/github-setup.test.ts test/cleanup.test.ts   # T-E2E-AZ static checks: deploy.yml and the infra scripts
-npx vitest run test/images.test.ts            # T-IMG-01: each image holds only its own layer's code and packages
+npx vitest run test/deploy-workflow.test.ts test/github-setup.test.ts test/cleanup.test.ts   # T-E2E-AZ static checks: the six pipelines, deploy.yml and the infra scripts
+npx vitest run test/images.test.ts            # T-IMG-01: each image holds only its own unit's code and packages
 npx vitest run test/agent.test.ts -t "T-AGT-KEY"   # both L1 entry points refuse the payer key
 npx vitest run test/ledger-lock.test.ts       # T-LED-05, including the must-fail two-writer case
 npx vitest run test/e2e.local.test.ts -t "T-E2E-09"   # hosted agent on the in-process harness: escalate → approve → continue session
@@ -35,21 +35,26 @@ npm run check                                 # typecheck + all tests + demo:loc
 
 ```bash
 az bicep install && export BICEP_PATH="$HOME/.azure/bin/bicep"   # Bicep CLI 0.47.16
-npx vitest run test/infra.test.ts             # T-IAC-01: rules 1–17 on main.bicep, pre-deploy.bicep and their parameter files, plus 22 must-fail mutant tests
-# Preview against Azure (reads only). Graph resources aren't previewed; main.bicep needs pre-deploy's resource group.
+npx vitest run test/infra.test.ts             # T-IAC-01: rules 1–18 on main.bicep, pre-deploy.bicep and their parameter files, plus 25 must-fail mutant tests
+# Preview against Azure (reads only). Graph resources aren't previewed; main.bicep needs pre-deploy's resource group,
+# and a unit's preview needs the platform deployed (its apps look the platform up by name).
 # v prints one value of a parameter file, as Bicep compiles it.
 v() { az bicep build-params -f "$1" --stdout --only-show-errors | jq -r --arg p "$2" '.parametersJson | fromjson | .parameters | map_values(.value) | getpath($p | split("."))'; }
 P=infra/pre-deploy.dev.bicepparam; M=infra/main.dev.bicepparam
 az deployment sub what-if -n pre-deploy-dev -p $P --subscription "$(v $P subscriptionId)" -l "$(v $P location)"
-PLATFORM_ONLY=false az deployment group what-if -p $M --subscription "$(v $M subscriptionId)" -g "$(v $M names.resourceGroup)"
-# One image per layer and the seller's (research R14). Each build fails if its closure reaches another layer.
+for unit in platform seller l3 operator l2 l1; do   # what each pipeline would deploy (main.bicep with UNIT)
+  UNIT=$unit az deployment group what-if -p $M --subscription "$(v $M subscriptionId)" -g "$(v $M names.resourceGroup)"
+done
+# One image per unit (research R14). Each build fails if its closure reaches another unit's code.
 docker build -f docker/l1-agent.Dockerfile -t x402-l1-agent:dev .
 docker build -f docker/l2-control.Dockerfile -t x402-l2-control:dev .
 docker build -f docker/l3-verifier.Dockerfile -t x402-l3-verifier:dev .
+docker build -f docker/operator.Dockerfile -t x402-operator:dev .
 docker build -t x402-seller:dev .
 docker run --rm x402-l1-agent:dev sh -c 'ls dist/src/hosted-main.js && test ! -e dist/src/layer2-control && test ! -e env'
 docker run --rm x402-l3-verifier:dev sh -c 'test ! -e dist/src/layer2-control/signer.js && test ! -e node_modules/@mastra'
-for i in l1-agent l2-control l3-verifier seller; do
+docker run --rm x402-operator:dev sh -c 'ls dist/scripts/ledger-verify.js && test ! -e dist/src/layer2-control'
+for i in l1-agent l2-control l3-verifier operator seller; do
   docker history --no-trunc x402-$i:dev | grep -E 'PRIVATE_KEY|_SECRET=|_TOKEN=' && echo "LEAK in $i" || echo "$i clean"   # SC-005
 done
 ```
@@ -132,31 +137,42 @@ for Entra ID.
 1. **GitHub environment.** Run `infra/github-setup.sh` (`--dry-run` first). It first checks that GitHub
    signs this repository's jobs with the subject the federated credential trusts (the owner's and
    repository's IDs, `githubOwnerId` and `githubRepositoryId`), then creates the `dev`
-   environment `deploy.yml` runs in, and sets no secret: `deploy.yml` reads every value from
+   environment the pipelines run in, and sets no secret: they read every value from
    `main.dev.bicepparam`.
-2. **Create the platform.** Run `deploy.yml` with `environment=dev`, `platform-only: true` and
+2. **Create the platform.** Run `deploy-infra` with `environment=dev`, `first-deployment: true` and
    `seed-ip` set to your public IP. It creates the network, identities, registry, the five vaults (open
-   to your IP), storage, Foundry with the `claude-sonnet-5-5` deployment, and both environments.
-   Without `platform-only`, the run refuses `seed-ip` at its first step and deploys nothing.
+   to your IP), storage, Foundry with the `claude-sonnet-5-5` deployment, and both environments. A
+   unit's pipeline refuses `seed-ip` at its first step and deploys nothing.
 3. **Seed the vaults.** Put the secrets in, following [cloud-topology](contracts/cloud-topology.md),
    with `az keyvault secret set` from a trusted shell. This is data, not provisioning: the secrets
    never appear in a template, a parameter file or GitHub.
-4. **Deploy everything.** Run `deploy.yml` without `platform-only`. It closes the vaults to your IP
-   again, builds the four images, deploys every app, and passes every gate of the
-   [deploy-pipeline](contracts/deploy-pipeline.md): the regression, the chain check and the smoke
-   check. The agent's traffic ends on its new revision, and each image is tagged `last-good`.
-5. **Time it.** Record the minutes from step 0 to the green run of step 4 (SC-008: under 60), and later
-   the minutes per redeploy (under 15).
+4. **Close the vaults.** Run `deploy-infra` again with `first-deployment: true` and no `seed-ip`. Only
+   the platform's runs change the vault firewalls, so this is the run that removes your IP.
+5. **Deploy the units, one run after another** (the pipelines share one concurrency group, and GitHub
+   cancels a second pending run), each with `first-deployment: true`: `deploy-seller`, `deploy-l3`,
+   `deploy-operator`, then `deploy-l2`. Each builds its own image, deploys its own apps and waits for
+   them (L2's wait runs the operator job, hence the operator first), but skips the checks through units
+   not deployed yet and promotes nothing.
+6. **Deploy L1.** Run `deploy-l1`, which has no first deployment. It builds the agent's image, deploys
+   the agent and the regression job, and passes every gate of the
+   [deploy-pipeline](contracts/deploy-pipeline.md): the regression, the chain check, the smoke check
+   and the log scan, through every unit. The agent's traffic ends on its new revision, and
+   `x402-l1-agent` is tagged `last-good`.
+7. **Verify the other units.** Run `deploy-seller`, `deploy-l3`, `deploy-operator` and `deploy-l2`
+   once more without `first-deployment`. Each image is tagged `last-good` once its run passes the
+   gates; until then, a failed run of that unit has nothing to roll back to and stays red for a human.
+8. **Time it.** Record the minutes from step 0 to the green run of step 6 (SC-008: under 60), and later
+   the minutes per redeploy of one unit (under 15).
 
 Then check the platform facts the research could not confirm:
 
 | Check | How | Expected |
 |---|---|---|
-| Foundry accepts the provider's `anthropic-beta` header | the hosted smoke check (deploy.yml step 9) succeeds; otherwise the 400 names the header | 200. If it fails, enable header stripping in the Foundry `fetch` (research R2) |
+| Foundry accepts the provider's `anthropic-beta` header | the hosted smoke check (deploy.yml step 8) succeeds; otherwise the 400 names the header | 200. If it fails, enable header stripping in the Foundry `fetch` (research R2) |
 | Lifecycle `None` blocks tokens inside L2 | `az containerapp exec -n ca-l2-eastus2-dev --container proxy -- sh -c 'wget -qO- "$IDENTITY_ENDPOINT?resource=https://vault.azure.net&api-version=2019-08-01" -H "X-IDENTITY-HEADER: $IDENTITY_HEADER"'` | fails: no endpoint or an error. Key Vault references still resolve, because L2 started |
 | Internal http calls aren't redirected | regression step 6 passes over `http://ca-l2-eastus2-dev.internal…` | no 301 to https |
 | Key Vault references resolve through the VNet rule (firewall default Deny) | all apps start and `ledger-verify` passes | no `secret reference` errors in the revision status |
-| Exclusive create on the NFS share | during a `deploy.yml` run that changes L2 (step 5, the wait), the L2 log shows `ledger locked … waiting` in the revision overlap, then a clean start | one writer; the chain verifies |
+| Exclusive create on the NFS share | during a `deploy-l2` run (step 4, the wait), the L2 log shows `ledger locked … waiting` in the revision overlap, then a clean start | one writer; the chain verifies |
 | L2/L3 are private | from your machine: `curl -m 5 https://ca-l2-eastus2-dev.<env-domain>/v1/escalations` | 404 from the environment proxy, or no route; never 401 from L2 |
 | A person can get a token and run the agent | "Calling the agent as a person" below | 200. A consent error (AADSTS65001) means the Azure CLI isn't pre-authorized; 401 means `AUTH_AUDIENCE` isn't the client ID |
 
@@ -171,14 +187,16 @@ curl -s -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
 ## 5. Operator flow in Azure
 
 ```bash
-az containerapp job start -n caj-l2-eastus2-dev -g rg-x402-eastus2-dev --container-name operator --image <acr>/x402-l2-control:<sha> \
+az containerapp job start -n caj-l2-eastus2-dev -g rg-x402-eastus2-dev --container-name operator --image <acr>/x402-operator:<sha> \
   --command node --args dist/scripts/escalations.js --env-vars OPERATOR_TOKEN=secretref:operator-token CONTROL_URL=http://ca-l2-eastus2-dev.internal.<env-domain>
 az containerapp job logs show -n caj-l2-eastus2-dev -g rg-x402-eastus2-dev --follow
 ```
 
 To approve, run the same command with `--args dist/scripts/approve.js <authorizationId>`. A start
 without `--command` runs the job's own command, `ledger-verify`. Only members of the operators' group
-(and the deploy identity, which `deploy.yml` uses for `ledger-verify` only) can start the job.
+(and the deploy identity, which the pipelines use for `ledger-verify` only) can start the job. The job
+runs the operator's own image, `x402-operator`, which `deploy-operator` builds: only the operator
+scripts, no L2 code.
 
 ## 6. Cleanup
 
@@ -210,6 +228,7 @@ The operators' group is a security group: it is deleted for good.
 
 The vaults stay soft-deleted for 90 days, with their secrets, even with `--purge`. Purge protection
 forbids purging them, which is intended, since the payer key lives there. To deploy the same
-environment again within that time, deploy `pre-deploy.bicep` (step 0), then run `deploy.yml` with
-`platform-only` and `recover-vaults`: Bicep recovers the vaults (`createMode: recover`) with their
-secrets, so step 3 can be skipped. Then run `deploy.yml` without inputs.
+environment again within that time, deploy `pre-deploy.bicep` (step 0), then run `deploy-infra` with
+`first-deployment` and `recover-vaults`: Bicep recovers the vaults (`createMode: recover`) with their
+secrets, so steps 3 and 4 can be skipped. Then go on from step 5. `recover-vaults` without
+`first-deployment` is refused: after the clean-up the units are gone.

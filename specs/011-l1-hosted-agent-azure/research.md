@@ -277,7 +277,8 @@ anything depends on them.
     subnet: `snet-x402-eastus2-dev` for the main environment, `snet-seller-eastus2-dev` for the counterparty environment,
     which gets its own subnet for this. Both subnets have the `Microsoft.KeyVault` service
     endpoint. Seeding secrets by hand needs a temporary IP rule for the operator: `seedIp`, set
-    through Bicep on one platform-only run and removed by the next (revised 2026-11-02). *To verify* in quickstart §4 that Key Vault references resolve through the VNet
+    through Bicep on a platform run and removed by the next platform run (revised 2026-11-02; since
+    2026-11-04 the platform's runs are `deploy-infra.yml`'s). *To verify* in quickstart §4 that Key Vault references resolve through the VNet
     rule.
 - **Rationale**:
   - An internal-ingress app is "reachable only from other apps in the same environment", which
@@ -402,8 +403,9 @@ anything depends on them.
     | Image | Dockerfile | Entry points | Runs in |
     |---|---|---|---|
     | `x402-l1-agent` | `docker/l1-agent.Dockerfile` | `src/hosted-main.ts`, `src/main.ts` | `ca-l1-eastus2-dev`, `caj-l1-eastus2-dev` |
-    | `x402-l2-control` | `docker/l2-control.Dockerfile` | `src/layer2-control/service.ts`, the four operator scripts | `ca-l2-eastus2-dev`, `caj-l2-eastus2-dev` |
+    | `x402-l2-control` | `docker/l2-control.Dockerfile` | `src/layer2-control/service.ts` | `ca-l2-eastus2-dev` |
     | `x402-l3-verifier` | `docker/l3-verifier.Dockerfile` | `src/layer3-settlement/service.ts` | `ca-l3-eastus2-dev` |
+    | `x402-operator` | `docker/operator.Dockerfile` | the four operator scripts (revised 2026-11-04: before, in L2's image) | `caj-l2-eastus2-dev` |
     | `x402-seller` | `Dockerfile` (root) | `src/counterparty/seller.ts` | `ca-seller-eastus2-dev`, `ca-seller-alias-eastus2-dev` |
 
   - **What an image holds.** `scripts/image-closure.ts` is the table above. esbuild walks the import
@@ -465,6 +467,25 @@ anything depends on them.
 
 ## R16. Deployment pipeline (FR-023, FR-024)
 
+- **Revised 2026-11-04, at the owner's request** (supersedes the revisions below where they differ):
+  - **One pipeline per unit, one template.** `deploy.yml` becomes the reusable steps that six
+    pipelines call with their unit: `deploy-infra.yml` (the platform), `deploy-l1.yml`,
+    `deploy-l2.yml`, `deploy-l3.yml`, `deploy-operator.yml` and `deploy-seller.yml`. `main.bicep` and
+    its parameter file stay one: a `unit` parameter (`UNIT`, set by `deploy.yml`) deploys either the
+    platform's modules or one unit's apps, and incremental mode leaves the rest as it is (T-IAC-01
+    rule 18). So every value still lives in one parameter file, and the 2026-11-02 reason for merging
+    the templates (what-if skipping modules fed by other modules' outputs) doesn't come back: the
+    modules still take names only.
+  - **The operator is a unit.** Its job gets its own module (`operator-apps.bicep`) and its own image,
+    `x402-operator` (the operator scripts and `src/shared` only), so each pipeline builds, promotes and
+    rolls back exactly one image, and the operator job no longer runs an image that holds the signer.
+  - **Gates.** Every unit's run checks every unit (the regression, the chain, the smoke and the log
+    scan) before promoting its own image; a failure rolls back that unit only. The platform has no
+    image and is fixed forward, but its runs check the units too. On a new environment the units go
+    in order (sellers, L3, the operator, L2, then L1), each but L1 with a first deployment that skips
+    the checks through units not deployed yet.
+  - **Why**: a change to one unit ships, and is rolled back, on its own; the cost is more runs on a
+    new environment, and a unit's preview needs the platform deployed first.
 - **Revised 2026-11-02, at the owner's request** (supersedes the decision below where they differ):
   - **Bicep only.** All Azure provisioning is Bicep: `infra/pre-deploy.bicep` (subscription scope,
     deployed by an administrator by hand) makes the resource group, the API and deploy app

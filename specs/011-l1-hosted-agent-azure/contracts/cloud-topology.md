@@ -36,7 +36,7 @@ contract are dev's (`eastus2`).
 | Container registry | `crx402eastus2dev` | admin user disabled; pulls through managed identity (AcrPull) |
 | Log Analytics | `log-x402-eastus2-dev` | 30-day retention |
 | Storage (NFS premium) | `stx402eastus2dev`, share `ledger` | NFSv4.1, reachable from `vnet-x402-eastus2-dev` only, mounted in `cae-x402-eastus2-dev` as storage `ledger` |
-| Key Vaults (RBAC mode) | `kv-l1-eastus2-dev`, `kv-l2-…`, `kv-l3-…`, `kv-op-…`, `kv-seller-…` | firewall default Deny, with a VNet rule for the owning unit's subnet (`snet-x402-eastus2-dev`, or `snet-seller-eastus2-dev` for `-seller`). Seeding opens them to an operator's IP through `seedIp` (a platform-only run of `deploy.yml`); the next run closes them. Purge protection on; `recoverVaults` recovers them from soft-delete |
+| Key Vaults (RBAC mode) | `kv-l1-eastus2-dev`, `kv-l2-…`, `kv-l3-…`, `kv-op-…`, `kv-seller-…` | firewall default Deny, with a VNet rule for the owning unit's subnet (`snet-x402-eastus2-dev`, or `snet-seller-eastus2-dev` for `-seller`). Seeding opens them to an operator's IP through `seedIp` (a run of `deploy-infra.yml`); the next platform run closes them. Purge protection on; `recoverVaults` recovers them from soft-delete |
 | User-assigned identities | `id-l1-eastus2-dev`, `id-l2-eastus2-dev`, `id-l3-eastus2-dev`, `id-op-eastus2-dev`, `id-seller-eastus2-dev` | one per runtime unit |
 | Foundry resource + deployment | `ais-x402-eastus2-dev`, deployment `claude-sonnet-5-5` (version 2, Global Standard, capacity 10) | `MODEL_PROVIDER=foundry` only; API keys disabled. The deployment declares `modelProviderData` (organization, country, industry, from `main.<env>.bicepparam`), which accepts Anthropic's Azure Marketplace terms |
 | Entra app registration (API) | `app-l1-eastus2-dev` | identifier URI `api://app-l1-eastus2-dev`, v2.0 tokens; app role `Agent.Run` (User, Application), assignment required; delegated scope `user_impersonation` (admin consent), the Azure CLI pre-authorized |
@@ -51,32 +51,36 @@ contract are dev's (`eastus2`).
 | `ca-l2-eastus2-dev` | main | `l2`: `node dist/src/layer2-control/service.js`; `proxy`: `nginx-unprivileged@sha256:…` | internal (`external: false`), target 8080, `allowInsecure: true` | min 1, max 1; single revision mode | `id-l2-eastus2-dev` (None) | TCP 8080 |
 | `ca-l3-eastus2-dev` | main | `l3`: `node dist/src/layer3-settlement/service.js`; `proxy` | internal, target 8080, `allowInsecure: true` | min 1, max 1; single revision | `id-l3-eastus2-dev` (None) | TCP 8080 |
 | `caj-l1-eastus2-dev` | main | `regression`: `node dist/src/main.js --scripted --check-baseline` | — | manual, parallelism 1, timeout 900 s | `id-l1-eastus2-dev` (None) | — |
-| `caj-l2-eastus2-dev` | main | `operator`: `node dist/scripts/ledger-verify.js`, what `deploy.yml` runs; an operator's start overrides command and args (`dist/scripts/approve.js`, `reject.js`, `escalations.js`) | — | manual, timeout 3,600 s | `id-op-eastus2-dev` (None) | — |
+| `caj-l2-eastus2-dev` | main | `operator`: `node dist/scripts/ledger-verify.js`, what the pipelines run; an operator's start overrides command and args (`dist/scripts/approve.js`, `reject.js`, `escalations.js`) | — | manual, timeout 3,600 s | `id-op-eastus2-dev` (None) | — |
 | `ca-seller-eastus2-dev` | cp | `seller`: `node dist/src/counterparty/seller.js` | external, target 4021 | min 0, max 1 | `id-seller-eastus2-dev` (None) | HTTP `/api/catalog` |
 | `ca-seller-alias-eastus2-dev` | cp | same image and env as `ca-seller-eastus2-dev` | external | min 0, max 1 | `id-seller-eastus2-dev` (None) | same |
 
-## Templates and pipeline
+## Templates and pipelines
 
 | Template | Scope | Deploys | Deployed by |
 |---|---|---|---|
 | `infra/pre-deploy.bicep` | subscription | the resource group; the API and deploy app registrations and their service principals; the deploy app's federated credential; `Agent.Run` for the deploy app and `agentUsers`; the operators' group; the deploy app's roles (`modules/deploy-access.bicep`) | an administrator, by hand (quickstart §4 step 0) |
-| `infra/main.bicep` | resource group | the platform (network, logs, identities, registry, vaults, storage, Foundry and its model, both environments) and each unit's apps (`modules/l1-apps.bicep`, `l2-apps.bicep`, `l3-apps.bicep`, `sellers.bicep`) | `.github/workflows/deploy.yml` ([deploy-pipeline](deploy-pipeline.md)) |
+| `infra/main.bicep` | resource group | one unit per deployment (`unit`): the platform (network, logs, identities, registry, vaults, storage, Foundry and its model, both environments), or one unit's apps (`modules/l1-apps.bicep`, `l2-apps.bicep`, `l3-apps.bicep`, `operator-apps.bicep`, `sellers.bicep`) | the unit's pipeline, `.github/workflows/deploy-<unit>.yml` (`deploy-infra.yml` for the platform), through the shared `deploy.yml` ([deploy-pipeline](deploy-pipeline.md)) |
 
 - Every value is in `infra/<template>.<env>.bicepparam`, the target (tenant, subscription, location) and
-  every name (`names`, the resource group's included). Only `imageTag`, `platformOnly`, `seedIp`, `recoverVaults` and
+  every name (`names`, the resource group's included). Only `unit`, `imageTag`, `seedIp`, `recoverVaults` and
   `agentStableRevision` come from the environment, set by `deploy.yml`. Each template fails validation
   (`fail()`) outside its file's tenant and subscription and, for `main.bicep`, resource group.
 - Every module of `main.bicep` takes names and settings only, and looks up what it uses (identities,
   environments, Foundry) by name with `existing`. A parameter holding another module's output makes
   what-if skip the whole module, so a first deployment would preview almost nothing; `dependsOn` orders
   the modules instead. Each apps module looks up only its own identities and vaults.
+- Each module is deployed only when `unit` is its unit's: the platform's modules for `platform`, each
+  unit's apps for that unit. A unit's apps find the platform an earlier platform run deployed, and
+  incremental mode leaves the rest of the resource group as it is.
 - The Entra objects use the Microsoft Graph Bicep extension (`infra/bicepconfig.json`,
   `microsoftgraph/v1.0:1.0.0`). what-if can't preview them, nor the role assignments of their principals.
 
-Each unit runs from its own layer's image, tagged with the commit SHA (research R14):
+Each unit runs from its own image, tagged with the commit SHA its pipeline built (research R14):
 - `x402-l1-agent`: `ca-l1-eastus2-dev` and `caj-l1-eastus2-dev`;
-- `x402-l2-control`: `ca-l2-eastus2-dev` and `caj-l2-eastus2-dev`;
+- `x402-l2-control`: `ca-l2-eastus2-dev`;
 - `x402-l3-verifier`: `ca-l3-eastus2-dev`;
+- `x402-operator`: `caj-l2-eastus2-dev` (the operator scripts and `src/shared` only: no L2 code);
 - `x402-seller`: `ca-seller-eastus2-dev` and `ca-seller-alias-eastus2-dev`.
 
 The `proxy` sidecars run the pinned nginx image.
@@ -159,18 +163,19 @@ both copies, then restarts both units.
    FQDN, and `ALLOWED_PAYEES` is non-empty. `caj-l1-eastus2-dev`'s `SELLER_ALIAS_URL` points at
    `ca-seller-alias-eastus2-dev`.
 10. Every Key Vault's firewall default is `Deny`, and its VNet rule names only its unit's subnet. Its only
-    IP rule is `seedIp`, empty unless `deploy.yml` sets it. Purge protection stays on, and a vault is
+    IP rule is `seedIp`, empty unless a platform run (`deploy-infra.yml`) sets it. Purge protection stays on, and a vault is
     recovered from soft-delete only through `recoverVaults`.
 11. `authAudience` is a required parameter of exactly 36 characters (the API app's client ID, with no
     `api://` default), and the agent's `AUTH_AUDIENCE` comes from it.
 12. Each app and job runs from its own unit's image, `x402-<image>:<imageTag>` in the platform's
     registry, as listed under "Apps and jobs". That image contains the entry point its command runs
     (`IMAGES` in `scripts/image-closure.ts`). The operator job's own command is `ledger-verify`, the
-    only one `deploy.yml` starts it with. The L2 and L3 sidecars run `main.bicep`'s digest-pinned nginx.
+    only one `deploy.yml` starts it with, from the operator's own image. The L2 and L3 sidecars run
+    `main.bicep`'s digest-pinned nginx.
 13. Each unit's apps module looks up only its own identities and vaults (L1: `id-l1-eastus2-dev` and
-    `kv-l1-…`; L2: `id-l2-eastus2-dev`, `id-op-eastus2-dev`, `kv-l2-…` and `kv-op-…`; L3: `id-l3-eastus2-dev`
-    and `kv-l3-…`; the seller: `id-seller-eastus2-dev` and `kv-seller-…`), and depends on the platform's
-    identities, registry, vaults and environments.
+    `kv-l1-…`; L2: `id-l2-eastus2-dev` and `kv-l2-…`; L3: `id-l3-eastus2-dev` and `kv-l3-…`; the
+    operator: `id-op-eastus2-dev` and `kv-op-…`; the seller: `id-seller-eastus2-dev` and `kv-seller-…`),
+    and depends on the platform's identities, registry, vaults and environments.
 14. The model is keyless. The Foundry account has `disableLocalAuth: true`, and no container has an
     `ANTHROPIC_API_KEY` env or an Anthropic secret. The agent runs with `MODEL_PROVIDER=foundry`,
     signs in as `id-l1-eastus2-dev` (`AZURE_CLIENT_ID`), and reaches the platform's Foundry endpoint.
@@ -193,6 +198,10 @@ both copies, then restarts both units.
     per-run parameters come from the environment. Both files of an environment name the same tenant,
     subscription, location and resource group, and `githubEnvironment` is the environment. Each template
     refuses (`fail()`) to run outside its file's target.
+18. Each module of `main.bicep` is deployed by exactly one unit's runs: the platform's modules (network,
+    logs, identities, registry, vaults, storage, Foundry, environments) only when `unit` is `platform`,
+    each unit's apps module only when `unit` is that unit. `unit` is required and is one of `platform`,
+    `l1`, `l2`, `l3`, `operator` and `seller`.
 
 **Must fail**: mutated copies of the templates and parameter files, each must trip its check:
 - an extra role assignment of `id-l1-eastus2-dev` on `kv-l2-eastus2-dev` (rule 1);
@@ -201,9 +210,10 @@ both copies, then restarts both units.
 - `ALLOWED_HOSTS` pointing at `ca-seller-alias-eastus2-dev` (rule 9);
 - a vault firewall that allows by default (rule 10);
 - an `api://app-l1-eastus2-dev` default for `authAudience` (rule 11);
-- L2's apps on the L1 image, and `caj-l2-eastus2-dev` with an own command other than `ledger-verify`
-  or one the L2 image doesn't contain (rule 12);
-- L1's apps reading the l2 vault, and L1's apps deployed without waiting for the vaults (rule 13);
+- L2's apps on the L1 image, `caj-l2-eastus2-dev` with an own command other than `ledger-verify` or one
+  the operator image doesn't contain, and the operator job back on L2's image (rule 12);
+- L1's apps reading the l2 vault, L2's apps reading the operator's vault, and L1's apps deployed
+  without waiting for the vaults (rule 13);
 - a Foundry account that accepts API keys, and an Anthropic key on the agent (rule 14);
 - a name in the parameter file outside the standard, a template that names a resource itself, L3
   calling L2 under a name the template writes out, a module that doesn't get `names` whole, and a
@@ -211,4 +221,6 @@ both copies, then restarts both units.
 - a federated credential trusting a branch, an unconditioned Role Based Access Control Administrator or
   one that may grant Owner, and an API app on v1.0 tokens (rule 16);
 - `main.bicep` without its target check, a configuration value or the environment's name read from the
-  environment, and the two parameter files naming different subscriptions (rule 17).
+  environment, and the two parameter files naming different subscriptions (rule 17);
+- L1's apps deployed by the platform's runs too, Foundry deployed by every run, and a seventh value of
+  `unit` (rule 18).

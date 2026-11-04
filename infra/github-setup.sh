@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# GitHub setup for .github/workflows/deploy.yml (specs/011 contracts/deploy-pipeline.md; quickstart §4 step 1).
+# GitHub setup for the pipelines, .github/workflows/deploy-*.yml, whose shared deploy.yml job runs in the environment
+# (specs/011 contracts/deploy-pipeline.md; quickstart §4 step 1).
 # Creates the GitHub environment the deploy job runs in, named with the repository in
 # infra/pre-deploy.<environment>.bicepparam (githubRepository, githubEnvironment), which Bicep compiles: the deploy
 # app's federated credential trusts that job only. First it checks that GitHub signs the repository's jobs with the

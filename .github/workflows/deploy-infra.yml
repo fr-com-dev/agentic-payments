@@ -1,0 +1,54 @@
+# The infrastructure pipeline (SPEC.md §3.1 Azure profile; specs/011 contracts/deploy-pipeline.md): the platform in
+# infra/main.bicep (network, logs, identities, registry, vaults, storage, Foundry and its model, the two Container
+# Apps environments), never a unit's apps or images. By hand or on a deploy-infra-* tag; the steps are the shared
+# deploy.yml's, with unit platform. Once the units exist, the run checks them through the new platform (the
+# regression, the chain, the hosted smoke and the log scan), but nothing is promoted or rolled back: a platform change
+# is fixed forward. On a new environment it runs first, twice (quickstart §4): with seed-ip while the vaults are
+# seeded, then without it, which closes the vault firewalls again.
+name: deploy-infra
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment (infra/main.<environment>.bicepparam)
+        required: true
+        default: dev
+        type: choice
+        options: [dev]
+      first-deployment:
+        description: The units don't exist yet (a new environment, or after infra/cleanup.sh) - skip the checks through them
+        required: false
+        default: false
+        type: boolean
+      seed-ip:
+        description: Your public IP, let through the vault firewalls while you seed them (the next run without it removes it)
+        required: false
+        default: ""
+        type: string
+      recover-vaults:
+        description: Recover the vaults infra/cleanup.sh left soft-deleted, with their secrets (with first-deployment)
+        required: false
+        default: false
+        type: boolean
+  push:
+    tags: ["deploy-infra-*"]
+
+permissions:
+  id-token: write
+  contents: read
+
+# One deployment at a time in the environment, whichever the pipeline: every run's checks go through all the units.
+concurrency:
+  group: deploy-azure
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    uses: ./.github/workflows/deploy.yml
+    with:
+      unit: platform
+      environment: ${{ inputs.environment || 'dev' }}
+      first-deployment: ${{ inputs.first-deployment || false }}
+      seed-ip: ${{ inputs.seed-ip || '' }}
+      recover-vaults: ${{ inputs.recover-vaults || false }}

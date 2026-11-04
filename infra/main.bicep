@@ -1,36 +1,38 @@
 // x402 three-layer agent payments in Azure (SPEC.md §3.1; specs/011 contracts/cloud-topology.md): everything in
-// the resource group that pre-deploy.bicep creates, from one commit. The platform (network, logs, identities,
-// registry, vaults, storage, Foundry and its model, the two Container Apps environments), then each unit's apps,
-// each from its own image: L1 (the agent and the regression job), L2 (the control service and the operator job),
-// L3 (the verifier) and the sellers. Deployed by .github/workflows/deploy.yml: with platformOnly first, so the
-// registry exists before the images are pushed (and, on the very first run, the vaults before they are seeded),
-// then whole. Every name comes from the parameter file's `names` ({type}-{app}-{location}-{environment}, the
-// registry's and storage's without hyphens; T-IAC-01 rule 15): no template names a resource itself. T-IAC-01
+// the resource group that pre-deploy.bicep creates. The platform (network, logs, identities, registry, vaults,
+// storage, Foundry and its model, the two Container Apps environments), and each unit's apps, each from its own
+// image: L1 (the agent and the regression job), L2 (the control service), L3 (the verifier), the operator (the
+// operator job) and the sellers. One deployment deploys one of them, chosen by `unit`: the platform by
+// .github/workflows/deploy-infra.yml, each unit by its own pipeline (deploy-l1.yml, deploy-l2.yml, deploy-l3.yml,
+// deploy-operator.yml, deploy-seller.yml), all through the shared deploy.yml. What a deployment leaves out stays as it
+// is (incremental mode). Every name comes from the parameter file's `names` ({type}-{app}-{location}-{environment},
+// the registry's and storage's without hyphens; T-IAC-01 rule 15): no template names a resource itself. T-IAC-01
 // (test/infra.test.ts) asserts the identity, secret and exposure rules. No secret value appears here: vaults are
 // seeded by hand (quickstart §4), never by a template.
 targetScope = 'resourceGroup'
 
-// Every value comes from main.<environment>.bicepparam, the target and every name included: deploy.yml signs in to
-// this tenant and deploys to this subscription and resource group, and a deployment anywhere else fails validation.
+// Every value comes from main.<environment>.bicepparam, the target and every name included: the pipelines sign in to
+// this tenant and deploy to this subscription and resource group, and a deployment anywhere else fails validation.
 @description('The Entra tenant: the deploy app\'s, and the one requesters\' tokens come from (AUTH_TENANT_ID).')
 param tenantId string
 param subscriptionId string
 param location string
 @description('Every resource name, {type}-{app}-{location}-{environment}: resourceGroup (made by pre-deploy.bicep), network, subnets, logs, registry, storage, foundry, environments, and per unit identities, vaults, apps and jobs.')
 param names object
-@description('The deploy app\'s client ID (pre-deploy.bicep): deploy.yml signs in as it with OIDC. Read by the workflow, not by any resource.')
+@description('The deploy app\'s client ID (pre-deploy.bicep): the pipelines sign in as it with OIDC. Read by deploy.yml, not by any resource.')
 #disable-next-line no-unused-params
 param deployClientId string
-@description('The payer\'s public address: deploy.yml checks its USDC balance before the regression. Read by the workflow, not by any resource.')
+@description('The payer\'s public address: deploy.yml checks its USDC balance before the regression. Read by deploy.yml, not by any resource.')
 #disable-next-line no-unused-params
 param payerAddress string
-@description('Image tag of all four images: the Git commit SHA (FR-023), or last-good on a rollback.')
+@description('What this deployment deploys: the platform (deploy-infra.yml), or one unit\'s apps (deploy-<unit>.yml). Everything else stays as it is.')
+@allowed(['platform', 'l1', 'l2', 'l3', 'operator', 'seller'])
+param unit string
+@description('Image tag of the unit\'s image: the Git commit SHA (FR-023), or last-good on a rollback. The platform has no image.')
 param imageTag string
-@description('Only the platform, without any app: the run before images are pushed, and the very first run, before the vaults are seeded.')
-param platformOnly bool = false
-@description('An operator\'s public IP, allowed through every vault firewall while the vaults are seeded (quickstart §4 step 3). Empty otherwise.')
+@description('An operator\'s public IP, allowed through every vault firewall while the vaults are seeded (quickstart §4 step 3). Empty otherwise. Platform only.')
 param seedIp string = ''
-@description('Recover the soft-deleted vaults of a cleaned-up environment (infra/cleanup.sh), with their secrets, instead of creating them: one platform-only run, within 90 days of the clean-up.')
+@description('Recover the soft-deleted vaults of a cleaned-up environment (infra/cleanup.sh), with their secrets, instead of creating them: one platform run, within 90 days of the clean-up.')
 param recoverVaults bool = false
 @description('The API app\'s client ID (pre-deploy.bicep). Entra v2.0 tokens carry it as aud, never the api:// URI, so there is no default.')
 @minLength(36)
@@ -78,43 +80,45 @@ var modelDeployment = 'claude-sonnet-5-5'
 
 // Every module gets names and settings only, never another module's outputs: what-if skips a module whose
 // parameters hold runtime values, and a first deployment would then preview almost nothing. Each module looks
-// up the resources it uses by name, so dependsOn orders them.
+// up the resources it uses by name, so dependsOn orders them. Each module is deployed by exactly one unit
+// (T-IAC-01 rule 18): a unit's apps find the platform deployed by an earlier run of deploy-infra.yml.
+var platform = unit == 'platform'
 
-// ---- The platform ----------------------------------------------------------------------------------------------
-module network 'modules/network.bicep' = {
+// ---- The platform (unit 'platform', deploy-infra.yml) ------------------------------------------------------------
+module network 'modules/network.bicep' = if (platform) {
   name: 'network'
   params: { location: location, names: names }
 }
 
-module logs 'modules/logs.bicep' = {
+module logs 'modules/logs.bicep' = if (platform) {
   name: 'logs'
   params: { location: location, names: names }
 }
 
-module ids 'modules/identities.bicep' = {
+module ids 'modules/identities.bicep' = if (platform) {
   name: 'identities'
   params: { location: location, names: names, keys: map(units, u => u.key) }
 }
 
-module registry 'modules/registry.bicep' = {
+module registry 'modules/registry.bicep' = if (platform) {
   name: 'registry'
   params: { location: location, names: names, identityKeys: map(units, u => u.key) }
   dependsOn: [ids]
 }
 
-module vaults 'modules/vault.bicep' = [for u in units: {
+module vaults 'modules/vault.bicep' = [for u in units: if (platform) {
   name: 'vault-${u.key}'
   params: { location: location, names: names, key: u.key, subnet: u.subnet, seedIp: seedIp, recover: recoverVaults }
   dependsOn: [ids, network]
 }]
 
-module storage 'modules/storage.bicep' = {
+module storage 'modules/storage.bicep' = if (platform) {
   name: 'storage'
   params: { location: location, names: names }
   dependsOn: [network]
 }
 
-module foundry 'modules/foundry.bicep' = {
+module foundry 'modules/foundry.bicep' = if (platform) {
   name: 'foundry'
   params: {
     location: location
@@ -127,14 +131,15 @@ module foundry 'modules/foundry.bicep' = {
   dependsOn: [ids]
 }
 
-module envs 'modules/environments.bicep' = {
+module envs 'modules/environments.bicep' = if (platform) {
   name: 'environments'
   params: { location: location, names: names }
   dependsOn: [network, logs, storage]
 }
 
-// ---- The units: each on its own image, with its own identities and vaults only (T-IAC-01 rules 12 and 13) -------
-module l1 'modules/l1-apps.bicep' = if (!platformOnly) {
+// ---- The units: each on its own image, with its own identities and vaults only (T-IAC-01 rules 12 and 13), each
+// deployed by its own pipeline (deploy-<unit>.yml) ------------------------------------------------------------------
+module l1 'modules/l1-apps.bicep' = if (unit == 'l1') {
   name: 'l1-apps'
   params: {
     location: location
@@ -149,7 +154,7 @@ module l1 'modules/l1-apps.bicep' = if (!platformOnly) {
   dependsOn: [ids, registry, vaults, envs, foundry]
 }
 
-module l2 'modules/l2-apps.bicep' = if (!platformOnly) {
+module l2 'modules/l2-apps.bicep' = if (unit == 'l2') {
   name: 'l2-apps'
   params: {
     location: location
@@ -159,12 +164,23 @@ module l2 'modules/l2-apps.bicep' = if (!platformOnly) {
     proxyImage: proxyImage
     acrServer: acrServer
     sellerPayTo: sellerPayTo
+  }
+  dependsOn: [ids, registry, vaults, envs]
+}
+
+module operator 'modules/operator-apps.bicep' = if (unit == 'operator') {
+  name: 'operator-apps'
+  params: {
+    location: location
+    names: names
+    image: '${acrServer}/x402-operator:${imageTag}'
+    acrServer: acrServer
     operatorsGroupId: operatorsGroupId
   }
   dependsOn: [ids, registry, vaults, envs]
 }
 
-module l3 'modules/l3-apps.bicep' = if (!platformOnly) {
+module l3 'modules/l3-apps.bicep' = if (unit == 'l3') {
   name: 'l3-apps'
   params: {
     location: location
@@ -176,7 +192,7 @@ module l3 'modules/l3-apps.bicep' = if (!platformOnly) {
   dependsOn: [ids, registry, vaults, envs]
 }
 
-module sellers 'modules/sellers.bicep' = if (!platformOnly) {
+module sellers 'modules/sellers.bicep' = if (unit == 'seller') {
   name: 'sellers'
   params: {
     location: location
@@ -188,9 +204,10 @@ module sellers 'modules/sellers.bicep' = if (!platformOnly) {
   dependsOn: [ids, registry, vaults, envs]
 }
 
+// Each deployment outputs what it deployed: the platform's registry, logs and vaults, or a unit's addresses.
 output registry string = acrServer
-output logWorkspaceCustomerId string = logs.outputs.customerId
-output vaults array = [for (u, i) in units: { key: u.key, uri: vaults[i].outputs.uri }]
-output agentFqdn string = platformOnly ? '' : l1!.outputs.agentFqdn
-output sellerFqdn string = platformOnly ? '' : sellers!.outputs.fqdn
-output sellerAliasFqdn string = platformOnly ? '' : sellers!.outputs.aliasFqdn
+output logWorkspaceCustomerId string = platform ? logs!.outputs.customerId : ''
+output vaults array = [for (u, i) in (platform ? units : []): { key: u.key, uri: vaults[i]!.outputs.uri }]
+output agentFqdn string = unit == 'l1' ? l1!.outputs.agentFqdn : ''
+output sellerFqdn string = unit == 'seller' ? sellers!.outputs.fqdn : ''
+output sellerAliasFqdn string = unit == 'seller' ? sellers!.outputs.aliasFqdn : ''

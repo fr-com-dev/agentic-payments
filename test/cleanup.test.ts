@@ -171,7 +171,7 @@ describe.skipIf(!BICEP_PATH)("T-E2E-AZ clean-up (infra/cleanup.sh against a fake
     expect(problems(r, false)).toEqual([]);
     expect(r.out).toContain("kept: the GitHub secrets LEFTOVER_SECRET");
     expect(r.out).toContain("Run this again with --purge");
-    expect(r.out).toContain("run deploy.yml with platform-only and recover-vaults");
+    expect(r.out).toContain("run deploy-infra.yml with first-deployment and recover-vaults");
   });
 
   it("T-E2E-AZ cleanup.sh --dry-run (even with --yes) prints the plan and changes nothing", () => {

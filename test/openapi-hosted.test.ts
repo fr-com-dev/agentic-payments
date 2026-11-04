@@ -381,8 +381,9 @@ describe("T-API-08 Swagger UI on the agent is opt-in, never set in Azure, same-o
     const files = [
       ...readdirSync("infra").filter((f) => /\.(bicep|bicepparam)$/.test(f)).map((f) => join("infra", f)),
       ...readdirSync("infra/modules").map((f) => join("infra/modules", f)),
-      ".github/workflows/deploy.yml",
+      ...readdirSync(".github/workflows").map((f) => join(".github/workflows", f)),
     ];
+    expect(files).toContain(".github/workflows/deploy.yml");
     expect(files).toContain("infra/modules/l1-apps.bicep");
     expect(files.filter((f) => /API_DOCS/.test(readFileSync(f, "utf8")))).toEqual([]);
   });

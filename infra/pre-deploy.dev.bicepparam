@@ -1,5 +1,5 @@
 // dev parameters for pre-deploy.bicep: every value it uses, its target and every name included. An administrator
-// deploys it by hand before the first run of deploy.yml (quickstart §4 step 0). infra/github-setup.sh and
+// deploys it by hand before the first pipeline run (quickstart §4 step 0). infra/github-setup.sh and
 // infra/cleanup.sh compile this file with Bicep (az bicep build-params) to read their values.
 using 'pre-deploy.bicep'
 
