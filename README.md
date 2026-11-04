@@ -35,7 +35,7 @@ The hosted agent's API (`POST /v1/runs` and the health routes) is described the 
 API_DOCS=1 npm run agent:hosted
 ```
 
-The seller's API (the free catalog and the four priced routes, with their x402 headers) is in [`docs/seller.openapi.yaml`](docs/seller.openapi.yaml), kept in sync with the seller and its catalog prices by `test/openapi-seller.test.ts`. With `API_DOCS=1` the seller serves it in Swagger UI at http://127.0.0.1:4021/docs. A browser can't sign an x402 payment, so "Try it out" on a priced route shows its 402 challenge: decode the `PAYMENT-REQUIRED` header (base64 JSON) to see the price and `payTo`. The Azure deployment never sets `API_DOCS`.
+The seller monetizes with freemium discovery plus pay-per-use tiers: each endpoint in `src/counterparty/seller-api.ts` declares its route and tier with decorators (`@Get` with `@Free`, `@PayPerUse`, `@Premium` or `@Enterprise`), and the catalog lists each priced route's `tier`. The seller's API (the free catalog and the four priced routes, with their x402 headers) is in [`docs/seller.openapi.yaml`](docs/seller.openapi.yaml), kept in sync with the seller and its catalog prices by `test/openapi-seller.test.ts`. With `API_DOCS=1` the seller serves it in Swagger UI at http://127.0.0.1:4021/docs. A browser can't sign an x402 payment, so "Try it out" on a priced route shows its 402 challenge: decode the `PAYMENT-REQUIRED` header (base64 JSON) to see the price and `payTo`. The Azure deployment never sets `API_DOCS`.
 
 ```bash
 API_DOCS=1 npm run seller
@@ -262,6 +262,7 @@ A milestone must pass its exit check before the next one starts.
 | `test/github-setup.test.ts` | T-E2E-AZ: `infra/github-setup.sh` against a fake `gh`: creates only the GitHub environment the parameter file names, and reports leftover secrets |
 | `test/cleanup.test.ts` | T-E2E-AZ: `infra/cleanup.sh` against a fake tenant and `gh`: deletes the GitHub environment, role assignments, resource group, app registrations and the operators' group and nothing else, leaves no orphaned role assignment, and deletes nothing on `--dry-run`, unconfirmed or for the wrong tenant |
 | `test/openapi.test.ts` | T-API-01..03: `docs/l2-control.openapi.yaml` matches L2's routes, tokens, statuses and response shapes; T-API-04: the Swagger UI routes are off by default, same-origin and serve fixed files only |
+| `test/seller-monetization.test.ts` | T-MON-01..03: the seller's tiers and prices, what's derived from its decorators, the free catalog while payments are down, `usdc()`, and every declaration mistake refused while the seller is built |
 | `test/openapi-seller.test.ts` | T-API-09..10: `docs/seller.openapi.yaml` matches the seller's routes, catalog prices, statuses, decoded x402 headers and bodies; T-API-11: its Swagger UI routes are off by default, never set in Azure, same-origin and serve fixed files only |
 | `test/openapi-hosted.test.ts` | T-API-05..07: `docs/l1-hosted.openapi.yaml` matches the hosted agent's routes, auth, statuses, headers and response shapes; T-API-08: its Swagger UI routes are off by default, never set in Azure, same-origin and serve fixed files only |
 

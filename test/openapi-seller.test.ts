@@ -12,7 +12,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { parse } from "yaml";
 import { SELLER_API_DOCS_FILE, servedSellerApiDocument } from "../src/counterparty/api-docs.js";
 import { CategorizedFacilitatorClient } from "../src/counterparty/facilitator-client.js";
-import { CATALOG, createSellerApp } from "../src/counterparty/seller.js";
+import { createSellerApp } from "../src/counterparty/seller.js";
+import { CATALOG, SELLER_ENDPOINTS } from "../src/counterparty/seller-api.js";
 import { networkProfile } from "../src/shared/config.js";
 import {
   conformance,
@@ -77,20 +78,29 @@ async function start(o: { apiDocs?: boolean; mode?: Partial<Mode> } = { apiDocs:
   return { app, mode, base: `http://127.0.0.1:${(server.address() as AddressInfo).port}` };
 }
 
-/** `x-x402-price-atomic` of every priced operation against CATALOG, both ways. */
-function priceMismatches(doc: OpenApiDoc): string[] {
+/**
+ * Each documented operation's `x-monetization-tier` and `x-x402-price-atomic` against the seller's decorators, both
+ * ways: every declared endpoint is documented with its tier and price (none for a free one), and every documented
+ * monetized operation is declared. The docs routes have no tier.
+ */
+function monetizationMismatches(doc: OpenApiDoc): string[] {
+  type Monetized = { "x-monetization-tier"?: string; "x-x402-price-atomic"?: string };
   const documented = new Map(
     operations(doc)
-      .filter(([, , op]) => op.tags?.includes("priced"))
-      .map(([, path, op]) => [path, (op as { "x-x402-price-atomic"?: string })["x-x402-price-atomic"]]),
+      .filter(([, , op]) => !isDocsRoute(op))
+      .map(([, path, op]) => [path, { tier: (op as Monetized)["x-monetization-tier"], price: (op as Monetized)["x-x402-price-atomic"] }]),
   );
   const out: string[] = [];
-  for (const item of CATALOG) {
-    const price = documented.get(item.route);
-    if (price !== item.priceAtomic) out.push(`${item.route}: document ${price ?? "missing"}, catalog ${item.priceAtomic}`);
-    documented.delete(item.route);
+  for (const e of SELLER_ENDPOINTS) {
+    const d = documented.get(e.route.path);
+    const declared = { tier: e.monetization.tier, price: e.monetization.price?.atomic };
+    if (d === undefined) out.push(`${e.route.path}: declared ${declared.tier}, not in the document`);
+    else if (d.tier !== declared.tier || d.price !== declared.price) {
+      out.push(`${e.route.path}: document ${d.tier ?? "no tier"} ${d.price ?? "no price"}, declared ${declared.tier} ${declared.price ?? "no price"}`);
+    }
+    documented.delete(e.route.path);
   }
-  for (const path of documented.keys()) out.push(`${path}: priced in the document, not in the catalog`);
+  for (const [path, d] of documented) out.push(`${path}: ${d.tier ?? "no tier"} in the document, not declared`);
   return out;
 }
 
@@ -125,21 +135,23 @@ describe("T-API-09 every seller route is documented at its catalog price, and ev
     expect(routeDiff(documentedRoutes(doc, (op) => !isDocsRoute(op)), mountedRoutes(app))).toEqual({ undocumented: [], unmounted: [] });
   });
 
-  it("T-API-09 each priced operation's x-x402-price-atomic is its CATALOG price", () => {
-    expect(priceMismatches(loadDoc())).toEqual([]);
+  it("T-API-09 each operation's x-monetization-tier and x-x402-price-atomic are its declared tier and price", () => {
+    expect(monetizationMismatches(loadDoc())).toEqual([]);
   });
 
-  it("T-API-09 must-fail: a missing route, an unmounted route and a wrong price are reported", async () => {
+  it("T-API-09 must-fail: a missing route, an unmounted route, a wrong price and a wrong tier are reported", async () => {
     const { app } = await start();
     const doc = loadDoc();
     delete doc.paths["/api/dataset-export"];
-    doc.paths["/api/refund"] = { get: { tags: ["priced"], responses: {} } };
+    doc.paths["/api/refund"] = { get: { tags: ["premium"], "x-monetization-tier": "premium", responses: {} } as never };
     (doc.paths["/api/weather"]!.get as unknown as Record<string, string>)["x-x402-price-atomic"] = "100";
+    (doc.paths["/api/premium-report"]!.get as unknown as Record<string, string>)["x-monetization-tier"] = "pay-per-use";
     expect(routeDiff(documentedRoutes(doc), mountedRoutes(app))).toEqual({ undocumented: ["GET /api/dataset-export"], unmounted: ["GET /api/refund"] });
-    expect(priceMismatches(doc)).toEqual([
-      "/api/weather: document 100, catalog 1000",
-      "/api/dataset-export: document missing, catalog 500000",
-      "/api/refund: priced in the document, not in the catalog",
+    expect(monetizationMismatches(doc)).toEqual([
+      "/api/weather: document pay-per-use 100, declared pay-per-use 1000",
+      "/api/premium-report: document pay-per-use 50000, declared premium 50000",
+      "/api/dataset-export: declared enterprise, not in the document",
+      "/api/refund: premium in the document, not declared",
     ]);
   });
 });
