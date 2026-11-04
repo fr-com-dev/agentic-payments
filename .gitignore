@@ -7,3 +7,4 @@ env/*.env
 dist/
 build/
 .env*
+env/*.json
