@@ -6,7 +6,7 @@ Azure app is `ca-l1-eastus2-dev`, and its code lives in `src/layer1-intent/hoste
 The entry point is `src/hosted-main.ts`, a composition root beside `src/main.ts`, run with
 `npm run agent:hosted`. It sits outside the layer because rule A5 bans `PAYER_PRIVATE_KEY` under
 `src/layer1-intent/`. `src/layer1-intent/hosted/server.ts` only builds the Express app. It listens on `AGENT_PORT`, default 4024: on `0.0.0.0` in a container and
-on `127.0.0.1` locally (`AGENT_BIND_HOST`, default `127.0.0.1`). These are the only routes. Mastra
+on `127.0.0.1` locally (`AGENT_BIND_HOST`, default `127.0.0.1`). These are the only routes, plus the docs routes below with `API_DOCS=1` (v1.6). Mastra
 publishes no routes (research R1).
 
 ## Startup (in this order)
@@ -93,6 +93,16 @@ Order of checks: auth (401/403) → limits (429) → body (400) → session (400
 No auth. `/healthz` → 200 `{ "status": "ok" }` while the process runs. `/readyz` → 200
 `{ "status": "ready" }` after startup, 503 `{ "status": "starting" }` before. Neither returns
 configuration, versions or secrets (FR-027).
+
+## API docs (v1.6, only with `API_DOCS=1`)
+
+`docs/l1-hosted.openapi.yaml` describes this API in OpenAPI 3.1; this contract and SPEC L1-6 stay
+normative, and `test/openapi-hosted.test.ts` (T-API-05..07) fails when the document and the service disagree.
+With `API_DOCS=1` in `env/l1-hosted.env`, the agent also mounts `GET /docs` (Swagger UI), `GET /docs/:asset`
+(its three files) and `GET /openapi.yaml` (the document, with `servers` set to `/`). Like the health routes they
+take no token and sit before auth. They serve files read at startup and never reach the model, a session, L2 or
+L3; the page's CSP limits scripts and requests to the agent's origin (SEC-13). Off by default, and the Azure
+deployment never sets `API_DOCS` (T-API-08).
 
 ## Anything else
 

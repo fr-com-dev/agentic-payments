@@ -22,6 +22,8 @@ npm run approve -- <id> [approver]           # operator: approve a pending escal
 npm run reject -- <id> [operator] [reason]   # operator: reject a pending escalation (R15 human_rejected)
 npm run escalations -- --watch               # operator: pending escalations, then each new one and outcome
 API_DOCS=1 npm run l2:control                # L2 plus Swagger UI at http://127.0.0.1:4020/docs (no token; off by default)
+API_DOCS=1 npm run agent:hosted              # the hosted agent plus Swagger UI at http://127.0.0.1:4024/docs (never in Azure)
+API_DOCS=1 npm run seller                    # the seller plus Swagger UI at http://127.0.0.1:4021/docs (never in Azure)
 npm run stack:local [-- --docker]            # chain, facilitator, seller, L2, L3 without an agent, until Ctrl-C
 npm run agent:hosted                         # hosted agent service (L1-6) on 127.0.0.1:4024; env/l1-hosted.env
 npm run dev-token -- --subject alice         # local dev issuer token for the hosted service (NETWORK=local only)
@@ -57,11 +59,12 @@ npx vitest run test/policy.test.ts -t "<name>"   # single test
   4. If it needs new context, add a field to `PolicyContext` and compute it in `service.ts` from the ledger.
 - **New contract field:** edit `src/shared/contracts.ts` and every producer and consumer, update SPEC §7, and extend the e2e assertions. If it crosses L2's HTTP API, also update `docs/l2-control.openapi.yaml`.
 - **New or changed L2 route** (path, token, status or response field): update SPEC L2-5 and `docs/l2-control.openapi.yaml` together. `test/openapi.test.ts` (T-API-01..04) fails until both match the service. Swagger UI (`API_DOCS=1`) serves that same file, so it needs no separate update.
+- **New or changed hosted agent route** (path, auth, status, header or response field): update SPEC L1-6, `specs/011` contracts/hosted-agent-api.md and `docs/l1-hosted.openapi.yaml` together. `test/openapi-hosted.test.ts` (T-API-05..08) fails until they match the service. The Swagger UI routes for L2, the agent and the seller live in `src/shared/api-docs.ts`; never set `API_DOCS` in `infra/`.
 - **New network:**
   1. Add a profile in `src/shared/config.ts`.
   2. Register the scheme in the signer, seller and (if local) facilitator.
   3. Check the token's EIP-712 domain (`name`/`version`).
-- **New paid route:** add it to `CATALOG` in `src/counterparty/seller.ts`. If the scripted plan changes, update SPEC §8.1 L1-4 and T-E2E-01.
+- **New paid route:** add it to `CATALOG` in `src/counterparty/seller.ts` and to `docs/seller.openapi.yaml` with its price as `x-x402-price-atomic` (T-API-09..10 fail until they match), and to the SPEC CP-1 table. If the scripted plan changes, update SPEC §8.1 L1-4 and T-E2E-01.
 - **New container entry point or runtime-resolved package:** add it to `IMAGES` in `scripts/image-closure.ts` (the entry point, or `extraPackages`), and give the app or job its own unit's image in `infra/`. T-IMG-01 and T-IAC-01 rule 12 fail until they match. Never point an app at another layer's image.
 - **Extensions** (AP2 mandate, remote signer, `upto`, Solana, MCP, SQLite, mTLS, OTel, refunds): follow SPEC §15. Implement one EXT-* per PR.
 

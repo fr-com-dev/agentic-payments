@@ -7,7 +7,6 @@ import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Express } from "express";
 import type { PaymentRequired, PaymentRequirements } from "@x402/core/types";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { parse } from "yaml";
@@ -19,6 +18,18 @@ import { AuditLedger } from "../src/layer2-control/ledger.js";
 import { buildMandate } from "../src/layer2-control/mandate.js";
 import { createControlService } from "../src/layer2-control/service.js";
 import type { PaymentSignerLike } from "../src/layer2-control/signer.js";
+import {
+  conformance,
+  documentedRoutes,
+  isDocsRoute,
+  loadDoc as loadDocFile,
+  mountedRoutes,
+  type OpenApiDoc,
+  operations,
+  responseContent,
+  routeDiff,
+  send,
+} from "./helpers/openapi.js";
 
 const DOC_FILE = "docs/l2-control.openapi.yaml";
 const CAIP2 = "eip155:31337";
@@ -33,120 +44,7 @@ const SCHEME_TOKENS: Record<string, string> = {
   settlementToken: TOKENS.settlement,
   operatorToken: TOKENS.operator,
 };
-const METHODS = ["get", "post", "put", "patch", "delete"] as const;
-
-type Schema = {
-  $ref?: string;
-  type?: string;
-  const?: unknown;
-  enum?: unknown[];
-  pattern?: string;
-  properties?: Record<string, Schema>;
-  required?: string[];
-  additionalProperties?: boolean | Schema;
-  items?: Schema;
-  oneOf?: Schema[];
-};
-type Response = { $ref?: string; content?: Record<string, { schema: Schema }> };
-type Operation = {
-  tags?: string[];
-  security?: Record<string, string[]>[];
-  parameters?: { name: string; schema: Schema }[];
-  responses: Record<string, Response>;
-};
-type OpenApiDoc = {
-  paths: Record<string, Partial<Record<(typeof METHODS)[number], Operation>>>;
-  components: { schemas: Record<string, Schema>; responses: Record<string, Response> };
-};
-
-const loadDoc = () => parse(readFileSync(DOC_FILE, "utf8")) as OpenApiDoc;
-
-/** Every operation as [method, document path, operation]. */
-function operations(doc: OpenApiDoc): [string, string, Operation][] {
-  return Object.entries(doc.paths).flatMap(([path, item]) =>
-    METHODS.filter((m) => item[m] !== undefined).map((m): [string, string, Operation] => [m.toUpperCase(), path, item[m]!]),
-  );
-}
-
-/** `/v1/approvals/{authorizationId}` → `/v1/approvals/:authorizationId` (Express form). */
-const expressPath = (path: string) => path.replace(/\{(\w+)\}/g, ":$1");
-
-function documentedRoutes(doc: OpenApiDoc, filter: (op: Operation) => boolean = () => true): string[] {
-  return operations(doc)
-    .filter(([, , op]) => filter(op))
-    .map(([m, p]) => `${m} ${expressPath(p)}`)
-    .sort();
-}
-
-/** The Swagger UI operations, mounted only with API_DOCS=1. */
-const isDocsRoute = (op: Operation) => op.tags?.includes("docs") === true;
-
-function mountedRoutes(app: Express): string[] {
-  const { stack } = app.router as unknown as { stack: { route?: { path: string; methods: Record<string, boolean> } }[] };
-  return stack
-    .flatMap((l) => (l.route ? Object.keys(l.route.methods).map((m) => `${m.toUpperCase()} ${l.route!.path}`) : []))
-    .sort();
-}
-
-function routeDiff(documented: string[], mounted: string[]) {
-  return {
-    undocumented: mounted.filter((r) => !documented.includes(r)),
-    unmounted: documented.filter((r) => !mounted.includes(r)),
-  };
-}
-
-const resolve = <T>(doc: OpenApiDoc, ref: string): T => {
-  const [, section, name] = ref.match(/^#\/components\/(schemas|responses)\/(\w+)$/) ?? [];
-  const found = section === "schemas" ? doc.components.schemas[name!] : section === "responses" ? doc.components.responses[name!] : undefined;
-  if (found === undefined) throw new Error(`unresolved $ref ${ref}`);
-  return found as T;
-};
-
-/**
- * Checks `value` against the subset of JSON Schema the document uses ($ref, oneOf, const, enum, type,
- * pattern, properties, required, additionalProperties, items). Returns one message per violation.
- */
-function conformance(doc: OpenApiDoc, schema: Schema, value: unknown, at = "$"): string[] {
-  if (schema.$ref) return conformance(doc, resolve<Schema>(doc, schema.$ref), value, at);
-  if (schema.oneOf) {
-    const n = schema.oneOf.filter((s) => conformance(doc, s, value, at).length === 0).length;
-    return n === 1 ? [] : [`${at}: matches ${n} oneOf branches`];
-  }
-  if ("const" in schema && value !== schema.const) return [`${at}: expected ${JSON.stringify(schema.const)}`];
-  if (schema.enum && !schema.enum.includes(value)) return [`${at}: ${JSON.stringify(value)} not in enum`];
-  const isObject = value !== null && typeof value === "object" && !Array.isArray(value);
-  const typeOk: Record<string, boolean> = {
-    object: isObject,
-    array: Array.isArray(value),
-    string: typeof value === "string",
-    integer: Number.isInteger(value),
-    number: typeof value === "number",
-    boolean: typeof value === "boolean",
-  };
-  if (schema.type && !typeOk[schema.type]) return [`${at}: expected ${schema.type}`];
-  if (schema.pattern && typeof value === "string" && !new RegExp(schema.pattern).test(value)) return [`${at}: does not match ${schema.pattern}`];
-  const errors: string[] = [];
-  if (Array.isArray(value) && schema.items) value.forEach((v, i) => errors.push(...conformance(doc, schema.items!, v, `${at}[${i}]`)));
-  if (isObject) {
-    const obj = value as Record<string, unknown>;
-    for (const k of schema.required ?? []) if (!(k in obj)) errors.push(`${at}.${k}: missing`);
-    for (const [k, v] of Object.entries(obj)) {
-      const prop = schema.properties?.[k];
-      if (prop) errors.push(...conformance(doc, prop, v, `${at}.${k}`));
-      else if (schema.additionalProperties === false) errors.push(`${at}.${k}: not documented`);
-      else if (typeof schema.additionalProperties === "object") errors.push(...conformance(doc, schema.additionalProperties, v, `${at}.${k}`));
-    }
-  }
-  return errors;
-}
-
-/** The documented content (media type → schema) for one (operation, status), or undefined when the status is not documented. */
-function responseContent(doc: OpenApiDoc, method: string, path: string, status: number): Response["content"] | undefined {
-  const op = doc.paths[path]?.[method.toLowerCase() as (typeof METHODS)[number]];
-  const res = op?.responses[String(status)];
-  if (!res) return undefined;
-  return (res.$ref ? resolve<Response>(doc, res.$ref) : res).content ?? {};
-}
+const loadDoc = () => loadDocFile(DOC_FILE);
 
 const fakeSigner: PaymentSignerLike = {
   address: PAYER,
@@ -206,19 +104,6 @@ async function startService(opts: { apiDocs?: boolean } = { apiDocs: true }) {
       t += ms;
     },
   };
-}
-
-/** `body` is the parsed JSON (empty for other media types); `text` is the raw body; `type` has no parameters. */
-async function send(base: string, method: string, path: string, token?: string, body?: unknown) {
-  const res = await fetch(base + path, {
-    method,
-    headers: { "content-type": "application/json", ...(token !== undefined && { authorization: `Bearer ${token}` }) },
-    ...(method !== "GET" && { body: JSON.stringify(body ?? {}) }),
-  });
-  const text = await res.text();
-  const type = (res.headers.get("content-type") ?? "").split(";")[0]!.trim();
-  const json = type === "application/json" ? (JSON.parse(text) as Record<string, unknown>) : {};
-  return { status: res.status, type, text, body: json, headers: res.headers };
 }
 
 /**

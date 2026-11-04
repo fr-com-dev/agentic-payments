@@ -7,6 +7,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { LanguageModelV3GenerateResult } from "@ai-sdk/provider";
+import type { Express } from "express";
 import { MockLanguageModelV3 } from "ai/test";
 import { createLocalJWKSet } from "jose";
 import { loadOrCreateDevIssuer, signDevToken, type DevTokenOptions } from "../../scripts/dev-issuer-lib.js";
@@ -106,6 +107,8 @@ export interface StartHostedOptions extends Partial<Omit<HostedDeps, "config" | 
 
 export interface HostedTestApp {
   base: string;
+  /** The Express app (its mounted routes, for T-API-05). */
+  app: Express;
   config: HostedConfig;
   markReady(): void;
   /** A dev-issuer token for `subject` (role Agent.Run unless `roles` is given). */
@@ -155,6 +158,7 @@ export async function startHostedApp(opts: StartHostedOptions = {}): Promise<Hos
   const token: HostedTestApp["token"] = (subject, o = {}) => signDevToken(issuer, { subject, ...o });
   return {
     base,
+    app: hosted.app,
     config,
     markReady: hosted.markReady,
     token,
