@@ -4,7 +4,8 @@
 // create the GitHub environment deploy.yml's job runs in, in the repository named there, and set nothing else:
 // deploy.yml reads no secret. A secret left in the repository or the environment is reported, never used. It
 // refuses, sending nothing, a parameter file whose GitHub environment isn't the deploy environment, a malformed
-// repository and a file Bicep can't compile.
+// repository and a file Bicep can't compile, and changes nothing when GitHub would sign the deploy job with another
+// OIDC subject than the deploy app's federated credential trusts (azure/login's AADSTS700213).
 import { spawnSync } from "node:child_process";
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -13,7 +14,12 @@ import { afterAll, describe, expect, it } from "vitest";
 import { BICEP_PATH } from "./helpers/bicep.js";
 
 const SCRIPT = "infra/github-setup.sh";
-const PARAMS = readFileSync("infra/pre-deploy.dev.bicepparam", "utf8").replace("param githubRepository = 'fr-com-dev/agentic-payments'", "param githubRepository = 'acme/agentic-payments'");
+const PARAMS = readFileSync("infra/pre-deploy.dev.bicepparam", "utf8")
+  .replace("param githubRepository = 'fr-com-dev/agentic-payments'", "param githubRepository = 'acme/agentic-payments'")
+  .replace(/^param githubOwnerId = '.*'$/m, "param githubOwnerId = '101'")
+  .replace(/^param githubRepositoryId = '.*'$/m, "param githubRepositoryId = '202'");
+/** acme/agentic-payments with GitHub's immutable OIDC subject: what the credential for PARAMS trusts. */
+const IMMUTABLE = JSON.stringify({ use_default: true, use_immutable_subject: true, sub_claim_prefix: "repo:acme@101/agentic-payments@202" });
 
 interface Run {
   status: number | null;
@@ -31,8 +37,8 @@ afterAll(() => {
  * dev parameter file `params`, with the fake `gh` and `az` on PATH. `existing` and `envSecrets` name secrets the
  * repository and the environment already hold.
  */
-function setup(params: string, opts: { mutate?: [string, string]; existing?: string; envSecrets?: string; args?: string[] } = {}): Run {
-  const { mutate, existing = "", envSecrets = "", args = [] } = opts;
+function setup(params: string, opts: { mutate?: [string, string]; existing?: string; envSecrets?: string; oidc?: string; args?: string[] } = {}): Run {
+  const { mutate, existing = "", envSecrets = "", oidc = IMMUTABLE, args = [] } = opts;
   const root = mkdtempSync(join(tmpdir(), "github-setup-"));
   tmp.push(root);
   cpSync("infra", join(root, "infra"), { recursive: true });
@@ -55,6 +61,7 @@ function setup(params: string, opts: { mutate?: [string, string]; existing?: str
       FAKE_GH_LOG: log,
       FAKE_GH_EXISTING: existing,
       FAKE_GH_ENV_SECRETS: envSecrets,
+      FAKE_GH_OIDC_SUB: oidc,
     },
     encoding: "utf8",
   });
@@ -87,10 +94,10 @@ describe.skipIf(!BICEP_PATH)("T-E2E-AZ GitHub setup (infra/github-setup.sh again
     expect(r.out).not.toContain("warning");
   });
 
-  it("T-E2E-AZ github-setup.sh --dry-run sends nothing", () => {
+  it("T-E2E-AZ github-setup.sh --dry-run only reads the repository's OIDC subject", () => {
     const r = setup(PARAMS, { args: ["--dry-run"] });
     expect(r.status).toBe(0);
-    expect(r.calls).toEqual([]);
+    expect(r.calls).toEqual([["api", "repos/acme/agentic-payments/actions/oidc/customization/sub"]]);
     expect(r.out).toContain("dry run: would create the environment dev in acme/agentic-payments");
   });
 
@@ -111,11 +118,30 @@ describe.skipIf(!BICEP_PATH)("T-E2E-AZ GitHub setup (infra/github-setup.sh again
     expect(r.out).toContain(message);
   });
 
+  it.each([
+    ["another repository ID", JSON.stringify({ use_default: true, use_immutable_subject: true, sub_claim_prefix: "repo:acme@101/agentic-payments@999" }), "as repo:acme@101/agentic-payments@999:…"],
+    ["the subject without IDs (immutable subject off)", JSON.stringify({ use_default: true, use_immutable_subject: false }), "as repo:acme/agentic-payments:…"],
+    ["a custom claim template", JSON.stringify({ use_default: false, include_claim_keys: ["repo", "context"] }), "as a custom claim template:…"],
+  ])("T-E2E-AZ github-setup.sh refuses, changing nothing, when GitHub signs the deploy job with %s", (_, oidc, message) => {
+    const r = setup(PARAMS, { oidc });
+    expect(r.status).toBe(2);
+    expect(r.calls.filter((c) => c.includes("--method") || c[0] === "secret")).toEqual([]);
+    expect(r.out).toContain(message);
+    expect(r.out).toContain("but the deploy app's federated credential trusts repo:acme@101/agentic-payments@202:…");
+  });
+
   it("T-E2E-AZ github-setup.sh refuses an environment without a pre-deploy parameter file", () => {
     const r = setup(PARAMS, { args: ["--environment", "prod"] });
     expect(r.status).toBe(2);
     expect(r.calls).toEqual([]);
     expect(r.out).toContain("no infra/pre-deploy.prod.bicepparam");
+  });
+
+  it("T-E2E-AZ must-fail: without the subject check, the environment is made for a deploy job that can't sign in", () => {
+    const oidc = JSON.stringify({ use_default: true, use_immutable_subject: false });
+    const r = setup(PARAMS, { oidc, mutate: ['if [[ "$SIGNED" != "$TRUSTED" ]]; then', "if false; then"] });
+    expect(r.status).toBe(0);
+    expect(r.calls.some((c) => c.includes("PUT"))).toBe(true);
   });
 
   it("T-E2E-AZ must-fail: without the environment check, a GitHub environment the deploy job never runs in is created, and it is reported", () => {

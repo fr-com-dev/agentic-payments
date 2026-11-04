@@ -2,7 +2,9 @@
 # GitHub setup for .github/workflows/deploy.yml (specs/011 contracts/deploy-pipeline.md; quickstart §4 step 1).
 # Creates the GitHub environment the deploy job runs in, named with the repository in
 # infra/pre-deploy.<environment>.bicepparam (githubRepository, githubEnvironment), which Bicep compiles: the deploy
-# app's federated credential trusts that job only. The workflow reads no GitHub secret or variable: its sign-in and
+# app's federated credential trusts that job only. First it checks that GitHub signs the repository's jobs with the
+# subject the credential trusts: GitHub's immutable subject, repo:<owner>@<githubOwnerId>/<name>@<githubRepositoryId>
+# (otherwise azure/login fails with AADSTS700213). The workflow reads no GitHub secret or variable: its sign-in and
 # target come from infra/main.<environment>.bicepparam. So a secret found in the repository or the environment is
 # reported, never used: no workflow reads it, and a credential there should be deleted.
 #
@@ -36,12 +38,25 @@ fi
 value() { jq -er --arg p "$1" '.[$p] | strings' <<< "$VALUES" || { echo "$PARAMS has no string parameter $1" >&2; return 2; }; }
 REPO=$(value githubRepository)
 GH_ENV=$(value githubEnvironment)
+OWNER_ID=$(value githubOwnerId)
+REPO_ID=$(value githubRepositoryId)
 ERRORS=()
 [[ "$REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || ERRORS+=("githubRepository $REPO is not owner/name")
 [[ "$GH_ENV" == "$ENVIRONMENT" ]] || ERRORS+=("githubEnvironment $GH_ENV is not $ENVIRONMENT: deploy.yml's job runs in the GitHub environment named like the deploy environment")
 if [[ ${#ERRORS[@]} -gt 0 ]]; then
   echo "$PARAMS: nothing was sent to GitHub" >&2
   for e in "${ERRORS[@]}"; do echo "  $e" >&2; done
+  exit 2
+fi
+
+# The subject prefix GitHub puts in this repository's OIDC tokens (a read), and the one the deploy app trusts.
+TRUSTED="repo:${REPO%%/*}@$OWNER_ID/${REPO#*/}@$REPO_ID"
+SIGNED=$(gh api "repos/$REPO/actions/oidc/customization/sub" | jq -r --arg repo "$REPO" \
+  'if .use_default != true then "a custom claim template" elif .use_immutable_subject != true then "repo:\($repo)" else .sub_claim_prefix end')
+if [[ "$SIGNED" != "$TRUSTED" ]]; then
+  echo "GitHub signs $REPO's jobs as $SIGNED:…, but the deploy app's federated credential trusts $TRUSTED:…: nothing was sent to GitHub" >&2
+  echo "  set githubOwnerId and githubRepositoryId in $PARAMS (gh api repos/$REPO --jq '.owner.id, .id')," >&2
+  echo "  keep the repository's immutable OIDC subject on, and deploy pre-deploy.bicep again" >&2
   exit 2
 fi
 
