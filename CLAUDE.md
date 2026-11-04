@@ -64,7 +64,7 @@ npx vitest run test/policy.test.ts -t "<name>"   # single test
   1. Add a profile in `src/shared/config.ts`.
   2. Register the scheme in the signer, seller and (if local) facilitator.
   3. Check the token's EIP-712 domain (`name`/`version`).
-- **New paid route:** add it to `CATALOG` in `src/counterparty/seller.ts` and to `docs/seller.openapi.yaml` with its price as `x-x402-price-atomic` (T-API-09..10 fail until they match), and to the SPEC CP-1 table. If the scripted plan changes, update SPEC §8.1 L1-4 and T-E2E-01.
+- **New seller route:** add a method to `SellerApi` in `src/counterparty/seller-api.ts` with `@Get(path)` and one monetization tier: `@Free(description)`, or `@PayPerUse`, `@Premium` or `@Enterprise` with `{ price: usdc("0.001"), description }` (SPEC CP-1's model). The catalog, the x402 requirements and the route follow from it. Add it to `docs/seller.openapi.yaml` with its `x-monetization-tier` and price (`x-x402-price-atomic`; T-API-09..10 fail until they match) and to the SPEC CP-1 table. If the scripted plan changes, update SPEC §8.1 L1-4 and T-E2E-01.
 - **New container entry point or runtime-resolved package:** add it to `IMAGES` in `scripts/image-closure.ts` (the entry point, or `extraPackages`), and give the app or job its own unit's image in `infra/`. T-IMG-01 and T-IAC-01 rule 12 fail until they match. Never point an app at another layer's image.
 - **Extensions** (AP2 mandate, remote signer, `upto`, Solana, MCP, SQLite, mTLS, OTel, refunds): follow SPEC §15. Implement one EXT-* per PR.
 
@@ -85,6 +85,7 @@ npx vitest run test/policy.test.ts -t "<name>"   # single test
 - Concurrency tests need `signerLatencyMs`; local signing is too fast to expose races.
 - Kill demo children by process group; otherwise ganache keeps port 8545 open.
 - CDP JWTs expire in 120 s; a skewed host clock shows up as `facilitator authentication` errors.
+- The seller's endpoints use TC39 decorators, which Node can't run natively: tsc (the build) and tsx lower them, and `vitest.config.ts` lowers them with esbuild because vite 8's oxc only knows legacy decorators. Never turn on `experimentalDecorators`.
 - Mastra (`@mastra/core`) needs Node ≥ 22.13. Use it as a library only: no Mastra server, CLI or instance. Its own logger is silenced because a provider error can carry the request body.
 - A Foundry deployment name must equal the model id (`claude-sonnet-5-5`); with any other id the AI SDK's Anthropic provider can add a third `json` tool, so the service refuses unknown ids.
 - Entra v2.0 access tokens carry the API app's client ID as `aud`, never `api://app-l1-eastus2-dev`. In Azure, `AUTH_AUDIENCE` is that GUID (`authAudience` in `infra/main.<env>.bicepparam`, from `pre-deploy.bicep`'s `mainParameters` output), and the agent refuses anything else unless it uses the local dev issuer.

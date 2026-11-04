@@ -1,7 +1,8 @@
-// Seller API (SPEC.md CP-1, CP-3). A simulated external party: an x402 v2 resource server with a free
-// catalog and four priced routes, each offering exactly one `exact` option priced as an explicit
-// AssetAmount (never a "$" string), so the asset and its EIP-712 domain come from the network profile.
-// docs/seller.openapi.yaml describes its routes (v1.6); with API_DOCS=1 it also serves that document and Swagger UI.
+// Seller API (SPEC.md CP-1, CP-3). A simulated external party: an x402 v2 resource server. Its endpoints, each
+// with its route and monetization tier, are declared in ./seller-api.ts; this file wires them up. Free endpoints
+// are mounted before the x402 middleware, priced ones after it, and each priced route offers exactly one `exact`
+// option priced as an explicit AssetAmount (never a "$" string), so the asset and its EIP-712 domain come from the
+// network profile. docs/seller.openapi.yaml describes the routes; with API_DOCS=1 the seller also serves it.
 import { pathToFileURL } from "node:url";
 import express from "express";
 import type { FacilitatorClient, RouteConfig, RoutesConfig } from "@x402/core/server";
@@ -23,6 +24,9 @@ import {
   type NetworkProfile,
 } from "../shared/config.js";
 import { mountSellerApiDocs } from "./api-docs.js";
+import { mountEndpoints } from "./endpoints.js";
+import { USDC_DECIMALS } from "./monetization.js";
+import { FREE_ENDPOINTS, PAID_ENDPOINTS, SellerApi } from "./seller-api.js";
 import {
   CategorizedFacilitatorClient,
   categorize,
@@ -41,48 +45,20 @@ import {
   type CdpCredential,
 } from "./cdp-facilitator.js";
 
-export interface CatalogItem {
-  /** Route path as advertised in the catalog (weather shows its query parameter). */
-  path: string;
-  route: string;
-  priceAtomic: string;
-  description: string;
-}
-
-/**
- * CP-1 price list. Adding a route here changes the scripted plan: update SPEC L1-4 and T-E2E-01 too, and
- * docs/seller.openapi.yaml (T-API-09, T-API-10 fail until it lists the route at this price).
- */
-export const CATALOG: readonly CatalogItem[] = [
-  { path: "/api/weather?city=", route: "/api/weather", priceAtomic: "1000", description: "current weather for a city" },
-  { path: "/api/market-brief", route: "/api/market-brief", priceAtomic: "5000", description: "daily market brief" },
-  { path: "/api/premium-report", route: "/api/premium-report", priceAtomic: "50000", description: "premium research report" },
-  { path: "/api/dataset-export", route: "/api/dataset-export", priceAtomic: "500000", description: "full dataset export" },
-];
-
-const SOURCE = "mock-seller (deterministic)";
-const CONDITIONS = ["sunny", "cloudy", "rain", "fog"] as const;
-
-/** Deterministic mock weather: seed = sum of the city's char codes (research R4). */
-export function weatherBody(city: string) {
-  let seed = 0;
-  for (const ch of city) seed += ch.codePointAt(0)!;
-  return { city, tempC: seed % 35, condition: CONDITIONS[seed % 4]!, source: SOURCE };
-}
-
 /** One payment option per route; the query string never affects the price. */
 export function sellerRoutes(net: NetworkProfile, payTo: string): Record<string, RouteConfig> {
   const routes: Record<string, RouteConfig> = {};
-  for (const item of CATALOG) {
-    routes[`GET ${item.route}`] = {
-      description: item.description,
+  for (const { route, monetization } of PAID_ENDPOINTS) {
+    if (monetization.price === null) continue;
+    routes[`${route.method} ${route.path}`] = {
+      description: monetization.description,
       mimeType: "application/json",
       accepts: {
         scheme: "exact",
         network: net.caip2,
         payTo,
         maxTimeoutSeconds: 120,
-        price: { asset: net.asset, amount: item.priceAtomic, extra: { ...net.assetDomain } },
+        price: { asset: net.asset, amount: monetization.price.atomic, extra: { ...net.assetDomain } },
       },
     };
   }
@@ -164,37 +140,14 @@ export function sellerPaymentMiddleware(
   };
 }
 
-/** GET /api/catalog. Must be mounted BEFORE the payment middleware (research R3). */
-export function mountCatalog(app: express.Express, net: NetworkProfile): void {
-  app.get("/api/catalog", (_req, res) => {
-    res.json({
-      network: net.caip2,
-      asset: net.asset,
-      decimals: net.decimals,
-      items: CATALOG.map(({ path, priceAtomic, description }) => ({ path, priceAtomic, description })),
-    });
-  });
+/** The free endpoints (the catalog). Mount them BEFORE the payment middleware, so they never pay (research R3). */
+export function mountFreeEndpoints(app: express.Express, api: SellerApi): void {
+  mountEndpoints(app, api, FREE_ENDPOINTS);
 }
 
-/** Handlers for the priced routes. They only run after the middleware verified a payment. */
-export function mountPaidHandlers(app: express.Express): void {
-  app.get("/api/weather", (req, res) => {
-    const city = typeof req.query.city === "string" && req.query.city.length > 0 ? req.query.city : "Lima";
-    res.json(weatherBody(city));
-  });
-  app.get("/api/market-brief", (_req, res) => {
-    res.json({
-      headline: "Stablecoin settlement volumes steady",
-      bullets: ["USDC supply unchanged week on week", "Base L2 fees remain sub-cent", "Agentic commerce pilots expand"],
-      source: SOURCE,
-    });
-  });
-  app.get("/api/premium-report", (_req, res) => {
-    res.json({ title: "Agentic payments: three-layer control", pages: 42, source: SOURCE });
-  });
-  app.get("/api/dataset-export", (_req, res) => {
-    res.json({ rows: 1_000_000, source: SOURCE });
-  });
+/** The priced endpoints. Mount them AFTER the payment middleware: they run only once a payment verified. */
+export function mountPaidEndpoints(app: express.Express, api: SellerApi): void {
+  mountEndpoints(app, api, PAID_ENDPOINTS);
 }
 
 export interface SellerOptions extends PaymentMiddlewareOptions {
@@ -204,13 +157,21 @@ export interface SellerOptions extends PaymentMiddlewareOptions {
   apiDocs?: boolean;
 }
 
-/** The seller app: catalog (and, with apiDocs, the docs routes) first, then the x402 middleware, then the paid handlers. */
+/**
+ * The seller app: the free endpoints (and, with apiDocs, the docs routes) first, then the x402 middleware, then the
+ * priced endpoints. Prices are written in USDC (`usdc()`), so a network whose asset has other decimals is refused.
+ */
 export function createSellerApp({ net, payTo, apiDocs = false, ...middleware }: SellerOptions): express.Express {
+  if (net.decimals !== USDC_DECIMALS) {
+    throw new ConfigError(`the seller prices in USDC (${USDC_DECIMALS} decimals); ${net.name}'s asset has ${net.decimals}`);
+  }
+  const api = new SellerApi(net);
   const app = express();
-  mountCatalog(app, net);
+  app.disable("x-powered-by");
+  mountFreeEndpoints(app, api);
   if (apiDocs) mountSellerApiDocs(app);
   app.use(sellerPaymentMiddleware(net, sellerRoutes(net, payTo), middleware));
-  mountPaidHandlers(app);
+  mountPaidEndpoints(app, api);
   return app;
 }
 

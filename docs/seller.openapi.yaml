@@ -1,14 +1,29 @@
 # Seller HTTP API (SPEC.md CP-1, CP-3) as OpenAPI 3.1: the demo counterparty, an x402 v2 resource server.
 # SPEC.md stays normative. test/openapi-seller.test.ts (T-API-09..11) fails when this file and the running seller
-# disagree on routes, prices, statuses, headers or response shapes, so change both together.
+# disagree on routes, tiers, prices, statuses, headers or response shapes, so change both together. Each route's tier
+# and price come from its decorators in src/counterparty/seller-api.ts.
 openapi: 3.1.0
 info:
   title: Seller API
-  version: "1.6"
+  version: "1.7"
   summary: The demo seller of the x402 three-layer agent payments PoC, selling JSON resources for USDC.
   description: |
     A simulated external party: a free catalog and four priced routes, paid with x402 v2 (`exact` scheme, an
     EIP-3009 USDC transfer authorization). Its responses are mock data, deterministic per input.
+
+    **Monetization model** (`x-monetization-tier` on each operation; the catalog lists each route's `tier`):
+    freemium discovery plus pay-per-use in tiers priced by value, two of the models in Stripe's "What is API
+    monetization?". x402 has no accounts, so every paid call is a single purchase.
+
+    | Tier | Routes | Price per call | For |
+    |---|---|---|---|
+    | `free` | `/api/catalog` | none | discovery; answers even while payments can't be taken |
+    | `pay-per-use` | `/api/weather`, `/api/market-brief` | 0.001, 0.005 USDC | everyday data |
+    | `premium` | `/api/premium-report` | 0.05 USDC | high-value data, priced higher |
+    | `enterprise` | `/api/dataset-export` | 0.50 USDC | bulk data |
+
+    A tier is a label with a price. The buyer's own policy decides from the price: with L2's default mandate an
+    agent's premium purchase escalates to an operator and an enterprise purchase is denied.
 
     **Paying for a route** (what L1 does, with L2 signing):
     1. `GET` the route without payment: **402** with an empty body and a `PAYMENT-REQUIRED` header, base64
@@ -31,20 +46,25 @@ servers:
   - url: http://127.0.0.1:4021
     description: Default local bind (npm run seller; 0.0.0.0 in a container)
 tags:
-  - name: catalog
-    description: Free.
-  - name: priced
-    description: Paid per request with x402 (`exact`, USDC).
+  - name: free
+    description: Freemium discovery, no payment.
+  - name: pay-per-use
+    description: Everyday data, paid per call with x402 (`exact`, USDC).
+  - name: premium
+    description: High-value data, priced higher.
+  - name: enterprise
+    description: Bulk data at a substantial per-call price.
   - name: docs
     description: Swagger UI and this document. Mounted only when `API_DOCS=1`; free.
 
 paths:
   /api/catalog:
     get:
-      tags: [catalog]
+      tags: [free]
       operationId: getCatalog
       summary: The price list
       description: Free, and always available, also while the facilitator is down.
+      x-monetization-tier: free
       responses:
         "200":
           description: The network, the asset and every priced route.
@@ -55,10 +75,11 @@ paths:
 
   /api/weather:
     get:
-      tags: [priced]
+      tags: [pay-per-use]
       operationId: getWeather
       summary: Current weather for a city (0.001 USDC)
       description: The price doesn't depend on the query. Mock data, deterministic per city.
+      x-monetization-tier: pay-per-use
       x-x402-price-atomic: "1000"
       parameters:
         - name: city
@@ -88,9 +109,10 @@ paths:
 
   /api/market-brief:
     get:
-      tags: [priced]
+      tags: [pay-per-use]
       operationId: getMarketBrief
       summary: Daily market brief (0.005 USDC)
+      x-monetization-tier: pay-per-use
       x-x402-price-atomic: "5000"
       parameters:
         - $ref: "#/components/parameters/PaymentSignature"
@@ -113,10 +135,11 @@ paths:
 
   /api/premium-report:
     get:
-      tags: [priced]
+      tags: [premium]
       operationId: getPremiumReport
       summary: Premium research report (0.05 USDC)
       description: Above L2's default auto-approve limit, so the agent's purchase escalates to an operator.
+      x-monetization-tier: premium
       x-x402-price-atomic: "50000"
       parameters:
         - $ref: "#/components/parameters/PaymentSignature"
@@ -139,10 +162,11 @@ paths:
 
   /api/dataset-export:
     get:
-      tags: [priced]
+      tags: [enterprise]
       operationId: getDatasetExport
       summary: Full dataset export (0.50 USDC)
       description: Above L2's default per-payment cap, so the agent's purchase is denied.
+      x-monetization-tier: enterprise
       x-x402-price-atomic: "500000"
       parameters:
         - $ref: "#/components/parameters/PaymentSignature"
@@ -353,7 +377,7 @@ components:
     CatalogItem:
       type: object
       additionalProperties: false
-      required: [path, priceAtomic, description]
+      required: [path, priceAtomic, description, tier]
       properties:
         path:
           type: string
@@ -362,6 +386,10 @@ components:
           $ref: "#/components/schemas/AtomicAmount"
         description:
           type: string
+        tier:
+          type: string
+          enum: [pay-per-use, premium, enterprise]
+          description: The route's monetization tier. The catalog lists priced routes only, so never `free`.
 
     Weather:
       type: object

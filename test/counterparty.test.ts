@@ -157,14 +157,14 @@ import {
   type LocalChain,
 } from "../scripts/local-chain-lib.js";
 import {
-  CATALOG,
   createSellerApp,
   defaultFacilitator,
-  mountCatalog,
-  mountPaidHandlers,
+  mountFreeEndpoints,
+  mountPaidEndpoints,
   sellerPaymentMiddleware,
   sellerRoutes,
 } from "../src/counterparty/seller.js";
+import { CATALOG, SellerApi } from "../src/counterparty/seller-api.js";
 import { createFacilitatorApp } from "../src/counterparty/facilitator.js";
 import { CHAIN_PORT, type NetworkProfile } from "../src/shared/config.js";
 
@@ -336,18 +336,18 @@ describe("local counterparty (006)", () => {
         network: string;
         asset: string;
         decimals: number;
-        items: Array<{ path: string; priceAtomic: string; description: string }>;
+        items: Array<{ path: string; priceAtomic: string; description: string; tier: string }>;
       };
       expect(body.network).toBe(net.caip2);
       expect(body.asset).toBe(net.asset);
       expect(body.decimals).toBe(6);
       expect(body.items).toHaveLength(4);
       for (const item of body.items) expect(item.priceAtomic).toMatch(/^[1-9]\d*$/);
-      expect(body.items.map((i) => [i.path, i.priceAtomic])).toEqual([
-        ["/api/weather?city=", "1000"],
-        ["/api/market-brief", "5000"],
-        ["/api/premium-report", "50000"],
-        ["/api/dataset-export", "500000"],
+      expect(body.items.map((i) => [i.path, i.priceAtomic, i.tier])).toEqual([
+        ["/api/weather?city=", "1000", "pay-per-use"],
+        ["/api/market-brief", "5000", "pay-per-use"],
+        ["/api/premium-report", "50000", "premium"],
+        ["/api/dataset-export", "500000", "enterprise"],
       ]);
       expect(CATALOG.map((c) => c.priceAtomic)).toEqual(["1000", "5000", "50000", "500000"]);
     });
@@ -364,7 +364,7 @@ describe("local counterparty (006)", () => {
     it("catalog mounted after a catch-all payment middleware → 402", async () => {
       const app = express();
       app.use(sellerPaymentMiddleware(net, wildcard()));
-      mountCatalog(app, net);
+      mountFreeEndpoints(app, new SellerApi(net));
       const s = await listen(app);
       try {
         expect((await fetch(`${s.url}/api/catalog`)).status).toBe(402);
@@ -375,9 +375,10 @@ describe("local counterparty (006)", () => {
 
     it("catalog mounted before the same middleware → 200", async () => {
       const app = express();
-      mountCatalog(app, net);
+      const api = new SellerApi(net);
+      mountFreeEndpoints(app, api);
       app.use(sellerPaymentMiddleware(net, wildcard()));
-      mountPaidHandlers(app);
+      mountPaidEndpoints(app, api);
       const s = await listen(app);
       try {
         expect((await fetch(`${s.url}/api/catalog`)).status).toBe(200);

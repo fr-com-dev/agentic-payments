@@ -3,12 +3,24 @@
 | Field | Value |
 |---|---|
 | Spec ID | X402-3L-SPEC |
-| Version | 1.6 (2026-11-04). v1.0 described the original PoC; v1.1 is the build target for the spec-kit plans in `specs/`; v1.2 adds the CDP facilitator on Base Sepolia (`specs/009`); v1.3 adds the escalation lifecycle: operator rejection, expiry and notification (`specs/010`); v1.4 adds an OpenAPI copy of L2-5 and opt-in Swagger UI on L2 (`API_DOCS=1`); v1.5 adds the hosted agent service on Mastra and Azure (`specs/011`); v1.6 adds OpenAPI copies of L1-6 and the seller (CP-1), with opt-in Swagger UI on both (`API_DOCS=1`) |
+| Version | 1.7 (2026-11-04). v1.0 described the original PoC; v1.1 is the build target for the spec-kit plans in `specs/`; v1.2 adds the CDP facilitator on Base Sepolia (`specs/009`); v1.3 adds the escalation lifecycle: operator rejection, expiry and notification (`specs/010`); v1.4 adds an OpenAPI copy of L2-5 and opt-in Swagger UI on L2 (`API_DOCS=1`); v1.5 adds the hosted agent service on Mastra and Azure (`specs/011`); v1.6 adds OpenAPI copies of L1-6 and the seller (CP-1), with opt-in Swagger UI on both (`API_DOCS=1`); v1.7 declares the seller's endpoints with decorators and a monetization model, freemium discovery plus pay-per-use tiers (CP-1) |
 | Owner | Fabricio Rojas |
 | Status | Implemented PoC; this spec is the source of truth for changes |
 | Reference | IMF Note 2026/004, *How Agentic AI Will Reshape Payments* (three-layer model) |
 
 ---
+
+## Changes in 1.7
+
+A refactor of the seller (CP-1): the same routes, prices, bodies, headers and statuses, declared once per endpoint with a monetization tier. One additive change: each catalog item gains `tier`.
+
+| Area | Change |
+|---|---|
+| CP-1 | The seller's endpoints are methods of one controller class, `SellerApi` (`src/counterparty/seller-api.ts`), each with two TC39 decorators: its route (`@Get`, `src/counterparty/endpoints.ts`) and its monetization tier (`@Free`, `@PayPerUse`, `@Premium`, `@Enterprise`, `src/counterparty/monetization.ts`), with prices written as `usdc("0.001")` (BigInt math, rule 8). The catalog, the x402 payment requirements and the Express routes are derived from those declarations, so a route, its price and its catalog entry can't drift. A declaration mistake (a missing route or tier, two of either, one route for two endpoints, a non-USDC network) is refused while the seller is built. |
+| CP-1 | The monetization model, after Stripe's "What is API monetization?": freemium discovery (the free catalog) plus pay-per-use in tiers priced by value. Tiers are labels with a price; the buyer's L2 decides from the price alone (INV-5). |
+| CP-1 | Catalog items are `{path, priceAtomic, description, tier}`; `tier` is new. `docs/seller.openapi.yaml` names each operation's tier (`x-monetization-tier`) and groups the operations by tier. |
+| §5 | Node can't run decorators natively: tsc 7 (the build) and tsx (esbuild) lower them, and `vitest.config.ts` lowers them with the same esbuild before vite 8's oxc transformer, which knows only TypeScript's legacy decorators. |
+| §6, §12 | `endpoints.ts`, `monetization.ts`, `seller-api.ts`; tests T-MON-01..03, and T-API-09 checks each operation's tier as well as its price. |
 
 ## Changes in 1.6
 
@@ -275,7 +287,7 @@ Each rule has a fixture under `test/fixtures/arch/` that must trip it (Principle
 | EVM | viem | ^2.57 |
 | HTTP | express | ^5.3 |
 | LLM | `@anthropic-ai/sdk` | ^0.135 |
-| Tests | vitest (`fileParallelism: false`, 120 s timeouts) | ^5.0 |
+| Tests | vitest (`fileParallelism: false`, 120 s timeouts; v1.7: `vitest.config.ts` lowers TC39 decorators with esbuild before oxc) | ^5.0 |
 | Local chain (dev) | ganache (hardfork `shanghai`) + solc 0.8.24 (`evmVersion: shanghai`, optimizer 200) | 7.9.2 / 0.8.24 |
 | Config | dotenv, one file per process via `ENV_FILE` | ^18 |
 | CDP facilitator auth (seller only) | `@coinbase/cdp-sdk`, `./auth` subpath only | 1.59.0 (exact) |
@@ -373,7 +385,10 @@ src/
     verifier.ts                  chain verification + finality (L3-1)
     service.ts                   HTTP API + reconciliation + recheck (L3-2)
   counterparty/
-    seller.ts                    x402 seller API (CP-1)
+    seller.ts                    x402 seller API: wiring, payment middleware, entry point (CP-1)
+    seller-api.ts                the seller's endpoints: SellerApi, one decorated method each; CATALOG (CP-1; v1.7)
+    endpoints.ts                 @Get, declaredEndpoints() and its checks, mountEndpoints() (CP-1; v1.7)
+    monetization.ts              the monetization model: tiers, @Free/@PayPerUse/@Premium/@Enterprise, usdc() (CP-1; v1.7)
     api-docs.ts                  the seller's OpenAPI document for src/shared/api-docs.ts, only with API_DOCS=1 (CP-1; v1.6)
     facilitator-client.ts        facilitator client selection and failure categories (CP-1, CP-3); no credentials
     cdp-facilitator.ts           CDP JWT-authenticated facilitator client; the only reader of the CDP credential (A8)
@@ -385,7 +400,7 @@ test/
   policy.test.ts  ledger.test.ts  architecture.test.ts  agent.test.ts  e2e.local.test.ts
   counterparty.test.ts  verifier.test.ts  settlement-service.test.ts  auth.test.ts  demo.local.test.ts
   cdp-config.test.ts  cdp-auth.test.ts  cdp-isolation.test.ts  cdp-failures.test.ts  escalations.test.ts
-  openapi.test.ts  openapi-hosted.test.ts  openapi-seller.test.ts (v1.6)
+  openapi.test.ts  openapi-hosted.test.ts  openapi-seller.test.ts (v1.6)  seller-monetization.test.ts (v1.7)
   hosted-agent.test.ts  hosted-access.test.ts  hosted-sessions.test.ts  hosted-run.test.ts   (L1-6, v1.5)
   ledger-lock.test.ts  infra.test.ts  images.test.ts  deploy-workflow.test.ts
   github-setup.test.ts  cleanup.test.ts   (L2-6, Azure, v1.5)
@@ -508,9 +523,9 @@ All amounts are **decimal strings of atomic units**. Use `BigInt` for arithmetic
 |---|---|---|---|
 | 1 | `/api/catalog` | free | FREE |
 | 2 | `/api/weather?city=Lima` | 1000 | PAID, CONFIRMED |
-| 3 | `/api/market-brief` | 5000 | PAID, CONFIRMED |
-| 4 | `/api/premium-report` | 50000 | ESCALATED (`human_approval_required`) |
-| 5 | `/api/dataset-export` | 500000 | DENIED (`hard_cap_exceeded`, plus budget rules) |
+| 3 | `/api/market-brief` | pay-per-use | 5000 | PAID, CONFIRMED |
+| 4 | `/api/premium-report` | premium | 50000 | ESCALATED (`human_approval_required`) |
+| 5 | `/api/dataset-export` | enterprise | 500000 | DENIED (`hard_cap_exceeded`, plus budget rules) |
 | 6 | same as #2 via host `localhost` | 1000 | DENIED (`host_not_allowed`) |
 
 - **Step 6 alias (v1.5).** With `SELLER_ALIAS_URL` set, step 6 requests `<SELLER_ALIAS_URL>/api/weather?city=Lima` instead of the `localhost` rewrite: a second seller host that L2 doesn't allow, as in the cloud regression. Unset, the plan is unchanged.
@@ -714,12 +729,22 @@ Defaults: `waitMs = 45000`, `pollMs = 1000`. One deadline (`start + waitMs`) cov
   - Verification rejections and settlement failures keep the SDK's x402 402 responses unchanged. A `PAYMENT-RESPONSE` passes through any transaction hash.
   - Every hosted facilitator call (`public`, `cdp`) has a 30 s timeout. The local facilitator keeps the SDK default.
   - Each failure logs one stderr line: `seller: facilitator <category> during <op>: <redacted excerpt>`.
-- `GET /api/catalog` is free and is mounted **before** the payment middleware. It returns `{network, asset, decimals, items:[{path, priceAtomic, description}]}`.
+- **Endpoints and monetization** (v1.7). Each endpoint is one method of `SellerApi` (`src/counterparty/seller-api.ts`) with two TC39 decorators: `@Get(path, {query})` (`endpoints.ts`) and one tier (`monetization.ts`). Every other description of a route is derived from them: `CATALOG`, the x402 requirements (`sellerRoutes`) and the Express routes. Free endpoints are mounted **before** the payment middleware and never appear in the x402 requirements; paid ones are mounted after it. `declaredEndpoints()` refuses a method with a tier but no route or a route but no tier, a second route or tier, two endpoints on one route, and a static or private endpoint; `usdc()` refuses zero, signs, exponents and more than 6 decimals; `createSellerApp` refuses a network whose asset doesn't have 6 decimals. The model, after Stripe's "What is API monetization?", is freemium discovery plus pay-per-use in tiers priced by value. x402 has no accounts, so every paid call is a single purchase:
+
+  | Tier | Decorator | For | With L2's default mandate, an agent's purchase is |
+  |---|---|---|---|
+  | `free` | `@Free(description)` | discovery: no payment, answers while payments can't be taken | not a payment |
+  | `pay-per-use` | `@PayPerUse({price, description})` | everyday data | auto-approved |
+  | `premium` | `@Premium({price, description})` | high-value data, priced higher | escalated (above auto-approve) |
+  | `enterprise` | `@Enterprise({price, description})` | bulk data, a substantial price | denied (above the per-payment cap) |
+
+  A tier is a label with a price, not policy: L2 decides from the price (INV-5), whatever the tier says.
+- `GET /api/catalog` (`@Free`) is free and is mounted **before** the payment middleware. It returns `{network, asset, decimals, items:[{path, priceAtomic, description, tier}]}` with one item per paid endpoint, in declaration order (`tier` since v1.7).
 - **API docs** (v1.6). `docs/seller.openapi.yaml` describes these routes in OpenAPI 3.1, each priced route with its catalog price (`x-x402-price-atomic`). When a route, price, status, header or body changes, update this section and the document together; T-API-09 and T-API-10 fail until they match. With `API_DOCS=1` (CFG-2), `GET /docs`, `GET /docs/:asset` and `GET /openapi.yaml` serve Swagger UI over that document, mounted before the payment middleware like the catalog, from the same shared module as L2's (SEC-13). They never call the facilitator. The Azure deployment never sets `API_DOCS`.
 
-| Route | Amount | Body (mock, deterministic) |
-|---|---|---|
-| `/api/weather?city=` | 1000 | `{city, tempC, condition, source}`. `seed` = sum of the city's char codes; `tempC = seed % 35`; `condition = ["sunny","cloudy","rain","fog"][seed % 4]` |
+| Route | Tier | Amount | Body (mock, deterministic) |
+|---|---|---|---|
+| `/api/weather?city=` | pay-per-use | 1000 | `{city, tempC, condition, source}`. `seed` = sum of the city's char codes; `tempC = seed % 35`; `condition = ["sunny","cloudy","rain","fog"][seed % 4]` |
 | `/api/market-brief` | 5000 | `{headline, bullets[3], source}` |
 | `/api/premium-report` | 50000 | `{title, pages:42, source}` |
 | `/api/dataset-export` | 500000 | `{rows:1000000, source}` |
@@ -901,9 +926,12 @@ Residual risks added in v1.4:
 | T-API-06 | openapi-hosted | without a token a secured operation answers 401 and a `security: []` one doesn't; a token without `Agent.Run` gets 403 from a secured one; a token with it passes every guard. **Must fail**: a document calling `/v1/runs` open, or `/healthz` secured, is reported |
 | T-API-07 | openapi-hosted | an in-process scenario (a stub seller, fake L2 and L3, a scripted model) reaches every documented status of every operation, including 503, 413 and 429; each response's media type and documented headers (`Retry-After`) are present and its body conforms to the schema, through FREE, PAID, ESCALATED and DENIED fetches, a budget read, a tool error, and completed, stopped and failed runs. **Must fail**: a missing field, a value outside its enum, a wrong type, an undocumented field and a step mixing both tools' shapes are reported |
 | T-API-08 | openapi-hosted | the agent's docs routes (SEC-13): with `API_DOCS` unset, none is mounted, and each docs URL answers 401 without a token and 404 with one; `API_DOCS` in `l1-hosted.env` accepts only `1`, `0` or empty; no file in `infra/` or `deploy.yml` sets it; the served document equals the file except `servers` = `/`; the page carries the same-origin CSP; `/docs/:asset` serves its three files only. **Must fail**: with `API_DOCS=1` the same probe gets 200 with no token and makes no model, L2 or L3 call; a document without `servers` is refused |
-| T-API-09 | openapi-seller | the operations in `docs/seller.openapi.yaml` equal the routes mounted on the seller with `API_DOCS=1`; without it, exactly the operations not tagged `docs`; each priced operation's `x-x402-price-atomic` equals its `CATALOG` price, and every catalog route is priced in the document (v1.6). **Must fail**: a missing route, an unmounted route, a wrong price and a price for a route the catalog lacks are reported |
+| T-API-09 | openapi-seller | the operations in `docs/seller.openapi.yaml` equal the routes mounted on the seller with `API_DOCS=1`; without it, exactly the operations not tagged `docs`; each operation's `x-monetization-tier` and `x-x402-price-atomic` equal its declared tier and price (none when free), and every declared endpoint is documented (v1.6; tiers v1.7). **Must fail**: a missing route, an unmounted route, a wrong price, a wrong tier and an undeclared operation are reported |
 | T-API-10 | openapi-seller | an in-process scenario with a scripted facilitator behind the real categorized client reaches every documented status of every route: 200 paid, 402 (no payment, a rejected payment, a payment for another route, a failed settlement), 502 (facilitator failing mid-payment) and 503 (facilitator down); bodies, media types and required headers conform, and the `PAYMENT-REQUIRED` and `PAYMENT-RESPONSE` headers, decoded with the SDK, conform to their `contentSchema`, as does the payment sent. **Must fail**: a wrong enum value, a missing field, an undocumented field and a wrong `x402Version` are reported |
 | T-API-11 | openapi-seller | the seller's docs routes (SEC-13): with `API_DOCS` unset, none is mounted and each docs URL answers 404; the seller refuses to start with any other value than `1`, `0` or empty; `sellers.bicep` never sets it; the served document equals the file except `servers` = `/`; the page carries the same-origin CSP; `/docs/:asset` serves its three files only. **Must fail**: with `API_DOCS=1` the same probe gets 200 and makes no facilitator call; a document without `servers` is refused |
+| T-MON-01 | seller-monetization | the seller declares `/api/catalog` free, weather and the market brief pay-per-use, the premium report premium and the dataset export enterprise, at unchanged prices, and no higher tier costs less than a lower one; `sellerRoutes` holds exactly the paid endpoints with their declared price and description, and `CATALOG` their paths and tiers; with the facilitator down the catalog answers 200 and every priced route 503 (v1.7) |
+| T-MON-02 | seller-monetization | `usdc()` converts decimal USDC to atomic units with BigInt (`0.001` → `1000`, `12.345678` → `12345678`). **Must fail**: zero, more than 6 decimals, signs, exponents, blanks and hex are refused |
+| T-MON-03 | seller-monetization | declaration mistakes are refused while the seller is built: **must fail** on an endpoint without a tier or without a route, two tiers, two routes, two endpoints on one route, a static endpoint, a path with a query, an empty description and a network whose asset doesn't have 6 decimals; an undecorated method is a helper, not an endpoint |
 | T-AGT-01 | agent | fake model → tool calls → intents carry `purpose`; the tool result contains PAID + CONFIRMED; exactly two tools are offered |
 | T-AGT-KEY | agent | spawning `src/main.ts`, or `src/hosted-main.ts` with the key in the process env or only in `ENV_FILE` (v1.5), with `PAYER_PRIVATE_KEY` set exits 1 with a refusal (the automated form of the manual check below) |
 | T-AGT-02 | hosted-agent | every model call offers exactly `fetch_resource` and `check_budget` with the L1-3 descriptions and schemas; 2048 max output tokens; 10 steps; both providers' HTTP requests (Foundry: Entra bearer, no `x-api-key`); config rules. **Must fail**: an injected extra tool appears as a third name; an unrecognized model id is refused |
