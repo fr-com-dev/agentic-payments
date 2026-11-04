@@ -67,6 +67,22 @@ hash chain ok=true entries=<n>
 
 Each process reads exactly one env file, `env/<role>.env` (templates in `env/*.env.example`). The demo falls back to the templates when a file is missing and, on the local network only, derives the dev payer key (account #2) for L2 and the facilitator key (#1) for the facilitator from the fixed ganache mnemonic. Never create a shared `.env` with `PAYER_PRIVATE_KEY`: the agent refuses to start if it can see that key.
 
+### Debugging in VS Code
+
+`.vscode/launch.json` debugs, or runs with Ctrl+F5, every process, always in local mode: L1 (the CLI agent, scripted or with Claude, and the hosted agent), L2, L3, the seller, the facilitator and the operator's commands. Each configuration starts through `scripts/vscode-local.ts`. It gives the process its own env file and, on the local network, only its own dev key, exactly as `stack:local` does; `NETWORK=local` is forced whatever the file says. The debugger attaches to the process, so breakpoints in `src/` and `scripts/` work as usual.
+
+1. Start the compound **Local stack**. Its task `local: chain` starts the local chain, or reuses one already running, and then the facilitator, seller, L2 and L3 start. The seller and L2 serve Swagger UI at `/docs`.
+2. Start any L1 or operator configuration. Each waits for the stack (task `local: wait for stack`) and then runs:
+
+| Configuration | What it runs |
+|---|---|
+| L1 agent: scripted plan | the deterministic L1-4 plan: FREE, PAID, PAID, ESCALATED, DENIED, DENIED |
+| L1 agent: Claude, your goal | the Claude agent with a goal you type (needs `ANTHROPIC_API_KEY` in `env/l1-agent.env`) |
+| L1 hosted agent | the hosted service on `:4024` with Swagger UI (needs `ANTHROPIC_API_KEY` in `env/l1-hosted.env`; get a token with task `local: dev token`) |
+| Operator: watch escalations, approve, reject, ledger-verify | the operator's commands; approve and reject ask for the `authorizationId` |
+
+The compounds **Local stack + L1 scripted plan** and **Local stack + L1 hosted agent** start both at once. The chain keeps running after a debug session, for the next one; task `local: stop chain` stops it. **Vitest: current file** debugs the open test file. Stop the local stack first, because the e2e suites use the same ports.
+
 ### Human approval
 
 A payment above the auto-approve limit (default $0.02) is escalated. The agent reports its `authorizationId`. The escalation ends exactly once, and nothing is ever reversed:
@@ -244,6 +260,7 @@ A milestone must pass its exit check before the next one starts.
 
 | File | Covers |
 |---|---|
+| `test/vscode-local.test.ts` | T-DEV-01..02: every VS Code configuration runs locally through the runner and resolves its role, tasks and inputs; each process gets its own env file and local key, NETWORK=local, and nothing else from VS Code but the debugger's attach hook |
 | `test/architecture.test.ts` | INV-1..4 and rules A1–A7 (static import and identifier scan), env templates |
 | `test/auth.test.ts` | per-role bearer guard `requireRole` (INV-13), token resolution, `loadEnv` |
 | `test/policy.test.ts` | mandate, T-POL-01..15, signer, authorize/budget API, approvals, rejections and escalation reads in-process, operator CLIs |

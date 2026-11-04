@@ -25,6 +25,7 @@ API_DOCS=1 npm run l2:control                # L2 plus Swagger UI at http://127.
 API_DOCS=1 npm run agent:hosted              # the hosted agent plus Swagger UI at http://127.0.0.1:4024/docs (never in Azure)
 API_DOCS=1 npm run seller                    # the seller plus Swagger UI at http://127.0.0.1:4021/docs (never in Azure)
 npm run stack:local [-- --docker]            # chain, facilitator, seller, L2, L3 without an agent, until Ctrl-C
+node --import tsx scripts/vscode-local.ts run <role> [args]   # what .vscode/launch.json runs: one process, local mode
 npm run agent:hosted                         # hosted agent service (L1-6) on 127.0.0.1:4024; env/l1-hosted.env
 npm run dev-token -- --subject alice         # local dev issuer token for the hosted service (NETWORK=local only)
 npm run ledger-verify                        # operator: exit 0 only when the hash chain verifies
@@ -85,6 +86,7 @@ npx vitest run test/policy.test.ts -t "<name>"   # single test
 - Concurrency tests need `signerLatencyMs`; local signing is too fast to expose races.
 - Kill demo children by process group; otherwise ganache keeps port 8545 open.
 - CDP JWTs expire in 120 s; a skewed host clock shows up as `facilitator authentication` errors.
+- VS Code (`.vscode/launch.json`, `tasks.json`) runs every process through `scripts/vscode-local.ts`, always in local mode: the same child env as `stack:local` (demo-lib `childEnv`, `localStack()`), `NETWORK=local` forced, and only `API_DOCS` and the debugger's attach variables passed from VS Code. A new process or role goes in `RUN_ROLES` and gets a launch configuration; T-DEV-01 fails until they match.
 - The seller's endpoints use TC39 decorators, which Node can't run natively: tsc (the build) and tsx lower them, and `vitest.config.ts` lowers them with esbuild because vite 8's oxc only knows legacy decorators. Never turn on `experimentalDecorators`.
 - Mastra (`@mastra/core`) needs Node ≥ 22.13. Use it as a library only: no Mastra server, CLI or instance. Its own logger is silenced because a provider error can carry the request body.
 - A Foundry deployment name must equal the model id (`claude-sonnet-5-5`); with any other id the AI SDK's Anthropic provider can add a third `json` tool, so the service refuses unknown ids.
