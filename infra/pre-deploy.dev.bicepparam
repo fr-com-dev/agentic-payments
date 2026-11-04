@@ -16,9 +16,12 @@ param names = {
   operators: 'grp-op-${location}-${environment}'
 }
 
-// GitHub: the repository and environment whose deploy job signs in as the deploy app (OIDC). deploy.yml's job runs
-// in the GitHub environment named like the deploy environment.
+// GitHub: the repository and environment whose deploy job signs in as the deploy app (OIDC), and the IDs in GitHub's
+// immutable subject (gh api repos/fr-com-dev/agentic-payments --jq '.owner.id, .id'). deploy.yml's job runs in the
+// GitHub environment named like the deploy environment.
 param githubRepository = 'fr-com-dev/agentic-payments'
+param githubOwnerId = '274163174'
+param githubRepositoryId = '1422461966'
 param githubEnvironment = environment
 
 // People: who may run the agent (Agent.Run), and who may start the operator job (the operators' group).

@@ -213,6 +213,8 @@ const NAMED_TYPES = [
 const PER_RUN = ["imageTag", "platformOnly", "seedIp", "recoverVaults", "agentStableRevision"];
 /** The deployment target: both parameter files of an environment must agree on it (rule 17). */
 const TARGET = ["tenantId", "subscriptionId", "location", "names.resourceGroup"];
+/** GitHub's immutable OIDC subject for a deploy job: the owner and repository by name and ID (rule 16). */
+const IMMUTABLE_SUBJECT = "repo:<owner>@<githubOwnerId>/<name>@<githubRepositoryId>:environment:<githubEnvironment>";
 /** A dotted path's value in an object. */
 const at = (o: unknown, path: string) => path.split(".").reduce<unknown>((v, k) => (v as Json | undefined)?.[k], o);
 
@@ -585,9 +587,10 @@ export function violations(arms: Templates, params: Params, infraFiles: Record<s
     !String(fic.name).includes("reference('deployApp')") ||
     fic.issuer !== "https://token.actions.githubusercontent.com" ||
     JSON.stringify(fic.audiences) !== '["api://AzureADTokenExchange"]' ||
-    fic.subject !== "[format('repo:{0}:environment:{1}', parameters('githubRepository'), parameters('githubEnvironment'))]"
+    (fic.subject === "[variables('githubSubject')]" ? fics[0]!.vars.githubSubject : fic.subject) !==
+      "[format('repo:{0}@{1}/{2}@{3}:environment:{4}', split(parameters('githubRepository'), '/')[0], parameters('githubOwnerId'), split(parameters('githubRepository'), '/')[1], parameters('githubRepositoryId'), parameters('githubEnvironment'))]"
   ) {
-    v.push("rule 16: the deploy app's one federated credential must trust only repo:<githubRepository>:environment:<githubEnvironment>");
+    v.push(`rule 16: the deploy app's one federated credential must trust only ${IMMUTABLE_SUBJECT}`);
   }
   const assigned = graph("appRoleAssignedTo");
   const principals = assigned.map((r) => String(r.properties.principalId)).sort();
@@ -641,6 +644,7 @@ export function violations(arms: Templates, params: Params, infraFiles: Record<s
     const mainParams = params[`main.${env}.bicepparam`] ?? {};
     for (const p of TARGET) if (at(pre, p) === undefined || at(pre, p) !== at(mainParams, p)) v.push(`rule 17: pre-deploy.${env}.bicepparam and main.${env}.bicepparam name different ${p}s (${at(pre, p)}, ${at(mainParams, p)})`);
     if (pre.githubEnvironment !== env) v.push(`rule 17: pre-deploy.${env}.bicepparam's githubEnvironment ${pre.githubEnvironment} is not ${env}, the environment deploy.yml's job runs in`);
+    for (const p of ["githubOwnerId", "githubRepositoryId"]) if (!/^[1-9][0-9]*$/.test(String(pre[p]))) v.push(`rule 17: pre-deploy.${env}.bicepparam's ${p} ${pre[p]} is not a numeric GitHub ID`);
   }
 
   return v;
@@ -817,9 +821,15 @@ resource extraRead 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
     expect(v).toContain(`rule 15: main.dev.bicepparam's names.vaults.seller kv-seller-southeastasia-dev breaks Azure's rule for its type (3-24 characters, ${STANDARD.vaults!.limits[2]})`);
   }, 60_000);
 
-  it("T-IAC-01 must-fail rule 16: a federated credential trusting a branch instead of the deploy environment is reported", async () => {
-    const v = await mutant("pre-deploy.bicep", "subject: 'repo:${githubRepository}:environment:${githubEnvironment}'", "subject: 'repo:${githubRepository}:ref:refs/heads/main'");
-    expect(v).toContain("rule 16: the deploy app's one federated credential must trust only repo:<githubRepository>:environment:<githubEnvironment>");
+  it("T-IAC-01 must-fail rule 16: a federated credential trusting a branch, or a subject without the immutable IDs, is reported", async () => {
+    const v = await mutant("pre-deploy.bicep", "  subject: githubSubject", "  subject: 'repo:${githubRepository}:ref:refs/heads/main'");
+    expect(v).toContain(`rule 16: the deploy app's one federated credential must trust only ${IMMUTABLE_SUBJECT}`);
+    const plain = await mutant(
+      "pre-deploy.bicep",
+      "var githubSubject = 'repo:${split(githubRepository, '/')[0]}@${githubOwnerId}/${split(githubRepository, '/')[1]}@${githubRepositoryId}:environment:${githubEnvironment}'",
+      "#disable-next-line no-unused-params\nvar githubSubject = 'repo:${githubRepository}:environment:${githubEnvironment}'",
+    );
+    expect(plain).toContain(`rule 16: the deploy app's one federated credential must trust only ${IMMUTABLE_SUBJECT}`);
   }, 60_000);
 
   it("T-IAC-01 must-fail rule 16: an unconditioned Role Based Access Control Administrator, or one that may grant Owner, is reported", async () => {
@@ -849,6 +859,8 @@ resource extraRead 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
     expect(v).toContain(`rule 17: main.dev.bicepparam reads sellerPayTo from the environment; only ${PER_RUN.join(", ")} may be`);
     const other = await mutant("main.dev.bicepparam", "param subscriptionId = '", "param subscriptionId = '0");
     expect(other.some((m) => m.startsWith("rule 17: pre-deploy.dev.bicepparam and main.dev.bicepparam name different subscriptionIds"))).toBe(true);
+    const id = await mutant("pre-deploy.dev.bicepparam", "param githubOwnerId = '274163174'", "param githubOwnerId = 'fr-com-dev'");
+    expect(id).toContain("rule 17: pre-deploy.dev.bicepparam's githubOwnerId fr-com-dev is not a numeric GitHub ID");
     const name = await mutant("pre-deploy.dev.bicepparam", "var environment = 'dev'", "var environment = readEnvironmentVariable('ENVIRONMENT', 'dev')");
     expect(name).toContain(`rule 17: pre-deploy.dev.bicepparam reads var environment = readEnvironmentVariable('ENVIRONMENT', 'dev') from the environment; only ${PER_RUN.join(", ")} may be`);
   }, 60_000);

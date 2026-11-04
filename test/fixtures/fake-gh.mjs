@@ -4,6 +4,8 @@
 // environments in FAKE_GH_ENVIRONMENTS, changed by the calls logged so far:
 // - `secret list` prints the names it holds (with --env, the environment's), one per line, as `--jq '.[].name'` would;
 // - `api repos/<repo>/environments/<name>` (a GET) exits 1 with HTTP 404 unless the environment exists;
+// - `api repos/<repo>/actions/oidc/customization/sub` prints FAKE_GH_OIDC_SUB, the repository's OIDC subject
+//   settings (GitHub's old default, `{"use_default":true}`, when unset);
 // - `api --method PUT|DELETE`, `secret set` and `secret delete` change what it holds.
 // Unknown commands exit 99.
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
@@ -32,7 +34,9 @@ function holdings() {
 
 if (args[0] === "api") {
   record(null);
-  if (!args.includes("--method")) {
+  if (args.some((a) => a.endsWith("/actions/oidc/customization/sub"))) {
+    process.stdout.write(process.env.FAKE_GH_OIDC_SUB || '{"use_default":true}');
+  } else if (!args.includes("--method")) {
     const name = args.find((a) => a.startsWith("repos/")).split("/").pop();
     if (!holdings().environments.has(name)) {
       process.stderr.write("gh: Not Found (HTTP 404)\n");

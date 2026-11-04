@@ -129,7 +129,9 @@ for Entra ID.
    resources and their role assignments can't be previewed. Copy the three `param` lines it prints (the
    deploy app's client ID, `authAudience` and `operatorsGroupId`) into `main.dev.bicepparam`. Run
    against another subscription or tenant than the file names, it fails validation and creates nothing.
-1. **GitHub environment.** Run `infra/github-setup.sh` (`--dry-run` first). It creates the `dev`
+1. **GitHub environment.** Run `infra/github-setup.sh` (`--dry-run` first). It first checks that GitHub
+   signs this repository's jobs with the subject the federated credential trusts (the owner's and
+   repository's IDs, `githubOwnerId` and `githubRepositoryId`), then creates the `dev`
    environment `deploy.yml` runs in, and sets no secret: `deploy.yml` reads every value from
    `main.dev.bicepparam`.
 2. **Create the platform.** Run `deploy.yml` with `environment=dev`, `platform-only: true` and

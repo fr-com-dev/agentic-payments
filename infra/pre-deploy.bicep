@@ -27,6 +27,10 @@ param location string
 param names object
 @description('owner/name of the GitHub repository whose deploy job signs in as the deploy app.')
 param githubRepository string
+@description('The repository owner\'s numeric ID: GitHub\'s immutable OIDC subject names the owner and the repository by name and ID.')
+param githubOwnerId string
+@description('The repository\'s numeric ID (gh api repos/<owner>/<name> --jq .id).')
+param githubRepositoryId string
 @description('The GitHub environment the deploy job runs in (deploy.yml: environment: <environment>), so named like the environment.')
 param githubEnvironment string
 @description('People who may run the agent (Agent.Run), by user principal name.')
@@ -102,13 +106,17 @@ resource deployApp 'Microsoft.Graph/applications@v1.0' = {
   signInAudience: 'AzureADMyOrg'
 }
 
-// OIDC from the repository's deploy job (job `environment: <githubEnvironment>`): no client secret anywhere.
+// OIDC from the repository's deploy job (job `environment: <githubEnvironment>`): no client secret anywhere. The
+// repository uses GitHub's immutable subject, repo:<owner>@<owner ID>/<name>@<repository ID>:…, so a deleted and
+// recreated repository of the same name can't sign in as the deploy app; infra/github-setup.sh checks it.
+var githubSubject = 'repo:${split(githubRepository, '/')[0]}@${githubOwnerId}/${split(githubRepository, '/')[1]}@${githubRepositoryId}:environment:${githubEnvironment}'
+
 resource githubCredential 'Microsoft.Graph/applications/federatedIdentityCredentials@v1.0' = {
   name: '${deployApp.uniqueName}/github-${githubEnvironment}'
   description: 'GitHub Actions: the deploy job of ${githubRepository} in its ${githubEnvironment} environment'
   audiences: ['api://AzureADTokenExchange']
   issuer: 'https://token.actions.githubusercontent.com'
-  subject: 'repo:${githubRepository}:environment:${githubEnvironment}'
+  subject: githubSubject
 }
 
 resource deploySp 'Microsoft.Graph/servicePrincipals@v1.0' = {

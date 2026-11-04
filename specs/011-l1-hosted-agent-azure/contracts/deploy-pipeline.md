@@ -28,8 +28,10 @@ its own image.
   deploy app's client ID, the tenant, the subscription, the API app's client ID (`authAudience`), the
   payer's address and every resource name it uses (`names`): it names no resource itself. It signs in
   with OIDC
-  (`id-token: write`): the deploy app's federated credential trusts only
-  `repo:<githubRepository>:environment:<githubEnvironment>`. `main.bicep` fails validation anywhere
+  (`id-token: write`): the deploy app's federated credential trusts only GitHub's immutable subject
+  `repo:<owner>@<githubOwnerId>/<name>@<githubRepositoryId>:environment:<githubEnvironment>` (revised 2026-11-04: the repository signs its jobs with its
+  owner's and its own IDs, and a subject without them fails with AADSTS700213). `infra/github-setup.sh`
+  refuses to set anything up when the two differ. `main.bicep` fails validation anywhere
   but the parameter file's tenant, subscription and resource group. No credential is stored in
   GitHub: the payer key, the CDP key and the service tokens live only in the Key Vaults, seeded by hand.
 - **Per-run values.** The workflow sets the only parameters a parameter file may read from the
