@@ -6,16 +6,19 @@
 // bootloader) and VSCODE_INSPECTOR_OPTIONS (where to attach), so breakpoints bind in the child.
 //
 //   vscode-local.ts chain                  start the local chain, or reuse the one already running (task "local: chain")
-//   vscode-local.ts wait                   wait until the chain, facilitator, seller, L2 and L3 answer (60 s)
+//   vscode-local.ts stack                  make the whole local stack answer (task "local: stack"): each process that
+//                                          answers is reused, one starting elsewhere is waited for, a missing one is
+//                                          started here, without the debugger, and kept running
 //   vscode-local.ts run <role> [args...]   run one process as a child; the debugger attaches to it
 //
 // Roles: facilitator, seller, l2, l3, agent (L1 CLI), hosted (L1 hosted agent), approve, reject, escalations,
 // ledger-verify (the operator's commands).
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { rmSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { ROOT, childEnv, envFileFor, localStack, portInUse, sleep, type DemoProcess, type EnvFile, type StackRole } from "./demo-lib.js";
+import { LOCAL_STACK, ProcessGroup, ROOT, childEnv, envFileFor, localStack, portInUse, sleep, type DemoProcess, type EnvFile, type StackRole } from "./demo-lib.js";
 import { loadOrCreateDevIssuer } from "./dev-issuer-lib.js";
 import { startLocalChain } from "./local-chain-lib.js";
 
@@ -65,6 +68,9 @@ export function runWarnings(role: RunRole, file: EnvFile | null, args: readonly 
   return out;
 }
 
+/** The stack's services by run role: `run` refuses to start one whose port is already taken. */
+const SERVICE_PORTS: Partial<Record<RunRole, StackRole>> = { facilitator: "facilitator", seller: "seller", l2: "l2", l3: "l3" };
+
 async function run(role: string | undefined, args: string[]): Promise<number> {
   if (role === undefined || !(role in RUN_ROLES)) {
     console.error(`vscode-local: run <role> [args...]; roles: ${Object.keys(RUN_ROLES).join(", ")}`);
@@ -73,6 +79,14 @@ async function run(role: string | undefined, args: string[]): Promise<number> {
   const r = role as RunRole;
   const p = RUN_ROLES[r];
   const file = envFileFor(p);
+  const service = SERVICE_PORTS[r];
+  if (service !== undefined) {
+    const port = localStack().ports[service];
+    if (await portInUse(port)) {
+      console.error(`vscode-local: port ${port} is taken: another ${r} runs, maybe in the task "local: stack". Run the task "local: stop stack" to debug this one.`);
+      return 1;
+    }
+  }
   for (const w of runWarnings(r, file, args)) console.error(`vscode-local: ${w}`);
   // The hosted agent verifies dev-issuer tokens locally; `npm run dev-token` signs them with the same issuer.
   const jwks = r === "hosted" ? file?.values.AUTH_JWKS_FILE : undefined;
@@ -111,31 +125,68 @@ async function chain(): Promise<number> {
   return 0;
 }
 
-async function wait(): Promise<number> {
-  const stack = localStack();
-  const roles: StackRole[] = ["chain", "facilitator", "seller", "l2", "l3"];
-  const deadline = Date.now() + 60_000;
-  for (const role of roles) {
-    while (!(await stack.ready[role]())) {
-      if (Date.now() > deadline) {
-        console.error(
-          `vscode-local: ${role} (port ${stack.ports[role]}) isn't answering. Start the compound "Local stack", or run task "local: chain" and the stack's launch configurations.`,
-        );
-        return 1;
-      }
-      await sleep(500);
-    }
+/** What `stack` does with one process: reuse it (it answers), wait for it (its port is taken), or start it (free). */
+export type StackAction = "reuse" | "wait" | "start";
+export const stackAction = (answers: boolean, portTaken: boolean): StackAction => (answers ? "reuse" : portTaken ? "wait" : "start");
+
+const READY_MS = 60_000;
+
+async function stack(): Promise<number> {
+  const local = localStack();
+  const group = new ProcessGroup(Object.values(local.ports));
+  let stopping = false;
+  for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+    process.on(sig, () => {
+      if (stopping) return;
+      stopping = true;
+      if (group.running.length > 0) console.log(`local stack: stopping (${sig})`);
+      void group.shutdown().then(() => process.exit(0));
+    });
   }
-  console.log(`vscode-local: local stack ready (L2 on port ${stack.ports.l2})`);
-  return 0;
+
+  console.log("local stack: checking");
+  try {
+    for (const p of LOCAL_STACK) {
+      const role = p.role;
+      const action = stackAction(await local.ready[role](), await portInUse(local.ports[role]));
+      if (action === "start") {
+        if (role === "chain") rmSync(local.deploymentPath, { force: true }); // readiness must see this chain's deployment
+        const env = role === "chain" ? childEnv(p, null, { network: "local", sessionId: "sess_stack" }) : localRunEnv(role as RunRole, local.files.get(role) ?? null, {});
+        console.log(`local stack: starting ${role} (not debugged)`);
+        group.start(p, env);
+        await group.waitReady(role, local.ready[role]);
+      } else if (action === "wait") {
+        console.log(`local stack: waiting for ${role} (port ${local.ports[role]} is starting elsewhere)`);
+        const deadline = Date.now() + READY_MS;
+        while (!(await local.ready[role]())) {
+          if (Date.now() > deadline) throw new Error(`${role} holds port ${local.ports[role]} but doesn't answer; stop what listens there`);
+          await sleep(500);
+        }
+      }
+    }
+  } catch (err) {
+    // A process that crashed or never answered: stop the ones this task started, so none is left behind.
+    console.log(`local stack: error: ${err instanceof Error ? err.message : String(err)}`);
+    await group.shutdown();
+    return 1;
+  }
+  if (group.running.length === 0) {
+    console.log("local stack: already running (reused)");
+    return 0;
+  }
+  console.log(`local stack: ready; ${group.running.map((r) => r.p.role).join(", ")} run in this task (task "local: stop stack" stops them)`);
+  while (!group.crash) await sleep(1_000);
+  console.log(`local stack: error: ${group.crash}`);
+  await group.shutdown();
+  return 1;
 }
 
 const isEntry = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (isEntry) {
   const [command, role, ...rest] = process.argv.slice(2);
-  const job = command === "chain" ? chain() : command === "wait" ? wait() : command === "run" ? run(role, rest) : null;
+  const job = command === "chain" ? chain() : command === "stack" ? stack() : command === "run" ? run(role, rest) : null;
   if (job === null) {
-    console.error("vscode-local: chain | wait | run <role> [args...]");
+    console.error("vscode-local: chain | stack | run <role> [args...]");
     process.exit(2);
   }
   job.then(

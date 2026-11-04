@@ -4,9 +4,11 @@
   // its own env file (env/<role>.env, or the .example template) and, on local, only its own dev key, then runs it as
   // a child the debugger attaches to. Breakpoints in src/ and scripts/ work as usual.
   //
-  // Start with the compound "Local stack": it starts the chain (task "local: chain") and the facilitator, seller, L2
-  // and L3. The L1 and operator configurations wait for that stack (task "local: wait for stack"). The chain keeps
-  // running after a debug session, for the next one; task "local: stop chain" stops it.
+  // Each L1 and operator configuration runs task "local: stack" first: it reuses whatever part of the local stack
+  // already answers and starts the rest in that task, without the debugger. To debug the stack's services, start the
+  // compound "Local stack" first (it starts the chain with task "local: chain"); L1 then reuses them. Tasks "local:
+  // stop stack" and "local: stop chain" stop what those tasks started; the chain otherwise keeps running for the next
+  // session.
   "version": "0.2.0",
   "configurations": [
     {
@@ -71,7 +73,7 @@
       "args": ["run", "agent", "--scripted"],
       "runtimeArgs": ["--import", "tsx"],
       "cwd": "${workspaceFolder}",
-      "preLaunchTask": "local: wait for stack",
+      "preLaunchTask": "local: stack",
       "console": "integratedTerminal",
       "autoAttachChildProcesses": true,
       "skipFiles": ["<node_internals>/**", "${workspaceFolder}/node_modules/**"],
@@ -85,7 +87,7 @@
       "args": ["run", "agent", "${input:goal}"],
       "runtimeArgs": ["--import", "tsx"],
       "cwd": "${workspaceFolder}",
-      "preLaunchTask": "local: wait for stack",
+      "preLaunchTask": "local: stack",
       "console": "integratedTerminal",
       "autoAttachChildProcesses": true,
       "skipFiles": ["<node_internals>/**", "${workspaceFolder}/node_modules/**"],
@@ -100,7 +102,7 @@
       "runtimeArgs": ["--import", "tsx"],
       "cwd": "${workspaceFolder}",
       "env": { "API_DOCS": "1" },
-      "preLaunchTask": "local: wait for stack",
+      "preLaunchTask": "local: stack",
       "console": "integratedTerminal",
       "autoAttachChildProcesses": true,
       "skipFiles": ["<node_internals>/**", "${workspaceFolder}/node_modules/**"],
@@ -114,7 +116,7 @@
       "args": ["run", "escalations", "--watch"],
       "runtimeArgs": ["--import", "tsx"],
       "cwd": "${workspaceFolder}",
-      "preLaunchTask": "local: wait for stack",
+      "preLaunchTask": "local: stack",
       "console": "integratedTerminal",
       "autoAttachChildProcesses": true,
       "skipFiles": ["<node_internals>/**", "${workspaceFolder}/node_modules/**"],
@@ -128,7 +130,7 @@
       "args": ["run", "approve", "${input:authorizationId}", "${input:approver}"],
       "runtimeArgs": ["--import", "tsx"],
       "cwd": "${workspaceFolder}",
-      "preLaunchTask": "local: wait for stack",
+      "preLaunchTask": "local: stack",
       "console": "integratedTerminal",
       "autoAttachChildProcesses": true,
       "skipFiles": ["<node_internals>/**", "${workspaceFolder}/node_modules/**"],
@@ -142,7 +144,7 @@
       "args": ["run", "reject", "${input:authorizationId}", "${input:approver}", "${input:reason}"],
       "runtimeArgs": ["--import", "tsx"],
       "cwd": "${workspaceFolder}",
-      "preLaunchTask": "local: wait for stack",
+      "preLaunchTask": "local: stack",
       "console": "integratedTerminal",
       "autoAttachChildProcesses": true,
       "skipFiles": ["<node_internals>/**", "${workspaceFolder}/node_modules/**"],
@@ -156,7 +158,7 @@
       "args": ["run", "ledger-verify"],
       "runtimeArgs": ["--import", "tsx"],
       "cwd": "${workspaceFolder}",
-      "preLaunchTask": "local: wait for stack",
+      "preLaunchTask": "local: stack",
       "console": "integratedTerminal",
       "autoAttachChildProcesses": true,
       "skipFiles": ["<node_internals>/**", "${workspaceFolder}/node_modules/**"],
@@ -186,20 +188,6 @@
       "preLaunchTask": "local: chain",
       "stopAll": true,
       "presentation": { "group": "0 compounds", "order": 1 }
-    },
-    {
-      "name": "Local stack + L1 scripted plan",
-      "configurations": ["Facilitator", "Seller", "L2 control", "L3 verifier", "L1 agent: scripted plan"],
-      "preLaunchTask": "local: chain",
-      "stopAll": true,
-      "presentation": { "group": "0 compounds", "order": 2 }
-    },
-    {
-      "name": "Local stack + L1 hosted agent",
-      "configurations": ["Facilitator", "Seller", "L2 control", "L3 verifier", "L1 hosted agent"],
-      "preLaunchTask": "local: chain",
-      "stopAll": true,
-      "presentation": { "group": "0 compounds", "order": 3 }
     }
   ],
   "inputs": [
