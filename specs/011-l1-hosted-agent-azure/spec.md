@@ -333,11 +333,10 @@ the IDs to the ledger entries. Run the secret scan over all of them: it finds no
   chain and a clean secret scan. Otherwise it is reported failed: the previous agent version keeps
   serving, and the previous control and settlement versions are restored, since only one control
   instance may run at a time. *(SPEC: L1-4, T-E2E-01, T-E2E-06, proposed T-E2E-AZ)*
-  *Amended 2026-10-25 (one pipeline per layer):* a deployment is one unit's: the platform and
-  sellers, or one layer. The plan runs after each, through every layer. One exception: an L2 or L3
-  deployment made before L1 exists, on the first deployment only. It is reported as deployed but
-  not verified, and it records no restore point. A failed deployment restores that unit's previous
-  version.
+  *Amended 2026-10-25 (one pipeline per layer), and again 2026-11-02 (one deployment for
+  everything):* a deployment deploys every unit from one commit, and the plan runs after it. The
+  only exception is the very first, platform-only deployment, made before the vaults are seeded:
+  it deploys no app and runs no plan. A failed deployment restores every unit's previous version.
 
 **Observability**
 

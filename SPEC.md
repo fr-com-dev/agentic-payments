@@ -17,13 +17,13 @@ The hosted agent service: L1 as an HTTP service built on Mastra, deployable to A
 | Area | Change |
 |---|---|
 | §3.1, L1-6 | A second L1 entry point, `src/hosted-main.ts` (`npm run agent:hosted`), serves `POST /v1/runs` to requesters with Entra ID tokens carrying `Agent.Run`. Same two tools, prompt and limits as L1-3. |
-| §3.1 Azure profile | One Container Apps environment. The agent has public ingress; L2 and L3 have internal-only ingress through a loopback-forwarding sidecar. One identity and one Key Vault per runtime unit, and the sellers live in a separate environment. One image per layer, plus the seller's, each holding only that unit's code. |
-| §3.3, CFG-2 | New credentials: the requester's Entra token (verified by L1 only), `SESSION_REF_SECRET` (L1 only) and the agent identity's Foundry access. New env file `env/l1-hosted.env`; `env/l1-agent.env` gains optional `SELLER_ALIAS_URL`. `env/infra.env` holds the deploy identifiers that `infra/github-setup.sh` sets as GitHub secrets. |
+| §3.1 Azure profile | One Container Apps environment. The agent has public ingress; L2 and L3 have internal-only ingress through a loopback-forwarding sidecar. One identity and one Key Vault per runtime unit, and the sellers live in a separate environment. One image per layer, plus the seller's, each holding only that unit's code. Every resource and app registration is named `{type}-{app}-{location}-{env}`, every name written in the parameter files' `names`, and `infra/cleanup.sh` deletes all of an environment. Azure is provisioned by Bicep only: `infra/pre-deploy.bicep` and `infra/main.bicep`, every value in their parameter files, deployed by one workflow. |
+| §3.3, CFG-2 | New credentials: the requester's Entra token (verified by L1 only), `SESSION_REF_SECRET` (L1 only) and the agent identity's Foundry access. New env file `env/l1-hosted.env`; `env/l1-agent.env` gains optional `SELLER_ALIAS_URL`. `infra/pre-deploy.<env>.bicepparam` and `infra/main.<env>.bicepparam` hold every value the two Azure deployments use, with no secret. |
 | INV-3 | Names both L1 entry points; both load env and then refuse. |
 | L1-4 | Optional seller alias for step 6, and `--check-baseline` (exit 2 on a mismatch). |
 | L2-6 | One ledger writer: L2 takes an exclusive lock beside the ledger before loading it, and waits in standby while another holder's heartbeat is fresh. |
 | §11 | SEC-14, SEC-15 and SEC-16, plus v1.5 residual risks. |
-| §5, §6, §12, §13 | Mastra and its libraries (Node ≥ 22.13), the Azure layout under `infra/` (the platform and one template per unit), `docker/` and `.github/workflows/` (one pipeline for the platform, one per layer), tests T-AGT-02..05, T-LED-05, T-E2E-09, T-IAC-01, T-IMG-01 and T-E2E-AZ, and the new commands. |
+| §5, §6, §12, §13 | Mastra and its libraries (Node ≥ 22.13), the Azure layout under `infra/` (`pre-deploy.bicep` and `main.bicep` with their parameter files), `docker/` and `.github/workflows/deploy.yml`, tests T-AGT-02..05, T-LED-05, T-E2E-09, T-IAC-01, T-IMG-01 and T-E2E-AZ, and the new commands. |
 
 ## Changes in 1.4
 
@@ -147,26 +147,28 @@ Ports are overridable with `CONTROL_PORT`, `SELLER_PORT`, `FACILITATOR_PORT`, `S
 
 **Azure profile (v1.5, `specs/011` contracts/cloud-topology.md).**
 
-- **Environments.** One workload-profiles Container Apps environment, `cae-x402`, on a custom VNet with peer-to-peer encryption. The sellers live in a second environment, `cae-x402-cp`, so they can't reach internal-only apps.
-- **Apps and jobs** in `cae-x402`:
-  - `ca-l1-agent`: the hosted agent service, external ingress on 4024, 0–1 replicas;
-  - `ca-l2-control` and `ca-l3-verifier`: internal-only ingress, exactly one replica each;
-  - `job-regression`: the scripted baseline with `--check-baseline`;
-  - `job-operator`: the operator commands.
+- **Naming.** Every resource and Entra app registration is `{type}-{app}-{location}-{env}`, written only in the parameter files' `names` (the templates and `deploy.yml` take every name from there) and checked by T-IAC-01 rule 15. `{app}` is `l1`, `l2`, `l3`, `op`, `seller` or `seller-alias`, or `x402` for what the layers share and `deploy` for the deploy app. The registry and storage account drop the hyphens (`crx402eastus2dev`). The names below are dev's in `eastus2`; the resource group is `rg-x402-eastus2-dev`, the API app `app-l1-eastus2-dev` (`api://app-l1-eastus2-dev`).
+- **Environments.** One workload-profiles Container Apps environment, `cae-x402-eastus2-dev`, on a custom VNet with peer-to-peer encryption. The sellers live in a second environment, `cae-seller-eastus2-dev`, so they can't reach internal-only apps.
+- **Apps and jobs** in `cae-x402-eastus2-dev`:
+  - `ca-l1-eastus2-dev`: the hosted agent service, external ingress on 4024, 0–1 replicas;
+  - `ca-l2-eastus2-dev` and `ca-l3-eastus2-dev`: internal-only ingress, exactly one replica each;
+  - `caj-l1-eastus2-dev`: the scripted baseline with `--check-baseline`;
+  - `caj-l2-eastus2-dev`: the operator commands.
 - **Loopback kept.** L2 and L3 still bind 127.0.0.1. A proxy sidecar in the same app forwards from port 8080 to the loopback port; it gets no env and no secrets.
 - **Identity and secrets.** Each runtime unit has its own user-assigned identity and Key Vault. The identity lifecycle is `None` everywhere except the agent, so no container in L2 or L3 can request a token at run time. Secrets reach containers only as Key Vault references.
 - **Ledger.** L2's ledger lives on an NFS Azure Files share mounted at `/app/.local`, with the L2-6 lock.
 - **Images.** One image per layer, plus the seller's, all tagged with the commit:
-  - `x402-l1-agent`: the agent and `job-regression`;
-  - `x402-l2-control`: L2 and `job-operator`;
+  - `x402-l1-agent`: the agent and `caj-l1-eastus2-dev`;
+  - `x402-l2-control`: L2 and `caj-l2-eastus2-dev`;
   - `x402-l3-verifier`: L3;
   - `x402-seller`: the sellers.
 
   Each image holds only its own unit's code and the packages that code imports, so only L2's image contains the signer (T-IMG-01). Each app and job runs from its own unit's image (T-IAC-01 rule 12).
-- **Templates and pipelines.** `infra/main.bicep` is the platform: network, identities, registry, vaults, storage, Foundry and both environments, with no apps.
-  - Each unit has its own template (`l1-agent`, `l2-control`, `l3-verifier`, `seller`). It looks up the platform by name and gets only its own identities and vaults (T-IAC-01 rule 13).
-  - `deploy-infra.yml` deploys the platform and the sellers. `deploy-l1.yml`, `deploy-l2.yml` and `deploy-l3.yml` each deploy one layer's image and template.
-  - All four run by hand or on their own tag, one at a time, and each repeats the cloud regression before promoting (T-E2E-AZ).
+- **Templates.** Azure is provisioned by Bicep only.
+  - `infra/pre-deploy.bicep` (subscription scope, deployed by an administrator by hand) makes the resource group, the API app registration (Agent.Run, `user_impersonation` with the Azure CLI pre-authorized, assignment required), the deploy app registration with a GitHub federated credential and no secret, `Agent.Run` for the deploy app and the listed people, the operators' group, and the deploy app's roles: Contributor and Role Based Access Control Administrator, limited to `main.bicep`'s four roles, on the resource group only (T-IAC-01 rule 16). The Entra objects use the Microsoft Graph Bicep extension.
+  - `infra/main.bicep` makes everything in the resource group: the platform (network, identities, registry, vaults, storage, Foundry with the Claude deployment, both environments) and each unit's apps, each from its own image and with only its own identities and vaults (T-IAC-01 rules 12 and 13). Its modules take names, never other modules' outputs, so what-if previews even a first deployment.
+  - Every value is in `infra/pre-deploy.<env>.bicepparam` and `infra/main.<env>.bicepparam`, the tenant, subscription and resource group included; each template fails validation anywhere else (T-IAC-01 rule 17).
+- **Pipeline.** `.github/workflows/deploy.yml` deploys `main.bicep` from one commit, by hand or on a `deploy-*` tag: platform first, then the four images, then everything, each deployment previewed with what-if. It signs in with OIDC from the parameter file and reads no GitHub secret, repeats the cloud regression before promoting, and moves the agent's traffic by redeploying `main.bicep` (T-E2E-AZ).
 
 ### 3.2 Data flow
 
@@ -291,8 +293,8 @@ SDK entry points in use:
 ## 6. Repository layout
 
 ```
-.github/workflows/               OIDC deploys, each gated by the cloud regression (T-E2E-AZ, v1.5): deploy-infra.yml
-                                 (platform, sellers), deploy-l1/l2/l3.yml (one layer each) over deploy-layer.yml
+.github/workflows/deploy.yml     deploys infra/main.bicep from one commit with OIDC, gated by the cloud regression
+                                 (T-E2E-AZ, v1.5)
 Dockerfile                       the seller's image, x402-seller (v1.5)
 docker/                          one image per layer: l1-agent.Dockerfile, l2-control.Dockerfile, l3-verifier.Dockerfile;
                                  each holds only its layer's code and packages (T-IMG-01, v1.5)
@@ -301,11 +303,12 @@ tsconfig.build.json              emits dist/ for src/ and the operator commands 
 config/mandate.json              spending mandate (CFG-3)
 contracts/MockUSDC.sol           local-only EIP-3009 token (CP-4)
 docs/l2-control.openapi.yaml     OpenAPI 3.1 copy of the L2 HTTP API (L2-5); kept in sync by T-API-01..03; L2 serves it with API_DOCS=1
-env/*.env.example                one env template per process, plus infra.env.example for infra/github-setup.sh (CFG-2)
-infra/                           Azure profile (§3.1, v1.5; T-IAC-01): main.bicep (the platform), l1-agent.bicep,
-                                 l2-control.bicep, l3-verifier.bicep, seller.bicep (one per unit), modules/*.bicep,
-                                 params/dev*.bicepparam, proxy/nginx-l{2,3}.conf (loopback sidecars), entra-app.sh,
-                                 run-job.sh, github-setup.sh (the GitHub environment and secrets, from env/infra.env)
+env/*.env.example                one env template per process (CFG-2)
+infra/                           Azure profile (§3.1, v1.5; T-IAC-01): pre-deploy.bicep (resource group, Entra apps,
+                                 operators' group, deploy app's roles), main.bicep (everything in the resource group),
+                                 modules/*.bicep, <template>.<env>.bicepparam (every value), bicepconfig.json (Graph
+                                 extension), proxy/nginx-l{2,3}.conf (loopback sidecars), and its only two scripts:
+                                 github-setup.sh (the GitHub environment), cleanup.sh (deletes all of an environment)
 scripts/
   local-chain-lib.ts             start ganache, compile + deploy MockUSDC, mint 10 USDC to payer, localDevKeys()
   facilitator.ts                 facilitator entry point: loads env, derives its account, starts the factory
@@ -363,12 +366,13 @@ test/
   cdp-config.test.ts  cdp-auth.test.ts  cdp-isolation.test.ts  cdp-failures.test.ts  escalations.test.ts
   openapi.test.ts
   hosted-agent.test.ts  hosted-access.test.ts  hosted-sessions.test.ts  hosted-run.test.ts   (L1-6, v1.5)
-  ledger-lock.test.ts  infra.test.ts  images.test.ts  entra-app.test.ts  deploy-workflow.test.ts
-  github-setup.test.ts   (L2-6, Azure, v1.5)
+  ledger-lock.test.ts  infra.test.ts  images.test.ts  deploy-workflow.test.ts
+  github-setup.test.ts  cleanup.test.ts   (L2-6, Azure, v1.5)
   helpers/hosted.ts              in-process hosted service: dev issuer, mock model, fake or harness ports
   fixtures/lock-holder.ts        child process holding the ledger lock until SIGTERM (T-LED-05)
-  fixtures/fake-az.mjs           fake `az` with Graph state in a file, for infra/entra-app.sh (T-AGT-03)
-  fixtures/fake-gh.mjs           fake `gh` recording each call and its stdin, for infra/github-setup.sh (T-E2E-AZ)
+  fixtures/fake-gh.mjs           fake `gh` recording each call and its stdin, for infra/github-setup.sh and cleanup.sh (T-E2E-AZ)
+  fixtures/fake-azure.mjs        fake `az` with a tenant in a file (groups, vaults, apps, role assignments), and the real Bicep CLI for `bicep build-params`, for infra/cleanup.sh and github-setup.sh (T-E2E-AZ)
+  helpers/bicep.ts               BICEP_PATH and compiled parameter files (names) for the tests (T-IAC-01, T-E2E-AZ)
   helpers/harness.ts             in-process multi-service harness shared by e2e suites
   helpers/fake-public-client.ts  deterministic read-only chain client for L3 unit tests
   helpers/cdp-stub.ts            offline CDP facilitator stub: verifies JWTs, delegates to the local facilitator
@@ -501,7 +505,7 @@ All amounts are **decimal strings of atomic units**. Use `BigInt` for arithmetic
 - **Code layout.** The parts live in `src/layer1-intent/hosted/`. The entry point, `src/hosted-main.ts`, sits outside the layer (rule A5) and runs in this order: `loadEnv("l1-hosted")` → INV-3 refusal (the shared text in `src/refusal.ts`, also outside the layer because it names the key) → config → ports and model → listen.
 - **Logs (outcomes).** A step's `outcome` is the fetch outcome, `ok` for a budget read, or `error` when a tool threw; Mastra's own logger is silenced (`noopLogger`), because a provider error object can carry the request body.
 - **Routes.** `POST /v1/runs` runs a goal. `GET /healthz` and `GET /readyz` report health. Every other path returns 404 after auth, and unauthenticated callers get 401 everywhere except the health routes. No Mastra server, Studio or tool-execute route exists.
-- **Auth.** An Entra ID v2.0 access token, verified with the tenant's JWKS: issuer, `tid`, `aud` (the API app's client ID: v2.0 tokens never carry the `api://` URI, so with Entra any other `AUTH_AUDIENCE` is a startup error), `exp`/`nbf` (60 s tolerance), `oid`, and role `Agent.Run` (else 403). People and service principals are both allowed; people get a token from the Azure CLI for `api://x402-l1-agent/user_impersonation`, which `infra/entra-app.sh` pre-authorizes. After verification the `Authorization` header is deleted, so it never reaches L2 or L3. With `NETWORK=local` only, `AUTH_JWKS_FILE` selects the dev issuer (`npm run dev-token`).
+- **Auth.** An Entra ID v2.0 access token, verified with the tenant's JWKS: issuer, `tid`, `aud` (the API app's client ID: v2.0 tokens never carry the `api://` URI, so with Entra any other `AUTH_AUDIENCE` is a startup error), `exp`/`nbf` (60 s tolerance), `oid`, and role `Agent.Run` (else 403). People and service principals are both allowed; people get a token from the Azure CLI for `api://app-l1-eastus2-dev/user_impersonation`, which `infra/pre-deploy.bicep` pre-authorizes. After verification the `Authorization` header is deleted, so it never reaches L2 or L3. With `NETWORK=local` only, `AUTH_JWKS_FILE` selects the dev issuer (`npm run dev-token`).
 - **Limits.** Goal 1–4,000 characters; body ≤ 16 KB (413); 2 concurrent runs and 20 starts per sliding hour per requester (429 with `Retry-After`); a 200 s deadline per run, under the ingress's 240 s idle timeout; client disconnect aborts. An abort stops the run before its next step, and a paid fetch in progress completes.
 - **Agent.** A Mastra `Agent` used as a library, with exactly `fetch_resource` and `check_budget`. The descriptions are L1-3's, and the JSON schema adds `additionalProperties: false`. It has no memory, workspace, sub-agents, workflows or processors. Limits: `maxSteps` 10, `maxOutputTokens` 2048. Tool results use the L1-3 format.
 - **Model.** `MODEL_PROVIDER=foundry` (Microsoft Foundry, keyless Entra token for scope `https://ai.azure.com/.default`) or `anthropic` (API key). The model id must be on the allow-list (`claude-sonnet-5-5` by default), and the Foundry deployment name must equal it; otherwise the AI SDK provider would add a third `json` tool.
@@ -754,7 +758,7 @@ With `cdp`, a missing or empty `CDP_API_KEY_ID` or `CDP_API_KEY_SECRET`, or a se
 | `seller.env` | `NETWORK, SELLER_PAY_TO, FACILITATOR?, FACILITATOR_URL?, CDP_API_KEY_ID?, CDP_API_KEY_SECRET?` (the CDP pair is required when the choice is `cdp`) |
 | `facilitator.env` | `NETWORK=local, FACILITATOR_PRIVATE_KEY` |
 | `operator.env` | `CONTROL_URL, OPERATOR_TOKEN` |
-| `infra.env` (v1.5) | `GITHUB_REPO, GITHUB_ENVIRONMENT, AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID, AGENT_API_CLIENT_ID?, SELLER_PAY_TO, PAYER_ADDRESS`. Not a process's file: `infra/github-setup.sh` reads it to set the deploy workflows' GitHub secrets, and refuses any other key. Identifiers and public addresses only |
+| `pre-deploy.<env>.bicepparam`, `main.<env>.bicepparam` (v1.5, in `infra/`) | Not env files: every value the two Azure deployments use. The target (`tenantId, subscriptionId, location`), every resource name (`names`, with the resource group), the GitHub repository and environment, the app and group IDs from `pre-deploy.bicep`'s outputs, public addresses and the Claude attestation. Only `imageTag, platformOnly, seedIp, recoverVaults, agentStableRevision` come from `deploy.yml`'s environment. Only Bicep reads them (`bicep build-params`). No secret values |
 
 Token defaults (`dev-control-token`, `dev-settlement-token`, `dev-verifier-token`, `dev-operator-token`) apply only when `NETWORK=local`. On any other network, a missing or empty token is a startup error. An empty token is always a startup error.
 - Each entry point calls `loadEnv()`. `ENV_FILE` defaults to the process's own file (§3.1), and a caller can override it.
@@ -830,10 +834,12 @@ Residual risks added in v1.3:
 
 Residual risks added in v1.5:
 - The payer key is stored in Azure Key Vault, so the subscription's RBAC holders for that vault are trusted.
-- Anyone allowed to start `job-operator` or `job-regression` holds that job's credentials, because a start can override the template.
+- Anyone allowed to start `caj-l2-eastus2-dev` or `caj-l1-eastus2-dev` holds that job's credentials, because a start can override the template.
 - L2 and L3 are reachable from every app in the private environment. Bearer tokens, not the network, enforce each role.
 - L2 runs as one instance. During a revision update or after a crash, calls get 502 for up to 30 s while the lock is handed over; L1 reports ERROR and nothing is paid.
 - Requester limits are held in memory by the single agent replica. Scaling out would need shared storage.
+- The deploy app trusts any run of the repository's deploy job in the `<env>` GitHub environment (OIDC). Whoever can run `deploy.yml` or push a `deploy-*` tag gets its rights: Contributor and Role Based Access Control Administrator (limited to `main.bicep`'s four roles) on `rg-x402-<location>-<env>`, and `Agent.Run`. Required reviewers on the GitHub environment narrow this.
+- Deploying the Claude model accepts Anthropic's Azure Marketplace terms with the attestation in `main.<env>.bicepparam`.
 
 Residual risks added in v1.4:
 - With `API_DOCS=1`, anyone who can reach L2's loopback port reads the API description without a token. It holds nothing that is not in the repository.
@@ -858,7 +864,7 @@ Residual risks added in v1.4:
 | T-LED-03 | ledger | anomaly reports are ignored for the effective status |
 | T-LED-04 | escalations | L2-4.3 state derivation and the 300 s boundary; `findRejection`, `findPendingEscalation`; the sweep appends each expiry and lapse once, also after a restart; operator views and events carry no secret-bearing keys. **Must fail without the clock check**: with no sweep, the state is already expired at 300 s |
 | T-ARCH-* | architecture | rules A1–A7 (§4.1). Each fixture under `test/fixtures/arch/` trips its rule. |
-| T-ARCH-ENV | architecture | each `env/*.env.example` holds only its process's variables, and `infra.env.example` only the deploy identifiers; private keys are empty |
+| T-ARCH-ENV | architecture | each `env/*.env.example` holds only its process's variables; private keys and secrets are empty |
 | T-ARCH-TRACE | architecture | every test ID named in the §11 threat matrix (specs/007 contracts) appears in a test title; a row naming a missing test fails |
 | T-ARCH-BIND | e2e | `listenControl`/`listenSettlement` bind 127.0.0.1 with `CONTROL_PORT`/`SETTLEMENT_PORT` overridden |
 | T-AUTH-01 | e2e | `POST /v1/authorize` with `SETTLEMENT_TOKEN`, `VERIFIER_TOKEN` or `OPERATOR_TOKEN` → 401; the ledger is unchanged |
@@ -870,7 +876,7 @@ Residual risks added in v1.4:
 | T-AGT-01 | agent | fake model → tool calls → intents carry `purpose`; the tool result contains PAID + CONFIRMED; exactly two tools are offered |
 | T-AGT-KEY | agent | spawning `src/main.ts`, or `src/hosted-main.ts` with the key in the process env or only in `ENV_FILE` (v1.5), with `PAYER_PRIVATE_KEY` set exits 1 with a refusal (the automated form of the manual check below) |
 | T-AGT-02 | hosted-agent | every model call offers exactly `fetch_resource` and `check_budget` with the L1-3 descriptions and schemas; 2048 max output tokens; 10 steps; both providers' HTTP requests (Foundry: Entra bearer, no `x-api-key`); config rules. **Must fail**: an injected extra tool appears as a third name; an unrecognized model id is refused |
-| T-AGT-03 | hosted-access | 401 for missing, invalid, expired, wrong-audience, wrong-issuer or wrong-tenant tokens; 403 without `Agent.Run`; each refusal under 1 s with 0 model and 0 L2 calls; 2 concurrent and 20 hourly runs per requester (429 with `Retry-After`); L2/L3 never see the requester's token; with Entra a non-GUID `AUTH_AUDIENCE` is a startup error; `infra/entra-app.sh` (against a fake `az`) prints the client ID as the audience and pre-authorizes the Azure CLI for `user_impersonation`. **Must fail**: with `bypassAuth`, an unauthenticated run reaches the model; the `api://` audience loads without the check; the script's identifier-URI audience or missing pre-authorization is reported |
+| T-AGT-03 | hosted-access | 401 for missing, invalid, expired, wrong-audience, wrong-issuer or wrong-tenant tokens; 403 without `Agent.Run`; each refusal under 1 s with 0 model and 0 L2 calls; 2 concurrent and 20 hourly runs per requester (429 with `Retry-After`); L2/L3 never see the requester's token; with Entra a non-GUID `AUTH_AUDIENCE` is a startup error. The API app registration itself is checked by T-IAC-01 rule 16. **Must fail**: with `bypassAuth`, an unauthenticated run reaches the model; the `api://` audience loads without the check |
 | T-AGT-04 | hosted-sessions | a reference continues its requester's session; another requester's use → 404; a raw `sess_…` or malformed reference → 400; a tampered or non-canonical MAC → 404. **Must fail**: with `skipSessionMac`, requester B uses requester A's session |
 | T-AGT-05 | hosted-run | response shape; the 200 s deadline (a fetch in progress completes, no model call after); step limit; body limits; readiness; failure keeps finished steps; run-log lines are whitelisted JSON and planted secrets never appear; the cloud scan's credential shapes |
 | T-E2E-01 | e2e | scripted plan outcomes `[FREE, PAID, PAID, ESCALATED, DENIED, DENIED]`; on-chain delta exactly 6000; two CONFIRMED settlements; chain ok; budget `spentOrReserved = 6000` |
@@ -882,9 +888,9 @@ Residual risks added in v1.4:
 | T-E2E-08 | e2e | expiry on L2's clock: a repeat while pending reuses the ID; after 300 s the escalation expires, approve and reject are 409, the next request escalates under a new ID, and re-approving returns the same approval so one payment happens |
 | T-E2E-09 | e2e | the hosted service on the harness: FREE, PAID, PAID, ESCALATED with both payments CONFIRMED and 6000 spent; continuation after an operator approval pays once with `approvalRef`, and another requester's use of the reference → 404 with the ledger unchanged |
 | T-LED-05 | ledger-lock | one ledger writer (L2-6): a second acquirer waits while a fresh lock is held and takes it within 2 s of SIGTERM; a 31 s stale lock is taken over; a lost lock is reported; `main()` locks before loading. **Must fail**: two unlocked writers fork the chain and the reload throws `integrity` |
-| T-IAC-01 | infra (needs `BICEP_PATH`) | the compiled `infra/main.bicep`: role assignments only per the identity–vault matrix; the payer key only in `ca-l2-control/l2` from the l2 vault; internal-only L2/L3; one L2 replica on NFS; sidecars without env or secrets; identity lifecycle `Main` only for the agent; sellers in their own environment; no secret literals; `ALLOWED_HOSTS` is the seller, not the alias; vault firewalls deny by default; the agent's audience is a required client ID; each app and job on its own unit's image, which contains its command's entry point; each unit template deploys only its own apps and looks up only its own identities and vaults; the model is keyless (Foundry refuses API keys, no container gets an Anthropic key, the agent signs in as `id-l1`). All five templates (platform and units) are compiled together. **Must fail**: twelve mutants (rules 1, 2, 3, 9, 10, 11, and two each for rules 12, 13 and 14) |
+| T-IAC-01 | infra (needs `BICEP_PATH`) | the compiled `infra/main.bicep` and `infra/pre-deploy.bicep`, with their parameter files: role assignments only per the identity–vault matrix (the operators' group on the operator job only); the payer key only in `ca-l2-eastus2-dev/l2` from the l2 vault; internal-only L2/L3; one L2 replica on NFS; sidecars without env or secrets; identity lifecycle `Main` only for the agent; sellers in their own environment; no secret literals; `ALLOWED_HOSTS` is the seller, not the alias; vault firewalls deny by default, open only to `seedIp`, recovered only through `recoverVaults`; the agent's audience is a required client ID; each app and job on its own unit's image, which contains its command's entry point, and the operator job's own command `ledger-verify`; each unit's apps look up only their own identities and vaults and wait for the platform; the model is keyless (Foundry refuses API keys, no container gets an Anthropic key, the agent signs in as `id-l1-eastus2-dev`) and the agent's model is the Claude deployment with its attestation; every name in the parameter files' `names` is the standard one for its place there and fits Azure's limits, every resource is named from `names`, each of `names` is deployed, every module gets `names` whole, and no template builds a name from the location or writes one out; the API app (v2.0 tokens, its standard URI, only Agent.Run, only `user_impersonation` with only the Azure CLI pre-authorized, assignment required), the deploy app (no secret, one federated credential for the deploy environment), Agent.Run for the deploy app and `agentUsers` only, the operators' security group, and the deploy app's Contributor and condition-limited Role Based Access Control Administrator on the resource group only; every template parameter set in its parameter file, only the five per-run values from the environment, both files agreeing on the target, and each template refusing to run elsewhere. **Must fail**: 22 mutant tests (rules 1, 2, 3, 9, 10, 11; two each for rules 12, 13, 14 and 17; five for rule 15; three for rule 16) |
 | T-IMG-01 | images | each image's import graph (`scripts/image-closure.ts`) stays in its own folders and uses only runtime dependencies; only the L2 image holds the signer; only the L1 image holds Mastra and the model SDKs; every Dockerfile builds its own image from the same pinned base and loads every module once. **Must fail**: L1 reaching the signer; a package resolved at run time but not listed; an imported package missing from `dependencies` |
-| T-E2E-AZ | deploy-workflow (static) and the live workflows | the four pipelines (`deploy-infra.yml`; `deploy-l1/l2/l3.yml` over `deploy-layer.yml`): OIDC only, one concurrency group, manual or tag triggers; every gate (tests, T-IAC-01, image scan, deploy, wait, balance, `--check-baseline` regression, chain, smoke ≤ 120 s, log scan) before promotion; gates skipped only by an explicit first deployment of L2 or L3, or by the infra run's first, platform-only run; every image built by exactly one pipeline; `job-operator` started only with commands of the L2 image; rollback of the unit to `last-good` on failure without touching the agent's traffic; `infra/github-setup.sh` (against a fake `gh`) sets exactly the declared secrets from `env/infra.env`, on stdin and never printed, and sends nothing for an unknown key, a credential or a value of the wrong shape. **Must fail**: promoting before the regression; a regression skipped by another condition (layer and infra); a first deployment of L1; a layer pipeline deploying another layer's image; an infra run that doesn't build the seller's image; a `job-operator` command the L2 image doesn't contain; the setup script with a looser address check (a private key reaches GitHub) or with the values in `gh`'s arguments |
+| T-E2E-AZ | deploy-workflow, github-setup, cleanup (static) and the live workflow | `deploy.yml`: manual or `deploy-*` tag triggers, one concurrency group; OIDC sign-in with the tenant, subscription, resource group and deploy app compiled from `infra/main.<env>.bicepparam` by the pinned Bicep CLI, which every step uses, and no GitHub secret or variable; Azure provisioned by Bicep only (every `az` command in the workflow and the two scripts is a Bicep deployment, a read, a job start, an image copy or a clean-up deletion), and `infra/` holds only `github-setup.sh` and `cleanup.sh`; every step with pipefail; what-if before each deployment; every gate (tests, T-IAC-01, image scan, deploy, wait, balance, `--check-baseline` regression, chain, smoke ≤ 120 s, log scan) before promotion; steps skipped only by the first, platform-only run; all four images built; promotion moves the agent's traffic through `main.bicep`; rollback to `last-good` on any failure once the deploy step ran, even partway, without touching the agent's traffic; every job started with its own command (the deploy identity never approves or rejects); the smoke token for the API app's client ID; names from the parameter file right after the checkout, none hard-coded. `infra/github-setup.sh` (fake `gh`) creates only the GitHub environment its parameter file names and reports leftover secrets. `infra/cleanup.sh` (fake tenant and `gh`) deletes the GitHub environment, the deploy app's role assignments before the app (none orphaned), the resource group, both app registrations and the operators' group, and nothing else; it purges with `--purge`, reports the vaults that purge protection keeps, and deletes nothing with `--dry-run`, unconfirmed, or for another tenant. **Must fail**: promoting before the regression; a regression skipped by another condition; a GitHub secret, or a sign-in that isn't OIDC from the parameter file; provisioning outside Bicep (`az group create`, traffic moved with `az`); a deployment without what-if, or a missing image; the operator job started with an approve command; the target step run late, a missing name, or no pipefail; a rollback skipped when the deploy step failed, or a smoke token for another audience; a hard-coded name; a third script in `infra/`; the setup script without its environment check; the clean-up without its role-assignment step or its dry-run guard |
 | T-CDP-01 | cdp-config | the `facilitatorChoice` matrix (CP-3), and the public path sends no credential |
 | T-CDP-02 | cdp-isolation | seller startup fails closed: missing ID or secret, malformed secret, conflicts; the log line format; the unused-credential warning |
 | T-CDP-03 | cdp-auth | JWT headers (EdDSA, ES256 from PKCS#8 and SEC1); the scripted plan through a JWT-verifying CDP stub matches T-E2E-01 |
@@ -930,7 +936,11 @@ npm run payer-balance -- <address> [--min <atomic>]   # read-only Base Sepolia U
 ... | npm run scan-logs     # credential-shape scan of log lines
 npm run build               # dist/ (each image's build stage runs it)
 docker build -f docker/l1-agent.Dockerfile -t x402-l1-agent .   # one per layer in docker/; the seller's: docker build -t x402-seller .
-BICEP_PATH=~/.azure/bin/bicep npx vitest run test/infra.test.ts   # T-IAC-01
+BICEP_PATH=~/.azure/bin/bicep npm test   # every suite, T-IAC-01 and the infra script tests included
+az deployment sub what-if|create -n pre-deploy-<env> -p infra/pre-deploy.<env>.bicepparam \
+  --subscription <its subscriptionId> -l <its location>   # admin, by hand
+infra/github-setup.sh [--environment <env>] [--dry-run]   # the GitHub environment deploy.yml runs in
+infra/cleanup.sh [--environment <env>] [--dry-run] [--purge] [--yes]   # deletes all of an environment
 ```
 
 Exit codes:

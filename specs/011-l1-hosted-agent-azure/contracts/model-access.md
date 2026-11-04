@@ -12,7 +12,7 @@
 | `ANTHROPIC_MODEL` | no | default `claude-sonnet-5-5`; must be in the allow-list below |
 | `ANTHROPIC_API_KEY` | `anthropic` only | template leaves it empty (`# set me`); forbidden with `foundry` |
 | `FOUNDRY_BASE_URL` | `foundry` only | `https://<resource>.services.ai.azure.com/anthropic/v1` |
-| `AZURE_CLIENT_ID` | `foundry` only | client ID of `id-l1` (user-assigned identity) |
+| `AZURE_CLIENT_ID` | `foundry` only | client ID of `id-l1-eastus2-dev` (user-assigned identity) |
 | `AUTH_TENANT_ID`, `AUTH_AUDIENCE` | yes | [access-and-sessions](access-and-sessions.md) |
 | `AUTH_JWKS_FILE` | `local` only | a dev issuer; a startup error on any other network |
 | `SESSION_REF_SECRET` | yes | at least 32 bytes; template leaves it empty |
@@ -29,13 +29,25 @@
 name must equal the model ID. An unrecognized ID makes the provider add a `json` tool (research
 R2).
 
+## The Foundry deployment (`infra/modules/foundry.bicep`)
+
+`main.bicep` deploys the model like everything else in Azure, never the portal: `claude-sonnet-5-5`,
+version 2, `format: Anthropic`, Global Standard, capacity 10 (thousands of tokens per minute), named
+exactly the model ID, which `main.bicep` also passes to the agent as `ANTHROPIC_MODEL`. An Anthropic
+deployment must carry `modelProviderData`: the organization name, two-letter country code and
+industry, from `main.<env>.bicepparam` (`claudeOrganizationName`, `claudeCountryCode`,
+`claudeIndustry`). Deploying it accepts Anthropic's Azure Marketplace terms for the subscription with
+those values. The published Bicep types don't list `modelProviderData` yet, so the template silences
+that warning (BCP037). what-if's preflight refuses a deployment without it. Foundry Claude refuses
+credit-only subscriptions, so dev uses the pay-as-you-go `fr-com-dev`.
+
 ## Provider construction (`src/layer1-intent/hosted/model.ts`)
 
 | | `anthropic` | `foundry` |
 |---|---|---|
 | Base URL | provider default (`https://api.anthropic.com/v1`) | `FOUNDRY_BASE_URL` (must end in `/anthropic/v1`) |
 | Auth | `apiKey: ANTHROPIC_API_KEY` → `x-api-key` | `authToken` placeholder, plus a custom `fetch` that sets `Authorization: Bearer <token>` per request. Token from `ManagedIdentityCredential(AZURE_CLIENT_ID)` for scope `https://ai.azure.com/.default` (cached by `@azure/identity`, refreshed before expiry). |
-| Azure role | — | `id-l1`: Cognitive Services User on the Foundry resource. The resource has `disableLocalAuth: true`, so it refuses API keys; no Foundry key exists anywhere (T-IAC-01 rule 14) |
+| Azure role | — | `id-l1-eastus2-dev`: Cognitive Services User on the Foundry resource. The resource has `disableLocalAuth: true`, so it refuses API keys; no Foundry key exists anywhere (T-IAC-01 rule 14) |
 | Never sent | `temperature`, `top_k` (not supported by Sonnet 5.5 on Foundry; the agent sets neither) | same |
 
 The provider choice never changes at run time. A model error fails the run (`status: failed`),
@@ -48,7 +60,7 @@ and the steps already finished are listed.
 | Requester Entra token | verifies | — | — | — | issued to people and service principals with `Agent.Run` |
 | `SESSION_REF_SECRET` | ✅ | — | — | — | |
 | `ANTHROPIC_API_KEY` | ✅ (`anthropic`) | — | — | — | the existing row |
-| `id-l1` Foundry access | ✅ (`foundry`) | — | — | — | managed identity, no secret |
+| `id-l1-eastus2-dev` Foundry access | ✅ (`foundry`) | — | — | — | managed identity, no secret |
 
 ## Tests
 

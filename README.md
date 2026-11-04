@@ -183,20 +183,19 @@ To run the agent's container image instead, see [quickstart §3](specs/011-l1-ho
 - Each runtime unit has its own managed identity and Key Vault. The payer key is readable only by L2's identity.
 - The ledger lives on an NFS share. L2 holds a lock on it (L2-6), so only one L2 writes during a revision update.
 - The sellers run in a separate environment.
-- Requesters sign in with Entra ID (`infra/entra-app.sh`). A person assigned `Agent.Run` gets a token with `az account get-access-token --scope api://x402-l1-agent/user_impersonation`.
+- Every resource is named `{type}-{app}-{location}-{env}`, such as `ca-l1-eastus2-dev`; the parameter files' `names` hold them all. `infra/` has two scripts only: `infra/github-setup.sh` and `infra/cleanup.sh`, which deletes all of an environment (`--dry-run` first).
+- Azure is provisioned by Bicep only. `infra/pre-deploy.bicep` makes the resource group, the Entra app registrations, the operators' group and the deploy app's roles; an administrator deploys it by hand. `infra/main.bicep` makes everything in the resource group, the Claude model deployment included.
+- Every value is in a parameter file: `infra/pre-deploy.<env>.bicepparam` and `infra/main.<env>.bicepparam`, the tenant, subscription and resource group included. Each template refuses to run anywhere else.
+- Requesters sign in with Entra ID (the API app `app-l1-<location>-<env>`). A person assigned `Agent.Run` gets a token with `az account get-access-token --scope api://app-l1-eastus2-dev/user_impersonation`.
 
-**Deployment**: four GitHub Actions workflows sign in with OIDC and run one at a time, by hand or on their own tag:
-- `deploy-infra.yml` deploys the platform (`infra/main.bicep`) and the sellers.
-- `deploy-l1.yml`, `deploy-l2.yml` and `deploy-l3.yml` each deploy one layer's image and its own apps' template.
-
-Each run deploys from one commit and records its image as `last-good` only after these all pass:
+**Deployment**: one GitHub Actions workflow, `.github/workflows/deploy.yml`, run by hand or on a `deploy-*` tag. It signs in with OIDC as the deploy app and reads its target from `infra/main.<env>.bicepparam`, not from GitHub secrets. It deploys the platform, builds the four images, previews and deploys `infra/main.bicep`, and records every image as `last-good` only after these all pass:
 - the infrastructure rules (T-IAC-01);
 - a secret check on the image;
 - the L1-4 baseline in the cloud (`--check-baseline`);
 - a hosted smoke run;
 - a log secret scan.
 
-An L1 run moves the agent's traffic to the new revision only then.
+Only then does it move the agent's traffic to the new revision, by deploying `main.bicep` again. A failure redeploys `last-good`.
 
 The first deployment, vault seeding and the operator job are in `specs/011-l1-hosted-agent-azure/quickstart.md`.
 
@@ -245,11 +244,11 @@ A milestone must pass its exit check before the next one starts.
 | `test/demo.local.test.ts` | the real six-process demo, port preflight, process-group shutdown |
 | `test/hosted-agent.test.ts`, `test/hosted-access.test.ts`, `test/hosted-sessions.test.ts`, `test/hosted-run.test.ts` | T-AGT-02..05: the hosted service's exact two tools, requester access and limits, session binding, run semantics and log redaction |
 | `test/ledger-lock.test.ts` | T-LED-05: one ledger writer across processes (L2-6) |
-| `test/infra.test.ts` | T-IAC-01: the compiled Bicep keeps identities, secrets and ingress per the Azure matrix (needs `BICEP_PATH`) |
-| `test/entra-app.test.ts` | T-AGT-03: `infra/entra-app.sh` against a fake `az`: client ID as the audience, people's scope with the Azure CLI pre-authorized, idempotent re-runs |
+| `test/infra.test.ts` | T-IAC-01: the compiled `main.bicep` and `pre-deploy.bicep` keep identities, secrets and ingress per the Azure matrix, take every name from the parameter files' `names` (each one the standard name), set up the Entra apps and the deploy app's roles, and take every value from their parameter files (needs `BICEP_PATH`) |
 | `test/images.test.ts` | T-IMG-01: each image holds only its own layer's code and packages (only L2's has the signer) |
-| `test/deploy-workflow.test.ts` | T-E2E-AZ: the four deploy pipelines' gates, skips and rollback |
-| `test/github-setup.test.ts` | T-E2E-AZ: `infra/github-setup.sh` against a fake `gh`: exactly the declared secrets, on stdin and never printed; a credential or a value of the wrong shape sends nothing |
+| `test/deploy-workflow.test.ts` | T-E2E-AZ: `deploy.yml`'s OIDC sign-in from the parameter file, no GitHub secret, Bicep-only provisioning (also in `infra/*.sh`), gates, skips and rollback |
+| `test/github-setup.test.ts` | T-E2E-AZ: `infra/github-setup.sh` against a fake `gh`: creates only the GitHub environment the parameter file names, and reports leftover secrets |
+| `test/cleanup.test.ts` | T-E2E-AZ: `infra/cleanup.sh` against a fake tenant and `gh`: deletes the GitHub environment, role assignments, resource group, app registrations and the operators' group and nothing else, leaves no orphaned role assignment, and deletes nothing on `--dry-run`, unconfirmed or for the wrong tenant |
 | `test/openapi.test.ts` | T-API-01..03: `docs/l2-control.openapi.yaml` matches L2's routes, tokens, statuses and response shapes; T-API-04: the Swagger UI routes are off by default, same-origin and serve fixed files only |
 
 Run one test with `npx vitest run test/policy.test.ts -t "<name>"`.

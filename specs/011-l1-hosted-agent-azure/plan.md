@@ -85,7 +85,7 @@ No item is NEEDS CLARIFICATION. [research.md](research.md) records each decision
 | II. Deterministic, pure policy | The policy is unchanged. `purpose` stays audit-only (INV-5). The requester's identity is never a policy input and never reaches L2 (FR-009). | PASS | PASS |
 | III. Ledger is the single source of truth | Budgets still come from the ledger, and a session reference only gates access to a session. The new L2-6 lock is a file beside the ledger, never an entry. It guarantees one writer across revision overlap, and the startup integrity check still runs, now after the lock is held (R12). | PASS | PASS |
 | IV. Trust the chain | L3 is unchanged. The cloud regression keeps L3's on-chain checks. | PASS | PASS |
-| V. Least-privilege credentials | **New credentials, one role each**: the requester's Entra token (verified by L1 only, stripped before any downstream call), `SESSION_REF_SECRET` (L1 only) and `id-l1`'s Foundry access (L1 only). **Per-unit secrets**: one vault and identity per runtime unit. Identity lifecycle `None` keeps sidecars from obtaining tokens. **Loopback kept**: L2/L3 still bind loopback, but who can reach them widens to the private environment through the sidecar (Complexity Tracking #1). | PASS, with a justified deviation | PASS. Constitution 1.2.0 states the cloud profile explicitly |
+| V. Least-privilege credentials | **New credentials, one role each**: the requester's Entra token (verified by L1 only, stripped before any downstream call), `SESSION_REF_SECRET` (L1 only) and `id-l1-eastus2-dev`'s Foundry access (L1 only). **Per-unit secrets**: one vault and identity per runtime unit. Identity lifecycle `None` keeps sidecars from obtaining tokens. **Loopback kept**: L2/L3 still bind loopback, but who can reach them widens to the private environment through the sidecar (Complexity Tracking #1). | PASS, with a justified deviation | PASS. Constitution 1.2.0 states the cloud profile explicitly |
 | VI. Exact money arithmetic | `amountUsd` stays the existing `formatAtomic` display value. No new arithmetic. | PASS | PASS |
 | VII. Protocol fidelity | x402 headers are untouched, and L1 forwards L2's headers unchanged through the same orchestrator. | PASS | PASS |
 | VIII. Proven safety | Every new control has a must-fail proof (see Proofs below): the tool set, access, session binding, the ledger lock, the identity and secret matrix, and log redaction. | PASS | PASS |
@@ -144,20 +144,21 @@ scripts/
 ├── ledger-verify.ts        # NEW: operator command for GET /v1/ledger/verify (exit 0 only when ok)
 └── payer-balance.ts        # NEW: read-only Base Sepolia USDC balanceOf(address) for the deploy preflight
 infra/
-├── main.bicep              # NEW: the platform: environments, network, registry, logs, storage, vaults, identities, Foundry
-├── l1-agent.bicep, l2-control.bicep, l3-verifier.bicep, seller.bicep   # NEW (2026-10-25): one template per unit
-├── modules/*.bicep         # NEW: one module per concern
-├── params/dev*.bicepparam  # NEW: one per template; no secret values; vault secrets are seeded out of band
+├── pre-deploy.bicep        # NEW (2026-11-02): resource group, Entra apps (Graph extension), operators' group, deploy app's roles
+├── main.bicep              # NEW: everything in the resource group: the platform, Foundry and its model, every unit's apps
+├── modules/*.bicep         # NEW: one module per concern; inputs are names, looked up with `existing`
+├── pre-deploy.dev.bicepparam, main.dev.bicepparam   # NEW: every value, the target included; no secret values
+├── bicepconfig.json        # NEW: the Microsoft Graph Bicep extension
 ├── proxy/nginx-l2.conf, nginx-l3.conf   # NEW: loopback proxy sidecars with the 401→200 /healthz
-└── entra-app.sh            # NEW: az CLI script for the API app registration and the Agent.Run role
+└── github-setup.sh, cleanup.sh   # NEW: the GitHub environment and the clean-up, the only two scripts (names are in the parameter files)
 Dockerfile                  # NEW: the seller's image (research R14, revised 2026-10-25)
 docker/l1-agent.Dockerfile, l2-control.Dockerfile, l3-verifier.Dockerfile   # NEW: one image per layer: build stage (tsc,
                             #   scripts/image-closure.ts) → node:22-bookworm-slim runtime, non-root, only that layer's code
 .dockerignore               # NEW
 scripts/image-closure.ts    # NEW: each image's files and packages from the import graph (T-IMG-01)
 tsconfig.build.json         # NEW: emits dist/ for src/ and the operator scripts
-.github/workflows/deploy-infra.yml, deploy-l1.yml, deploy-l2.yml, deploy-l3.yml, deploy-layer.yml   # NEW: OIDC deploys
-                            #   (the platform and the sellers; one per layer over shared steps), each gated by the regression
+.github/workflows/deploy.yml   # NEW: deploys main.bicep from one commit (OIDC, target from the parameter file),
+                            #   gated by the regression
 env/l1-hosted.env.example   # NEW: CFG-2 template
 env/l1-agent.env.example    # MOD: optional SELLER_ALIAS_URL
 test/
@@ -165,7 +166,7 @@ test/
 ├── hosted-access.test.ts   # NEW: T-AGT-03 tokens, roles, limits, no forwarding
 ├── hosted-sessions.test.ts # NEW: T-AGT-04 session references
 ├── hosted-run.test.ts      # NEW: T-AGT-05 deadline, step limit, disconnect, health, response shape, log redaction
-├── deploy-workflow.test.ts # NEW: T-E2E-AZ static checks on the four deploy pipelines (gate order, skips, rollback)
+├── deploy-workflow.test.ts # NEW: T-E2E-AZ static checks on deploy.yml (OIDC, Bicep only, gate order, skips, rollback)
 ├── ledger-lock.test.ts     # NEW: T-LED-05
 ├── infra.test.ts           # NEW: T-IAC-01 (skipped without BICEP_PATH)
 ├── agent.test.ts           # MOD: T-AGT-KEY covers the hosted entry point
@@ -264,10 +265,10 @@ server, release the lock, exit 0. `createControlService` is untouched.
 | FR-015, FR-016 (sessions bound to requesters) | `session-ref.ts` | T-AGT-04; T-E2E-09 |
 | FR-017 (budgets unchanged) | L2 unchanged | T-E2E-09; T-E2E-01 |
 | FR-018, FR-019, FR-022 (private L2/L3, loopback, seller apart) | internal ingress, sidecar, counterparty environment | T-IAC-01 (3, 7); quickstart §4 reachability check |
-| FR-020 (one L2 instance, ledger survives) | L2-6 lock, NFS share, `maxReplicas: 1` | T-LED-05; T-IAC-01 (4); T-E2E-AZ step 7 |
-| FR-021 (operator private path) | `job-operator`, RBAC on start | quickstart §5; T-IAC-01 (role table) |
-| FR-023, FR-024 (reproducible deploy, regression gate) | Bicep, the workflow, `job-regression`, rollback | T-E2E-AZ (static workflow checks in `test/deploy-workflow.test.ts`, plus the live run) |
-| FR-025, FR-026 (traceability, no secrets in logs) | `run-log.ts` whitelist; Log Analytics scan | T-AGT-05 (captured logs pass the secret scan); T-E2E-AZ step 9 |
+| FR-020 (one L2 instance, ledger survives) | L2-6 lock, NFS share, `maxReplicas: 1` | T-LED-05; T-IAC-01 (4); T-E2E-AZ steps 5 and 8 (the wait and the chain check) |
+| FR-021 (operator private path) | `caj-l2-eastus2-dev`, RBAC on start | quickstart §5; T-IAC-01 (role table) |
+| FR-023, FR-024 (reproducible deploy, regression gate) | Bicep, the workflow, `caj-l1-eastus2-dev`, rollback | T-E2E-AZ (static workflow checks in `test/deploy-workflow.test.ts`, plus the live run) |
+| FR-025, FR-026 (traceability, no secrets in logs) | `run-log.ts` whitelist; Log Analytics scan | T-AGT-05 (captured logs pass the secret scan); T-E2E-AZ step 10 |
 | FR-027 (health) | `/healthz`, `/readyz` | T-AGT-05 |
 | FR-028, NFR-007 (local parity) | new root only; L1-4 alias optional | `npm run check` |
 | NFR-001 (Mastra on Azure) | R1, R10 | — |
@@ -299,7 +300,7 @@ server, release the lock, exit 0. `createControlService` is untouched.
 - **§3.1**: a new process row (L1 hosted agent service, `src/hosted-main.ts`, 4024,
   `agent:hosted`, `env/l1-hosted.env`) and an "Azure profile" subsection that summarizes
   [cloud-topology](contracts/cloud-topology.md).
-- **§3.3**: rows for the requester Entra token, `SESSION_REF_SECRET` and `id-l1`'s Foundry access.
+- **§3.3**: rows for the requester Entra token, `SESSION_REF_SECRET` and `id-l1-eastus2-dev`'s Foundry access.
 - **§4**: INV-3 names both L1 entry points (`src/main.ts`, `src/hosted-main.ts`). Both load
   env, then refuse.
 - **§5**: rows and pins for Mastra, `@ai-sdk/anthropic`, `zod`, `jose`, `@azure/identity`, and the
@@ -349,9 +350,9 @@ server, release the lock, exit 0. `createControlService` is untouched.
 | A Mastra upgrade starts adding tools or calling out | Exact pin. T-AGT-02 runs on every test pass. The upgrade checklist re-runs the network-spy probe from research R13. |
 | Lock handover makes L2 unavailable for seconds (up to 30 s after a crash) | L1 reports ERROR and nothing is paid. Deployments run when idle. The pipeline waits on `ledger-verify` before the regression. |
 | NFS share latency slows ledger appends | Appends are small and serialized. The regression measures it. A durable ledger (EXT-6) is the long-term fix. |
-| Job-start RBAC leaks credentials | Start rights only for the deploy identity (`job-regression`) and the operators' group (`job-operator`). Listed as a residual risk. |
+| Job-start RBAC leaks credentials | Start rights only for the deploy identity (`caj-l1-eastus2-dev`) and the operators' group (`caj-l2-eastus2-dev`). Listed as a residual risk. |
 | Identity lifecycle `None` doesn't behave as documented | Quickstart §4 checks it on the first deployment. If it fails, L2/L3 move the sidecar out (TCP probe only, ingress straight to a `0.0.0.0` bind) after a SPEC amendment, never by keeping the key reachable. |
-| Testnet spend per deployment | 0.012 USDC per deployment, with a balance preflight (deploy-pipeline step 5b). |
+| Testnet spend per deployment | 0.012 USDC per deployment, with a balance preflight (deploy-pipeline step 6). |
 
 ## Complexity Tracking
 

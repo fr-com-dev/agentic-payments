@@ -1,35 +1,43 @@
-// The demo seller, an external party, in its own environment cae-x402-cp (FR-022). It can't reach the
-// internal apps of cae-x402, and it holds only its own CDP credential (A8), from its own vault. Deployed by
-// seller.bicep (deploy-infra.yml).
+// The demo seller, an external party, in its own environment names.environments.seller (FR-022).
+// It can't reach the internal apps of names.environments.x402, and it holds only its own CDP
+// credential (A8), from its own vault. Deployed by main.bicep.
+// The platform's resources it uses are looked up by their names (the names parameter), never passed in
+// as another module's outputs: what-if skips a module whose parameters hold runtime values, so this keeps the module
+// in the preview of a first deployment. main.bicep deploys it after the platform (dependsOn).
 param location string
-param cpEnvId string
+@description('Every resource name (main.<environment>.bicepparam).')
+param names object
+@description('x402-seller:<imageTag> in the registry.')
 param image string
+@description('The registry\'s login server.')
 param acrServer string
-@description('id-seller → { id, clientId }.')
-param identity object
-param vaultUri string
 param sellerPayTo string
 
-// ca-seller and ca-seller-alias: the same seller on two FQDNs. L2 allows only the first, so the regression's
-// step 6 through the alias is DENIED host_not_allowed (L1-4, research R17).
-var sellerNames = ['ca-seller', 'ca-seller-alias']
+resource idSeller 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' existing = { name: names.identities.seller }
+resource sellerEnv 'Microsoft.App/managedEnvironments@2025-01-01' existing = { name: names.environments.seller }
 
-resource seller 'Microsoft.App/containerApps@2025-01-01' = [for n in sellerNames: {
-  name: n
+var vaultSeller = 'https://${names.vaults.seller}${az.environment().suffixes.keyvaultDns}/'
+
+// names.apps.seller and names.apps.sellerAlias: the same seller on two FQDNs. L2 allows only the first, so the
+// regression's step 6 through the alias is DENIED host_not_allowed (L1-4, research R17).
+var sellerApps = ['seller', 'sellerAlias']
+
+resource seller 'Microsoft.App/containerApps@2025-01-01' = [for a in sellerApps: {
+  name: names.apps[a]
   location: location
-  identity: { type: 'UserAssigned', userAssignedIdentities: { '${identity.id}': {} } }
+  identity: { type: 'UserAssigned', userAssignedIdentities: { '${idSeller.id}': {} } }
   properties: {
-    environmentId: cpEnvId
+    environmentId: sellerEnv.id
     workloadProfileName: 'Consumption'
     configuration: {
       activeRevisionsMode: 'Single'
       ingress: { external: true, targetPort: 4021, transport: 'auto', allowInsecure: false }
-      registries: [{ server: acrServer, identity: identity.id }]
+      registries: [{ server: acrServer, identity: idSeller.id }]
       secrets: [
-        { name: 'cdp-api-key-id', keyVaultUrl: '${vaultUri}secrets/cdp-api-key-id', identity: identity.id }
-        { name: 'cdp-api-key-secret', keyVaultUrl: '${vaultUri}secrets/cdp-api-key-secret', identity: identity.id }
+        { name: 'cdp-api-key-id', keyVaultUrl: '${vaultSeller}secrets/cdp-api-key-id', identity: idSeller.id }
+        { name: 'cdp-api-key-secret', keyVaultUrl: '${vaultSeller}secrets/cdp-api-key-secret', identity: idSeller.id }
       ]
-      identitySettings: [{ identity: identity.id, lifecycle: 'None' }]
+      identitySettings: [{ identity: idSeller.id, lifecycle: 'None' }]
     }
     template: {
       containers: [
