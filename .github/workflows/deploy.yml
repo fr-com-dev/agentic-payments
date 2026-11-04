@@ -94,11 +94,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The pinned Bicep CLI, first on PATH, so the tests and every deployment use it. It compiles the parameter
+      # First the inputs: seed-ip and recover-vaults belong to a platform-only run. Without platform-only, a run would go
+      # on to build the images and deploy the apps against vaults not seeded yet (2026-11-04: seed-ip set, platform-only
+      # unchecked), so the step refuses before it does anything. The inputs come in as INPUT_*: the parameter file
+      # reads SEED_IP and RECOVER_VAULTS itself, and an input is never pasted into the script.
+      # Then the pinned Bicep CLI, first on PATH, so the tests and every deployment use it. It compiles the parameter
       # file: the sign-in and target, never GitHub secrets, and every resource name the steps below use.
       - name: "0 Bicep CLI, then the sign-in, target and names (infra/main.<environment>.bicepparam)"
         id: target
+        env:
+          INPUT_PLATFORM_ONLY: ${{ inputs.platform-only || false }}
+          INPUT_SEED_IP: ${{ inputs.seed-ip }}
+          INPUT_RECOVER_VAULTS: ${{ inputs.recover-vaults || false }}
         run: |
+          if [[ "$INPUT_PLATFORM_ONLY" != true && ( -n "$INPUT_SEED_IP" || "$INPUT_RECOVER_VAULTS" == true ) ]]; then
+            echo "::error::seed-ip and recover-vaults are for a platform-only run (quickstart §4 and §6): check platform-only, or leave both empty. Nothing was deployed."
+            exit 1
+          fi
           mkdir -p "$RUNNER_TEMP/bicep"
           curl -fsSL -o "$RUNNER_TEMP/bicep/bicep" "https://github.com/Azure/bicep/releases/download/${BICEP_VERSION}/bicep-linux-x64"
           chmod +x "$RUNNER_TEMP/bicep/bicep"

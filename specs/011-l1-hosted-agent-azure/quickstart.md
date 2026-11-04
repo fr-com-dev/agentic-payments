@@ -137,6 +137,7 @@ for Entra ID.
 2. **Create the platform.** Run `deploy.yml` with `environment=dev`, `platform-only: true` and
    `seed-ip` set to your public IP. It creates the network, identities, registry, the five vaults (open
    to your IP), storage, Foundry with the `claude-sonnet-5-5` deployment, and both environments.
+   Without `platform-only`, the run refuses `seed-ip` at its first step and deploys nothing.
 3. **Seed the vaults.** Put the secrets in, following [cloud-topology](contracts/cloud-topology.md),
    with `az keyvault secret set` from a trusted shell. This is data, not provisioning: the secrets
    never appear in a template, a parameter file or GitHub.
