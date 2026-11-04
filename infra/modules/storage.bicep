@@ -1,10 +1,12 @@
 // Premium NFS share for the L2 ledger and its L2-6 lock (POSIX exclusive create and rename).
+// Its inputs are names, never another module's outputs, so what-if previews it on a first deployment (main.bicep).
 param location string
-param suffix string
-param subnetId string
+@description('Every resource name (main.<environment>.bicepparam).')
+param names object
 
 resource st 'Microsoft.Storage/storageAccounts@2023-05-01' = {
-  name: 'stx402${suffix}'
+  // Lowercase letters and digits only.
+  name: names.storage
   location: location
   kind: 'FileStorage'
   sku: { name: 'Premium_LRS' }
@@ -16,7 +18,7 @@ resource st 'Microsoft.Storage/storageAccounts@2023-05-01' = {
     networkAcls: {
       defaultAction: 'Deny'
       bypass: 'None'
-      virtualNetworkRules: [{ id: subnetId, action: 'Allow' }]
+      virtualNetworkRules: [{ id: resourceId('Microsoft.Network/virtualNetworks/subnets', names.network, names.subnets.x402), action: 'Allow' }]
     }
   }
 }
@@ -36,5 +38,5 @@ resource share 'Microsoft.Storage/storageAccounts/fileServices/shares@2023-05-01
   }
 }
 
-output nfsServer string = '${st.name}.file.${environment().suffixes.storage}'
+output nfsServer string = '${st.name}.file.${az.environment().suffixes.storage}'
 output nfsShareName string = '/${st.name}/${share.name}'

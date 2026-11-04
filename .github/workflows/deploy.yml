@@ -1,0 +1,275 @@
+# Deploy everything from one commit (SPEC.md §3.1 Azure profile; specs/011 contracts/deploy-pipeline.md): the
+# platform and every unit's apps, all in infra/main.bicep, each unit on its own image. Azure is provisioned by Bicep
+# only, and each deployment is previewed with what-if first: the platform (so the registry exists), then the four
+# images, then the whole template. Nothing is promoted before the cloud regression, the chain check, the hosted
+# smoke run and the log scan pass; a failure rolls everything back to last-good. T-E2E-AZ:
+# test/deploy-workflow.test.ts checks this file offline.
+#
+# No GitHub secrets: the sign-in (OIDC, as pre-deploy.bicep's deploy app), the target (tenant, subscription,
+# resource group) and every resource name come from infra/main.<environment>.bicepparam, which holds every value
+# main.bicep uses; the pinned Bicep CLI compiles it, and every deployment uses that CLI. The first run is
+# platform-only, before the vaults are seeded (quickstart §4); seed-ip lets an operator's IP through the vault
+# firewalls for that, and the next run removes it.
+name: deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment (infra/main.<environment>.bicepparam)
+        required: true
+        default: dev
+        type: choice
+        options: [dev]
+      platform-only:
+        description: Deploy only the platform (the very first run, before the vaults are seeded; quickstart §4)
+        required: false
+        default: false
+        type: boolean
+      seed-ip:
+        description: Your public IP, let through the vault firewalls on a platform-only run while you seed them
+        required: false
+        default: ""
+        type: string
+      recover-vaults:
+        description: Recover the vaults infra/cleanup.sh left soft-deleted, with their secrets (a platform-only run)
+        required: false
+        default: false
+        type: boolean
+  push:
+    tags: ["deploy-*"]
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: deploy-azure
+  cancel-in-progress: false
+
+# bash -eo pipefail: a failed command inside a pipe fails its step, so a gate fed by a pipe (the log scan) never
+# passes on empty input.
+defaults:
+  run:
+    shell: bash
+
+env:
+  ENVIRONMENT: ${{ inputs.environment || 'dev' }}
+  PARAMS: infra/main.${{ inputs.environment || 'dev' }}.bicepparam
+  IMAGE_TAG: ${{ github.sha }}
+  BICEP_VERSION: v0.47.16
+  # One execution of a manual job ($1) with the job's own command: waits for it (at most $2 seconds, 900 by
+  # default), prints its logs and returns 0 only when it Succeeded. A step runs it as `eval "$RUN_JOB"; run_job …`.
+  RUN_JOB: |
+    run_job() {
+      local job="$1" deadline=$(( $(date +%s) + ${2:-900} )) execution status=""
+      execution=$(az containerapp job start -n "$job" -g "$RG" --query name -o tsv)
+      echo "$job: execution $execution started"
+      while [[ -z "$status" || "$status" == Running || "$status" == Processing || "$status" == Unknown ]]; do
+        if (( $(date +%s) > deadline )); then echo "$job: execution $execution timed out"; return 1; fi
+        sleep 10
+        status=$(az containerapp job execution show -n "$job" -g "$RG" --job-execution-name "$execution" --query properties.status -o tsv 2>/dev/null || echo Unknown)
+      done
+      az containerapp job logs show -n "$job" -g "$RG" --execution "$execution" --format text \
+        --container "$(az containerapp job show -n "$job" -g "$RG" --query 'properties.template.containers[0].name' -o tsv)" 2>/dev/null || true
+      echo "$job: execution $execution $status"
+      [[ "$status" == Succeeded ]]
+    }
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # The deploy app's federated credential trusts this repository's deploy job in this GitHub environment only.
+    environment: ${{ inputs.environment || 'dev' }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      # The pinned Bicep CLI, first on PATH, so the tests and every deployment use it. It compiles the parameter
+      # file: the sign-in and target, never GitHub secrets, and every resource name the steps below use.
+      - name: "0 Bicep CLI, then the sign-in, target and names (infra/main.<environment>.bicepparam)"
+        id: target
+        run: |
+          mkdir -p "$RUNNER_TEMP/bicep"
+          curl -fsSL -o "$RUNNER_TEMP/bicep/bicep" "https://github.com/Azure/bicep/releases/download/${BICEP_VERSION}/bicep-linux-x64"
+          chmod +x "$RUNNER_TEMP/bicep/bicep"
+          echo "$RUNNER_TEMP/bicep" >> "$GITHUB_PATH"
+          echo "BICEP_PATH=$RUNNER_TEMP/bicep/bicep" >> "$GITHUB_ENV"
+          "$RUNNER_TEMP/bicep/bicep" build-params "$PARAMS" --stdout | jq '.parametersJson | fromjson | .parameters | map_values(.value)' > "$RUNNER_TEMP/params.json"
+          jq -r 'def v(p): getpath(p) // error("the parameter file has no \(p | join("."))");
+            "tenantId=\(v(["tenantId"]))", "subscriptionId=\(v(["subscriptionId"]))", "deployClientId=\(v(["deployClientId"]))",
+            "authAudience=\(v(["authAudience"]))", "payerAddress=\(v(["payerAddress"]))"' "$RUNNER_TEMP/params.json" >> "$GITHUB_OUTPUT"
+          jq -r 'def v(p): getpath(["names"] + p) // error("the parameter file has no names.\(p | join("."))");
+            "RG=\(v(["resourceGroup"]))", "LOG_X402=\(v(["logs"]))", "CR_X402=\(v(["registry"]))",
+            "CA_L1=\(v(["apps", "l1"]))", "CA_L3=\(v(["apps", "l3"]))", "CA_SELLER=\(v(["apps", "seller"]))",
+            "CA_SELLER_ALIAS=\(v(["apps", "sellerAlias"]))", "CAJ_L1=\(v(["jobs", "l1"]))", "CAJ_L2=\(v(["jobs", "l2"]))"' "$RUNNER_TEMP/params.json" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # With BICEP_PATH set, every suite runs, T-IAC-01 on the compiled templates included.
+      - name: "1 typecheck and tests"
+        id: tests
+        run: |
+          npm install --no-audit --no-fund
+          npm run typecheck
+          npm test
+
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ steps.target.outputs.deployClientId }}
+          tenant-id: ${{ steps.target.outputs.tenantId }}
+          subscription-id: ${{ steps.target.outputs.subscriptionId }}
+
+      - name: "2 what-if, then deploy the platform"
+        id: platform
+        env:
+          PLATFORM_ONLY: "true"
+          SEED_IP: ${{ inputs.seed-ip }}
+          RECOVER_VAULTS: ${{ inputs.recover-vaults || false }}
+        run: |
+          echo "started=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          az deployment group what-if -g "$RG" -p "$PARAMS"
+          az deployment group create -g "$RG" -n "x402-platform-$IMAGE_TAG" -p "$PARAMS" -o none
+          echo "law=$(az monitor log-analytics workspace show -g "$RG" -n "$LOG_X402" --query customerId -o tsv)" >> "$GITHUB_OUTPUT"
+
+      - name: "3 build and push the four images, tagged with the commit"
+        id: build
+        if: ${{ !inputs.platform-only }}
+        run: |
+          az acr login -n "$CR_X402"
+          SERVER=$(az acr show -n "$CR_X402" --query loginServer -o tsv)
+          for image in l1-agent l2-control l3-verifier; do
+            docker build -f "docker/$image.Dockerfile" -t "$SERVER/x402-$image:$IMAGE_TAG" .
+            docker push "$SERVER/x402-$image:$IMAGE_TAG"
+          done
+          docker build -f Dockerfile -t "$SERVER/x402-seller:$IMAGE_TAG" .
+          docker push "$SERVER/x402-seller:$IMAGE_TAG"
+          echo "acr=$SERVER" >> "$GITHUB_OUTPUT"
+
+      - name: "3b image secret check (SC-005)"
+        id: image-scan
+        if: ${{ !inputs.platform-only }}
+        run: |
+          for image in l1-agent l2-control l3-verifier seller; do
+            IMG="${{ steps.build.outputs.acr }}/x402-$image:$IMAGE_TAG"
+            if (docker history --no-trunc "$IMG"; docker run --rm "$IMG" env) | grep -E 'PRIVATE_KEY[=]|_SECRET[=]|_TOKEN[=]'; then
+              echo "secret assignment found in $IMG"; exit 1
+            fi
+          done
+
+      # The agent's current revision keeps all traffic; the new one starts at 0% behind the `candidate` label.
+      - name: "4 what-if, then deploy everything"
+        id: deploy
+        if: ${{ !inputs.platform-only }}
+        run: |
+          STABLE=$(az containerapp revision list -n "$CA_L1" -g "$RG" --query "[?properties.trafficWeight==\`100\`].name | [0]" -o tsv 2>/dev/null || true)
+          echo "stable=$STABLE" >> "$GITHUB_OUTPUT"
+          export AGENT_STABLE_REVISION="$STABLE"
+          az deployment group what-if -g "$RG" -p "$PARAMS"
+          az deployment group create -g "$RG" -n "x402-$IMAGE_TAG" -p "$PARAMS" -o none
+
+      # The operator job's own command is ledger-verify: the deploy identity never starts it with another.
+      - name: "5 wait: L2's ledger lock handover, the latest revisions, both sellers"
+        id: wait
+        if: ${{ !inputs.platform-only }}
+        run: |
+          eval "$RUN_JOB"
+          ok=""
+          for _ in $(seq 1 20); do
+            if run_job "$CAJ_L2" 120; then ok=1; break; fi
+            sleep 15
+          done
+          if [ -z "$ok" ]; then echo "L2 did not answer ledger-verify within 5 minutes"; exit 1; fi
+          for app in "$CA_L1" "$CA_L3"; do
+            state=""
+            for _ in $(seq 1 30); do
+              LATEST=$(az containerapp show -n "$app" -g "$RG" --query properties.latestRevisionName -o tsv)
+              state=$(az containerapp revision show -n "$app" -g "$RG" --revision "$LATEST" --query properties.provisioningState -o tsv)
+              [ "$state" = Provisioned ] && break
+              sleep 10
+            done
+            if [ "$state" != Provisioned ]; then echo "$app revision $LATEST was not provisioned within 5 minutes"; exit 1; fi
+          done
+          for app in "$CA_SELLER" "$CA_SELLER_ALIAS"; do
+            host=$(az containerapp show -n "$app" -g "$RG" --query properties.configuration.ingress.fqdn -o tsv)
+            ok=""
+            for _ in $(seq 1 18); do
+              if curl -fsS -m 10 -o /dev/null "https://$host/api/catalog"; then ok=1; break; fi
+              sleep 10
+            done
+            if [ -z "$ok" ]; then echo "$host did not answer /api/catalog within 3 minutes"; exit 1; fi
+          done
+
+      - name: "6 payer balance (read-only)"
+        id: balance
+        if: ${{ !inputs.platform-only }}
+        run: npm run -s payer-balance -- "${{ steps.target.outputs.payerAddress }}"
+
+      - name: "7 regression: L1-4 scripted plan with --check-baseline"
+        id: regression
+        if: ${{ !inputs.platform-only }}
+        run: |
+          eval "$RUN_JOB"
+          run_job "$CAJ_L1"
+
+      - name: "8 ledger-verify"
+        id: chain
+        if: ${{ !inputs.platform-only }}
+        run: |
+          eval "$RUN_JOB"
+          run_job "$CAJ_L2"
+
+      # The token is for the API app's client ID, the audience the agent accepts (authAudience).
+      - name: "9 hosted smoke through the agent's new revision"
+        id: smoke
+        if: ${{ !inputs.platform-only }}
+        run: |
+          AGENT=$(az containerapp show -n "$CA_L1" -g "$RG" --query properties.configuration.ingress.fqdn -o tsv)
+          if [ -n "${{ steps.deploy.outputs.stable }}" ]; then AGENT="${AGENT/$CA_L1/$CA_L1---candidate}"; fi
+          ACCESS=$(az account get-access-token --resource "${{ steps.target.outputs.authAudience }}" --query accessToken -o tsv)
+          START=$(date +%s)
+          curl -fsS -m 210 -X POST "https://$AGENT/v1/runs" -H "authorization: Bearer $ACCESS" -H "content-type: application/json" \
+            -d '{"goal":"Get today'"'"'s weather for Lima and a short market brief, then give me a receipt list of what you bought."}' > "$RUNNER_TEMP/smoke.json"
+          SECS=$(( $(date +%s) - START ))
+          echo "hosted smoke: ${SECS}s (SC-009 target: p95 <= 120 s)" >> "$GITHUB_STEP_SUMMARY"
+          jq -e '.status == "completed"' "$RUNNER_TEMP/smoke.json" > /dev/null
+          for p in /api/weather /api/market-brief; do
+            jq -e --arg p "$p" '[.steps[] | select((.url // "") | contains($p)) | select(.result.outcome == "PAID" and .result.payment.settlement.status == "CONFIRMED")] | length >= 1' "$RUNNER_TEMP/smoke.json" > /dev/null
+          done
+          test "$SECS" -le 120
+
+      - name: "10 log secret scan (credential shapes)"
+        id: log-scan
+        if: ${{ !inputs.platform-only }}
+        run: |
+          az monitor log-analytics query -w "${{ steps.platform.outputs.law }}" \
+            --analytics-query "ContainerAppConsoleLogs_CL | where TimeGenerated >= datetime(${{ steps.platform.outputs.started }}) | project Log_s" \
+            --query "[].Log_s" -o tsv | npm run -s scan-logs
+
+      # Bicep moves the traffic: main.bicep again, without a stable revision, gives the latest one 100%.
+      - name: "11 promote: the agent's traffic, and every image as last-good"
+        id: promote
+        if: ${{ !inputs.platform-only }}
+        run: |
+          AGENT_STABLE_REVISION="" az deployment group create -g "$RG" -n "x402-promote-$IMAGE_TAG" -p "$PARAMS" -o none
+          for image in l1-agent l2-control l3-verifier seller; do
+            az acr import -n "$CR_X402" --source "${{ steps.build.outputs.acr }}/x402-$image:$IMAGE_TAG" --image "x402-$image:last-good" --force
+          done
+
+      # Once step 4 has run, even if it failed partway, the apps may be on the new images: back to last-good. A failed
+      # platform deployment is fixed forward: there is no previous platform to return to.
+      - name: "rollback everything to last-good (the agent's traffic stays on its previous revision)"
+        id: rollback
+        if: failure() && (steps.deploy.outcome == 'success' || steps.deploy.outcome == 'failure')
+        run: |
+          eval "$RUN_JOB"
+          for image in l1-agent l2-control l3-verifier seller; do
+            if ! az acr repository show-tags -n "$CR_X402" --repository "x402-$image" -o tsv | grep -x last-good > /dev/null; then
+              echo "x402-$image has no last-good yet: nothing to roll back to"; exit 1
+            fi
+          done
+          IMAGE_TAG=last-good AGENT_STABLE_REVISION="${{ steps.deploy.outputs.stable }}" \
+            az deployment group create -g "$RG" -n "x402-rollback-${{ github.sha }}" -p "$PARAMS" -o none
+          run_job "$CAJ_L2"

@@ -1,7 +1,7 @@
 # Contract: hosted agent HTTP API (proposed SPEC L1-6)
 
 **Names**: SPEC calls this unit the *hosted agent service*. Its env role is `l1-hosted`, its
-Azure app is `ca-l1-agent`, and its code lives in `src/layer1-intent/hosted/`.
+Azure app is `ca-l1-eastus2-dev`, and its code lives in `src/layer1-intent/hosted/`.
 
 The entry point is `src/hosted-main.ts`, a composition root beside `src/main.ts`, run with
 `npm run agent:hosted`. It sits outside the layer because rule A5 bans `PAYER_PRIVATE_KEY` under

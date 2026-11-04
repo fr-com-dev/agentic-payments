@@ -333,6 +333,10 @@ the IDs to the ledger entries. Run the secret scan over all of them: it finds no
   chain and a clean secret scan. Otherwise it is reported failed: the previous agent version keeps
   serving, and the previous control and settlement versions are restored, since only one control
   instance may run at a time. *(SPEC: L1-4, T-E2E-01, T-E2E-06, proposed T-E2E-AZ)*
+  *Amended 2026-10-25 (one pipeline per layer), and again 2026-11-02 (one deployment for
+  everything):* a deployment deploys every unit from one commit, and the plan runs after it. The
+  only exception is the very first, platform-only deployment, made before the vaults are seeded:
+  it deploys no app and runs no plan. A failed deployment restores every unit's previous version.
 
 **Observability**
 
@@ -384,8 +388,8 @@ the IDs to the ledger entries. Run the secret scan over all of them: it finds no
 - **Layer runtime unit**: the agent, control or settlement service as deployed. Each has its own
   cloud identity, its own secrets and its own network exposure (public for the agent, private for
   the others).
-- **Deployment**: one commit deployed to the environment. It has its images, its environment
-  definition and the result of its regression run.
+- **Deployment**: one unit (the platform and sellers, or one layer) deployed from one commit. It
+  has its image, its environment definition and the result of its regression run.
 
 ## Success Criteria *(mandatory)*
 

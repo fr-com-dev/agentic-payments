@@ -164,7 +164,7 @@ anything depends on them.
   other systems through an app-role assignment to their service principal.
 - **People's tokens**: the app exposes the delegated scope `user_impersonation` and pre-authorizes
   the Azure CLI for it, so a person assigned `Agent.Run` runs
-  `az account get-access-token --scope api://x402-l1-agent/user_impersonation`. App roles assigned to
+  `az account get-access-token --scope api://app-l1-eastus2-dev/user_impersonation`. App roles assigned to
   a user appear in `roles` of a delegated token. Without a scope and a pre-authorized client, only
   service principals (client credentials) could get a token. (Added 2026-10-24; first confirmed live
   in T060.)
@@ -255,37 +255,37 @@ anything depends on them.
   - **Environment.** One workload-profiles Container Apps environment (Consumption profile) on a
     custom VNet, *external*, so the agent can have public ingress. Peer-to-peer encryption is on.
   - **Apps in the environment**:
-    - `ca-l1-agent`: external ingress, target port 4024;
-    - `ca-l2-control`: internal ingress (`external: false`);
-    - `ca-l3-verifier`: internal ingress;
-    - the jobs `job-regression` and `job-operator` (R17, R18).
-  - **The seller.** The demo seller `ca-seller` and its alias `ca-seller-alias` (R17) run in a
+    - `ca-l1-eastus2-dev`: external ingress, target port 4024;
+    - `ca-l2-eastus2-dev`: internal ingress (`external: false`);
+    - `ca-l3-eastus2-dev`: internal ingress;
+    - the jobs `caj-l1-eastus2-dev` and `caj-l2-eastus2-dev` (R17, R18).
+  - **The seller.** The demo seller `ca-seller-eastus2-dev` and its alias `ca-seller-alias-eastus2-dev` (R17) run in a
     **second** environment, so they can't reach the internal apps.
   - **Internal calls** use `http://<app>.internal.<environment-domain>`, with `allowInsecure:
     true` on the internal apps. The platform still encrypts the hop. A maintainer recommended the
     full internal FQDN after short names proved flaky from jobs.
   - **Identities and vaults.** One user-assigned identity and one Key Vault per runtime unit:
-    `id-l1/kv-l1`, `id-l2/kv-l2`, `id-l3/kv-l3`, `id-op/kv-op` and `id-seller/kv-seller`. Each
+    `id-l1-eastus2-dev/kv-l1`, `id-l2-eastus2-dev/kv-l2`, `id-l3-eastus2-dev/kv-l3`, `id-op-eastus2-dev/kv-op` and `id-seller-eastus2-dev/kv-seller`. Each
     identity gets Key Vault Secrets User on its own vault only, plus AcrPull on the registry.
-    `id-l1` alone also gets Cognitive Services User on the Foundry resource.
-  - **Identity lifecycle.** `None` for `id-l2`, `id-l3`, `id-op` and `id-seller`: platform use
+    `id-l1-eastus2-dev` alone also gets Cognitive Services User on the Foundry resource.
+  - **Identity lifecycle.** `None` for `id-l2-eastus2-dev`, `id-l3-eastus2-dev`, `id-op-eastus2-dev` and `id-seller-eastus2-dev`: platform use
     only, for Key Vault references and image pull, so no container can request a token at run
-    time. `Main` for `id-l1`, which needs Foundry tokens.
+    time. `Main` for `id-l1-eastus2-dev`, which needs Foundry tokens.
   - **Other resources**: Azure Container Registry, Log Analytics, and a premium NFS file share for
     the L2 ledger (R12).
   - **Key Vault network access.** Each vault denies by default and has a VNet rule for its unit's
-    subnet: `snet-cae` for the main environment, `snet-cae-cp` for the counterparty environment,
+    subnet: `snet-x402-eastus2-dev` for the main environment, `snet-seller-eastus2-dev` for the counterparty environment,
     which gets its own subnet for this. Both subnets have the `Microsoft.KeyVault` service
-    endpoint. Seeding secrets by hand needs a temporary IP rule for the operator, removed
-    afterwards. *To verify* in quickstart §4 that Key Vault references resolve through the VNet
+    endpoint. Seeding secrets by hand needs a temporary IP rule for the operator: `seedIp`, set
+    through Bicep on one platform-only run and removed by the next (revised 2026-11-02). *To verify* in quickstart §4 that Key Vault references resolve through the VNet
     rule.
 - **Rationale**:
   - An internal-ingress app is "reachable only from other apps in the same environment", which
     excludes the rest of the VNet and other environments. That is why the seller lives in its
     own environment.
   - Every container in an app can use the app's identities. The only control is the identity
-    `lifecycle`, so `None` is what keeps L2's proxy sidecar (R11) from using `id-l2`. *To verify*
-    in quickstart §4: a token request from inside `ca-l2-control` must fail, and the Key Vault
+    `lifecycle`, so `None` is what keeps L2's proxy sidecar (R11) from using `id-l2-eastus2-dev`. *To verify*
+    in quickstart §4: a token request from inside `ca-l2-eastus2-dev` must fail, and the Key Vault
     references must still resolve.
 - **Alternatives considered**:
   - A separate environment per layer (clarification option C, not chosen).
@@ -392,28 +392,51 @@ anything depends on them.
 - **Sources**: https://mastra.ai/reference/observability/tracing/configuration,
   https://mastra.ai/reference/cli/mastra#telemetry, `packages/core/src/telemetry/*` at 1.75.0.
 
-## R14. Build and container image
+## R14. Build and container images
 
-- **Decision**:
-  - **One image for every process**, with a different `command` per app.
-  - **Build stage**: `npm install` then `tsc -p tsconfig.build.json` (emits `dist/` for `src/`
-    and the operator scripts).
-  - **Runtime stage**: `node:22-bookworm-slim` pinned by digest, a non-root user,
-    `npm install --omit=dev`, `dist/`, `config/`, and `docs/` copied to `dist/docs/` (the API-docs
-    module resolves the OpenAPI file relative to itself).
+- **Decision** (revised 2026-10-25: one image per layer, at the owner's request; first decided as one image
+  for every process):
+  - **One image per layer, plus the seller's.** Each app and job runs from its own unit's image
+    (T-IAC-01 rule 12):
+
+    | Image | Dockerfile | Entry points | Runs in |
+    |---|---|---|---|
+    | `x402-l1-agent` | `docker/l1-agent.Dockerfile` | `src/hosted-main.ts`, `src/main.ts` | `ca-l1-eastus2-dev`, `caj-l1-eastus2-dev` |
+    | `x402-l2-control` | `docker/l2-control.Dockerfile` | `src/layer2-control/service.ts`, the four operator scripts | `ca-l2-eastus2-dev`, `caj-l2-eastus2-dev` |
+    | `x402-l3-verifier` | `docker/l3-verifier.Dockerfile` | `src/layer3-settlement/service.ts` | `ca-l3-eastus2-dev` |
+    | `x402-seller` | `Dockerfile` (root) | `src/counterparty/seller.ts` | `ca-seller-eastus2-dev`, `ca-seller-alias-eastus2-dev` |
+
+  - **What an image holds.** `scripts/image-closure.ts` is the table above. esbuild walks the import
+    graph of the image's entry points in the TypeScript sources, and the script copies only those
+    compiled files and writes a `package.json` with only the packages they import. Each image's
+    packages are installed with `npm install --omit=dev` against the full lockfile, so versions match
+    the repository. The build fails when the graph reaches a file outside the image's folders, or a
+    package that isn't a runtime dependency. A package resolved at run time (`createRequire`) must be
+    listed in the image's `extraPackages`; L2 lists `swagger-ui-dist`. The runtime stage then imports
+    every module once, so a missing file or package fails the build, not a revision start.
+  - **Build stage**: `npm install`, `tsc -p tsconfig.build.json`, then the closure script.
+  - **Runtime stage**: `node:22-bookworm-slim` pinned by digest (the same digest in all four), a
+    non-root user. Only the L2 image adds `config/`, `docs/l2-control.openapi.yaml` (as
+    `dist/docs/`, where the API-docs module looks for it) and `/app/.local` for the NFS ledger.
   - `engines.node` becomes `>=22.13`, Mastra's floor.
 - **Rationale**:
   - The services run TypeScript through `tsx` today, and `tsx` is a dev dependency. A compiled
-    `dist/` keeps dev tools (ganache, solc, vitest) out of the image.
+    `dist/` keeps dev tools (ganache, solc, vitest) out of the images.
   - `npm install`, not `npm ci`, because of the lockfile quirk (CLAUDE.md). On Linux, darwin-only
     `fsevents` is skipped.
-  - One image keeps builds simple. Isolation comes from identities, env and network, not from
-    which code is in the image; the image holds no key.
+  - Identities, env and network remain the primary isolation, and no image holds a key. Per-layer
+    images add code isolation on top: the L1 and L3 images don't contain the signer, and the L2 and
+    L3 images contain no agent framework or model SDK (T-IMG-01). Each image is also smaller. On
+    2026-10-25 the one shared image was 874 MB; the four are L1 640 MB, L2 539 MB, L3 512 MB and the
+    seller 585 MB.
 - **Alternatives considered**:
   - `tsx` in production: ships a dev toolchain.
   - Node's built-in type stripping: the code imports `.js` specifiers that point at `.ts` files,
     which type stripping doesn't rewrite.
-  - One image per layer: more pipelines for no isolation gain.
+  - One image for every process (the first decision): simpler builds, but every process carries
+    every layer's code and packages.
+  - Bundling each entry point into one file: smaller still, but production would then run bundled
+    copies of Mastra and the SDKs instead of the same modules the tests and the demo load.
 
 ## R15. Infrastructure as code and its test (FR-010, FR-023, T-IAC-01)
 
@@ -422,10 +445,10 @@ anything depends on them.
   - **T-IAC-01** compiles it with `@azure/bicep-rpc-client` 0.4.1 (dev only; `bicep-node` is
     deprecated) and the Bicep CLI 0.47.16. It then asserts on the ARM JSON:
     - each identity has role assignments only on its own vault (plus AcrPull, and Foundry for
-      `id-l1`);
-    - `PAYER_PRIVATE_KEY` is referenced only by `ca-l2-control`'s `l2` container;
-    - `ca-l2-control` and `ca-l3-verifier` have `external: false`;
-    - `ca-l2-control` has `maxReplicas: 1`;
+      `id-l1-eastus2-dev`);
+    - `PAYER_PRIVATE_KEY` is referenced only by `ca-l2-eastus2-dev`'s `l2` container;
+    - `ca-l2-eastus2-dev` and `ca-l3-eastus2-dev` have `external: false`;
+    - `ca-l2-eastus2-dev` has `maxReplicas: 1`;
     - the sidecars get no env;
     - identity lifecycles match R10.
   - **Where it runs.** The npm package doesn't ship the CLI. The test runs when `BICEP_PATH` is
@@ -442,38 +465,79 @@ anything depends on them.
 
 ## R16. Deployment pipeline (FR-023, FR-024)
 
-- **Decision**: A GitHub Actions workflow, `.github/workflows/deploy-azure.yml`, triggered
-  manually or on a tag. It signs in to Azure with OIDC (federated credential, no stored secret).
-  Steps:
-  1. typecheck and `npm test`;
-  2. T-IAC-01 with the Bicep CLI;
-  3. `az acr build`, with the image tagged by commit SHA;
-  4. `az deployment group what-if`, then `create` with that tag;
-  5. wait for L2's lock handover;
-  6. start `job-regression` and require exit 0;
-  7. the hosted smoke check and the Log Analytics secret scan;
-  8. shift `ca-l1-agent` traffic to the new revision.
+- **Revised 2026-11-02, at the owner's request** (supersedes the decision below where they differ):
+  - **Bicep only.** All Azure provisioning is Bicep: `infra/pre-deploy.bicep` (subscription scope,
+    deployed by an administrator by hand) makes the resource group, the API and deploy app
+    registrations with their service principals (Microsoft Graph Bicep extension v1.0:1.0.0), the
+    deploy app's federated credential, `Agent.Run` assignments, the operators' group and the deploy
+    app's roles; `infra/main.bicep` makes everything in the resource group, the Claude model
+    deployment, the vault seed IP and vault recovery included. Even the agent's traffic moves through
+    `main.bicep`. Bicep can't create a client secret, so the deploy app signs in with OIDC again
+    (federated credential, no secret).
+  - **One template, one workflow.** The unit templates are merged into `main.bicep`, deployed by one
+    workflow, `deploy.yml`, from one commit: platform first, then the four images, then everything.
+    Every layer ships together again and shares one `last-good`. Its modules take names, not other
+    modules' outputs, so what-if previews a first deployment fully (32 creates platform-only, 40 in all).
+  - **Every value in the parameter files.** `pre-deploy.<env>.bicepparam` and `main.<env>.bicepparam`
+    hold the target (tenant, subscription, resource group, location), the GitHub repository and
+    environment, the app IDs and the public addresses. Each template fails validation anywhere else.
+    The workflow reads its sign-in and target from the parameter file and no GitHub secret;
+    `env/infra.env` is gone.
+  - **Why**: one place for every value, one tool for provisioning, and a what-if that shows the whole
+    change before each deployment. The cost: a change to one layer redeploys the template for all, and
+    the layers no longer ship separately.
+- **Decision** (revised 2026-10-25 at the owner's request: one pipeline for the platform and one per
+  layer; first decided as one workflow, `deploy-azure.yml`, for everything):
+  - **Four GitHub Actions workflows**, each run by hand or by its own tag, all signing in to Azure
+    with the deploy app's client ID and client secret, and sharing one concurrency group (revised
+    2026-10-27 at the owner's request; first decided as OIDC with a federated credential, which
+    stores no credential in GitHub). They read seven GitHub secrets: the client secret, and
+    identifiers or public addresses kept as secrets so the logs mask them. The application's
+    credentials stay in the Key Vaults (contracts/deploy-pipeline.md). The workflows:
+    - **`deploy-infra.yml`** deploys the platform (`infra/main.bicep`). It then builds the seller's
+      image and deploys the sellers (`infra/seller.bicep`); the seller is the counterparty, test
+      infrastructure rather than a layer.
+    - **`deploy-l1.yml`, `deploy-l2.yml` and `deploy-l3.yml`** call the shared `deploy-layer.yml`,
+      which builds that layer's image and deploys that layer's template (`infra/<image>.bicep`).
+  - **Platform only in `main.bicep`.** Each unit template finds the platform's resources by name
+    through `modules/platform.bicep`, and asks for its own identities and vaults only (T-IAC-01
+    rule 13). An app's configuration and its code therefore ship together, from one commit.
+  - **Layer steps:**
+    1. typecheck and `npm test`;
+    2. T-IAC-01 on every template;
+    3. the layer's image, tagged with the commit SHA;
+    4. `az deployment group what-if`, then `create` of its template with that tag;
+    5. wait for the layer (L2: its lock handover);
+    6. start `caj-l1-eastus2-dev` and require exit 0;
+    7. the hosted smoke check and the Log Analytics secret scan;
+    8. promote: the agent's traffic for L1, and the image's `last-good` tag for every layer.
   - **The agent app** runs in multiple-revision mode. A new revision gets 0% traffic and a label
     until checks pass, so the previous agent keeps serving.
-  - **L2, L3 and the seller** run in single-revision mode. On failure the workflow redeploys the
-    previous SHA's images (FR-024 as amended).
+  - **L2, L3 and the seller** run in single-revision mode. On failure their pipeline redeploys that
+    unit's `last-good` image (FR-024 as amended).
 - **Rationale**:
-  - Every deployment is reproducible from one commit.
-  - The baseline gates the release.
+  - Every deployment is reproducible from one commit, and each unit records its own `last-good`.
+  - A layer ships without rebuilding or restarting the others. That matters most for L2, whose
+    lock handover makes every deployment a short standby.
+  - The layers can run different commits, so each layer run repeats the regression through all of
+    them; the infra run repeats it too once the layers exist. The baseline still gates every release.
   - The agent can stay blue-green, but L2 cannot, because only one copy may write (R12).
-- **Alternatives considered**: deploying from a developer machine with `azd`, which isn't
-  reproducible or gated.
+- **Alternatives considered**:
+  - One workflow for everything (the first decision): every change redeploys every unit.
+  - Infra owns all the Bicep and layer pipelines only roll images: an app's configuration would then
+    ship apart from its code.
+  - Deploying from a developer machine with `azd`, which isn't reproducible or gated.
 
 ## R17. How does the baseline plan run in the cloud (FR-024, T-E2E-AZ)?
 
-- **Decision**: `job-regression` is a manual Container Apps Job in the main environment. It runs
+- **Decision**: `caj-l1-eastus2-dev` is a manual Container Apps Job in the main environment. It runs
   the existing scripted agent (`node dist/src/main.js --scripted --check-baseline`) with L1 credentials:
-  - **Identity.** It uses `id-l1` with lifecycle `None` for this job; it reads only `kv-l1`
+  - **Identity.** It uses `id-l1-eastus2-dev` with lifecycle `None` for this job; it reads only `kv-l1`
     secrets through references.
   - **Calls.** It calls L2 and L3 by internal FQDN, and the seller by its public FQDN.
   - **Step 6.** It needs a host the seller answers on that isn't allow-listed. `localhost`
     doesn't reach anything from a cloud job, so `scriptedPlan` gains an optional `SELLER_ALIAS_URL`
-    (default: today's `localhost` rewrite). In Azure that URL is `ca-seller-alias`, the same
+    (default: today's `localhost` rewrite). In Azure that URL is `ca-seller-alias-eastus2-dev`, the same
     seller image and config on a second FQDN, scaled to zero when idle.
   - **Pass criteria** match `demo:base-sepolia`: the six outcomes, two CONFIRMED settlements, a
     verified chain (through the operator job) and a clean secret scan.
@@ -486,7 +550,7 @@ anything depends on them.
 - **Alternatives considered**:
   - A custom domain for the seller: needs DNS and certificates.
   - Changing the cloud baseline's step 6 expectation to `ERROR`: that would change the baseline.
-- **Security**: holding `Microsoft.App/jobs/start/action` on `job-regression` is equivalent to
+- **Security**: holding `Microsoft.App/jobs/start/action` on `caj-l1-eastus2-dev` is equivalent to
   holding L1's credentials, because a start can override the template. Only the deploy identity
   gets it.
 - **The challenge's scheme behind ingress**: the x402 Express adapter builds the challenge's
@@ -501,8 +565,8 @@ anything depends on them.
 
 ## R18. Operator path (FR-021, SEC-8)
 
-- **Decision**: `job-operator` is a manual Container Apps Job in the main environment. It runs
-  `dist/scripts/{approve,reject,escalations}.js` from per-start `--command`/`--args`, with `id-op`
+- **Decision**: `caj-l2-eastus2-dev` is a manual Container Apps Job in the main environment. It runs
+  `dist/scripts/{approve,reject,escalations}.js` from per-start `--command`/`--args`, with `id-op-eastus2-dev`
   and `OPERATOR_TOKEN` from `kv-op`.
   - **Who can start it.** Only the operators' Entra group gets the job-start role on it.
   - **Watching.** `escalations --watch` runs as a long execution, and the operator follows it
@@ -519,7 +583,7 @@ anything depends on them.
 - **Alternatives considered**:
   - A P2S VPN or a jump box (more cost and more to maintain).
   - `az containerapp exec` into L2: it would put a shell in the container that holds the key.
-- **Security**: as with R17, start rights on `job-operator` equal holding `OPERATOR_TOKEN`. This is
+- **Security**: as with R17, start rights on `caj-l2-eastus2-dev` equal holding `OPERATOR_TOKEN`. This is
   stated in SPEC §11 as a v1.5 residual risk.
 - **Sources**: https://learn.microsoft.com/en-us/azure/container-apps/jobs,
   https://learn.microsoft.com/en-us/cli/azure/containerapp/job#az-containerapp-job-start.

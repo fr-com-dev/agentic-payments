@@ -1,8 +1,10 @@
 // Log Analytics for container stdout (FR-025; the post-deployment secret scan reads it).
 param location string
+@description('Every resource name (main.<environment>.bicepparam).')
+param names object
 
 resource law 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
-  name: 'log-x402'
+  name: names.logs
   location: location
   properties: {
     sku: { name: 'PerGB2018' }
