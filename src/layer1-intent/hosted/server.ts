@@ -2,13 +2,15 @@
 // Only `createHostedApp` lives here. The entry point that loads env, enforces INV-3 and listens is
 // src/hosted-main.ts, outside this layer, because rule A5 bans the payer key's name in L1 code.
 // Order per request: auth (401/403) → limits (429) → body (400/413) → session → run. Only POST /v1/runs and the two
-// health routes exist; Mastra publishes no routes (research R1).
+// health routes exist, plus the token-free docs routes with API_DOCS=1 (v1.6); Mastra publishes no routes
+// (research R1). docs/l1-hosted.openapi.yaml describes them; test/openapi-hosted.test.ts keeps it in sync.
 import { randomUUID } from "node:crypto";
 import express, { type Express, type NextFunction, type Request, type Response } from "express";
 import type { JWTVerifyGetKey } from "jose";
 import type { MastraModelConfig } from "@mastra/core/llm";
 import type { AuthorizationGatePort, SettlementVerifierPort } from "../../shared/contracts.js";
 import { runGoal } from "./agent.js";
+import { mountHostedApiDocs } from "./api-docs.js";
 import type { HostedConfig } from "./config.js";
 import { requesterAuth, type Requester } from "./requester-auth.js";
 import { createRunLimiter } from "./run-limits.js";
@@ -73,6 +75,8 @@ export function createHostedApp(deps: HostedDeps): HostedApp {
     if (ready) res.json({ status: "ready" });
     else res.status(503).json({ status: "starting" });
   });
+  // API_DOCS=1 only (SEC-13): Swagger UI and the document, token-free like the health routes, so before auth.
+  if (deps.config.apiDocs) mountHostedApiDocs(app);
 
   if (!deps.bypassAuth) {
     app.use(

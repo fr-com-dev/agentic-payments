@@ -1,0 +1,461 @@
+# L1 hosted agent service HTTP API (SPEC.md §8.1 L1-6; specs/011 contracts/hosted-agent-api.md) as OpenAPI 3.1.
+# SPEC.md and the contract stay normative. test/openapi-hosted.test.ts (T-API-05..08) fails when this file and the
+# running service disagree on routes, auth or response shapes, so change both together.
+openapi: 3.1.0
+info:
+  title: L1 hosted agent API
+  version: "1.6"
+  summary: The purchasing agent of the x402 three-layer agent payments PoC, as an HTTP service.
+  description: |
+    A Claude agent that buys HTTP resources with x402 within a spending mandate. It holds no key: every
+    payment is decided and signed by L2, and settled payments are verified on-chain by L3. One call runs one
+    goal to the end and answers with every step and a receipt.
+
+    - **Auth.** An Entra ID v2.0 access token carrying the app role `Agent.Run`, checked before anything else.
+      Without a valid token every path answers 401, except `/healthz`, `/readyz` and the docs routes.
+    - **One call, one run.** The response arrives when the run has ended (completed, stopped or failed), at
+      most 200 s later. Allow up to 220 s on the client.
+    - **Sessions.** Each new run gets a session and a budget. Send the returned `sessionRef` with the next
+      goal to continue that session; it works for the requester it was issued to only.
+    - **Limits** per requester: 2 concurrent runs and 20 starts per sliding hour (429 with `Retry-After`).
+    - **Amounts.** `amountUsd` is a decimal string; budget fields are decimal strings of atomic units (USDC
+      has 6 decimals: `"1000"` is 0.001 USDC).
+    - **API docs.** With `API_DOCS=1`, the agent also serves this document and Swagger UI at `/docs`. Those
+      routes take no token and are not mounted by default; the Azure deployment never sets `API_DOCS`.
+      When served, `servers` points at that agent.
+servers:
+  - url: http://127.0.0.1:4024
+    description: Default local bind (npm run agent:hosted; 0.0.0.0 in a container)
+tags:
+  - name: runs
+    description: Run a goal (requires `Agent.Run`).
+  - name: health
+    description: Liveness and readiness; no token.
+  - name: docs
+    description: Swagger UI and this document. Mounted only when `API_DOCS=1`; no token.
+
+paths:
+  /v1/runs:
+    post:
+      tags: [runs]
+      operationId: runGoal
+      summary: Run one goal to the end
+      description: |
+        Checks, in order: the token (401, 403), the requester's limits (429), the body (400, 413), the session
+        (400, 404), then runs the goal with exactly two tools, `fetch_resource` and `check_budget`, for at most
+        10 steps and 200 s. A refused call makes no model, L2 or L3 call. Every finished step is listed, also
+        for a stopped or failed run. An ESCALATED purchase carries an `authorizationId`: give it to an operator,
+        then call again with the same `sessionRef`.
+      security:
+        - entraBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RunRequest"
+            examples:
+              newSession:
+                summary: A new session
+                value:
+                  goal: Get the weather for Lima
+              continueSession:
+                summary: Continue a session
+                value:
+                  goal: Now a short market brief
+                  sessionRef: sr1.sess_0123456789abcdef.Zm9yLWRvY3Mtb25seS1ub3QtYS1yZWFsLW1hYy0xMjM
+      responses:
+        "200":
+          description: The run has ended, in any status.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Run"
+        "400":
+          description: |
+            The body is not a JSON object; `goal` is missing, not a string, or empty or over 4,000 characters
+            after trimming; an unknown field; `sessionRef` is not a string, is malformed or is a raw `sess_…` ID.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: A well-formed `sessionRef` that does not verify for this requester (`unknown session`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "413":
+          description: The body is over 16 KB.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          description: More than 2 concurrent runs, or 20 starts in the last hour, for this requester.
+          headers:
+            Retry-After:
+              description: Seconds until a run may start.
+              required: true
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /healthz:
+    get:
+      tags: [health]
+      operationId: getHealth
+      summary: Liveness
+      description: 200 while the process runs. Never returns configuration, versions or secrets.
+      security: []
+      responses:
+        "200":
+          description: The process is running.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [status]
+                properties:
+                  status:
+                    const: ok
+
+  /readyz:
+    get:
+      tags: [health]
+      operationId: getReadiness
+      summary: Readiness
+      description: 200 once the agent listens, 503 before. Never returns configuration, versions or secrets.
+      security: []
+      responses:
+        "200":
+          description: Ready to run goals.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [status]
+                properties:
+                  status:
+                    const: ready
+        "503":
+          description: Startup has not finished.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [status]
+                properties:
+                  status:
+                    const: starting
+
+  /docs:
+    get:
+      tags: [docs]
+      operationId: getApiDocsPage
+      summary: Swagger UI for this document
+      description: |
+        Only with `API_DOCS=1`. The page loads its scripts and styles from the agent itself (`/docs/{asset}`),
+        never from a CDN, and its Content-Security-Policy limits scripts and requests to the agent's origin.
+        Use **Authorize** to paste a bearer token; Swagger UI keeps it in memory only.
+      security: []
+      responses:
+        "200":
+          description: The Swagger UI page.
+          content:
+            text/html:
+              schema:
+                type: string
+
+  /docs/{asset}:
+    get:
+      tags: [docs]
+      operationId: getApiDocsAsset
+      summary: A Swagger UI file
+      description: Only with `API_DOCS=1`. Serves these three files and nothing else.
+      security: []
+      parameters:
+        - name: asset
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [swagger-ui.css, swagger-ui-bundle.js, swagger-initializer.js]
+      responses:
+        "200":
+          description: The file.
+          content:
+            text/css:
+              schema:
+                type: string
+            text/javascript:
+              schema:
+                type: string
+        "404":
+          description: Not one of the three files.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /openapi.yaml:
+    get:
+      tags: [docs]
+      operationId: getApiDocument
+      summary: This document
+      description: Only with `API_DOCS=1`. Identical to the file, except `servers` is `/`, the agent serving it.
+      security: []
+      responses:
+        "200":
+          description: The OpenAPI document.
+          content:
+            application/yaml:
+              schema:
+                type: string
+
+components:
+  securitySchemes:
+    entraBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        An Entra ID v2.0 access token for the API app, with the app role `Agent.Run`. Its `aud` is the API
+        app's client ID; issuer, tenant, `exp` and `nbf` are checked (60 s tolerance). A person assigned
+        `Agent.Run` gets one from the Azure CLI:
+
+            az account get-access-token --scope api://app-l1-eastus2-dev/user_impersonation --query accessToken -o tsv
+
+        With `@azure/identity`'s `AzureCliCredential`, ask for `api://app-l1-eastus2-dev/.default`. Locally
+        (`NETWORK=local`, `AUTH_JWKS_FILE`), `npm run dev-token -- --subject alice` prints a dev-issuer token.
+
+  responses:
+    Unauthorized:
+      description: Missing, malformed, invalid, expired, wrong-audience, wrong-issuer or wrong-tenant token.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Forbidden:
+      description: A valid token without the app role `Agent.Run`.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+  schemas:
+    Error:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: string
+
+    SessionRef:
+      type: string
+      pattern: "^sr1\\.sess_[0-9a-f]{16}\\.[A-Za-z0-9_-]{43}$"
+      description: |
+        `sr1.<sessionId>.<MAC>`: a session bound to the requester it was issued to. Another requester's use
+        answers 404; a raw `sess_…` ID answers 400.
+
+    AtomicAmount:
+      type: string
+      pattern: "^[0-9]+$"
+      description: Decimal string of atomic units.
+
+    RunRequest:
+      type: object
+      additionalProperties: false
+      required: [goal]
+      properties:
+        goal:
+          type: string
+          minLength: 1
+          maxLength: 4000
+          description: What to buy, in plain language. 1–4,000 characters after trimming.
+          examples: [Get today's weather for Lima and a short market brief, then give me a receipt list of what you bought.]
+        sessionRef:
+          $ref: "#/components/schemas/SessionRef"
+
+    Run:
+      type: object
+      additionalProperties: false
+      required: [runId, sessionRef, status, stopReason, error, finalText, steps, startedAt, finishedAt]
+      properties:
+        runId:
+          type: string
+          pattern: "^run_[0-9a-f-]{36}$"
+        sessionRef:
+          $ref: "#/components/schemas/SessionRef"
+        status:
+          type: string
+          enum: [completed, stopped, failed]
+        stopReason:
+          description: Why a stopped run stopped; null otherwise.
+          enum: [deadline, step_limit, null]
+        error:
+          type: [string, "null"]
+          description: Why a failed run failed (at most 300 characters); null otherwise.
+        finalText:
+          type: string
+          description: The agent's final answer, with a receipt list. Empty when the run failed.
+        steps:
+          type: array
+          description: Every finished tool call, in order, including one still in progress when the run stopped.
+          items:
+            $ref: "#/components/schemas/Step"
+        startedAt:
+          type: string
+          format: date-time
+        finishedAt:
+          type: string
+          format: date-time
+
+    Step:
+      oneOf:
+        - $ref: "#/components/schemas/FetchStep"
+        - $ref: "#/components/schemas/BudgetStep"
+      discriminator:
+        propertyName: tool
+        mapping:
+          fetch_resource: "#/components/schemas/FetchStep"
+          check_budget: "#/components/schemas/BudgetStep"
+
+    FetchStep:
+      type: object
+      additionalProperties: false
+      required: [index, tool, url, purpose, result]
+      properties:
+        index:
+          type: integer
+        tool:
+          const: fetch_resource
+        url:
+          type: string
+        purpose:
+          type: string
+          description: The agent's reason, sent to L2 as audit text only; never an input to a decision.
+        result:
+          oneOf:
+            - $ref: "#/components/schemas/FetchResult"
+            - $ref: "#/components/schemas/ToolError"
+
+    BudgetStep:
+      type: object
+      additionalProperties: false
+      required: [index, tool, result]
+      properties:
+        index:
+          type: integer
+        tool:
+          const: check_budget
+        result:
+          oneOf:
+            - $ref: "#/components/schemas/BudgetStatus"
+            - $ref: "#/components/schemas/ToolError"
+
+    FetchResult:
+      type: object
+      additionalProperties: false
+      required: [outcome, httpStatus, body, payment, violations, authorizationId, error]
+      description: The L1-3 tool result.
+      properties:
+        outcome:
+          type: string
+          enum: [FREE, PAID, DENIED, ESCALATED, PAYMENT_FAILED, ERROR]
+        httpStatus:
+          type: [integer, "null"]
+        body:
+          description: The resource's response body (any JSON), or null.
+        payment:
+          oneOf:
+            - $ref: "#/components/schemas/Payment"
+            - type: "null"
+        violations:
+          description: The policy rules a DENIED or ESCALATED payment broke; null otherwise.
+          oneOf:
+            - type: array
+              items:
+                $ref: "#/components/schemas/PolicyViolation"
+            - type: "null"
+        authorizationId:
+          type: [string, "null"]
+          description: L2's ID for the decision. For ESCALATED, the ID an operator approves or rejects.
+        error:
+          type: [string, "null"]
+
+    Payment:
+      type: object
+      additionalProperties: false
+      required: [authorizationId, amountUsd, settlement]
+      properties:
+        authorizationId:
+          type: string
+        amountUsd:
+          type: string
+          pattern: "^[0-9]+(\\.[0-9]+)?$"
+          examples: ["0.001"]
+        settlement:
+          type: object
+          additionalProperties: false
+          required: [status, tx, finality]
+          properties:
+            status:
+              enum: [CONFIRMED, PENDING, MISMATCH, NOT_SETTLED, null]
+            tx:
+              type: [string, "null"]
+              description: The transaction hash, when one exists.
+            finality:
+              enum: [included, confirmed-depth, l1-safe, null]
+
+    PolicyViolation:
+      type: object
+      additionalProperties: false
+      required: [rule, detail]
+      properties:
+        rule:
+          type: string
+          examples: [human_approval_required]
+        detail:
+          type: string
+
+    BudgetStatus:
+      type: object
+      additionalProperties: false
+      required: [sessionId, asset, decimals, sessionCapAtomic, spentOrReservedAtomic, remainingAtomic, perPaymentCapAtomic]
+      description: The session's budget, as L2 derives it from its ledger.
+      properties:
+        sessionId:
+          type: string
+        asset:
+          type: string
+        decimals:
+          type: integer
+        sessionCapAtomic:
+          $ref: "#/components/schemas/AtomicAmount"
+        spentOrReservedAtomic:
+          $ref: "#/components/schemas/AtomicAmount"
+        remainingAtomic:
+          $ref: "#/components/schemas/AtomicAmount"
+        perPaymentCapAtomic:
+          $ref: "#/components/schemas/AtomicAmount"
+
+    ToolError:
+      type: object
+      additionalProperties: false
+      required: [error]
+      description: A tool call that threw (for example, L2 unreachable).
+      properties:
+        error:
+          type: string

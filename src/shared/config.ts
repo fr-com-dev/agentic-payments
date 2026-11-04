@@ -230,7 +230,7 @@ export const facilitatorPort = (env: Env = process.env) =>
 export const settlementPort = (env: Env = process.env) =>
   portFrom(env, "SETTLEMENT_PORT", DEFAULT_PORTS.settlement);
 
-/** `API_DOCS=1` serves Swagger UI on L2 (L2-5). Off when unset, empty or `0`; any other value is a startup error. */
+/** `API_DOCS=1` serves Swagger UI on L2 (L2-5) and, since v1.6, on the hosted agent (L1-6) and the seller (CP-1). Off when unset, empty or `0`; any other value is a startup error. */
 export function apiDocsEnabled(env: Env = process.env): boolean {
   const raw = env.API_DOCS;
   if (raw === undefined || raw === "" || raw === "0") return false;

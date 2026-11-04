@@ -1,6 +1,6 @@
 // L1-6 hosted agent service configuration (SPEC.md §9 CFG-2 `l1-hosted.env`; specs/011 contracts/model-access.md).
 // Errors name the variable and never echo its value: several of them are secrets.
-import { ConfigError, serviceUrls, tokenFor } from "../../shared/config.js";
+import { apiDocsEnabled, ConfigError, serviceUrls, tokenFor } from "../../shared/config.js";
 
 type Env = Record<string, string | undefined>;
 
@@ -34,6 +34,8 @@ export interface HostedConfig {
   sessionRefSecret: Buffer;
   port: number;
   bindHost: string;
+  /** v1.6: `API_DOCS=1` mounts the token-free Swagger UI routes (SEC-13). Off by default. */
+  apiDocs: boolean;
 }
 
 const present = (v: string | undefined): v is string => v !== undefined && v !== "";
@@ -117,5 +119,6 @@ export function loadHostedConfig(env: Env = process.env): HostedConfig {
     sessionRefSecret,
     port: agentPort(env),
     bindHost: present(env.AGENT_BIND_HOST) ? env.AGENT_BIND_HOST : DEFAULT_AGENT_BIND_HOST,
+    apiDocs: apiDocsEnabled(env),
   };
 }

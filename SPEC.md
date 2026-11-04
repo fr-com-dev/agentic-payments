@@ -3,12 +3,26 @@
 | Field | Value |
 |---|---|
 | Spec ID | X402-3L-SPEC |
-| Version | 1.5 (2026-10-22). v1.0 described the original PoC; v1.1 is the build target for the spec-kit plans in `specs/`; v1.2 adds the CDP facilitator on Base Sepolia (`specs/009`); v1.3 adds the escalation lifecycle: operator rejection, expiry and notification (`specs/010`); v1.4 adds an OpenAPI copy of L2-5 and opt-in Swagger UI on L2 (`API_DOCS=1`); v1.5 adds the hosted agent service on Mastra and Azure (`specs/011`) |
+| Version | 1.6 (2026-11-04). v1.0 described the original PoC; v1.1 is the build target for the spec-kit plans in `specs/`; v1.2 adds the CDP facilitator on Base Sepolia (`specs/009`); v1.3 adds the escalation lifecycle: operator rejection, expiry and notification (`specs/010`); v1.4 adds an OpenAPI copy of L2-5 and opt-in Swagger UI on L2 (`API_DOCS=1`); v1.5 adds the hosted agent service on Mastra and Azure (`specs/011`); v1.6 adds OpenAPI copies of L1-6 and the seller (CP-1), with opt-in Swagger UI on both (`API_DOCS=1`) |
 | Owner | Fabricio Rojas |
 | Status | Implemented PoC; this spec is the source of truth for changes |
 | Reference | IMF Note 2026/004, *How Agentic AI Will Reshape Payments* (three-layer model) |
 
 ---
+
+## Changes in 1.6
+
+One opt-in behavior change: with `API_DOCS=1`, the hosted agent service and the seller serve Swagger UI. Without it, every process behaves exactly as in 1.5. No contract change.
+
+| Area | Change |
+|---|---|
+| L1-6, §6 | `docs/l1-hosted.openapi.yaml` describes the hosted agent's HTTP API in OpenAPI 3.1, for tools such as Swagger UI, Swagger Editor or Redocly. L1-6 and `specs/011` contracts/hosted-agent-api.md stay normative. |
+| L1-6, CFG-2, §13 | `API_DOCS=1` in `env/l1-hosted.env` mounts `GET /docs`, `GET /docs/:asset` and `GET /openapi.yaml` on the agent, before requester auth like the health routes: Swagger UI over that document, with no token. Off by default, and the Azure deployment never sets it. The Swagger UI routes move to `src/shared/api-docs.ts`, which L2 and the agent each mount through their own wrapper; L2's routes and behavior are unchanged. |
+| CP-1, §6 | `docs/seller.openapi.yaml` describes the seller's HTTP API in OpenAPI 3.1, the x402 headers' decoded JSON included (`contentSchema`), with each priced route's catalog price as `x-x402-price-atomic`. CP-1 stays normative. |
+| CP-1, CFG-2, §13 | `API_DOCS=1` in `env/seller.env` mounts the same three docs routes on the seller, before the payment middleware like the catalog. Off by default, and the Azure deployment never sets it. |
+| §11 | SEC-13 covers the agent's and the seller's docs routes too. |
+| §12 | T-API-05..07 fail when the document and the agent disagree on routes, auth, response statuses, headers, media types or response shapes. T-API-08 checks that the agent's docs routes are off by default, never set in Azure, same-origin and limited to fixed files. T-API-09..11 do the same for the seller, its catalog prices included. |
+| §5, T-IMG-01 | The L1 and seller images list `swagger-ui-dist`, which the shared module resolves at run time, and carry their documents. |
 
 ## Changes in 1.5
 
@@ -266,7 +280,7 @@ Each rule has a fixture under `test/fixtures/arch/` that must trip it (Principle
 | Config | dotenv, one file per process via `ENV_FILE` | ^18 |
 | CDP facilitator auth (seller only) | `@coinbase/cdp-sdk`, `./auth` subpath only | 1.59.0 (exact) |
 | OpenAPI document parsing (tests only) | yaml | ^2.9 |
-| API docs UI (L2, only with `API_DOCS=1`; served by L2, never from a CDN) | swagger-ui-dist | 5.33.1 (exact) |
+| API docs UI (L2 and, since v1.6, the hosted agent and the seller, only with `API_DOCS=1`; served by the service itself, never from a CDN) | swagger-ui-dist | 5.33.1 (exact) |
 | Hosted agent service (L1-6, v1.5): Mastra `Agent` as a library only, no Mastra server, CLI or instance | `@mastra/core`, `@ai-sdk/anthropic` | 1.75.0 / 3.0.128 (exact) |
 | Hosted agent service: tool schemas, requester tokens, Foundry identity | zod, jose, `@azure/identity` | ^4.6.5 / ^6.2.12 / ^4.13.3 |
 | Hosted agent and infrastructure tests (dev only) | `ai` (`MockLanguageModelV3`), `@ai-sdk/provider`, `@azure/bicep-rpc-client`; Bicep CLI | ^6.0.302 / ^3.0.18 / ^0.4.1; 0.47.16 |
@@ -303,6 +317,10 @@ tsconfig.build.json              emits dist/ for src/ and the operator commands 
 config/mandate.json              spending mandate (CFG-3)
 contracts/MockUSDC.sol           local-only EIP-3009 token (CP-4)
 docs/l2-control.openapi.yaml     OpenAPI 3.1 copy of the L2 HTTP API (L2-5); kept in sync by T-API-01..03; L2 serves it with API_DOCS=1
+docs/l1-hosted.openapi.yaml      OpenAPI 3.1 copy of the hosted agent's HTTP API (L1-6, v1.6); kept in sync by T-API-05..07;
+                                 the agent serves it with API_DOCS=1
+docs/seller.openapi.yaml         OpenAPI 3.1 copy of the seller's HTTP API (CP-1, v1.6); kept in sync by T-API-09..10;
+                                 the seller serves it with API_DOCS=1
 env/*.env.example                one env template per process (CFG-2)
 infra/                           Azure profile (§3.1, v1.5; T-IAC-01): pre-deploy.bicep (resource group, Entra apps,
                                  operators' group, deploy app's roles), main.bicep (everything in the resource group),
@@ -331,13 +349,15 @@ src/
   shared/contracts.ts            ALL cross-layer types and ports (§7)
   shared/config.ts               network profiles, ports, bind hosts, URLs, tokens, loadEnv, formatAtomic
   shared/auth.ts                 requireRole(role): per-caller bearer check, constant-time compare
+  shared/api-docs.ts             Swagger UI routes over one OpenAPI document, for L2, the hosted agent and the seller (SEC-13; v1.6)
   layer1-intent/
     orchestrator.ts              402 transport loop (L1-1)
     ports-http.ts                HTTP adapters for L2/L3 ports (L1-2)
     agent.ts                     Claude tool-use loop (L1-3)
     scripted.ts                  deterministic plan, seller alias and checkBaseline (L1-4)
     hosted/                      hosted agent service parts (L1-6, v1.5): server.ts (createHostedApp only), agent.ts,
-                                 model.ts, config.ts, requester-auth.ts, session-ref.ts, run-limits.ts, run-log.ts
+                                 model.ts, config.ts, requester-auth.ts, session-ref.ts, run-limits.ts, run-log.ts,
+                                 api-docs.ts (its OpenAPI document for src/shared/api-docs.ts, only with API_DOCS=1; v1.6)
   layer2-control/
     mandate.ts                   mandate type + loader (L2-1)
     policy.ts                    pure rule engine (L2-2)
@@ -347,13 +367,14 @@ src/
     escalations.ts               escalation lifecycle derivations and the sweep (L2-4.3)
     approval-routes.ts           operator approve and reject (L2-5)
     escalation-routes.ts         operator escalation reads (L2-5)
-    api-docs.ts                  Swagger UI and the OpenAPI document, only with API_DOCS=1 (L2-5, SEC-13)
+    api-docs.ts                  L2's OpenAPI document for src/shared/api-docs.ts, only with API_DOCS=1 (L2-5, SEC-13)
     service.ts                   HTTP API (L2-5)
   layer3-settlement/
     verifier.ts                  chain verification + finality (L3-1)
     service.ts                   HTTP API + reconciliation + recheck (L3-2)
   counterparty/
     seller.ts                    x402 seller API (CP-1)
+    api-docs.ts                  the seller's OpenAPI document for src/shared/api-docs.ts, only with API_DOCS=1 (CP-1; v1.6)
     facilitator-client.ts        facilitator client selection and failure categories (CP-1, CP-3); no credentials
     cdp-facilitator.ts           CDP JWT-authenticated facilitator client; the only reader of the CDP credential (A8)
     facilitator.ts               local facilitator factory, takes a ready account (CP-2)
@@ -364,11 +385,12 @@ test/
   policy.test.ts  ledger.test.ts  architecture.test.ts  agent.test.ts  e2e.local.test.ts
   counterparty.test.ts  verifier.test.ts  settlement-service.test.ts  auth.test.ts  demo.local.test.ts
   cdp-config.test.ts  cdp-auth.test.ts  cdp-isolation.test.ts  cdp-failures.test.ts  escalations.test.ts
-  openapi.test.ts
+  openapi.test.ts  openapi-hosted.test.ts  openapi-seller.test.ts (v1.6)
   hosted-agent.test.ts  hosted-access.test.ts  hosted-sessions.test.ts  hosted-run.test.ts   (L1-6, v1.5)
   ledger-lock.test.ts  infra.test.ts  images.test.ts  deploy-workflow.test.ts
   github-setup.test.ts  cleanup.test.ts   (L2-6, Azure, v1.5)
   helpers/hosted.ts              in-process hosted service: dev issuer, mock model, fake or harness ports
+  helpers/openapi.ts             OpenAPI document helpers for T-API: routes, a schema subset checker, a client (v1.6)
   fixtures/lock-holder.ts        child process holding the ledger lock until SIGTERM (T-LED-05)
   fixtures/fake-gh.mjs           fake `gh` recording each call and its stdin, for infra/github-setup.sh and cleanup.sh (T-E2E-AZ)
   fixtures/fake-azure.mjs        fake `az` with a tenant in a file (groups, vaults, apps, role assignments), and the real Bicep CLI for `bicep build-params`, for infra/cleanup.sh and github-setup.sh (T-E2E-AZ)
@@ -504,7 +526,8 @@ All amounts are **decimal strings of atomic units**. Use `BigInt` for arithmetic
 
 - **Code layout.** The parts live in `src/layer1-intent/hosted/`. The entry point, `src/hosted-main.ts`, sits outside the layer (rule A5) and runs in this order: `loadEnv("l1-hosted")` → INV-3 refusal (the shared text in `src/refusal.ts`, also outside the layer because it names the key) → config → ports and model → listen.
 - **Logs (outcomes).** A step's `outcome` is the fetch outcome, `ok` for a budget read, or `error` when a tool threw; Mastra's own logger is silenced (`noopLogger`), because a provider error object can carry the request body.
-- **Routes.** `POST /v1/runs` runs a goal. `GET /healthz` and `GET /readyz` report health. Every other path returns 404 after auth, and unauthenticated callers get 401 everywhere except the health routes. No Mastra server, Studio or tool-execute route exists.
+- **Routes.** `POST /v1/runs` runs a goal. `GET /healthz` and `GET /readyz` report health. Every other path returns 404 after auth, and unauthenticated callers get 401 everywhere except the health routes (and the docs routes, when mounted). No Mastra server, Studio or tool-execute route exists.
+- **API docs** (v1.6). `docs/l1-hosted.openapi.yaml` describes these routes in OpenAPI 3.1. When a route, status, header or response field changes, update this section, the contract and the document together; T-API-05..07 fail until they match. With `API_DOCS=1` (CFG-2), `GET /docs`, `GET /docs/:asset` and `GET /openapi.yaml` serve Swagger UI over that document with no token, mounted before auth like the health routes and from the same shared module as L2's (L2-5, SEC-13). They serve files read at startup and never reach the model, a session, L2 or L3. The Azure deployment never sets `API_DOCS` (T-API-08).
 - **Auth.** An Entra ID v2.0 access token, verified with the tenant's JWKS: issuer, `tid`, `aud` (the API app's client ID: v2.0 tokens never carry the `api://` URI, so with Entra any other `AUTH_AUDIENCE` is a startup error), `exp`/`nbf` (60 s tolerance), `oid`, and role `Agent.Run` (else 403). People and service principals are both allowed; people get a token from the Azure CLI for `api://app-l1-eastus2-dev/user_impersonation`, which `infra/pre-deploy.bicep` pre-authorizes. After verification the `Authorization` header is deleted, so it never reaches L2 or L3. With `NETWORK=local` only, `AUTH_JWKS_FILE` selects the dev issuer (`npm run dev-token`).
 - **Limits.** Goal 1–4,000 characters; body ≤ 16 KB (413); 2 concurrent runs and 20 starts per sliding hour per requester (429 with `Retry-After`); a 200 s deadline per run, under the ingress's 240 s idle timeout; client disconnect aborts. An abort stops the run before its next step, and a paid fetch in progress completes.
 - **Agent.** A Mastra `Agent` used as a library, with exactly `fetch_resource` and `check_budget`. The descriptions are L1-3's, and the JSON schema adds `additionalProperties: false`. It has no memory, workspace, sub-agents, workflows or processors. Limits: `maxSteps` 10, `maxOutputTokens` 2048. Tool results use the L1-3 format.
@@ -692,6 +715,7 @@ Defaults: `waitMs = 45000`, `pollMs = 1000`. One deadline (`start + waitMs`) cov
   - Every hosted facilitator call (`public`, `cdp`) has a 30 s timeout. The local facilitator keeps the SDK default.
   - Each failure logs one stderr line: `seller: facilitator <category> during <op>: <redacted excerpt>`.
 - `GET /api/catalog` is free and is mounted **before** the payment middleware. It returns `{network, asset, decimals, items:[{path, priceAtomic, description}]}`.
+- **API docs** (v1.6). `docs/seller.openapi.yaml` describes these routes in OpenAPI 3.1, each priced route with its catalog price (`x-x402-price-atomic`). When a route, price, status, header or body changes, update this section and the document together; T-API-09 and T-API-10 fail until they match. With `API_DOCS=1` (CFG-2), `GET /docs`, `GET /docs/:asset` and `GET /openapi.yaml` serve Swagger UI over that document, mounted before the payment middleware like the catalog, from the same shared module as L2's (SEC-13). They never call the facilitator. The Azure deployment never sets `API_DOCS`.
 
 | Route | Amount | Body (mock, deterministic) |
 |---|---|---|
@@ -752,10 +776,10 @@ With `cdp`, a missing or empty `CDP_API_KEY_ID` or `CDP_API_KEY_SECRET`, or a se
 | File | Variables |
 |---|---|
 | `l1-agent.env` | `NETWORK, ANTHROPIC_API_KEY, ANTHROPIC_MODEL?, SELLER_URL, CONTROL_URL, SETTLEMENT_URL, CONTROL_TOKEN, VERIFIER_TOKEN, SESSION_ID?, SELLER_ALIAS_URL? (v1.5)` |
-| `l1-hosted.env` (v1.5) | `NETWORK, SELLER_URL, CONTROL_URL, SETTLEMENT_URL, CONTROL_TOKEN, VERIFIER_TOKEN, MODEL_PROVIDER, ANTHROPIC_MODEL?, ANTHROPIC_API_KEY? (anthropic only), FOUNDRY_BASE_URL? and AZURE_CLIENT_ID? (foundry only), AUTH_TENANT_ID, AUTH_AUDIENCE, AUTH_JWKS_FILE? (local only), SESSION_REF_SECRET, AGENT_PORT?, AGENT_BIND_HOST?` |
+| `l1-hosted.env` (v1.5) | `NETWORK, SELLER_URL, CONTROL_URL, SETTLEMENT_URL, CONTROL_TOKEN, VERIFIER_TOKEN, MODEL_PROVIDER, ANTHROPIC_MODEL?, ANTHROPIC_API_KEY? (anthropic only), FOUNDRY_BASE_URL? and AZURE_CLIENT_ID? (foundry only), AUTH_TENANT_ID, AUTH_AUDIENCE, AUTH_JWKS_FILE? (local only), SESSION_REF_SECRET, AGENT_PORT?, AGENT_BIND_HOST?, API_DOCS? (v1.6)` |
 | `l2-control.env` | `NETWORK, PAYER_PRIVATE_KEY, ALLOWED_PAYEES, ALLOWED_HOSTS, CONTROL_TOKEN, SETTLEMENT_TOKEN, OPERATOR_TOKEN, API_DOCS?` |
 | `l3-verifier.env` | `NETWORK, BASE_SEPOLIA_RPC_URL?, CONTROL_URL, VERIFIER_TOKEN, SETTLEMENT_TOKEN` |
-| `seller.env` | `NETWORK, SELLER_PAY_TO, FACILITATOR?, FACILITATOR_URL?, CDP_API_KEY_ID?, CDP_API_KEY_SECRET?` (the CDP pair is required when the choice is `cdp`) |
+| `seller.env` | `NETWORK, SELLER_PAY_TO, FACILITATOR?, FACILITATOR_URL?, CDP_API_KEY_ID?, CDP_API_KEY_SECRET?, API_DOCS? (v1.6)` (the CDP pair is required when the choice is `cdp`) |
 | `facilitator.env` | `NETWORK=local, FACILITATOR_PRIVATE_KEY` |
 | `operator.env` | `CONTROL_URL, OPERATOR_TOKEN` |
 | `pre-deploy.<env>.bicepparam`, `main.<env>.bicepparam` (v1.5, in `infra/`) | Not env files: every value the two Azure deployments use. The target (`tenantId, subscriptionId, location`), every resource name (`names`, with the resource group), the GitHub repository and environment, the app and group IDs from `pre-deploy.bicep`'s outputs, public addresses and the Claude attestation. Only `imageTag, platformOnly, seedIp, recoverVaults, agentStableRevision` come from `deploy.yml`'s environment. Only Bicep reads them (`bicep build-params`). No secret values |
@@ -763,7 +787,7 @@ With `cdp`, a missing or empty `CDP_API_KEY_ID` or `CDP_API_KEY_SECRET`, or a se
 Token defaults (`dev-control-token`, `dev-settlement-token`, `dev-verifier-token`, `dev-operator-token`) apply only when `NETWORK=local`. On any other network, a missing or empty token is a startup error. An empty token is always a startup error.
 - Each entry point calls `loadEnv()`. `ENV_FILE` defaults to the process's own file (§3.1), and a caller can override it.
 - Templates leave private keys empty (`# set me`).
-- `API_DOCS` (L2 only, read by `apiDocsEnabled()`): `1` mounts the docs routes (L2-5); unset, empty or `0` leaves them off; any other value is a startup error.
+- `API_DOCS` (L2 and, since v1.6, the hosted agent and the seller; read by `apiDocsEnabled()`): `1` mounts the docs routes (L2-5, L1-6, CP-1); unset, empty or `0` leaves them off; any other value is a startup error. No Azure template or workflow sets it.
 - `npm run demo:local` gives each child only `PATH`, `HOME`, `NODE_*` and its own `ENV_FILE`. On `local`, if `env/l2-control.env` or `env/facilitator.env` is missing or the key is empty, the demo derives that key with `localDevKeys()`. It passes the payer key only to the L2 child and the facilitator key only to the facilitator child.
 - The demo spawns `node_modules/.bin/tsx` directly (not `npx`) and reads each child's env file with a minimal `KEY=value` reader for its fallback decisions; only `src/shared/config.ts` uses dotenv (architecture test). On `local`, when `SELLER_PAY_TO` or `ALLOWED_PAYEES` is empty, the demo sets it to account #3 (CP-5).
 - `npm run approve`, `npm run reject` and `npm run escalations` resolve their bearer token with `tokenFor("operator")`, so on `local` the dev operator token applies when `OPERATOR_TOKEN` is unset. They read only `env/operator.env` (or `ENV_FILE`).
@@ -816,7 +840,7 @@ Only use the SDK helpers to encode and decode these headers. Never hand-roll bas
 | SEC-10 | The CDP API credential leaks to another process, a log or a response, or a misconfiguration silently uses an unauthenticated facilitator | Seller-only credential (A8, T-ARCH-ENV); fail-closed startup; no runtime fallback; redaction | T-ARCH-A8, T-CDP-02, T-CDP-07, T-CDP-08 |
 | SEC-11 | A facilitator reports failure for a transfer that actually settled, so the budget under-counts | L3 checks any reported hash on-chain (L3-1 step 2) | T-CDP-06 |
 | SEC-12 | Operator free text (label, reason) reaches the LLM agent and acts as a prompt injection | The R15 violation detail carries only the rejection ID; label and reason are stored as data and shown to the operator only | T-POL-15 |
-| SEC-13 | The token-free API docs routes expose more than the document, or run third-party code on the signer's origin where operators type tokens | Off unless `API_DOCS=1`; three fixed files and the document, no ledger, mandate or signer access; Swagger UI from the pinned package, never a CDN; CSP `script-src 'self'`, `connect-src 'self'` | T-API-04 |
+| SEC-13 | The token-free API docs routes expose more than the document, or run third-party code on the signer's origin where operators type tokens, or on the agent's or the seller's public origin, where requesters paste theirs (v1.6) | Off unless `API_DOCS=1`, which the Azure deployment never sets; three fixed files and the document, no ledger, mandate, signer, model, session or facilitator access; Swagger UI from the pinned package, never a CDN; CSP `script-src 'self'`, `connect-src 'self'` | T-API-04, T-API-08, T-API-11 |
 | SEC-14 | Anyone who can reach the public agent endpoint spends from the budget | Entra ID token with `Agent.Run` checked before any model or L2 call; per-requester limits; L2's budgets and rules unchanged | T-AGT-03 |
 | SEC-15 | A requester continues another requester's session and uses its approvals or budget | HMAC-bound session references; a raw session ID is refused; a foreign reference → 404 | T-AGT-04 |
 | SEC-16 | Secrets, requester tokens or payment headers reach logs or telemetry | Whitelisted JSON run logs; no Mastra observability or OTel export; known-value tests offline and a shape scan of cloud logs | T-AGT-05, T-E2E-AZ |
@@ -873,6 +897,13 @@ Residual risks added in v1.4:
 | T-API-02 | openapi | for each operation, only the token of its documented security scheme passes the guard; no token and the other tokens get 401. A `security: []` operation passes for every caller. **Must fail**: a document naming the wrong token is reported |
 | T-API-03 | openapi | an in-process scenario reaches every documented status except authorize's 500, and each response's media type is documented and its body conforms to the schema (required fields, types, no undocumented fields). **Must fail**: a missing field, a wrong type and an undocumented field are reported |
 | T-API-04 | openapi | the docs routes (SEC-13): with `API_DOCS` unset, none is mounted and each docs URL answers 404; `API_DOCS` accepts only `1`, `0` or empty; the served document equals the file except `servers` = `/`; the page carries a CSP limiting scripts and requests to `'self'` and names no other origin; `/docs/:asset` serves its three files and 404s anything else. **Must fail**: the same probe gets 200 with `API_DOCS=1`; a document without `servers` is refused |
+| T-API-05 | openapi-hosted | the operations in `docs/l1-hosted.openapi.yaml` equal the routes mounted on the hosted agent with `API_DOCS=1`; without it, the mounted routes are exactly the operations not tagged `docs` (v1.6). **Must fail**: a route missing from the document, or documented but not mounted, is reported |
+| T-API-06 | openapi-hosted | without a token a secured operation answers 401 and a `security: []` one doesn't; a token without `Agent.Run` gets 403 from a secured one; a token with it passes every guard. **Must fail**: a document calling `/v1/runs` open, or `/healthz` secured, is reported |
+| T-API-07 | openapi-hosted | an in-process scenario (a stub seller, fake L2 and L3, a scripted model) reaches every documented status of every operation, including 503, 413 and 429; each response's media type and documented headers (`Retry-After`) are present and its body conforms to the schema, through FREE, PAID, ESCALATED and DENIED fetches, a budget read, a tool error, and completed, stopped and failed runs. **Must fail**: a missing field, a value outside its enum, a wrong type, an undocumented field and a step mixing both tools' shapes are reported |
+| T-API-08 | openapi-hosted | the agent's docs routes (SEC-13): with `API_DOCS` unset, none is mounted, and each docs URL answers 401 without a token and 404 with one; `API_DOCS` in `l1-hosted.env` accepts only `1`, `0` or empty; no file in `infra/` or `deploy.yml` sets it; the served document equals the file except `servers` = `/`; the page carries the same-origin CSP; `/docs/:asset` serves its three files only. **Must fail**: with `API_DOCS=1` the same probe gets 200 with no token and makes no model, L2 or L3 call; a document without `servers` is refused |
+| T-API-09 | openapi-seller | the operations in `docs/seller.openapi.yaml` equal the routes mounted on the seller with `API_DOCS=1`; without it, exactly the operations not tagged `docs`; each priced operation's `x-x402-price-atomic` equals its `CATALOG` price, and every catalog route is priced in the document (v1.6). **Must fail**: a missing route, an unmounted route, a wrong price and a price for a route the catalog lacks are reported |
+| T-API-10 | openapi-seller | an in-process scenario with a scripted facilitator behind the real categorized client reaches every documented status of every route: 200 paid, 402 (no payment, a rejected payment, a payment for another route, a failed settlement), 502 (facilitator failing mid-payment) and 503 (facilitator down); bodies, media types and required headers conform, and the `PAYMENT-REQUIRED` and `PAYMENT-RESPONSE` headers, decoded with the SDK, conform to their `contentSchema`, as does the payment sent. **Must fail**: a wrong enum value, a missing field, an undocumented field and a wrong `x402Version` are reported |
+| T-API-11 | openapi-seller | the seller's docs routes (SEC-13): with `API_DOCS` unset, none is mounted and each docs URL answers 404; the seller refuses to start with any other value than `1`, `0` or empty; `sellers.bicep` never sets it; the served document equals the file except `servers` = `/`; the page carries the same-origin CSP; `/docs/:asset` serves its three files only. **Must fail**: with `API_DOCS=1` the same probe gets 200 and makes no facilitator call; a document without `servers` is refused |
 | T-AGT-01 | agent | fake model → tool calls → intents carry `purpose`; the tool result contains PAID + CONFIRMED; exactly two tools are offered |
 | T-AGT-KEY | agent | spawning `src/main.ts`, or `src/hosted-main.ts` with the key in the process env or only in `ENV_FILE` (v1.5), with `PAYER_PRIVATE_KEY` set exits 1 with a refusal (the automated form of the manual check below) |
 | T-AGT-02 | hosted-agent | every model call offers exactly `fetch_resource` and `check_budget` with the L1-3 descriptions and schemas; 2048 max output tokens; 10 steps; both providers' HTTP requests (Foundry: Entra bearer, no `x-api-key`); config rules. **Must fail**: an injected extra tool appears as a third name; an unrecognized model id is refused |
@@ -929,6 +960,8 @@ npm run check               # typecheck && test && demo:local (definition of don
 # v1.5 hosted agent service and Azure profile:
 npm run stack:local [-- --docker]   # chain, facilitator, seller, L2, L3 for agent:hosted, until Ctrl-C
 npm run agent:hosted        # L1-6 on 127.0.0.1:4024 (env/l1-hosted.env)
+API_DOCS=1 npm run agent:hosted   # plus Swagger UI at http://127.0.0.1:4024/docs (no token; off by default; never in Azure; v1.6)
+API_DOCS=1 npm run seller        # the seller plus Swagger UI at http://127.0.0.1:4021/docs (off by default; never in Azure; v1.6)
 npm run dev-token -- [--subject <name>] [--no-role] [--expired] [--service]   # local dev issuer (NETWORK=local only)
 npm run agent:scripted -- --check-baseline   # L1-4 plan; exit 2 unless the baseline matches
 npm run ledger-verify       # operator chain check

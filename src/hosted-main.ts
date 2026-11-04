@@ -31,6 +31,7 @@ async function main(): Promise<void> {
   });
   const server: Server = app.listen(config.port, config.bindHost, () => {
     console.log(`l1-hosted listening on http://${config.bindHost}:${config.port} (provider ${config.provider}, model ${config.model})`);
+    if (config.apiDocs) console.log(`l1-hosted API docs on http://${config.bindHost}:${config.port}/docs (API_DOCS=1, no token)`);
     markReady();
   });
   server.on("error", (err) => {

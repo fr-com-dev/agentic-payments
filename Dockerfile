@@ -29,6 +29,9 @@ COPY --from=build /out/package.json ./
 COPY package-lock.json ./
 RUN npm install --omit=dev --no-audit --no-fund --ignore-scripts && npm cache clean --force
 COPY --from=build /out/dist ./dist
+# The API-docs module resolves the OpenAPI file relative to itself (dist/src/counterparty → dist/docs).
+# It's read only with API_DOCS=1, which the Azure deployment never sets.
+COPY docs/seller.openapi.yaml ./dist/docs/
 # Load every module once, so a file or package the closure missed fails the build instead of a revision.
 RUN node --input-type=module -e "import { readFileSync } from 'node:fs'; for (const m of JSON.parse(readFileSync('dist/image-modules.json', 'utf8'))) await import('/app/' + m);"
 USER node

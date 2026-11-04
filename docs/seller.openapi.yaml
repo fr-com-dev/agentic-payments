@@ -1,0 +1,506 @@
+# Seller HTTP API (SPEC.md CP-1, CP-3) as OpenAPI 3.1: the demo counterparty, an x402 v2 resource server.
+# SPEC.md stays normative. test/openapi-seller.test.ts (T-API-09..11) fails when this file and the running seller
+# disagree on routes, prices, statuses, headers or response shapes, so change both together.
+openapi: 3.1.0
+info:
+  title: Seller API
+  version: "1.6"
+  summary: The demo seller of the x402 three-layer agent payments PoC, selling JSON resources for USDC.
+  description: |
+    A simulated external party: a free catalog and four priced routes, paid with x402 v2 (`exact` scheme, an
+    EIP-3009 USDC transfer authorization). Its responses are mock data, deterministic per input.
+
+    **Paying for a route** (what L1 does, with L2 signing):
+    1. `GET` the route without payment: **402** with an empty body and a `PAYMENT-REQUIRED` header, base64
+       JSON naming the price (`amount` in atomic units), the asset, the network and `payTo`.
+    2. Sign a payment for exactly those requirements and repeat the request with it in `PAYMENT-SIGNATURE`.
+    3. The seller has its facilitator verify the payment, serves the resource, settles, and answers **200** with
+       the resource and a `PAYMENT-RESPONSE` header (base64 JSON with the transaction hash).
+
+    A rejected payment, or one for another route, gets the 402 challenge again (its `error` says why). A failed
+    settlement gets 402 with a `PAYMENT-RESPONSE` whose `success` is false, and the resource is not served. While
+    the facilitator is unreachable, priced routes answer 503 before a challenge and 502 during a paid retry.
+
+    - **Amounts** are decimal strings of atomic units (USDC has 6 decimals: `"1000"` is 0.001 USDC).
+    - **Networks.** Locally `eip155:31337` with a mock USDC and the local facilitator; on Base Sepolia
+      `eip155:84532` with USDC and the CDP facilitator (CP-3). The catalog names the network and asset in use.
+    - **API docs.** With `API_DOCS=1`, the seller also serves this document and Swagger UI at `/docs`. Those
+      routes are free and not mounted by default; the Azure deployment never sets `API_DOCS`. A browser can't
+      sign a payment, so "Try it out" on a priced route shows its 402 challenge.
+servers:
+  - url: http://127.0.0.1:4021
+    description: Default local bind (npm run seller; 0.0.0.0 in a container)
+tags:
+  - name: catalog
+    description: Free.
+  - name: priced
+    description: Paid per request with x402 (`exact`, USDC).
+  - name: docs
+    description: Swagger UI and this document. Mounted only when `API_DOCS=1`; free.
+
+paths:
+  /api/catalog:
+    get:
+      tags: [catalog]
+      operationId: getCatalog
+      summary: The price list
+      description: Free, and always available, also while the facilitator is down.
+      responses:
+        "200":
+          description: The network, the asset and every priced route.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Catalog"
+
+  /api/weather:
+    get:
+      tags: [priced]
+      operationId: getWeather
+      summary: Current weather for a city (0.001 USDC)
+      description: The price doesn't depend on the query. Mock data, deterministic per city.
+      x-x402-price-atomic: "1000"
+      parameters:
+        - name: city
+          in: query
+          required: false
+          description: The city; `Lima` when missing or empty.
+          schema:
+            type: string
+            examples: [Lima]
+        - $ref: "#/components/parameters/PaymentSignature"
+      responses:
+        "200":
+          description: Paid and settled.
+          headers:
+            PAYMENT-RESPONSE:
+              $ref: "#/components/headers/PaymentResponse"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Weather"
+        "402":
+          $ref: "#/components/responses/PaymentRequired"
+        "502":
+          $ref: "#/components/responses/FacilitatorFailed"
+        "503":
+          $ref: "#/components/responses/FacilitatorUnavailable"
+
+  /api/market-brief:
+    get:
+      tags: [priced]
+      operationId: getMarketBrief
+      summary: Daily market brief (0.005 USDC)
+      x-x402-price-atomic: "5000"
+      parameters:
+        - $ref: "#/components/parameters/PaymentSignature"
+      responses:
+        "200":
+          description: Paid and settled.
+          headers:
+            PAYMENT-RESPONSE:
+              $ref: "#/components/headers/PaymentResponse"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MarketBrief"
+        "402":
+          $ref: "#/components/responses/PaymentRequired"
+        "502":
+          $ref: "#/components/responses/FacilitatorFailed"
+        "503":
+          $ref: "#/components/responses/FacilitatorUnavailable"
+
+  /api/premium-report:
+    get:
+      tags: [priced]
+      operationId: getPremiumReport
+      summary: Premium research report (0.05 USDC)
+      description: Above L2's default auto-approve limit, so the agent's purchase escalates to an operator.
+      x-x402-price-atomic: "50000"
+      parameters:
+        - $ref: "#/components/parameters/PaymentSignature"
+      responses:
+        "200":
+          description: Paid and settled.
+          headers:
+            PAYMENT-RESPONSE:
+              $ref: "#/components/headers/PaymentResponse"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PremiumReport"
+        "402":
+          $ref: "#/components/responses/PaymentRequired"
+        "502":
+          $ref: "#/components/responses/FacilitatorFailed"
+        "503":
+          $ref: "#/components/responses/FacilitatorUnavailable"
+
+  /api/dataset-export:
+    get:
+      tags: [priced]
+      operationId: getDatasetExport
+      summary: Full dataset export (0.50 USDC)
+      description: Above L2's default per-payment cap, so the agent's purchase is denied.
+      x-x402-price-atomic: "500000"
+      parameters:
+        - $ref: "#/components/parameters/PaymentSignature"
+      responses:
+        "200":
+          description: Paid and settled.
+          headers:
+            PAYMENT-RESPONSE:
+              $ref: "#/components/headers/PaymentResponse"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DatasetExport"
+        "402":
+          $ref: "#/components/responses/PaymentRequired"
+        "502":
+          $ref: "#/components/responses/FacilitatorFailed"
+        "503":
+          $ref: "#/components/responses/FacilitatorUnavailable"
+
+  /docs:
+    get:
+      tags: [docs]
+      operationId: getApiDocsPage
+      summary: Swagger UI for this document
+      description: |
+        Only with `API_DOCS=1`. The page loads its scripts and styles from the seller itself (`/docs/{asset}`),
+        never from a CDN, and its Content-Security-Policy limits scripts and requests to the seller's origin.
+      responses:
+        "200":
+          description: The Swagger UI page.
+          content:
+            text/html:
+              schema:
+                type: string
+
+  /docs/{asset}:
+    get:
+      tags: [docs]
+      operationId: getApiDocsAsset
+      summary: A Swagger UI file
+      description: Only with `API_DOCS=1`. Serves these three files and nothing else.
+      parameters:
+        - name: asset
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [swagger-ui.css, swagger-ui-bundle.js, swagger-initializer.js]
+      responses:
+        "200":
+          description: The file.
+          content:
+            text/css:
+              schema:
+                type: string
+            text/javascript:
+              schema:
+                type: string
+        "404":
+          description: Not one of the three files.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /openapi.yaml:
+    get:
+      tags: [docs]
+      operationId: getApiDocument
+      summary: This document
+      description: Only with `API_DOCS=1`. Identical to the file, except `servers` is `/`, the seller serving it.
+      responses:
+        "200":
+          description: The OpenAPI document.
+          content:
+            application/yaml:
+              schema:
+                type: string
+
+components:
+  parameters:
+    PaymentSignature:
+      name: PAYMENT-SIGNATURE
+      in: header
+      required: false
+      description: |
+        The x402 payment: base64 JSON of a `PaymentPayload` whose `accepted` repeats the requirements of the 402
+        challenge. Without it, or with one that doesn't verify, the route answers 402.
+      schema:
+        type: string
+        contentEncoding: base64
+        contentMediaType: application/json
+        contentSchema:
+          $ref: "#/components/schemas/PaymentPayload"
+
+  headers:
+    PaymentRequired:
+      description: The x402 challenge, base64 JSON. Absent when the 402 answers a failed settlement.
+      schema:
+        type: string
+        contentEncoding: base64
+        contentMediaType: application/json
+        contentSchema:
+          $ref: "#/components/schemas/PaymentRequired"
+    PaymentResponse:
+      description: The settlement, base64 JSON. On a 200 `success` is true and `transaction` is the hash.
+      required: true
+      schema:
+        type: string
+        contentEncoding: base64
+        contentMediaType: application/json
+        contentSchema:
+          $ref: "#/components/schemas/SettleResponse"
+    FailedSettlement:
+      description: Present only when the 402 answers a failed settlement (`success` false).
+      schema:
+        type: string
+        contentEncoding: base64
+        contentMediaType: application/json
+        contentSchema:
+          $ref: "#/components/schemas/SettleResponse"
+
+  responses:
+    PaymentRequired:
+      description: |
+        No payment, a payment that doesn't verify or matches no requirement of this route (the challenge's
+        `error` says which), or a failed settlement (`PAYMENT-RESPONSE` with `success` false instead of a
+        challenge). The resource is not served.
+      headers:
+        PAYMENT-REQUIRED:
+          $ref: "#/components/headers/PaymentRequired"
+        PAYMENT-RESPONSE:
+          $ref: "#/components/headers/FailedSettlement"
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: false
+            description: Always empty.
+    FacilitatorFailed:
+      description: The facilitator failed while verifying or settling a paid retry. The resource is not served.
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: false
+            required: [error]
+            properties:
+              error:
+                type: string
+                pattern: "^facilitator (unavailable|authentication|rate-limited|unsupported)$"
+    FacilitatorUnavailable:
+      description: The facilitator can't be reached (or refuses the seller), so no challenge can be issued. Retried on the next request.
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: false
+            required: [error, category]
+            properties:
+              error:
+                type: string
+                pattern: "^facilitator (unavailable|authentication|rate-limited|unsupported)$"
+              category:
+                type: string
+                enum: [unavailable, authentication, rate-limited, unsupported]
+
+  schemas:
+    Error:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: string
+
+    AtomicAmount:
+      type: string
+      pattern: "^[0-9]+$"
+      description: Decimal string of atomic units.
+
+    Address:
+      type: string
+      pattern: "^0x[0-9a-fA-F]{40}$"
+
+    Network:
+      type: string
+      pattern: "^eip155:[0-9]+$"
+      description: CAIP-2 chain ID (`eip155:31337` local, `eip155:84532` Base Sepolia).
+
+    Catalog:
+      type: object
+      additionalProperties: false
+      required: [network, asset, decimals, items]
+      properties:
+        network:
+          $ref: "#/components/schemas/Network"
+        asset:
+          $ref: "#/components/schemas/Address"
+        decimals:
+          type: integer
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/CatalogItem"
+
+    CatalogItem:
+      type: object
+      additionalProperties: false
+      required: [path, priceAtomic, description]
+      properties:
+        path:
+          type: string
+          examples: [/api/weather?city=]
+        priceAtomic:
+          $ref: "#/components/schemas/AtomicAmount"
+        description:
+          type: string
+
+    Weather:
+      type: object
+      additionalProperties: false
+      required: [city, tempC, condition, source]
+      properties:
+        city:
+          type: string
+        tempC:
+          type: integer
+        condition:
+          type: string
+          enum: [sunny, cloudy, rain, fog]
+        source:
+          type: string
+
+    MarketBrief:
+      type: object
+      additionalProperties: false
+      required: [headline, bullets, source]
+      properties:
+        headline:
+          type: string
+        bullets:
+          type: array
+          items:
+            type: string
+        source:
+          type: string
+
+    PremiumReport:
+      type: object
+      additionalProperties: false
+      required: [title, pages, source]
+      properties:
+        title:
+          type: string
+        pages:
+          type: integer
+        source:
+          type: string
+
+    DatasetExport:
+      type: object
+      additionalProperties: false
+      required: [rows, source]
+      properties:
+        rows:
+          type: integer
+        source:
+          type: string
+
+    ResourceInfo:
+      type: object
+      required: [url]
+      properties:
+        url:
+          type: string
+        description:
+          type: string
+        mimeType:
+          type: string
+
+    PaymentRequirements:
+      type: object
+      required: [scheme, network, amount, asset, payTo, maxTimeoutSeconds]
+      description: One way to pay. This seller offers exactly one per route.
+      properties:
+        scheme:
+          const: exact
+        network:
+          $ref: "#/components/schemas/Network"
+        amount:
+          $ref: "#/components/schemas/AtomicAmount"
+        asset:
+          $ref: "#/components/schemas/Address"
+        payTo:
+          $ref: "#/components/schemas/Address"
+        maxTimeoutSeconds:
+          type: integer
+        extra:
+          type: object
+          description: The token's EIP-712 domain (`name`, `version`).
+          properties:
+            name:
+              type: string
+              examples: [USD Coin, USDC]
+            version:
+              type: string
+
+    PaymentRequired:
+      type: object
+      required: [x402Version, resource, accepts]
+      description: The decoded `PAYMENT-REQUIRED` header (x402 v2).
+      properties:
+        x402Version:
+          const: 2
+        error:
+          type: string
+          description: Why the request wasn't served, e.g. `Payment required`, `invalid_signature`, `No matching payment requirements`.
+        resource:
+          $ref: "#/components/schemas/ResourceInfo"
+        accepts:
+          type: array
+          items:
+            $ref: "#/components/schemas/PaymentRequirements"
+
+    PaymentPayload:
+      type: object
+      required: [x402Version, accepted, payload]
+      description: The decoded `PAYMENT-SIGNATURE` header (x402 v2).
+      properties:
+        x402Version:
+          const: 2
+        resource:
+          $ref: "#/components/schemas/ResourceInfo"
+        accepted:
+          $ref: "#/components/schemas/PaymentRequirements"
+        payload:
+          type: object
+          description: The scheme's proof; for `exact` on EVM, an EIP-3009 authorization and its signature.
+
+    SettleResponse:
+      type: object
+      required: [success, transaction, network]
+      description: The decoded `PAYMENT-RESPONSE` header (x402 v2).
+      properties:
+        success:
+          type: boolean
+        errorReason:
+          type: string
+        errorMessage:
+          type: string
+        payer:
+          $ref: "#/components/schemas/Address"
+        transaction:
+          type: string
+          description: The transaction hash; empty when nothing was settled.
+        network:
+          $ref: "#/components/schemas/Network"
+        amount:
+          $ref: "#/components/schemas/AtomicAmount"

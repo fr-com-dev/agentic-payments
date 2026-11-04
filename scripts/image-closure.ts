@@ -39,13 +39,14 @@ export const IMAGES: Record<ImageName, ImageSpec> = {
     dockerfile: "docker/l1-agent.Dockerfile",
     entries: ["src/hosted-main.ts", "src/main.ts"],
     allowed: ["src/layer1-intent/", "src/shared/", "src/hosted-main.ts", "src/main.ts", "src/refusal.ts"],
+    extraPackages: ["swagger-ui-dist"], // src/shared/api-docs.ts, with API_DOCS=1 (v1.6)
   },
   // L2 and the operator job, whose scripts call L2's operator routes.
   "l2-control": {
     dockerfile: "docker/l2-control.Dockerfile",
     entries: ["src/layer2-control/service.ts", ...OPERATOR_SCRIPTS],
     allowed: ["src/layer2-control/", "src/shared/", ...OPERATOR_SCRIPTS],
-    extraPackages: ["swagger-ui-dist"], // src/layer2-control/api-docs.ts
+    extraPackages: ["swagger-ui-dist"], // src/shared/api-docs.ts, with API_DOCS=1
   },
   "l3-verifier": {
     dockerfile: "docker/l3-verifier.Dockerfile",
@@ -57,6 +58,7 @@ export const IMAGES: Record<ImageName, ImageSpec> = {
     dockerfile: "Dockerfile",
     entries: ["src/counterparty/seller.ts"],
     allowed: ["src/counterparty/", "src/shared/"],
+    extraPackages: ["swagger-ui-dist"], // src/shared/api-docs.ts, with API_DOCS=1 (v1.6)
   },
 };
 

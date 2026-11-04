@@ -1,6 +1,7 @@
 // Seller API (SPEC.md CP-1, CP-3). A simulated external party: an x402 v2 resource server with a free
 // catalog and four priced routes, each offering exactly one `exact` option priced as an explicit
 // AssetAmount (never a "$" string), so the asset and its EIP-712 domain come from the network profile.
+// docs/seller.openapi.yaml describes its routes (v1.6); with API_DOCS=1 it also serves that document and Swagger UI.
 import { pathToFileURL } from "node:url";
 import express from "express";
 import type { FacilitatorClient, RouteConfig, RoutesConfig } from "@x402/core/server";
@@ -12,6 +13,7 @@ import {
 } from "@x402/express";
 import { ExactEvmScheme } from "@x402/evm/exact/server";
 import {
+  apiDocsEnabled,
   ConfigError,
   facilitatorChoice,
   loadEnv,
@@ -20,6 +22,7 @@ import {
   SELLER_BIND_HOST,
   type NetworkProfile,
 } from "../shared/config.js";
+import { mountSellerApiDocs } from "./api-docs.js";
 import {
   CategorizedFacilitatorClient,
   categorize,
@@ -46,7 +49,10 @@ export interface CatalogItem {
   description: string;
 }
 
-/** CP-1 price list. Adding a route here changes the scripted plan: update SPEC L1-4 and T-E2E-01 too. */
+/**
+ * CP-1 price list. Adding a route here changes the scripted plan: update SPEC L1-4 and T-E2E-01 too, and
+ * docs/seller.openapi.yaml (T-API-09, T-API-10 fail until it lists the route at this price).
+ */
 export const CATALOG: readonly CatalogItem[] = [
   { path: "/api/weather?city=", route: "/api/weather", priceAtomic: "1000", description: "current weather for a city" },
   { path: "/api/market-brief", route: "/api/market-brief", priceAtomic: "5000", description: "daily market brief" },
@@ -194,12 +200,15 @@ export function mountPaidHandlers(app: express.Express): void {
 export interface SellerOptions extends PaymentMiddlewareOptions {
   net: NetworkProfile;
   payTo: string;
+  /** v1.6: `API_DOCS=1` mounts the free Swagger UI routes (SEC-13). Default false. */
+  apiDocs?: boolean;
 }
 
-/** The seller app: catalog first, then the x402 middleware, then the paid handlers. */
-export function createSellerApp({ net, payTo, ...middleware }: SellerOptions): express.Express {
+/** The seller app: catalog (and, with apiDocs, the docs routes) first, then the x402 middleware, then the paid handlers. */
+export function createSellerApp({ net, payTo, apiDocs = false, ...middleware }: SellerOptions): express.Express {
   const app = express();
   mountCatalog(app, net);
+  if (apiDocs) mountSellerApiDocs(app);
   app.use(sellerPaymentMiddleware(net, sellerRoutes(net, payTo), middleware));
   mountPaidHandlers(app);
   return app;
@@ -236,6 +245,12 @@ async function main(): Promise<void> {
 
   const payTo = process.env.SELLER_PAY_TO;
   if (!payTo || !/^0x[0-9a-fA-F]{40}$/.test(payTo)) fail("SELLER_PAY_TO must be set to a 0x address (env/seller.env)");
+  let apiDocs = false;
+  try {
+    apiDocs = apiDocsEnabled();
+  } catch (err) {
+    fail(err instanceof ConfigError ? err.message : "invalid API_DOCS");
+  }
 
   const facilitator = cred
     ? facilitatorClientFor(choice, { cdp: cdpFacilitatorClient(cred) })
@@ -243,6 +258,7 @@ async function main(): Promise<void> {
   const app = createSellerApp({
     net,
     payTo,
+    apiDocs,
     facilitator,
     ...(cred && { redact: makeRedactor(cred), authHint: CDP_AUTH_HINT }),
   });
@@ -252,6 +268,7 @@ async function main(): Promise<void> {
     console.log(
       `seller listening on ${SELLER_BIND_HOST}:${port} (${net.caip2}, facilitator=${choice.kind} host=${new URL(choice.url).host}${keyNote})`,
     );
+    if (apiDocs) console.log(`seller API docs on http://${SELLER_BIND_HOST}:${port}/docs (API_DOCS=1)`);
   });
 }
 
