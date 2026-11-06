@@ -99,7 +99,9 @@ jobs:
     environment: ${{ inputs.environment }}
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      # v7 of checkout and setup-node run on Node 24: GitHub forces actions built for Node 20 (v4) onto it with a
+      # deprecation warning.
+      - uses: actions/checkout@v7
 
       # First the unit and its image (scripts/image-closure.ts IMAGES), then the inputs, before anything is downloaded
       # or deployed: seed-ip and recover-vaults belong to the platform; recover-vaults follows infra/cleanup.sh, so the
@@ -152,9 +154,12 @@ jobs:
             "CA_L1=\(v(["apps", "l1"]))", "CA_L3=\(v(["apps", "l3"]))", "CA_SELLER=\(v(["apps", "seller"]))",
             "CA_SELLER_ALIAS=\(v(["apps", "sellerAlias"]))", "CAJ_L1=\(v(["jobs", "l1"]))", "CAJ_L2=\(v(["jobs", "l2"]))"' "$RUNNER_TEMP/params.json" >> "$GITHUB_ENV"
 
-      - uses: actions/setup-node@v4
+      # No dependency cache: this job can deploy, and a restored cache would be code no commit holds. setup-node v5+
+      # turns caching on by itself once package.json names a packageManager.
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
+          package-manager-cache: false
 
       # With BICEP_PATH set, every suite runs, T-IAC-01 on the compiled templates included.
       - name: "1 typecheck and tests"
