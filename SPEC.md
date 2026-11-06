@@ -360,7 +360,8 @@ scripts/
   dev-issuer-lib.ts, dev-token.ts    local dev issuer and tokens for the hosted service (NETWORK=local only, v1.5)
   stack-local.ts                 the local stack without an agent, for the hosted service (v1.5); its processes, ports and
                                  readiness probes are demo-lib's localStack(), shared with the VS Code runner
-  vscode-local.ts                the VS Code runner: `chain` (start or reuse), `wait`, `run <role>`, always NETWORK=local
+  vscode-local.ts                the VS Code runner: `chain` (start or reuse), `stack` (reuse, wait for or start each stack
+                                 process), `run <role>`, always NETWORK=local
   image-closure.ts               each image's files and packages from the import graph; fails the build on another
                                  layer's file (T-IMG-01, v1.5)
   solc.d.ts                      type shim
@@ -921,8 +922,9 @@ Residual risks added in v1.4:
 | T-LED-04 | escalations | L2-4.3 state derivation and the 300 s boundary; `findRejection`, `findPendingEscalation`; the sweep appends each expiry and lapse once, also after a restart; operator views and events carry no secret-bearing keys. **Must fail without the clock check**: with no sweep, the state is already expired at 300 s |
 | T-ARCH-* | architecture | rules A1–A7 (§4.1). Each fixture under `test/fixtures/arch/` trips its rule. |
 | T-ARCH-ENV | architecture | each `env/*.env.example` holds only its process's variables; private keys and secrets are empty |
-| T-DEV-01 | vscode-local | every configuration in `.vscode/launch.json` runs through `scripts/vscode-local.ts run <role>` with tsx and child attach, or is the vitest one with `NETWORK=local`; every role is reachable; pre-launch tasks, compound members and `${input:…}` names resolve; no compound starts two members on the same pre-launch task. **Must fail**: another program, an unknown role, an env the runner drops, a missing task and a shared pre-launch task are reported |
+| T-DEV-01 | vscode-local | every configuration in `.vscode/launch.json` runs through `scripts/vscode-local.ts run <role>` with tsx and child attach, or is the vitest one with `NETWORK=local`; every role is reachable; the stack's services have no pre-launch task and every L1 and operator configuration runs `local: stack` first; pre-launch tasks, compound members and `${input:…}` names resolve; no compound starts two members on the same pre-launch task. **Must fail**: another program, an unknown role, an env the runner drops, a service with a pre-launch task, an L1 configuration without `local: stack`, a missing task and a shared pre-launch task are reported |
 | T-DEV-02 | vscode-local | `localRunEnv` gives each role its own env file and on local only its own key (the payer key to L2, the facilitator key to the facilitator, payTo to the seller), `NETWORK=local` whatever the file says, `API_DOCS`, and the debugger's attach variables; warnings name a missing model key without its value. **Must fail**: a `base-sepolia` file still runs locally, and VS Code's own `PAYER_PRIVATE_KEY`, `ANTHROPIC_API_KEY` or ports never reach a process |
+| T-DEV-03 | vscode-local | `local: stack` (`vscode-local.ts stack`) decides per stack process: reuse it when it answers, wait for it when its port is taken (a compound starting it), start it when the port is free. Checked by hand: from nothing it starts all five; with the chain up it starts the four services; a second call reuses everything; SIGTERM and SIGHUP stop what it started; `run l2` on a taken port is refused |
 | T-ARCH-TRACE | architecture | every test ID named in the §11 threat matrix (specs/007 contracts) appears in a test title; a row naming a missing test fails |
 | T-ARCH-BIND | e2e | `listenControl`/`listenSettlement` bind 127.0.0.1 with `CONTROL_PORT`/`SETTLEMENT_PORT` overridden |
 | T-AUTH-01 | e2e | `POST /v1/authorize` with `SETTLEMENT_TOKEN`, `VERIFIER_TOKEN` or `OPERATOR_TOKEN` → 401; the ledger is unchanged |
@@ -996,7 +998,7 @@ npm run escalations [-- --watch]   # pending escalations; --watch reports every 
 npm run check               # typecheck && test && demo:local (definition of done in one command)
 # v1.5 hosted agent service and Azure profile:
 npm run stack:local [-- --docker]   # chain, facilitator, seller, L2, L3 for agent:hosted, until Ctrl-C
-node --import tsx scripts/vscode-local.ts chain | wait | run <role> [args]   # VS Code's runner, local mode only
+node --import tsx scripts/vscode-local.ts chain | stack | run <role> [args]   # VS Code's runner, local mode only
 npm run agent:hosted        # L1-6 on 127.0.0.1:4024 (env/l1-hosted.env)
 API_DOCS=1 npm run agent:hosted   # plus Swagger UI at http://127.0.0.1:4024/docs (no token; off by default; never in Azure; v1.6)
 API_DOCS=1 npm run seller        # the seller plus Swagger UI at http://127.0.0.1:4021/docs (off by default; never in Azure; v1.6)

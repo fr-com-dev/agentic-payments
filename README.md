@@ -71,17 +71,17 @@ Each process reads exactly one env file, `env/<role>.env` (templates in `env/*.e
 
 `.vscode/launch.json` debugs, or runs with Ctrl+F5, every process, always in local mode: L1 (the CLI agent, scripted or with Claude, and the hosted agent), L2, L3, the seller, the facilitator and the operator's commands. Each configuration starts through `scripts/vscode-local.ts`. It gives the process its own env file and, on the local network, only its own dev key, exactly as `stack:local` does; `NETWORK=local` is forced whatever the file says. The debugger attaches to the process, so breakpoints in `src/` and `scripts/` work as usual.
 
-1. Start the compound **Local stack**. Its task `local: chain` starts the local chain, or reuses one already running, and then the facilitator, seller, L2 and L3 start. The seller and L2 serve Swagger UI at `/docs`.
-2. Start any L1 or operator configuration. Each waits for the stack (task `local: wait for stack`) and then runs:
+Start any L1 or operator configuration. Its task `local: stack` makes the local stack answer first: it reuses whatever part already runs and starts the rest (the chain, facilitator, seller, L2 and L3) in that task, without the debugger. To debug the stack's services as well, start the compound **Local stack** first; its task `local: chain` starts or reuses the chain, and L1 then reuses those services. The seller and L2 serve Swagger UI at `/docs`.
 
 | Configuration | What it runs |
 |---|---|
+| Local stack (compound) | the facilitator, seller, L2 and L3, debugged (also each alone: Facilitator, Seller, L2 control, L3 verifier) |
 | L1 agent: scripted plan | the deterministic L1-4 plan: FREE, PAID, PAID, ESCALATED, DENIED, DENIED |
 | L1 agent: Claude, your goal | the Claude agent with a goal you type (needs `ANTHROPIC_API_KEY` in `env/l1-agent.env`) |
 | L1 hosted agent | the hosted service on `:4024` with Swagger UI (needs `ANTHROPIC_API_KEY` in `env/l1-hosted.env`; get a token with task `local: dev token`) |
 | Operator: watch escalations, approve, reject, ledger-verify | the operator's commands; approve and reject ask for the `authorizationId` |
 
-The compounds **Local stack + L1 scripted plan** and **Local stack + L1 hosted agent** start both at once. The chain keeps running after a debug session, for the next one; task `local: stop chain` stops it. **Vitest: current file** debugs the open test file. Stop the local stack first, because the e2e suites use the same ports.
+Tasks `local: stop stack` and `local: stop chain` stop what `local: stack` and `local: chain` started; otherwise they keep running for the next session. To debug a service that `local: stack` started, stop that task first: the runner refuses to start a second process on a taken port. **Vitest: current file** debugs the open test file; stop the local stack and chain first, because the e2e suites use the same ports.
 
 ### Human approval
 
@@ -272,7 +272,7 @@ A milestone must pass its exit check before the next one starts.
 
 | File | Covers |
 |---|---|
-| `test/vscode-local.test.ts` | T-DEV-01..02: every VS Code configuration runs locally through the runner and resolves its role, tasks and inputs; each process gets its own env file and local key, NETWORK=local, and nothing else from VS Code but the debugger's attach hook |
+| `test/vscode-local.test.ts` | T-DEV-01..03: every VS Code configuration runs locally through the runner and resolves its role, tasks and inputs; each process gets its own env file and local key, NETWORK=local, and nothing else from VS Code but the debugger's attach hook; `local: stack` reuses, waits for or starts each stack process |
 | `test/architecture.test.ts` | INV-1..4 and rules A1–A7 (static import and identifier scan), env templates |
 | `test/auth.test.ts` | per-role bearer guard `requireRole` (INV-13), token resolution, `loadEnv` |
 | `test/policy.test.ts` | mandate, T-POL-01..15, signer, authorize/budget API, approvals, rejections and escalation reads in-process, operator CLIs |

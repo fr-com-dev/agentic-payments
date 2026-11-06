@@ -23,14 +23,31 @@
       "presentation": { "reveal": "silent", "panel": "dedicated", "group": "local" }
     },
     {
-      "label": "local: wait for stack",
-      "detail": "Wait until the chain, facilitator, seller, L2 and L3 answer (60 s)",
+      "label": "local: stack",
+      "detail": "Make the whole local stack answer: reuse what runs (e.g. the compound \"Local stack\"), start the rest here, not debugged",
       "type": "process",
       "command": "node",
-      "args": ["--import", "tsx", "scripts/vscode-local.ts", "wait"],
+      "args": ["--import", "tsx", "scripts/vscode-local.ts", "stack"],
       "options": { "cwd": "${workspaceFolder}" },
+      "isBackground": true,
+      "problemMatcher": {
+        "owner": "local-stack",
+        "pattern": { "regexp": "^local stack: error: (.*)$", "file": 2, "message": 1 },
+        "background": {
+          "activeBegins": true,
+          "beginsPattern": "^local stack: checking",
+          "endsPattern": "^local stack: (ready|already running|error)"
+        }
+      },
+      "presentation": { "reveal": "silent", "panel": "dedicated", "group": "local" }
+    },
+    {
+      "label": "local: stop stack",
+      "detail": "Stop the processes the task \"local: stack\" started",
+      "type": "shell",
+      "command": "echo local stack stopped ${input:terminateStack}",
       "problemMatcher": [],
-      "presentation": { "reveal": "silent", "panel": "shared", "group": "local" }
+      "presentation": { "reveal": "silent" }
     },
     {
       "label": "local: stop chain",
@@ -59,7 +76,7 @@
     },
     {
       "label": "test",
-      "detail": "Every suite; stop the local stack first (the e2e suites use the same ports)",
+      "detail": "Every suite; stop the local stack and chain first (the e2e suites use the same ports)",
       "type": "npm",
       "script": "test",
       "problemMatcher": [],
@@ -83,6 +100,7 @@
   ],
   "inputs": [
     { "id": "terminateChain", "type": "command", "command": "workbench.action.tasks.terminate", "args": "local: chain" },
+    { "id": "terminateStack", "type": "command", "command": "workbench.action.tasks.terminate", "args": "local: stack" },
     { "id": "subject", "type": "promptString", "description": "The token's subject (the requester)", "default": "alice" }
   ]
 }
