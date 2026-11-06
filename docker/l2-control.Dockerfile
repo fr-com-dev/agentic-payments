@@ -1,9 +1,8 @@
 # syntax=docker/dockerfile:1
-# L2 image x402-l2-control (specs/011 research R14): the control service and the operator job.
-#   node dist/src/layer2-control/service.js                         L2 (with the loopback proxy sidecar)
-#   node dist/scripts/{approve,reject,escalations,ledger-verify}.js  operator job
-# It holds only L2's code (src/layer2-control, src/shared, the operator scripts) and the packages that code
-# imports: no agent framework or model SDK, no L3 verifier, no seller.
+# L2 image x402-l2-control (specs/011 research R14): the control service, deployed by deploy-l2.yml.
+#   node dist/src/layer2-control/service.js   L2 (with the loopback proxy sidecar)
+# It holds only L2's code (src/layer2-control, src/shared) and the packages that code imports: no agent
+# framework or model SDK, no L3 verifier, no seller, no operator scripts (docker/operator.Dockerfile).
 # scripts/image-closure.ts derives both from the import graph and fails the build when a file from another
 # layer would be included. No key or env file is inside; each Container App or job gets its secrets as Key
 # Vault references.

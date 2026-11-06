@@ -1,8 +1,10 @@
 // T-IAC-01 Azure identity, secret, exposure and naming rules (SPEC.md §3.1 Azure profile; specs/011 contracts/
 // cloud-topology.md "T-IAC-01 assertions"). Compiles infra/main.bicep (the platform and every unit) and
 // infra/pre-deploy.bicep (the resource group, the Entra objects and the deploy app's roles) with the Bicep CLI, and
-// asserts on the ARM JSON that would actually be deployed and on their parameter files, compiled too. Needs the
-// Bicep CLI, and the Microsoft Graph extension it restores from mcr.microsoft.com: set BICEP_PATH (deploy.yml does);
+// asserts on the ARM JSON that would actually be deployed and on their parameter files, compiled too. main.bicep
+// deploys one unit per run (`unit`: the platform, or one unit's apps), and rule 18 checks each module belongs to
+// exactly one. Needs the Bicep CLI, and the Microsoft Graph extension it restores from mcr.microsoft.com: set
+// BICEP_PATH (deploy.yml does);
 // without it this suite is skipped. Each rule has a must-fail mutant. Every name is in the parameter files (`names`):
 // names are resolved with the dev files' values, and rule 15 checks each one against the naming standard.
 import { cpSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -162,13 +164,21 @@ const GUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g;
 /** The two templates: everything in the resource group, and what precedes it. */
 export const TEMPLATES = ["main", "pre-deploy"] as const;
 export type Templates = Record<(typeof TEMPLATES)[number], Json>;
-/** Each unit's apps module in main.bicep, and the identities and vaults it may use (rules 12 and 13). */
-const UNITS: Record<ImageName, { apps: string; identities: string[]; vaults: string[] }> = {
-  "l1-agent": { apps: "l1-apps", identities: ["l1"], vaults: ["l1"] },
-  "l2-control": { apps: "l2-apps", identities: ["l2", "op"], vaults: ["l2", "op"] },
-  "l3-verifier": { apps: "l3-apps", identities: ["l3"], vaults: ["l3"] },
-  seller: { apps: "sellers", identities: ["seller"], vaults: ["seller"] },
+/**
+ * Each unit's apps module in main.bicep, by its image: the unit whose runs deploy it (main.bicep's `unit`, rule 18),
+ * and the identities and vaults it may use (rules 12 and 13).
+ */
+const UNITS: Record<ImageName, { unit: string; apps: string; identities: string[]; vaults: string[] }> = {
+  "l1-agent": { unit: "l1", apps: "l1-apps", identities: ["l1"], vaults: ["l1"] },
+  "l2-control": { unit: "l2", apps: "l2-apps", identities: ["l2"], vaults: ["l2"] },
+  "l3-verifier": { unit: "l3", apps: "l3-apps", identities: ["l3"], vaults: ["l3"] },
+  operator: { unit: "operator", apps: "operator-apps", identities: ["op"], vaults: ["op"] },
+  seller: { unit: "seller", apps: "sellers", identities: ["seller"], vaults: ["seller"] },
 };
+/** main.bicep's platform modules: deployed only by the platform's runs (deploy-infra.yml; rule 18). */
+const PLATFORM_MODULES = ["network", "logs", "identities", "registry", "vault", "storage", "foundry", "environments"];
+/** What one deployment of main.bicep deploys (`unit`): the platform, or one unit's apps. */
+const DEPLOY_UNITS = ["platform", ...Object.values(UNITS).map((u) => u.unit)];
 /**
  * The naming standard, {type}-{app}-{location}-{environment}, by a name's place in a parameter file's `names` (rule
  * 15): a group's keys are the {app} (sellerAlias is seller-alias); the registry and storage drop the hyphens. Each
@@ -210,7 +220,7 @@ const NAMED_TYPES = [
   "Microsoft.Graph/groups@v1.0",
 ];
 /** The only parameters a parameter file may read from the environment: deploy.yml sets them on each run. */
-const PER_RUN = ["imageTag", "platformOnly", "seedIp", "recoverVaults", "agentStableRevision"];
+const PER_RUN = ["unit", "imageTag", "seedIp", "recoverVaults", "agentStableRevision"];
 /** The deployment target: both parameter files of an environment must agree on it (rule 17). */
 const TARGET = ["tenantId", "subscriptionId", "location", "names.resourceGroup"];
 /** GitHub's immutable OIDC subject for a deploy job: the owner and repository by name and ID (rule 16). */
@@ -256,7 +266,7 @@ const vaultKeysOf = (r: Res, url: string | undefined) => [...withVars(url ?? "",
 const paramLines = (text: string) => new Map([...text.matchAll(/^param (\w+) = (.+)$/gm)].map((m) => [m[1]!, m[2]!.trim()]));
 
 /**
- * Rules 1–17 of contracts/cloud-topology.md, on the compiled templates, the compiled parameter files (`params`, by
+ * Rules 1–18 of contracts/cloud-topology.md, on the compiled templates, the compiled parameter files (`params`, by
  * file name) and the infra sources. Returns one message per violation, prefixed `rule N:`.
  */
 export function violations(arms: Templates, params: Params, infraFiles: Record<string, string>): string[] {
@@ -272,7 +282,7 @@ export function violations(arms: Templates, params: Params, infraFiles: Record<s
     [MN.apps.l1]: "l1-agent",
     [MN.jobs.l1]: "l1-agent",
     [MN.apps.l2]: "l2-control",
-    [MN.jobs.l2]: "l2-control",
+    [MN.jobs.l2]: "operator",
     [MN.apps.l3]: "l3-verifier",
     [MN.apps.seller]: "seller",
     [MN.apps.sellerAlias]: "seller",
@@ -296,7 +306,7 @@ export function violations(arms: Templates, params: Params, infraFiles: Record<s
       (ra.module === "vault" && role.includes(KV_SECRETS_USER) && principal.includes("parameters('names').identities[parameters('key')]")) ||
       (ra.module === "registry" && role.includes(ACR_PULL) && principal.includes("parameters('names').identities[parameters('identityKeys')[copyIndex()]]")) ||
       (ra.module === "foundry" && role.includes(COGNITIVE_SERVICES_USER) && principal.includes("parameters('names').identities.l1)")) ||
-      (ra.module === "l2-apps" && role.includes(JOBS_OPERATOR) && principal === "[parameters('operatorsGroupId')]" && scope.some((s) => s === MN.jobs.l2 || s.endsWith(`/${MN.jobs.l2}`))) ||
+      (ra.module === "operator-apps" && role.includes(JOBS_OPERATOR) && principal === "[parameters('operatorsGroupId')]" && scope.some((s) => s === MN.jobs.l2 || s.endsWith(`/${MN.jobs.l2}`))) ||
       (ra.module === "deploy-access" && (role.includes(CONTRIBUTOR) || role.includes(RBAC_ADMINISTRATOR)) && principal === "[parameters('principalId')]");
     if (!ok) v.push(`rule 1: role assignment ${ra.name} in ${ra.module} is not in the matrix`);
   }
@@ -647,6 +657,23 @@ export function violations(arms: Templates, params: Params, infraFiles: Record<s
     for (const p of ["githubOwnerId", "githubRepositoryId"]) if (!/^[1-9][0-9]*$/.test(String(pre[p]))) v.push(`rule 17: pre-deploy.${env}.bicepparam's ${p} ${pre[p]} is not a numeric GitHub ID`);
   }
 
+  // Rule 18: each module is deployed by exactly one unit's runs: the platform's modules by the platform's
+  // (deploy-infra.yml), each unit's apps by that unit's (deploy-<unit>.yml), so a pipeline changes nothing of another
+  // unit's. `unit` is required and names one of them.
+  const unitParam = ((arms.main.parameters as Json)?.unit ?? {}) as Json;
+  if ("defaultValue" in unitParam || JSON.stringify([...((unitParam.allowedValues ?? []) as string[])].sort()) !== JSON.stringify([...DEPLOY_UNITS].sort())) {
+    v.push(`rule 18: unit must be a required parameter, one of ${DEPLOY_UNITS.join(", ")}`);
+  }
+  if ((arms.main.variables as Json)?.platform !== "[equals(parameters('unit'), 'platform')]") v.push("rule 18: main's platform variable must be unit == 'platform'");
+  const unitOf = new Map(Object.values(UNITS).map((u) => [u.apps, u.unit]));
+  for (const d of main.filter((r) => r.module === "main" && r.type === "Microsoft.Resources/deployments")) {
+    const m = moduleName(d.name);
+    const unit = unitOf.get(m);
+    const want = unit ? `[equals(parameters('unit'), '${unit}')]` : PLATFORM_MODULES.includes(m) ? "[variables('platform')]" : undefined;
+    if (want === undefined) v.push(`rule 18: the ${m} module belongs to no unit`);
+    else if (d.raw.condition !== want) v.push(`rule 18: the ${m} module must be deployed only by ${unit ? `unit ${unit}'s` : "the platform's"} runs`);
+  }
+
   return v;
 }
 
@@ -711,7 +738,7 @@ describe.skipIf(!BICEP_PATH)("T-IAC-01 Azure identity, secret, exposure and nami
     return violations(arms, params, infraSources(dir));
   }
 
-  it("T-IAC-01 the real templates and parameter files pass rules 1–17", async () => {
+  it("T-IAC-01 the real templates and parameter files pass rules 1–18", async () => {
     const { arms, params } = await compile("infra");
     expect(violations(arms, params, infraSources("infra"))).toEqual([]);
   }, 60_000);
@@ -728,7 +755,7 @@ resource extraRead 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   }
 }
 `;
-    const v = await mutant("main.bicep", "// ---- The platform ---", `${extra}\n// ---- The platform ---`);
+    const v = await mutant("main.bicep", "// ---- The platform (", `${extra}\n// ---- The platform (`);
     expect(v.some((m) => m.startsWith("rule 1: role assignment") && m.endsWith("in main is not in the matrix"))).toBe(true);
   }, 60_000);
 
@@ -762,11 +789,11 @@ resource extraRead 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
     expect(v).toContain("rule 12: l2-apps's image is not x402-l2-control:<imageTag> from the platform's registry");
   }, 60_000);
 
-  it("T-IAC-01 must-fail rule 12: an operator job whose own command isn't ledger-verify, or that the L2 image doesn't contain, is reported", async () => {
-    const v = await mutant("modules/l2-apps.bicep", "command: ['node', 'dist/scripts/ledger-verify.js']", "command: ['node', 'dist/src/main.js']");
-    expect(v).toContain(`rule 12: ${N.main.jobs.l2}/operator runs dist/src/main.js, which the l2-control image doesn't contain`);
+  it("T-IAC-01 must-fail rule 12: an operator job whose own command isn't ledger-verify, or that the operator image doesn't contain, is reported", async () => {
+    const v = await mutant("modules/operator-apps.bicep", "command: ['node', 'dist/scripts/ledger-verify.js']", "command: ['node', 'dist/src/layer2-control/service.js']");
+    expect(v).toContain(`rule 12: ${N.main.jobs.l2}/operator runs dist/src/layer2-control/service.js, which the operator image doesn't contain`);
     expect(v).toContain("rule 12: the operator job's own command must be ledger-verify: deploy.yml starts it without an override");
-    const approve = await mutant("modules/l2-apps.bicep", "command: ['node', 'dist/scripts/ledger-verify.js']", "command: ['node', 'dist/scripts/approve.js']");
+    const approve = await mutant("modules/operator-apps.bicep", "command: ['node', 'dist/scripts/ledger-verify.js']", "command: ['node', 'dist/scripts/approve.js']");
     expect(approve).toContain("rule 12: the operator job's own command must be ledger-verify: deploy.yml starts it without an override");
   }, 60_000);
 
@@ -775,9 +802,28 @@ resource extraRead 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
     expect(v).toContain("rule 13: l1-apps looks up vaults l2, not its own (l1)");
   }, 60_000);
 
+  it("T-IAC-01 must-fail rule 12: the operator job back on L2's image is reported", async () => {
+    const v = await mutant("main.bicep", "image: '${acrServer}/x402-operator:${imageTag}'", "image: '${acrServer}/x402-l2-control:${imageTag}'");
+    expect(v).toContain("rule 12: operator-apps's image is not x402-operator:<imageTag> from the platform's registry");
+  }, 60_000);
+
+  it("T-IAC-01 must-fail rule 13: L2's apps reading the operator's vault are reported", async () => {
+    const v = await mutant("modules/l2-apps.bicep", "var vaultL2 = 'https://${names.vaults.l2}", "var vaultOp = 'https://${names.vaults.op}${az.environment().suffixes.keyvaultDns}/'\noutput opVault string = vaultOp\nvar vaultL2 = 'https://${names.vaults.l2}");
+    expect(v).toContain("rule 13: l2-apps looks up vaults l2,op, not its own (l2)");
+  }, 60_000);
+
   it("T-IAC-01 must-fail rule 13: L1's apps deployed without waiting for the vaults are reported", async () => {
     const v = await mutant("main.bicep", "dependsOn: [ids, registry, vaults, envs, foundry]", "dependsOn: [ids, registry, envs, foundry]");
     expect(v).toContain("rule 13: l1-apps doesn't wait for the platform's vaults");
+  }, 60_000);
+
+  it("T-IAC-01 must-fail rule 18: a unit's apps deployed by the platform's runs, a platform module deployed by every run, or a unit outside the list, is reported", async () => {
+    const v = await mutant("main.bicep", "module l1 'modules/l1-apps.bicep' = if (unit == 'l1') {", "module l1 'modules/l1-apps.bicep' = if (unit == 'l1' || platform) {");
+    expect(v).toContain("rule 18: the l1-apps module must be deployed only by unit l1's runs");
+    const always = await mutant("main.bicep", "module foundry 'modules/foundry.bicep' = if (platform) {", "module foundry 'modules/foundry.bicep' = {");
+    expect(always).toContain("rule 18: the foundry module must be deployed only by the platform's runs");
+    const all = await mutant("main.bicep", "@allowed(['platform', 'l1', 'l2', 'l3', 'operator', 'seller'])", "@allowed(['platform', 'l1', 'l2', 'l3', 'operator', 'seller', 'all'])");
+    expect(all).toContain(`rule 18: unit must be a required parameter, one of ${DEPLOY_UNITS.join(", ")}`);
   }, 60_000);
 
   it("T-IAC-01 must-fail rule 14: a Foundry account that accepts API keys is reported", async () => {

@@ -1,0 +1,35 @@
+# L1's pipeline (SPEC.md §3.1 Azure profile; specs/011 contracts/deploy-pipeline.md): the agent and the regression
+# job, from the x402-l1-agent image only. By hand or on a deploy-l1-* tag; the steps are the shared deploy.yml's,
+# with unit l1: build and scan the image, deploy L1's apps (infra/main.bicep with UNIT=l1) with the agent's new
+# revision at 0% behind the `candidate` label, check them through every unit, then move the agent's traffic and
+# promote the image to last-good, or roll L1 back to its last-good. On a new environment it runs last, through every
+# check (quickstart §4): it has no first deployment.
+name: deploy-l1
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment (infra/main.<environment>.bicepparam)
+        required: true
+        default: dev
+        type: choice
+        options: [dev]
+  push:
+    tags: ["deploy-l1-*"]
+
+permissions:
+  id-token: write
+  contents: read
+
+# One deployment at a time in the environment, whichever the pipeline: every run's checks go through all the units.
+concurrency:
+  group: deploy-azure
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    uses: ./.github/workflows/deploy.yml
+    with:
+      unit: l1
+      environment: ${{ inputs.environment || 'dev' }}

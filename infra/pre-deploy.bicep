@@ -1,6 +1,6 @@
-// Everything an environment needs before .github/workflows/deploy.yml can run (SPEC.md §3.1; specs/011
-// contracts/cloud-topology.md, access-and-sessions.md), as one subscription deployment that an administrator runs
-// by hand (quickstart §4 step 0):
+// Everything an environment needs before its pipelines (.github/workflows/deploy-*.yml) can run (SPEC.md §3.1;
+// specs/011 contracts/cloud-topology.md, access-and-sessions.md), as one subscription deployment that an
+// administrator runs by hand (quickstart §4 step 0):
 // - the resource group main.bicep deploys into;
 // - the API app registration app-l1-<location>-<environment> and its service principal: the identifier URI
 //   api://app-l1-…, v2.0 access tokens, the Agent.Run app role (assignment required) and the delegated scope

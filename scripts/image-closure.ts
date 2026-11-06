@@ -1,7 +1,8 @@
 // `tsx scripts/image-closure.ts <image> <outDir>`, after `npm run build`: what one container image ships
-// (specs/011 research R14). Each layer has its own image, and the seller has the root Dockerfile's, so a
-// process carries only its own code: the L1 image holds no signer, and the L2 and L3 images hold no agent
-// framework.
+// (specs/011 research R14). Each layer has its own image, the operator job has its own, and the seller has the
+// root Dockerfile's, so a process carries only its own code: the L1 image holds no signer, the L2 and L3 images
+// hold no agent framework, and the operator's holds only the operator scripts. Each image is built, promoted and
+// rolled back by its own pipeline (.github/workflows/deploy-<unit>.yml).
 //
 // esbuild walks the import graph of the image's entry points in the TypeScript sources: static imports and
 // literal dynamic imports, without the imports tsc drops because they're used only as types. A package the
@@ -18,7 +19,7 @@ import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { build } from "esbuild";
 
-export type ImageName = "l1-agent" | "l2-control" | "l3-verifier" | "seller";
+export type ImageName = "l1-agent" | "l2-control" | "l3-verifier" | "operator" | "seller";
 
 export interface ImageSpec {
   /** Dockerfile that builds the image, from the repository root. */
@@ -41,17 +42,23 @@ export const IMAGES: Record<ImageName, ImageSpec> = {
     allowed: ["src/layer1-intent/", "src/shared/", "src/hosted-main.ts", "src/main.ts", "src/refusal.ts"],
     extraPackages: ["swagger-ui-dist"], // src/shared/api-docs.ts, with API_DOCS=1 (v1.6)
   },
-  // L2 and the operator job, whose scripts call L2's operator routes.
+  // L2, the control service and sole signer.
   "l2-control": {
     dockerfile: "docker/l2-control.Dockerfile",
-    entries: ["src/layer2-control/service.ts", ...OPERATOR_SCRIPTS],
-    allowed: ["src/layer2-control/", "src/shared/", ...OPERATOR_SCRIPTS],
+    entries: ["src/layer2-control/service.ts"],
+    allowed: ["src/layer2-control/", "src/shared/"],
     extraPackages: ["swagger-ui-dist"], // src/shared/api-docs.ts, with API_DOCS=1
   },
   "l3-verifier": {
     dockerfile: "docker/l3-verifier.Dockerfile",
     entries: ["src/layer3-settlement/service.ts"],
     allowed: ["src/layer3-settlement/", "src/shared/"],
+  },
+  // The operator job, whose scripts call L2's operator routes over HTTP: no L2 code, no signer.
+  operator: {
+    dockerfile: "docker/operator.Dockerfile",
+    entries: OPERATOR_SCRIPTS,
+    allowed: ["src/shared/", ...OPERATOR_SCRIPTS],
   },
   // The demo seller, the counterparty, not a layer.
   seller: {

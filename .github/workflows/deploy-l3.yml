@@ -1,0 +1,40 @@
+# L3's pipeline (SPEC.md §3.1 Azure profile; specs/011 contracts/deploy-pipeline.md): the settlement verifier, from
+# the x402-l3-verifier image only. By hand or on a deploy-l3-* tag; the steps are the shared deploy.yml's, with unit
+# l3: build and scan the image, deploy L3's app (infra/main.bicep with UNIT=l3), check it through every unit, then
+# promote the image to last-good, or roll L3 back to its last-good. On a new environment its first run is a first
+# deployment, after the sellers' (quickstart §4).
+name: deploy-l3
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment (infra/main.<environment>.bicepparam)
+        required: true
+        default: dev
+        type: choice
+        options: [dev]
+      first-deployment:
+        description: A new environment, where the units deployed after this one don't exist yet - skip the checks through them, and promote nothing
+        required: false
+        default: false
+        type: boolean
+  push:
+    tags: ["deploy-l3-*"]
+
+permissions:
+  id-token: write
+  contents: read
+
+# One deployment at a time in the environment, whichever the pipeline: every run's checks go through all the units.
+concurrency:
+  group: deploy-azure
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    uses: ./.github/workflows/deploy.yml
+    with:
+      unit: l3
+      environment: ${{ inputs.environment || 'dev' }}
+      first-deployment: ${{ inputs.first-deployment || false }}

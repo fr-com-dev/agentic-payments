@@ -25,8 +25,9 @@ describe("T-IMG-01 per-layer images", { timeout: 30_000 }, () => {
     for (const n of NAMES) for (const e of IMAGES[n].entries) expect(closures.get(n)!.files, n).toContain(e);
   });
 
-  it("T-IMG-01 only the L2 image holds the signer, and only the L1 image holds the agent framework and model SDKs", () => {
+  it("T-IMG-01 only the L2 image holds the signer (and any L2 code: not the operator's), and only the L1 image holds the agent framework and model SDKs", () => {
     expect(holders((c) => c.files.includes(SIGNER))).toEqual(["l2-control"]);
+    expect(holders((c) => c.files.some((f) => f.startsWith("src/layer2-control/")))).toEqual(["l2-control"]);
     for (const p of AGENT_PACKAGES) expect(holders((c) => c.packages.includes(p)), p).toEqual(["l1-agent"]);
     expect(holders((c) => c.files.some((f) => f.startsWith("src/counterparty/")))).toEqual(["seller"]);
   });

@@ -111,8 +111,9 @@ The lock is not a ledger entry and never touches the hash chain.
 
 | Field | Notes |
 |---|---|
-| `environment` | the deploy environment (`dev`): one run of `deploy.yml` deploys everything in it (contracts/deploy-pipeline.md) |
-| `commit` | the Git SHA. Every image's tag equals it (FR-023) |
+| `environment` | the deploy environment (`dev`) |
+| `unit` | what the run deploys: `platform` (`deploy-infra.yml`), `l1`, `l2`, `l3`, `operator` or `seller` (`deploy-<unit>.yml`); one run deploys one unit (contracts/deploy-pipeline.md) |
+| `commit` | the Git SHA. The unit's image tag equals it (FR-023) |
 | `revisions` | the new revision name per app; the agent's carries a label until promoted |
 | `regression` | job exit code, the six outcomes, CONFIRMED count, chain check, secret scan result |
-| `result` | `promoted` (every image tagged `last-good`), `failed`, or `platform-only` (the first run, before the vaults are seeded). When failed, the agent stays on its previous revision, and everything is redeployed at `last-good` |
+| `result` | `promoted` (the unit's image tagged `last-good`), `failed`, `unverified` (a first deployment: no checks through the other units, nothing promoted) or, for the platform, `checked` (nothing to promote). When a unit fails, the agent stays on its previous revision, and that unit is redeployed at `last-good`; the platform is fixed forward |

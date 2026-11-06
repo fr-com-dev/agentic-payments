@@ -1,51 +1,57 @@
-# Deploy everything from one commit (SPEC.md §3.1 Azure profile; specs/011 contracts/deploy-pipeline.md): the
-# platform and every unit's apps, all in infra/main.bicep, each unit on its own image. Azure is provisioned by Bicep
-# only, and each deployment is previewed with what-if first: the platform (so the registry exists), then the four
-# images, then the whole template. Nothing is promoted before the cloud regression, the chain check, the hosted
-# smoke run and the log scan pass; a failure rolls everything back to last-good. T-E2E-AZ:
-# test/deploy-workflow.test.ts checks this file offline.
+# The steps every pipeline runs (SPEC.md §3.1 Azure profile; specs/011 contracts/deploy-pipeline.md): one reusable
+# workflow, called with its unit by the six pipelines, each run by hand or on its own tag:
+#   deploy-infra.yml     unit platform   the platform (network, logs, identities, registry, vaults, storage, Foundry,
+#                                        the environments); no image, no promotion, fixed forward
+#   deploy-l1.yml        unit l1         x402-l1-agent: the agent and the regression job
+#   deploy-l2.yml        unit l2         x402-l2-control: the control service
+#   deploy-l3.yml        unit l3         x402-l3-verifier: the verifier
+#   deploy-operator.yml  unit operator   x402-operator: the operator job
+#   deploy-seller.yml    unit seller     x402-seller: the seller and its alias
+# A run deploys infra/main.bicep with UNIT set, so only that unit's modules (everything else stays as it is), each
+# deployment previewed with what-if first. Azure is provisioned by Bicep only. A unit's new image is promoted to
+# last-good only after the cloud regression, the chain check, the hosted smoke run and the log scan pass through every
+# unit; a failure rolls that unit back to its last-good. T-E2E-AZ: test/deploy-workflow.test.ts checks this file and
+# the six pipelines offline.
 #
 # No GitHub secrets: the sign-in (OIDC, as pre-deploy.bicep's deploy app, in each step that calls Azure), the target
 # (tenant, subscription, resource group) and every resource name come from infra/main.<environment>.bicepparam, which
-# holds every value main.bicep uses; the pinned Bicep CLI compiles it, and every deployment uses that CLI. The first run is
-# platform-only, before the vaults are seeded (quickstart §4); seed-ip lets an operator's IP through the vault
-# firewalls for that, and the next run removes it.
+# holds every value main.bicep uses; the pinned Bicep CLI compiles it, and every deployment uses that CLI. On a new
+# environment each pipeline's first run is a first deployment (quickstart §4), which skips the checks through units
+# that don't exist yet; seed-ip lets an operator's IP through the vault firewalls on a platform run, and the next
+# platform run without it removes it. The pipelines hold the concurrency group: a called workflow sharing it would
+# deadlock with its caller.
 name: deploy
 
 on:
-  workflow_dispatch:
+  workflow_call:
     inputs:
+      unit:
+        description: What the run deploys (main.bicep's unit) - platform, l1, l2, l3, operator or seller
+        required: true
+        type: string
       environment:
         description: Target environment (infra/main.<environment>.bicepparam)
         required: true
-        default: dev
-        type: choice
-        options: [dev]
-      platform-only:
-        description: Deploy only the platform (the very first run, before the vaults are seeded; quickstart §4)
+        type: string
+      first-deployment:
+        description: A new environment, where the units deployed after this one don't exist yet - skip the checks through them, and promote nothing
         required: false
         default: false
         type: boolean
       seed-ip:
-        description: Your public IP, let through the vault firewalls on a platform-only run while you seed them
+        description: The platform only - an operator's public IP, let through the vault firewalls while the vaults are seeded
         required: false
         default: ""
         type: string
       recover-vaults:
-        description: Recover the vaults infra/cleanup.sh left soft-deleted, with their secrets (a platform-only run)
+        description: The platform only, on a first deployment - recover the vaults infra/cleanup.sh left soft-deleted, with their secrets
         required: false
         default: false
         type: boolean
-  push:
-    tags: ["deploy-*"]
 
 permissions:
   id-token: write
   contents: read
-
-concurrency:
-  group: deploy-azure
-  cancel-in-progress: false
 
 # bash -eo pipefail: a failed command inside a pipe fails its step, so a gate fed by a pipe (the log scan) never
 # passes on empty input.
@@ -54,8 +60,9 @@ defaults:
     shell: bash
 
 env:
-  ENVIRONMENT: ${{ inputs.environment || 'dev' }}
-  PARAMS: infra/main.${{ inputs.environment || 'dev' }}.bicepparam
+  UNIT: ${{ inputs.unit }}
+  ENVIRONMENT: ${{ inputs.environment }}
+  PARAMS: infra/main.${{ inputs.environment }}.bicepparam
   IMAGE_TAG: ${{ github.sha }}
   BICEP_VERSION: v0.47.16
   # The sign-in, as the deploy app (OIDC), that every step calling Azure starts with: `eval "$SIGN_IN"`. GitHub's
@@ -88,29 +95,48 @@ env:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    # The deploy app's federated credential trusts this repository's deploy job in this GitHub environment only.
-    environment: ${{ inputs.environment || 'dev' }}
+    # The deploy app's federated credential trusts this repository's jobs in this GitHub environment only.
+    environment: ${{ inputs.environment }}
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
-      # First the inputs: seed-ip and recover-vaults belong to a platform-only run. Without platform-only, a run would go
-      # on to build the images and deploy the apps against vaults not seeded yet (2026-11-04: seed-ip set, platform-only
-      # unchecked), so the step refuses before it does anything. The inputs come in as INPUT_*: the parameter file
-      # reads SEED_IP and RECOVER_VAULTS itself, and an input is never pasted into the script.
+      # First the unit and its image (scripts/image-closure.ts IMAGES), then the inputs, before anything is downloaded
+      # or deployed: seed-ip and recover-vaults belong to the platform; recover-vaults follows infra/cleanup.sh, so the
+      # units are gone (a first deployment); L1 is deployed last, through every check. The inputs come in as INPUT_*:
+      # the parameter file reads SEED_IP and RECOVER_VAULTS itself, and an input is never pasted into the script.
       # Then the pinned Bicep CLI, first on PATH, so the tests and every deployment use it. It compiles the parameter
       # file: the sign-in and target, never GitHub secrets, and every resource name the steps below use.
-      - name: "0 Bicep CLI, then the sign-in, target and names (infra/main.<environment>.bicepparam)"
+      - name: "0 the unit and its image, the Bicep CLI, then the sign-in, target and names (infra/main.<environment>.bicepparam)"
         id: target
         env:
-          INPUT_PLATFORM_ONLY: ${{ inputs.platform-only || false }}
+          INPUT_FIRST_DEPLOYMENT: ${{ inputs.first-deployment }}
           INPUT_SEED_IP: ${{ inputs.seed-ip }}
-          INPUT_RECOVER_VAULTS: ${{ inputs.recover-vaults || false }}
+          INPUT_RECOVER_VAULTS: ${{ inputs.recover-vaults }}
         run: |
-          if [[ "$INPUT_PLATFORM_ONLY" != true && ( -n "$INPUT_SEED_IP" || "$INPUT_RECOVER_VAULTS" == true ) ]]; then
-            echo "::error::seed-ip and recover-vaults are for a platform-only run (quickstart §4 and §6): check platform-only, or leave both empty. Nothing was deployed."
+          case "$UNIT" in
+            platform) image="" dockerfile="" ;;
+            l1) image=l1-agent dockerfile=docker/l1-agent.Dockerfile ;;
+            l2) image=l2-control dockerfile=docker/l2-control.Dockerfile ;;
+            l3) image=l3-verifier dockerfile=docker/l3-verifier.Dockerfile ;;
+            operator) image=operator dockerfile=docker/operator.Dockerfile ;;
+            seller) image=seller dockerfile=Dockerfile ;;
+            *) echo "::error::unit $UNIT is not platform, l1, l2, l3, operator or seller. Nothing was deployed."; exit 1 ;;
+          esac
+          if [[ "$UNIT" != platform && ( -n "$INPUT_SEED_IP" || "$INPUT_RECOVER_VAULTS" == true ) ]]; then
+            echo "::error::seed-ip and recover-vaults are for the platform: run deploy-infra (quickstart §4 and §6). Nothing was deployed."
             exit 1
           fi
+          if [[ "$INPUT_RECOVER_VAULTS" == true && "$INPUT_FIRST_DEPLOYMENT" != true ]]; then
+            echo "::error::recover-vaults follows infra/cleanup.sh, so the units are gone: check first-deployment too (quickstart §6). Nothing was deployed."
+            exit 1
+          fi
+          if [[ "$UNIT" == l1 && "$INPUT_FIRST_DEPLOYMENT" == true ]]; then
+            echo "::error::L1 is deployed last, through every check: it has no first deployment (quickstart §4). Nothing was deployed."
+            exit 1
+          fi
+          echo "IMAGE=$image" >> "$GITHUB_ENV"
+          echo "DOCKERFILE=$dockerfile" >> "$GITHUB_ENV"
           mkdir -p "$RUNNER_TEMP/bicep"
           curl -fsSL -o "$RUNNER_TEMP/bicep/bicep" "https://github.com/Azure/bicep/releases/download/${BICEP_VERSION}/bicep-linux-x64"
           chmod +x "$RUNNER_TEMP/bicep/bicep"
@@ -138,71 +164,69 @@ jobs:
           npm run typecheck
           npm test
 
-      - name: "2 what-if, then deploy the platform"
-        id: platform
-        env:
-          PLATFORM_ONLY: "true"
-          SEED_IP: ${{ inputs.seed-ip }}
-          RECOVER_VAULTS: ${{ inputs.recover-vaults || false }}
-        run: |
-          eval "$SIGN_IN"
-          echo "started=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
-          az deployment group what-if -g "$RG" -p "$PARAMS"
-          az deployment group create -g "$RG" -n "x402-platform-$IMAGE_TAG" -p "$PARAMS" -o none
-          echo "law=$(az monitor log-analytics workspace show -g "$RG" -n "$LOG_X402" --query customerId -o tsv)" >> "$GITHUB_OUTPUT"
-
-      - name: "3 build and push the four images, tagged with the commit"
+      - name: "2 build and push the unit's image, tagged with the commit"
         id: build
-        if: ${{ !inputs.platform-only }}
+        if: ${{ inputs.unit != 'platform' }}
         run: |
           eval "$SIGN_IN"
           az acr login -n "$CR_X402"
           SERVER=$(az acr show -n "$CR_X402" --query loginServer -o tsv)
-          for image in l1-agent l2-control l3-verifier; do
-            docker build -f "docker/$image.Dockerfile" -t "$SERVER/x402-$image:$IMAGE_TAG" .
-            docker push "$SERVER/x402-$image:$IMAGE_TAG"
-          done
-          docker build -f Dockerfile -t "$SERVER/x402-seller:$IMAGE_TAG" .
-          docker push "$SERVER/x402-seller:$IMAGE_TAG"
+          docker build -f "$DOCKERFILE" -t "$SERVER/x402-$IMAGE:$IMAGE_TAG" .
+          docker push "$SERVER/x402-$IMAGE:$IMAGE_TAG"
           echo "acr=$SERVER" >> "$GITHUB_OUTPUT"
 
-      - name: "3b image secret check (SC-005)"
+      - name: "2b image secret check (SC-005)"
         id: image-scan
-        if: ${{ !inputs.platform-only }}
+        if: ${{ inputs.unit != 'platform' }}
         run: |
-          for image in l1-agent l2-control l3-verifier seller; do
-            IMG="${{ steps.build.outputs.acr }}/x402-$image:$IMAGE_TAG"
-            if (docker history --no-trunc "$IMG"; docker run --rm "$IMG" env) | grep -E 'PRIVATE_KEY[=]|_SECRET[=]|_TOKEN[=]'; then
-              echo "secret assignment found in $IMG"; exit 1
-            fi
-          done
+          IMG="${{ steps.build.outputs.acr }}/x402-$IMAGE:$IMAGE_TAG"
+          if (docker history --no-trunc "$IMG"; docker run --rm "$IMG" env) | grep -E 'PRIVATE_KEY[=]|_SECRET[=]|_TOKEN[=]'; then
+            echo "secret assignment found in $IMG"; exit 1
+          fi
 
-      # The agent's current revision keeps all traffic; the new one starts at 0% behind the `candidate` label.
-      - name: "4 what-if, then deploy everything"
+      # main.bicep with UNIT: the platform, or this unit's apps only. On L1, the agent's current revision keeps all
+      # traffic; the new one starts at 0% behind the `candidate` label.
+      - name: "3 what-if, then deploy the unit (main.bicep with UNIT)"
         id: deploy
-        if: ${{ !inputs.platform-only }}
+        env:
+          FIRST_DEPLOYMENT: ${{ inputs.first-deployment }}
+          SEED_IP: ${{ inputs.seed-ip }}
+          RECOVER_VAULTS: ${{ inputs.recover-vaults }}
         run: |
           eval "$SIGN_IN"
-          STABLE=$(az containerapp revision list -n "$CA_L1" -g "$RG" --query "[?properties.trafficWeight==\`100\`].name | [0]" -o tsv 2>/dev/null || true)
-          echo "stable=$STABLE" >> "$GITHUB_OUTPUT"
-          export AGENT_STABLE_REVISION="$STABLE"
+          echo "started=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          if [[ "$UNIT" == l1 ]]; then
+            STABLE=$(az containerapp revision list -n "$CA_L1" -g "$RG" --query "[?properties.trafficWeight==\`100\`].name | [0]" -o tsv 2>/dev/null || true)
+            echo "stable=$STABLE" >> "$GITHUB_OUTPUT"
+            export AGENT_STABLE_REVISION="$STABLE"
+          fi
           az deployment group what-if -g "$RG" -p "$PARAMS"
-          az deployment group create -g "$RG" -n "x402-$IMAGE_TAG" -p "$PARAMS" -o none
+          az deployment group create -g "$RG" -n "x402-$UNIT-$IMAGE_TAG" -p "$PARAMS" -o none
+          echo "law=$(az monitor log-analytics workspace show -g "$RG" -n "$LOG_X402" --query customerId -o tsv)" >> "$GITHUB_OUTPUT"
+          if [[ -n "$SEED_IP" ]]; then
+            echo "The vaults let the seed IP through until the next deploy-infra run without seed-ip." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [[ "$FIRST_DEPLOYMENT" == true ]]; then
+            echo "First deployment of $UNIT: deployed without the checks through the other units, so unverified, and nothing promoted." >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       # The operator job's own command is ledger-verify: the deploy identity never starts it with another.
-      - name: "5 wait: L2's ledger lock handover, the latest revisions, both sellers"
+      - name: "4 wait: the unit's new revision (L2: the ledger lock handover), then both sellers"
         id: wait
-        if: ${{ !inputs.platform-only }}
+        if: ${{ inputs.unit != 'platform' || !inputs.first-deployment }}
         run: |
           eval "$SIGN_IN"
           eval "$RUN_JOB"
-          ok=""
-          for _ in $(seq 1 20); do
-            if run_job "$CAJ_L2" 120; then ok=1; break; fi
-            sleep 15
-          done
-          if [ -z "$ok" ]; then echo "L2 did not answer ledger-verify within 5 minutes"; exit 1; fi
-          for app in "$CA_L1" "$CA_L3"; do
+          if [[ "$UNIT" == platform || "$UNIT" == l2 ]]; then
+            ok=""
+            for _ in $(seq 1 20); do
+              if run_job "$CAJ_L2" 120; then ok=1; break; fi
+              sleep 15
+            done
+            if [ -z "$ok" ]; then echo "L2 did not answer ledger-verify within 5 minutes"; exit 1; fi
+          fi
+          if [[ "$UNIT" == l1 || "$UNIT" == l3 ]]; then
+            if [[ "$UNIT" == l1 ]]; then app="$CA_L1"; else app="$CA_L3"; fi
             state=""
             for _ in $(seq 1 30); do
               LATEST=$(az containerapp show -n "$app" -g "$RG" --query properties.latestRevisionName -o tsv)
@@ -211,7 +235,7 @@ jobs:
               sleep 10
             done
             if [ "$state" != Provisioned ]; then echo "$app revision $LATEST was not provisioned within 5 minutes"; exit 1; fi
-          done
+          fi
           for app in "$CA_SELLER" "$CA_SELLER_ALIAS"; do
             host=$(az containerapp show -n "$app" -g "$RG" --query properties.configuration.ingress.fqdn -o tsv)
             ok=""
@@ -222,35 +246,36 @@ jobs:
             if [ -z "$ok" ]; then echo "$host did not answer /api/catalog within 3 minutes"; exit 1; fi
           done
 
-      - name: "6 payer balance (read-only)"
+      - name: "5 payer balance (read-only)"
         id: balance
-        if: ${{ !inputs.platform-only }}
+        if: ${{ !inputs.first-deployment }}
         run: npm run -s payer-balance -- "${{ steps.target.outputs.payerAddress }}"
 
-      - name: "7 regression: L1-4 scripted plan with --check-baseline"
+      - name: "6 regression: L1-4 scripted plan with --check-baseline"
         id: regression
-        if: ${{ !inputs.platform-only }}
+        if: ${{ !inputs.first-deployment }}
         run: |
           eval "$SIGN_IN"
           eval "$RUN_JOB"
           run_job "$CAJ_L1"
 
-      - name: "8 ledger-verify"
+      - name: "7 ledger-verify"
         id: chain
-        if: ${{ !inputs.platform-only }}
+        if: ${{ !inputs.first-deployment }}
         run: |
           eval "$SIGN_IN"
           eval "$RUN_JOB"
           run_job "$CAJ_L2"
 
-      # The token is for the API app's client ID, the audience the agent accepts (authAudience).
-      - name: "9 hosted smoke through the agent's new revision"
+      # The token is for the API app's client ID, the audience the agent accepts (authAudience). On L1, the request
+      # goes to the new revision.
+      - name: "8 hosted smoke through the agent (on L1, its new revision)"
         id: smoke
-        if: ${{ !inputs.platform-only }}
+        if: ${{ !inputs.first-deployment }}
         run: |
           eval "$SIGN_IN"
           AGENT=$(az containerapp show -n "$CA_L1" -g "$RG" --query properties.configuration.ingress.fqdn -o tsv)
-          if [ -n "${{ steps.deploy.outputs.stable }}" ]; then AGENT="${AGENT/$CA_L1/$CA_L1---candidate}"; fi
+          if [[ "$UNIT" == l1 && -n "${{ steps.deploy.outputs.stable }}" ]]; then AGENT="${AGENT/$CA_L1/$CA_L1---candidate}"; fi
           ACCESS=$(az account get-access-token --resource "${{ steps.target.outputs.authAudience }}" --query accessToken -o tsv)
           START=$(date +%s)
           curl -fsS -m 210 -X POST "https://$AGENT/v1/runs" -H "authorization: Bearer $ACCESS" -H "content-type: application/json" \
@@ -263,39 +288,38 @@ jobs:
           done
           test "$SECS" -le 120
 
-      - name: "10 log secret scan (credential shapes)"
+      - name: "9 log secret scan (credential shapes)"
         id: log-scan
-        if: ${{ !inputs.platform-only }}
+        if: ${{ !inputs.first-deployment }}
         run: |
           eval "$SIGN_IN"
-          az monitor log-analytics query -w "${{ steps.platform.outputs.law }}" \
-            --analytics-query "ContainerAppConsoleLogs_CL | where TimeGenerated >= datetime(${{ steps.platform.outputs.started }}) | project Log_s" \
+          az monitor log-analytics query -w "${{ steps.deploy.outputs.law }}" \
+            --analytics-query "ContainerAppConsoleLogs_CL | where TimeGenerated >= datetime(${{ steps.deploy.outputs.started }}) | project Log_s" \
             --query "[].Log_s" -o tsv | npm run -s scan-logs
 
-      # Bicep moves the traffic: main.bicep again, without a stable revision, gives the latest one 100%.
-      - name: "11 promote: the agent's traffic, and every image as last-good"
+      # Bicep moves the traffic: on L1, main.bicep again without a stable revision gives the latest one 100%.
+      - name: "10 promote: the unit's image as last-good (on L1, the agent's traffic first)"
         id: promote
-        if: ${{ !inputs.platform-only }}
+        if: ${{ inputs.unit != 'platform' && !inputs.first-deployment }}
         run: |
           eval "$SIGN_IN"
-          AGENT_STABLE_REVISION="" az deployment group create -g "$RG" -n "x402-promote-$IMAGE_TAG" -p "$PARAMS" -o none
-          for image in l1-agent l2-control l3-verifier seller; do
-            az acr import -n "$CR_X402" --source "${{ steps.build.outputs.acr }}/x402-$image:$IMAGE_TAG" --image "x402-$image:last-good" --force
-          done
+          if [[ "$UNIT" == l1 ]]; then
+            AGENT_STABLE_REVISION="" az deployment group create -g "$RG" -n "x402-l1-promote-$IMAGE_TAG" -p "$PARAMS" -o none
+          fi
+          az acr import -n "$CR_X402" --source "${{ steps.build.outputs.acr }}/x402-$IMAGE:$IMAGE_TAG" --image "x402-$IMAGE:last-good" --force
 
-      # Once step 4 has run, even if it failed partway, the apps may be on the new images: back to last-good. A failed
-      # platform deployment is fixed forward: there is no previous platform to return to.
-      - name: "rollback everything to last-good (the agent's traffic stays on its previous revision)"
+      # Once step 3 has run, even if it failed partway, the unit's apps may be on the new image: back to its last-good.
+      # The other units keep theirs. A failed platform deployment is fixed forward: there is no previous platform to
+      # return to.
+      - name: "rollback the unit to last-good (the agent's traffic stays on its previous revision)"
         id: rollback
-        if: failure() && (steps.deploy.outcome == 'success' || steps.deploy.outcome == 'failure')
+        if: failure() && inputs.unit != 'platform' && (steps.deploy.outcome == 'success' || steps.deploy.outcome == 'failure')
         run: |
           eval "$SIGN_IN"
           eval "$RUN_JOB"
-          for image in l1-agent l2-control l3-verifier seller; do
-            if ! az acr repository show-tags -n "$CR_X402" --repository "x402-$image" -o tsv | grep -x last-good > /dev/null; then
-              echo "x402-$image has no last-good yet: nothing to roll back to"; exit 1
-            fi
-          done
+          if ! az acr repository show-tags -n "$CR_X402" --repository "x402-$IMAGE" -o tsv | grep -x last-good > /dev/null; then
+            echo "x402-$IMAGE has no last-good yet: nothing to roll back to"; exit 1
+          fi
           IMAGE_TAG=last-good AGENT_STABLE_REVISION="${{ steps.deploy.outputs.stable }}" \
-            az deployment group create -g "$RG" -n "x402-rollback-${{ github.sha }}" -p "$PARAMS" -o none
+            az deployment group create -g "$RG" -n "x402-$UNIT-rollback-${{ github.sha }}" -p "$PARAMS" -o none
           run_job "$CAJ_L2"

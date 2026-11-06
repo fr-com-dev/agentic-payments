@@ -1,6 +1,6 @@
-// dev parameters for main.bicep: every value it uses, its target and every resource name included. deploy.yml
-// compiles this file with the Bicep CLI to read its sign-in, target and names, and sets the five values at the end
-// on each run. No secret values: the vaults are seeded by hand (quickstart §4 step 3).
+// dev parameters for main.bicep: every value it uses, its target and every resource name included. deploy.yml (the
+// pipelines' shared workflow) compiles this file with the Bicep CLI to read its sign-in, target and names, and sets
+// the five values at the end on each run. No secret values: the vaults are seeded by hand (quickstart §4 step 3).
 using 'main.bicep'
 
 param tenantId = '88f8af2e-ee60-42cd-ba67-6806d30aac9d'
@@ -67,11 +67,11 @@ param claudeOrganizationName = 'Fabricio Rojas'
 param claudeCountryCode = 'US'
 param claudeIndustry = 'technology'
 
-// Set by deploy.yml on each run: the commit, the platform-only run, an operator's IP while seeding the vaults, the
-// recovery of a cleaned-up environment's vaults, and the agent revision that keeps its traffic until the new one
-// passes the checks.
+// Set by deploy.yml on each run: what the run deploys (the platform, or the pipeline's unit), the commit, an
+// operator's IP while seeding the vaults, the recovery of a cleaned-up environment's vaults, and the agent revision
+// that keeps its traffic until the new one passes the checks.
+param unit = readEnvironmentVariable('UNIT', 'platform')
 param imageTag = readEnvironmentVariable('IMAGE_TAG', 'dev')
-param platformOnly = bool(readEnvironmentVariable('PLATFORM_ONLY', 'false'))
 param seedIp = readEnvironmentVariable('SEED_IP', '')
 param recoverVaults = bool(readEnvironmentVariable('RECOVER_VAULTS', 'false'))
 param agentStableRevision = readEnvironmentVariable('AGENT_STABLE_REVISION', '')

@@ -337,6 +337,11 @@ the IDs to the ledger entries. Run the secret scan over all of them: it finds no
   everything):* a deployment deploys every unit from one commit, and the plan runs after it. The
   only exception is the very first, platform-only deployment, made before the vaults are seeded:
   it deploys no app and runs no plan. A failed deployment restores every unit's previous version.
+  *Amended 2026-11-04 (one pipeline per unit):* a deployment deploys one unit (the platform, L1, L2,
+  L3, the operator or the sellers) from one commit, and the plan runs through every unit after it.
+  The exception is a unit's first deployment in a new environment, before the units deployed after
+  it exist: it runs no plan and promotes nothing. A failed deployment restores that unit's previous
+  version; the platform is fixed forward.
 
 **Observability**
 
@@ -388,8 +393,9 @@ the IDs to the ledger entries. Run the secret scan over all of them: it finds no
 - **Layer runtime unit**: the agent, control or settlement service as deployed. Each has its own
   cloud identity, its own secrets and its own network exposure (public for the agent, private for
   the others).
-- **Deployment**: one unit (the platform and sellers, or one layer) deployed from one commit. It
-  has its image, its environment definition and the result of its regression run.
+- **Deployment**: one unit (the platform, one layer, the operator or the sellers) deployed from one
+  commit by its own pipeline. It has its image (none for the platform), its environment definition
+  and the result of its regression run.
 
 ## Success Criteria *(mandatory)*
 

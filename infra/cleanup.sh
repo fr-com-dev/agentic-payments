@@ -228,7 +228,7 @@ while IFS="$TAB" read -r name date id; do
   KEPT_VAULTS=1
 done <<< "$FOUND"
 if [[ -n "${KEPT_VAULTS:-}" ]]; then
-  echo "To deploy $ENVIRONMENT again before then, deploy pre-deploy.bicep, then run deploy.yml with platform-only and" \
-    "recover-vaults: Bicep recovers the vaults, secrets included, instead of creating them."
+  echo "To deploy $ENVIRONMENT again before then, deploy pre-deploy.bicep, then run deploy-infra.yml with first-deployment" \
+    "and recover-vaults: Bicep recovers the vaults, secrets included, instead of creating them."
 fi
 echo "clean-up of $ENVIRONMENT done"
