@@ -61,6 +61,10 @@ The rows are in first-deployment order (quickstart §4).
   (audience `api://AzureADTokenExchange`), clears the CLI's cached tokens (`az account clear`, so the
   step's own Azure tokens last the step), and signs in as the deploy app (`az login --service-principal
   --federated-token`, then `az account set`) with the client ID, tenant and subscription step 0 read.
+  The token request retries a transient answer (a timeout, 429 or 5xx; `curl --retry 5`, at most 30 s
+  an attempt and 120 s in all), and a 401 or 403 still fails at once (revised 2026-11-06: a run signs
+  in up to nine times, and one 503 from GitHub's token endpoint failed run 42158206985 before it built
+  anything). T-E2E-AZ runs the request against a local endpoint that answers 503 once.
 - **Per-run values.** The workflow sets the only parameters a parameter file may read from the
   environment: `UNIT`, `IMAGE_TAG` (the commit, or `last-good`), `SEED_IP`, `RECOVER_VAULTS` and
   `AGENT_STABLE_REVISION`.

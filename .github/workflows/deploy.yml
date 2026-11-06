@@ -69,8 +69,11 @@ env:
   # token is valid for 5 minutes and az can't renew it, so after one azure/login the first new token request past
   # that fails with AADSTS700024 (the registry's, after the platform's 17-minute deployment; 2026-11-04). Each step
   # gets a fresh GitHub token, and clears the CLI's cached tokens so its own Azure tokens last the whole step.
+  # The token request retries a transient answer (a timeout, 429 or 5xx) with backoff, at most 30 s an attempt and
+  # 120 s in all: a run signs in up to nine times, and one 503 from GitHub failed a run before it built anything
+  # (2026-11-06, run 42158206985). A 401 or 403 still fails at once.
   SIGN_IN: |
-    oidc=$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=api://AzureADTokenExchange" | jq -er .value)
+    oidc=$(curl -fsS --retry 5 --retry-max-time 120 --max-time 30 -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=api://AzureADTokenExchange" | jq -er .value)
     az account clear
     az login --service-principal -u "$DEPLOY_CLIENT_ID" -t "$TENANT_ID" --federated-token "$oidc" -o none
     az account set -s "$SUBSCRIPTION_ID"
