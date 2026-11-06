@@ -7,7 +7,8 @@
 //   exactly one pipeline;
 // - OIDC only, with the sign-in, target and resource names compiled from infra/main.<environment>.bicepparam by the
 //   pinned Bicep CLI: no GitHub secret or variable; each step that calls Azure signs in first with a fresh GitHub
-//   token, which is valid for 5 minutes (one azure/login failed with AADSTS700024 after the platform's deployment);
+//   token, which is valid for 5 minutes (one azure/login failed with AADSTS700024 after the platform's deployment),
+//   and the token request retries a transient answer (it is run against a local endpoint that answers 503 once);
 // - Azure provisioned by Bicep only: every az command is a Bicep deployment (each previewed with what-if), a read,
 //   a job start, an image copy or (in infra/cleanup.sh) a deletion, and infra/ holds two scripts only
 //   (github-setup.sh, cleanup.sh);
@@ -21,8 +22,10 @@
 // - no resource name hard-coded;
 // - no secret-shaped literal.
 // The live part of T-E2E-AZ is the workflow runs themselves (quickstart §4).
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -102,10 +105,11 @@ const PERMISSIONS = JSON.stringify({ "id-token": "write", contents: "read" });
 /**
  * The sign-in every step that calls Azure starts with (`eval "$SIGN_IN"`): a fresh GitHub OIDC token (GitHub's are
  * valid for 5 minutes, and az can't renew one), the CLI's cached tokens cleared, then the deploy app, tenant and
- * subscription the target step read from the parameter file. No secret, no password.
+ * subscription the target step read from the parameter file. No secret, no password. The token request retries a
+ * transient answer: one 503 from GitHub failed run 42158206985 (signInRetryProblems runs it against a local server).
  */
 const SIGN_IN = [
-  'oidc=$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=api://AzureADTokenExchange" | jq -er .value)',
+  'oidc=$(curl -fsS --retry 5 --retry-max-time 120 --max-time 30 -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=api://AzureADTokenExchange" | jq -er .value)',
   "az account clear",
   'az login --service-principal -u "$DEPLOY_CLIENT_ID" -t "$TENANT_ID" --federated-token "$oidc" -o none',
   'az account set -s "$SUBSCRIPTION_ID"',
@@ -336,6 +340,44 @@ export function hardCodedNames(file: string, text: string): string[] {
   return names.filter(([, n]) => text.includes(n)).map(([k, n]) => `${file} hard-codes ${n}: use ${k} from the parameter file`);
 }
 
+const RETRY_PROBLEM = "SIGN_IN's token request must retry a transient answer from GitHub (one 503 failed run 42158206985) and pass the token on";
+/**
+ * SIGN_IN's token request (its first line only: az never runs), in bash with pipefail as a step runs it, against a
+ * local stand-in for GitHub's OIDC endpoint that answers 503 once, as GitHub did in run 42158206985, then the token.
+ * The request must retry, ask for the Azure token exchange audience with the runner's request token, and leave the
+ * token in $oidc.
+ */
+export async function signInRetryProblems(signIn: string): Promise<string[]> {
+  const requests: { authorization?: string; audience: string | null }[] = [];
+  const server = createServer((req, res) => {
+    requests.push({ authorization: req.headers.authorization, audience: new URL(req.url ?? "/", "http://127.0.0.1").searchParams.get("audience") });
+    if (requests.length === 1) res.writeHead(503).end();
+    else res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ count: 1, value: "github-oidc-token" }));
+  });
+  await new Promise<void>((ready) => server.listen(0, "127.0.0.1", ready));
+  const { port } = server.address() as AddressInfo;
+  const env = {
+    PATH: process.env.PATH ?? "",
+    ACTIONS_ID_TOKEN_REQUEST_TOKEN: "runner-request-token",
+    ACTIONS_ID_TOKEN_REQUEST_URL: `http://127.0.0.1:${port}/idtoken?api-version=2.0`,
+  };
+  const script = `${signIn.split("\n")[0]}\nprintf '%s' "$oidc"`;
+  const run = await new Promise<{ code: number | null; stdout: string }>((done) => {
+    const child = spawn("bash", ["--noprofile", "--norc", "-eo", "pipefail", "-c", script], { env });
+    let stdout = "";
+    child.stdout.on("data", (chunk: Buffer) => (stdout += chunk.toString()));
+    child.on("close", (code) => done({ code, stdout }));
+  });
+  server.closeAllConnections();
+  server.close();
+  const out: string[] = [];
+  if (run.code !== 0 || run.stdout !== "github-oidc-token") out.push(RETRY_PROBLEM);
+  if (requests.some((r) => r.authorization !== "bearer runner-request-token" || r.audience !== "api://AzureADTokenExchange")) {
+    out.push("SIGN_IN must ask GitHub for the api://AzureADTokenExchange audience with the runner's request token");
+  }
+  return out;
+}
+
 describe("T-E2E-AZ deployment workflow gates", () => {
   const w = read(SHARED);
   const text = readFileSync(`${DIR}/${SHARED}`, "utf8");
@@ -449,6 +491,19 @@ describe("T-E2E-AZ deployment workflow gates", () => {
     expect(workflowProblems(parse(password) as Workflow)).toContain(
       "SIGN_IN must sign in with OIDC only: a fresh GitHub token, then the deploy app, tenant and subscription from the parameter file",
     );
+  });
+
+  it("T-E2E-AZ SIGN_IN retries GitHub's token request: one 503, as in run 42158206985, then the token", { timeout: 30_000 }, async () => {
+    expect(await signInRetryProblems(w.env?.SIGN_IN ?? "")).toEqual([]);
+  });
+
+  it("T-E2E-AZ must-fail: a token request without the retry, or for another audience, is reported", { timeout: 30_000 }, async () => {
+    const signIn = w.env?.SIGN_IN ?? "";
+    const once = signIn.replace("--retry 5 --retry-max-time 120 --max-time 30 ", "");
+    expect(once).not.toBe(signIn);
+    expect(await signInRetryProblems(once)).toEqual([RETRY_PROBLEM]);
+    const audience = signIn.replace("audience=api://AzureADTokenExchange", "audience=api://another");
+    expect(await signInRetryProblems(audience)).toEqual(["SIGN_IN must ask GitHub for the api://AzureADTokenExchange audience with the runner's request token"]);
   });
 
   it("T-E2E-AZ must-fail: one azure/login for the whole job (the run that failed with AADSTS700024), or a step calling Azure without signing in first, is reported", () => {
