@@ -14,7 +14,7 @@ import { SELLER_API_DOCS_FILE, servedSellerApiDocument } from "../src/counterpar
 import { CategorizedFacilitatorClient } from "../src/counterparty/facilitator-client.js";
 import { createSellerApp } from "../src/counterparty/seller.js";
 import { CATALOG, SELLER_ENDPOINTS } from "../src/counterparty/seller-api.js";
-import { networkProfile } from "../src/shared/config.js";
+import { localTestNet } from "./helpers/local-net.js";
 import {
   conformance,
   documentedResponse,
@@ -32,7 +32,7 @@ import {
 
 const DOC_FILE = "docs/seller.openapi.yaml";
 const loadDoc = () => loadDocFile(DOC_FILE);
-const NET = networkProfile("local");
+const NET = localTestNet();
 const PAY_TO = "0x90F79bf6EB2c4f870365E785982E1f101E93b906";
 const PAYER = "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC";
 
