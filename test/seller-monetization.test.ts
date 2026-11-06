@@ -10,9 +10,9 @@ import { declaredEndpoints, EndpointDeclarationError, Get } from "../src/counter
 import { Enterprise, Free, PayPerUse, Premium, TIERS, usdc } from "../src/counterparty/monetization.js";
 import { createSellerApp, sellerRoutes } from "../src/counterparty/seller.js";
 import { CATALOG, FREE_ENDPOINTS, PAID_ENDPOINTS, SELLER_ENDPOINTS } from "../src/counterparty/seller-api.js";
-import { ConfigError, networkProfile } from "../src/shared/config.js";
+import { localTestNet } from "./helpers/local-net.js";
 
-const NET = networkProfile("local");
+const NET = localTestNet();
 const PAY_TO = "0x90F79bf6EB2c4f870365E785982E1f101E93b906";
 
 let servers: Server[] = [];
@@ -172,7 +172,9 @@ describe("T-MON-03 a declaration mistake is refused while the seller is built, n
     }).toThrow(new EndpointDeclarationError("a: an endpoint must be a public instance method"));
     expect(() => Get("/api/weather?city=")).toThrow(EndpointDeclarationError);
     expect(() => Free(" ")).toThrow(RangeError);
-    expect(() => createSellerApp({ net: { ...NET, decimals: 18 }, payTo: PAY_TO })).toThrow(ConfigError);
+    // The decimals refusal itself: on a clean checkout, `{ ...NET }` used to throw the missing-deployment ConfigError
+    // before createSellerApp ran, so a bare toThrow(ConfigError) passed without testing it.
+    expect(() => createSellerApp({ net: { ...NET, decimals: 18 }, payTo: PAY_TO })).toThrow(/the seller prices in USDC \(6 decimals\); local's asset has 18/);
   });
 
   it("T-MON-03 undecorated methods are helpers, not endpoints", () => {
