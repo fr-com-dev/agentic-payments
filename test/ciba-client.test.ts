@@ -3,7 +3,7 @@
 import { generateKeyPairSync } from "node:crypto";
 import { decodeJwt } from "jose";
 import { afterEach, describe, expect, it } from "vitest";
-import { CibaClient, cibaConfigFromEnv, type CibaSettings, errorCode } from "../src/layer2-control/ciba-client.js";
+import { CibaClient, cibaConfigFromEnv, type CibaSettings, errorCode, rsaKeySizeAllowed } from "../src/layer2-control/ciba-client.js";
 import { type CibaStub, PLANTED_ERROR_TEXT, startCibaStub, testRsaKeyPair } from "./helpers/ciba-stub.js";
 
 const KEY = testRsaKeyPair();
@@ -60,7 +60,8 @@ describe("T-CIBA-01 configuration", () => {
     expect(cfg.enabled && cfg.credential).toEqual({ kind: "secret", secret: SECRET });
   });
 
-  const rsa1024 = generateKeyPairSync("rsa", { modulusLength: 1024 }).privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+  // The bounds are tested as numbers below; end to end, an oversized key is refused (no weak key is ever generated).
+  const rsaOversized = generateKeyPairSync("rsa", { modulusLength: 4160 }).privateKey.export({ type: "pkcs8", format: "pem" }).toString();
   const ec = generateKeyPairSync("ec", { namedCurve: "P-256" }).privateKey.export({ type: "pkcs8", format: "pem" }).toString();
   const { CIBA_CLIENT_KEY: _drop, ...withoutKey } = base;
   it.each<[string, Record<string, string>, string]>([
@@ -76,7 +77,7 @@ describe("T-CIBA-01 configuration", () => {
     ["neither credential", withoutKey, "CIBA_CLIENT_KEY or CIBA_CLIENT_SECRET"],
     ["both credentials", { ...base, CIBA_CLIENT_SECRET: SECRET }, "CIBA_CLIENT_KEY and CIBA_CLIENT_SECRET"],
     ["not a PEM", { ...base, CIBA_CLIENT_KEY: "not-a-key" }, "CIBA_CLIENT_KEY"],
-    ["a 1024-bit key", { ...base, CIBA_CLIENT_KEY: rsa1024 }, "CIBA_CLIENT_KEY"],
+    ["a 4160-bit key", { ...base, CIBA_CLIENT_KEY: rsaOversized }, "CIBA_CLIENT_KEY"],
     ["an EC key", { ...base, CIBA_CLIENT_KEY: ec }, "CIBA_CLIENT_KEY"],
     ["a short secret", { ...withoutKey, CIBA_CLIENT_SECRET: "short" }, "CIBA_CLIENT_SECRET"],
     ["a key id with a secret", { ...withoutKey, CIBA_CLIENT_SECRET: SECRET, CIBA_CLIENT_KEY_ID: "k" }, "CIBA_CLIENT_KEY_ID"],
@@ -85,7 +86,19 @@ describe("T-CIBA-01 configuration", () => {
     expect(m).toContain(name);
     expect(m).not.toContain(pemBody(KEY.privatePem).slice(0, 40));
     expect(m).not.toContain(SECRET);
-    expect(m).not.toContain(pemBody(rsa1024).slice(0, 40));
+    expect(m).not.toContain(pemBody(rsaOversized).slice(0, 40));
+  });
+
+  it.each<[number, boolean]>([
+    [1024, false],
+    [2047, false],
+    [2048, true],
+    [3072, true],
+    [4096, true],
+    [4097, false],
+    [2048.5, false],
+  ])("an RSA key of %d bits is %s", (bits, allowed) => {
+    expect(rsaKeySizeAllowed(bits)).toBe(allowed);
   });
 });
 

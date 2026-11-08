@@ -67,6 +67,11 @@ function issuerFrom(raw: string): string {
   return u.href.endsWith("/") ? u.href : `${u.href}/`;
 }
 
+/** Auth0's private_key_jwt takes RSA keys of 2048 to 4096 bits, never EC (research R3). */
+export const RSA_KEY_BITS = { min: 2048, max: 4096 } as const;
+
+export const rsaKeySizeAllowed = (bits: number): boolean => Number.isInteger(bits) && bits >= RSA_KEY_BITS.min && bits <= RSA_KEY_BITS.max;
+
 /** An RSA private key of 2048-4096 bits, returned as PKCS#8 PEM. `\n` escapes are accepted. */
 function clientKeyPem(raw: string): string {
   let key: KeyObject;
@@ -76,7 +81,7 @@ function clientKeyPem(raw: string): string {
     throw new ConfigError("CIBA_CLIENT_KEY is not a PEM private key");
   }
   const bits = key.asymmetricKeyDetails?.modulusLength ?? 0;
-  if (key.asymmetricKeyType !== "rsa" || bits < 2048 || bits > 4096) {
+  if (key.asymmetricKeyType !== "rsa" || !rsaKeySizeAllowed(bits)) {
     throw new ConfigError("CIBA_CLIENT_KEY must be an RSA key of 2048-4096 bits (Auth0 private_key_jwt accepts RS256, never ES256)");
   }
   return key.export({ type: "pkcs8", format: "pem" }).toString();
