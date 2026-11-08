@@ -21,6 +21,14 @@
   Otherwise the call returns ESCALATED, and a later approval pays on the agent's next request.
   The 120 seconds fit inside the hosted agent's 200-second run deadline.
 
+### Session 2026-11-08
+
+- Q: How is the Auth0 tenant provisioned? → A: As code, in Terraform under a new top-level `auth0/` folder (the
+  official `auth0/auth0` provider), applied by a tenant administrator by hand, like `infra/pre-deploy.bicep`.
+  Azure stays Bicep only. The plan, the approver's Guardian enrollment and L2's private key stay manual.
+- Q: How does Azure deliver the CIBA settings? → A: Always present on L2's container. The l2 vault always holds
+  `ciba-client-credential`, as the placeholder `off` while the feature is off.
+
 ## User Scenarios & Testing *(mandatory)*
 
 Terms used below:
@@ -301,7 +309,9 @@ deciding identity. Neither shows a token, a request handle or text from the appr
 **Activation and configuration**
 
 - **FR-001**: Backchannel approval MUST be off unless the control service is configured for it. In
-  that case every behavior in feature 004 and 010 is unchanged. *(SPEC: proposed L2-7, CFG-2)*
+  that case every behavior in feature 004 and 010 is unchanged. The only differences are additive
+  audit fields: `channel: "operator"` on new operator decisions, and the reference code in the
+  operator's views. *(SPEC: proposed L2-7, CFG-2)*
 - **FR-002**: When it is on, the configuration MUST name all of the following. A missing or
   invalid value MUST stop the control service at startup.
   - the approval service's issuer;
@@ -407,7 +417,10 @@ deciding identity. Neither shows a token, a request handle or text from the appr
   once, as today:
   - a repeat request for a pending purchase (`ESCALATION_REPEATED`);
   - an operator-only intent (FR-007);
-  - an escalation for which no approval request was sent, because of the cap or a failure.
+  - an escalation capped under FR-008, which sends no approval request.
+
+  When starting the request fails, the call returns ESCALATED as soon as the failure is recorded:
+  within 6 seconds, after at most 3 attempts (FR-009).
 
   *(SPEC: L2-4.3, proposed L2-7)*
 - **FR-019**: If the caller disconnects during the wait, L2 MUST end the wait and sign nothing for
@@ -441,9 +454,16 @@ deciding identity. Neither shows a token, a request handle or text from the appr
   - which channel decided each approval or rejection: `operator` or `backchannel`.
 
   Existing entries are never rewritten. *(SPEC: INV-9, L2-4 table)*
-- **FR-025**: A backchannel approval or rejection MUST record the approver's verified identity,
-  the issuer, and the identifier and issue time of the answer that proved it. It MUST NEVER record
-  tokens, client credentials or the approval service's free text. *(SPEC: L2-4, SEC-16)*
+- **FR-025**: A backchannel approval MUST record three things: the approver's verified identity,
+  the issuer, and the identifier and issue time of the signed answer that proved it.
+
+  A backchannel refusal comes back unsigned, as the answer to L2's own authenticated poll. It MUST
+  record the approver the request was addressed to, the issuer, the approval request it answers and
+  the time it was received. Accepting an unsigned refusal can only make L2 more restrictive
+  (NFR-001).
+
+  Neither MUST ever record tokens, client credentials or the approval service's free text.
+  *(SPEC: L2-4, SEC-16)*
 - **FR-026**: Whatever L2 needs to resume waiting after a restart (FR-012) MUST be recorded. The
   request handle MUST NOT appear in operator events, logs or any response. *(SPEC: L2-5
   escalation events, proposed L2-7)*
@@ -593,14 +613,21 @@ deciding identity. Neither shows a token, a request handle or text from the appr
   ping and push token delivery modes are out of scope.
 - **Client authentication.** A private-key JWT credential is preferred over a client secret, so no
   shared secret leaves L2's vault. Auth0 also supports a client secret or mTLS.
-- **The Auth0 tenant is configured by hand,** outside Bicep, because it is not an Azure resource:
+- **The Auth0 tenant is configured as code** (clarified 2026-11-08), in Terraform under `auth0/`, outside
+  Bicep because it is not an Azure resource. A tenant administrator applies it by hand. It makes:
   - the CIBA grant on L2's client;
   - the API with its payment-details type;
-  - the approver's account and Guardian enrollment.
+  - Guardian push.
 
-  The quickstart documents these steps. `infra/` gains no new script (T-E2E-AZ), and its
-  parameter files gain the non-secret values (FR-003).
+  The approver's account must already exist; their Guardian enrollment and the plan stay manual. `infra/` gains
+  no new script (T-E2E-AZ), and its parameter files gain the non-secret values (FR-003).
 - **Approval time-to-live.** A backchannel approval uses the operator default, 600 seconds.
+- **Resuming without the handle (planning, 2026-11-07).** FR-026 asks for whatever resuming needs
+  to be recorded, while NFR-003 and SC-008 keep the request handle out of the ledger. The design
+  reconciles them by storing the handle sealed (AES-256-GCM) under a key derived from L2's own
+  client credential. "Using only the ledger" (FR-012) therefore means the ledger plus the
+  credential L2 already holds. If the credential has rotated, the handle can't be opened; the
+  escalation then stays with the operator. See plan research R8.
 - **Bounded wait (clarified 2026-11-07).** The authorize call that created the escalation waits
   up to 120 seconds (FR-016..FR-019).
   - **L1's code is unchanged.** Its authorize call just takes longer, and may come back
