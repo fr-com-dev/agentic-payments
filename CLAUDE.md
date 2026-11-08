@@ -37,12 +37,13 @@ P=infra/pre-deploy.dev.bicepparam; az deployment sub what-if -n pre-deploy-dev -
   --subscription <the file's subscriptionId> -l <its location>   # then `create`; admin, by hand
 infra/github-setup.sh [--dry-run]            # the GitHub environment the pipelines run in, from pre-deploy.<env>.bicepparam
 infra/cleanup.sh [--dry-run] [--purge]       # delete everything of the dev environment (asks first)
+terraform -chdir=auth0 init && terraform -chdir=auth0 plan -var-file=dev.tfvars -out=dev.tfplan   # the Auth0 tenant (admin, by hand)
 npx vitest run test/policy.test.ts -t "<name>"   # single test
 ```
 
 ## Hard rules (SPEC §4). Never break these to make something pass.
 1. A layer imports only `../shared/*` and its own folder. Cross-layer wiring happens only in `src/main.ts`, `scripts/` and `test/`.
-2. Within `src/`, only `src/layer2-control/signer.ts` touches payment key material (`scripts/` may derive local dev keys only). The seller's CDP API credential is an auth credential confined to `src/counterparty/cdp-facilitator.ts` (A8). L1 never references `PAYER_PRIVATE_KEY`. L3 never gets a wallet client. Both L1 entry points (`src/main.ts`, `src/hosted-main.ts`) sit outside `src/layer1-intent/` (rule A5 bans the key's name there), load their env file and then refuse if the key is visible. The hosted agent offers only `fetch_resource` and `check_budget`; never add a Mastra memory, workspace, sub-agent or tool to it.
+2. Within `src/`, only `src/layer2-control/signer.ts` touches payment key material (`scripts/` may derive local dev keys only). The seller's CDP API credential is an auth credential confined to `src/counterparty/cdp-facilitator.ts` (A8), and L2's Auth0 client credential (`CIBA_CLIENT_KEY` / `CIBA_CLIENT_SECRET`) is one confined to `src/layer2-control/ciba-client.ts` (A9). L1 never references `PAYER_PRIVATE_KEY`. L3 never gets a wallet client. Both L1 entry points (`src/main.ts`, `src/hosted-main.ts`) sit outside `src/layer1-intent/` (rule A5 bans the key's name there), load their env file and then refuse if the key is visible. The hosted agent offers only `fetch_resource` and `check_budget`; never add a Mastra memory, workspace, sub-agent or tool to it.
 3. `policy.ts` stays pure: time is an input, no I/O, and the LLM `purpose` text is never an input to a decision.
 4. Budgets come from the ledger. Never add a mutable spend counter.
 5. Authorize stays inside the serialized section (check → sign → append).
@@ -78,8 +79,13 @@ npx vitest run test/policy.test.ts -t "<name>"   # single test
 - `.local/` holds the deployment and ledger and is gitignored.
 - Base Sepolia needs a payer funded with test USDC (faucet.circle.com). The hosted facilitator pays gas.
 - On Base Sepolia the seller uses the CDP facilitator by default. The CDP API key (`CDP_API_KEY_ID`/`CDP_API_KEY_SECRET`) goes only in the seller's env file. `FACILITATOR=public` opts out to x402.org.
+- Backchannel approval (SPEC L2-7, `specs/012`) is off unless `CIBA_APPROVAL=1`. The `CIBA_*` variables go only in `env/l2-control.env`; a missing or invalid one stops L2 before the ledger lock. Tests use the stand-in Auth0 (`test/helpers/ciba-stub.ts`) through `test/helpers/backchannel-l2.ts`, with test-only timing deps, never env.
 
 ## Gotchas
+- Auth0 CIBA (L2-7): Guardian push is used only for requests that live 300 s or less (`requested_expiry`); the binding message allows at most 64 characters from `A-Za-z0-9+-_.,:#` (no spaces, no `/`); `private_key_jwt` is Enterprise-only and RS256/RS384/PS256, never ES256; Guardian displays `authorization_details` only in Auth0's schema (`urn:auth0:schemas:authorization-details:v1:…`, exactly one object); `access_denied` can also mean expired (the 5 s rule).
+- The Auth0 tenant is Terraform in `auth0/` (T-IAC-02), applied by a tenant administrator with their own Management API credentials in the shell; never Terraform for Azure, never a pipeline. State, plans and `*.tfvars` are gitignored and excluded from Docker builds; commit `.terraform.lock.hcl`. The provider refuses `consent_policy = "standard"` (use `"null"`), and `auth0_guardian` is a tenant-wide singleton kept by `prevent_destroy`.
+- In Azure, L2 always references the l2 vault's `ciba-client-credential` (rule 19). Seed it before an environment's first L2 deployment with 012, as `off` while `ciba.enabled` is false; otherwise the L2 revision fails and the pipeline rolls back. `ciba` in `main.bicep` is a plain object: a user-defined type switches the template to `languageVersion` 2.0, which T-IAC-01 rule 13 can't read.
+- The authorize call that creates an eligible escalation waits up to 120 s outside the lock (L2-7). A must-fail switch (`serializeOutcomes`, `skipChecks`, `approvalRequestCap`) is a test-only dep of the backchannel, never env.
 - Ignore ganache's `uws_linux` warning.
 - Development runs on Node 26 (SPEC §5 floor is Node ≥ 22). npm 11 skips some native install scripts; ganache falls back to JS.
 - Base Sepolia USDC's EIP-712 name is `"USDC"`; the local mock's is `"USD Coin"`.

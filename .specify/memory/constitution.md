@@ -1,5 +1,17 @@
 <!--
 Sync Impact Report
+- Version change: 1.2.0 → 1.3.0 (MINOR, 2026-11-07, feature 012-ciba-escalation-approval)
+- Modified principles: V. Least-Privilege Credentials (adds the approval-service client credential: L2 only,
+  one module by rule A9, authentication only, never payment authority). No principle is redefined or removed.
+- Modified sections: Technology & Scope Constraints (jose is no longer L1-only: L2 verifies the approver's token
+  and signs its client assertion with it; Auth0 is the approval service, reached over HTTPS from L2 only; the
+  Auth0 tenant is Terraform with the auth0/auth0 provider, administrator-applied, while Azure stays Bicep only;
+  residual risks for v1.8)
+- Templates reviewed: plan-template.md, spec-template.md, tasks-template.md (no change)
+- Source: SPEC.md v1.8 (Changes in 1.8, §3.3, §4.1 A9, L2-7, §11 SEC-17/SEC-18)
+- Deferred TODOs: none
+
+Previous report (1.2.0)
 - Version change: 1.1.1 → 1.2.0 (MINOR, 2026-10-22, feature 011-l1-hosted-agent-azure)
 - Modified principles: V. Least-Privilege Credentials (adds the requester credential, and the
   cloud reachability rule: loopback bind kept, reached through a same-app proxy sidecar inside one
@@ -103,6 +115,10 @@ Rationale: authorization must be reproducible, auditable and race-free.
 - A requester credential (the Entra ID token a person or system presents to the hosted agent
   service) authenticates the requester to L1 only. It MUST NOT be forwarded to L2 or L3, and it
   never replaces a role credential.
+- The approval-service client credential (L2's Auth0 key or secret, for backchannel approval) is held by L2
+  only and confined to one module by an architecture rule (A9). It authenticates L2 to the approval service; it
+  never signs a payment, and it never approves one by itself: an approval counts only when the approver's
+  signed answer verifies.
 - Internal control and verifier services listen only on the loopback interface. In the Azure
   profile they keep that bind and are reached only through a proxy sidecar in the same app, on an
   internal-only ingress inside one private environment. The sidecar holds no secrets and no
@@ -133,7 +149,11 @@ Rationale: authorization must be reproducible, auditable and race-free.
   express, Anthropic SDK and vitest. Ganache and solc are used for the local chain only. The
   CDP SDK 1.59.0 is used by the seller only, through its auth subpath, to sign facilitator JWTs.
   Added in 1.2.0, for the hosted agent service (L1) only: Mastra 1.75.0 used as a library,
-  `@ai-sdk/anthropic`, zod, jose and `@azure/identity`. The Node floor is 22.13.
+  `@ai-sdk/anthropic`, zod, jose and `@azure/identity`. The Node floor is 22.13. Added in 1.3.0: L2 also
+  uses jose, to verify the approver's token and sign its client assertion; the approval service is an Auth0
+  tenant reached over HTTPS by OpenID CIBA in poll mode, from L2 only, with no inbound route. The tenant is
+  Terraform (`auth0/`, provider `auth0/auth0`), applied by a tenant administrator by hand; Terraform manages
+  nothing in Azure, which stays Bicep only.
 - Networks in scope: `local` (dev chain with a mock EIP-3009 USDC) and `base-sepolia`
   (testnet USDC). Mainnet is out of scope. The Azure profile (Container Apps, Key Vault, Microsoft
   Foundry) is in scope on testnet only.
@@ -152,6 +172,9 @@ Rationale: authorization must be reproducible, auditable and race-free.
   - L2/L3 are reachable from the whole private environment, with roles enforced by bearer tokens;
   - the single L2 instance has a lock-handover window;
   - requester limits are per replica.
+  Added in 1.3.0:
+  - the approval service is trusted to authenticate the approver;
+  - the approver's phone is a new place where approvals happen.
 
 ## Development Workflow & Quality Gates
 
@@ -180,4 +203,4 @@ New policy rules get a snake_case rule ID, a row in the SPEC rule table and a po
   design and again before implementation. Every review verifies the quality gates above.
 - Runtime guidance for agents lives in `CLAUDE.md`.
 
-**Version**: 1.2.0 | **Ratified**: 2026-10-16 | **Last Amended**: 2026-10-22
+**Version**: 1.3.0 | **Ratified**: 2026-10-16 | **Last Amended**: 2026-11-07

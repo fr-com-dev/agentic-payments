@@ -17,6 +17,10 @@ import { HttpAuthorizationGate, HttpSettlementVerifier } from "../src/layer1-int
 import { PaidResourceOrchestrator, type PaidFetchResult } from "../src/layer1-intent/orchestrator.js";
 import { runScriptedAgent } from "../src/layer1-intent/scripted.js";
 import { listenControl } from "../src/layer2-control/service.js";
+import { issuerKeys } from "../src/layer2-control/approval-evidence.js";
+import { CibaClient, type CibaSettings } from "../src/layer2-control/ciba-client.js";
+import { type CibaStub, PLANTED_ERROR_TEXT, startCibaStub } from "./helpers/ciba-stub.js";
+import { APPROVER, AUDIENCE, CLIENT_ID, CLIENT_KEY } from "./helpers/backchannel-l2.js";
 import { listenSettlement } from "../src/layer3-settlement/service.js";
 import type {
   AuthorizationDecision,
@@ -684,4 +688,88 @@ describe("T-E2E-09 hosted agent", () => {
       await a.close();
     }
   }, 120_000);
+});
+
+// ---------------------------------------------------------------------------
+// 012: backchannel approval end to end, through the real L1 orchestrator, chain and L3 (specs/012 T018, T025, T043).
+// One harness and one stand-in Auth0; each scenario uses its own session and its own request script.
+// ---------------------------------------------------------------------------
+describe("012 backchannel approval end to end", () => {
+  let h: Harness;
+  let stub: CibaStub;
+  beforeAll(async () => {
+    stub = await startCibaStub({ approver: APPROVER, clientId: CLIENT_ID, audience: AUDIENCE, clientPublicKeyPem: CLIENT_KEY.publicPem });
+    const settings: CibaSettings = { issuer: stub.issuer, clientId: CLIENT_ID, audience: AUDIENCE, approver: APPROVER, credential: { kind: "key", keyPem: CLIENT_KEY.privatePem } };
+    h = await startHarness({
+      controlBackchannel: {
+        port: new CibaClient(settings, { allowInsecureLoopback: true }),
+        issuer: stub.issuer,
+        clientId: CLIENT_ID,
+        audience: AUDIENCE,
+        approver: APPROVER,
+        keys: issuerKeys(stub.issuer, { allowInsecureLoopback: true }),
+        decimals: 6,
+        waitMs: 10_000,
+        pollDelayMs: (s) => s * 50,
+        log: () => {},
+      },
+    });
+  }, 60_000);
+  afterAll(async () => {
+    await h?.close();
+    await stub?.close();
+  });
+
+  const leaks = (r: PaidFetchResult) => {
+    const text = JSON.stringify(r);
+    return [...stub.tokensIssued, ...stub.authReqIds, PLANTED_ERROR_TEXT].filter((s) => text.includes(s));
+  };
+
+  it("T-E2E-10 backchannel approval within the wait pays in the same fetch", async () => {
+    const before = stub.authReqIds.length;
+    stub.setAnswersFor(before, "pending", "pending", { approve: {} });
+    const { orchestrator } = l1(h, "sess_e2e10a");
+    const payer0 = await h.balanceOf(h.addresses.payer);
+    const r = await orchestrator.fetchPaid(`${h.urls.seller}/api/premium-report`, "premium report");
+    expect(r.outcome).toBe("PAID");
+    expect(r.payment?.settlement?.status).toBe("CONFIRMED");
+    expect(payer0 - (await h.balanceOf(h.addresses.payer))).toBe(50000n);
+    expect(stub.authReqIds.length - before).toBe(1);
+    const approval = h.ledgerEntries().find((e) => e.type === "HUMAN_APPROVAL" && e.sessionId === "sess_e2e10a")!;
+    expect(approval.data.channel).toBe("backchannel");
+    const paid = h.ledgerEntries().filter((e) => e.type === "AUTHORIZED" && e.sessionId === "sess_e2e10a");
+    expect(paid).toHaveLength(1);
+    expect(paid[0]!.data.approvalRef).toBe(approval.data.approvalId);
+    expect(leaks(r)).toEqual([]);
+  }, 60_000);
+
+  it("T-E2E-10 the scripted plan never asks the approver (operator-only), and matches the baseline", async () => {
+    const before = stub.authReqIds.length;
+    const orchestrator = new PaidResourceOrchestrator({
+      gate: new HttpAuthorizationGate(h.urls.control, h.tokens.control),
+      settlement: new HttpSettlementVerifier(h.urls.settlement, h.tokens.verifier),
+      sessionId: "sess_e2e10s",
+      operatorApprovalOnly: true, // as src/main.ts builds it for --scripted
+    });
+    const results = await runScriptedAgent({ orchestrator, sellerUrl: h.urls.seller, log: () => {} });
+    expect(results.map((r) => r.outcome)).toEqual(RegressionBaseline.outcomes);
+    expect(stub.authReqIds.length).toBe(before);
+    const esc = h.ledgerEntries().filter((e) => e.type === "ESCALATED" && e.sessionId === "sess_e2e10s");
+    expect(esc.map((e) => e.data.approvalRequest)).toEqual(["operator_only"]);
+  }, 60_000);
+
+  it("T-E2E-11 backchannel refusal through the orchestrator", async () => {
+    const before = stub.authReqIds.length;
+    stub.setAnswersFor(before, "deny");
+    const { orchestrator } = l1(h, "sess_e2e11");
+    const payer0 = await h.balanceOf(h.addresses.payer);
+    const r = await orchestrator.fetchPaid(`${h.urls.seller}/api/premium-report`, "premium report");
+    expect(r.outcome).toBe("DENIED");
+    expect(rulesOf(r)).toEqual(["human_rejected"]);
+    expect(await h.balanceOf(h.addresses.payer)).toBe(payer0);
+    const esc = h.ledgerEntries().find((e) => e.type === "ESCALATED" && e.sessionId === "sess_e2e11")!;
+    const trail = h.ledgerEntries().filter((e) => e.sessionId === "sess_e2e11" && e.seq > esc.seq).map((e) => e.type);
+    expect(trail).toEqual(["APPROVAL_REQUESTED", "HUMAN_REJECTION", "INTENT", "DENIED"]);
+    expect(leaks(r)).toEqual([]);
+  }, 60_000);
 });

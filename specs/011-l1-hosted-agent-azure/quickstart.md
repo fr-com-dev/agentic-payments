@@ -35,7 +35,7 @@ npm run check                                 # typecheck + all tests + demo:loc
 
 ```bash
 az bicep install && export BICEP_PATH="$HOME/.azure/bin/bicep"   # Bicep CLI 0.47.16
-npx vitest run test/infra.test.ts             # T-IAC-01: rules 1–18 on main.bicep, pre-deploy.bicep and their parameter files, plus 25 must-fail mutant tests
+npx vitest run test/infra.test.ts             # T-IAC-01: rules 1–19 on main.bicep, pre-deploy.bicep and their parameter files, plus 25 must-fail mutant tests
 # Preview against Azure (reads only). Graph resources aren't previewed; main.bicep needs pre-deploy's resource group,
 # and a unit's preview needs the platform deployed (its apps look the platform up by name).
 # v prints one value of a parameter file, as Bicep compiles it.
@@ -145,7 +145,9 @@ for Entra ID.
    unit's pipeline refuses `seed-ip` at its first step and deploys nothing.
 3. **Seed the vaults.** Put the secrets in, following [cloud-topology](contracts/cloud-topology.md),
    with `az keyvault secret set` from a trusted shell. This is data, not provisioning: the secrets
-   never appear in a template, a parameter file or GitHub.
+   never appear in a template, a parameter file or GitHub. Since 012, the l2 vault also holds
+   `ciba-client-credential`: the placeholder `off` while backchannel approval is off (`ciba.enabled: false`),
+   or L2's Auth0 client key once it is on ([012 quickstart §6](../012-ciba-escalation-approval/quickstart.md#6-azure)).
 4. **Close the vaults.** Run `deploy-infra` again with `first-deployment: true` and no `seed-ip`. Only
    the platform's runs change the vault firewalls, so this is the run that removes your IP.
 5. **Deploy the units, one run after another** (the pipelines share one concurrency group, and GitHub

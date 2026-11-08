@@ -828,6 +828,7 @@ describe("010 US1 operator rejects a pending escalation", () => {
       amount: "50000",
       operator: "alice",
       reason: "too expensive",
+      channel: "operator", // 012: additive (FR-024)
     });
   });
 
@@ -1075,7 +1076,7 @@ describe("010 US4 escalations CLI (scripts/escalations.ts)", () => {
     await authz(base, intent({ accepts: [req50()] }));
     const one = await runScript("scripts/escalations.ts", [], env);
     expect(one.code, one.stderr).toBe(0);
-    expect(one.stdout.trim()).toMatch(/^PENDING auth_\S+ session=\S+ resource=\S+ payTo=0x\S+ amount=50000 expiresAt=\S+$/);
+    expect(one.stdout.trim()).toMatch(/^PENDING auth_\S+ session=\S+ resource=\S+ payTo=0x\S+ amount=50000 expiresAt=\S+ referenceCode=[0-9a-f]{8}$/) // 012: additive;
     const down = await runScript("scripts/escalations.ts", [], { CONTROL_URL: "http://127.0.0.1:9", OPERATOR_TOKEN: TOKENS.operator });
     expect(down.code).toBe(1);
   });

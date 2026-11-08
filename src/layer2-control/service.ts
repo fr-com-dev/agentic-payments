@@ -3,6 +3,9 @@
 // ./approval-routes.ts (004, 010); escalation reads from ./escalation-routes.ts (010); Swagger UI from
 // ./api-docs.ts (v1.4, only with API_DOCS=1).
 // INV-8: the whole authorize body (INTENT → decide → sign → outcome entry) runs in one serialized section.
+// 012 (L2-7): with backchannel approval on, a new eligible escalation starts an approval request and the call waits
+// up to 120 s outside the section; if the escalation reaches approved or denied meanwhile, a second serialized
+// decision (a new INTENT for the same intentId) is returned instead of ESCALATE.
 import { randomUUID } from "node:crypto";
 import type { Server } from "node:http";
 import { pathToFileURL } from "node:url";
@@ -12,9 +15,12 @@ import { requireRole } from "../shared/auth.js";
 import { apiDocsEnabled, CONTROL_BIND_HOST, controlPort, loadEnv, networkProfile } from "../shared/config.js";
 import type { AuthorizationDecision, BudgetStatus, PaymentIntent, PolicyViolation } from "../shared/contracts.js";
 import { mountApiDocs } from "./api-docs.js";
+import { issuerKeys } from "./approval-evidence.js";
 import { mountApprovalRoutes } from "./approval-routes.js";
+import { Backchannel, type BackchannelDeps, type StartPlan } from "./backchannel.js";
+import { CibaClient, cibaConfigFromEnv, publicSettings } from "./ciba-client.js";
 import { mountEscalationRoutes } from "./escalation-routes.js";
-import { findPendingEscalation, findRejection, sweep } from "./escalations.js";
+import { ESCALATION_TTL_MS, findPendingEscalation, findRejection, sweep } from "./escalations.js";
 import { AuditLedger, resourceKey } from "./ledger.js";
 import { acquireLedgerLock } from "./ledger-lock.js";
 import { mountLedgerRoutes, type Serialize } from "./ledger-routes.js";
@@ -41,6 +47,8 @@ export interface ControlServiceDeps {
   dedupePendingEscalations?: boolean;
   /** v1.4: mounts the token-free Swagger UI routes (`API_DOCS=1` in main()). Default false (SEC-13). */
   apiDocs?: boolean;
+  /** 012 (L2-7): backchannel approval through the approval service. Absent: off, behavior as in v1.7. */
+  backchannel?: BackchannelDeps;
 }
 
 export interface ControlService {
@@ -48,6 +56,8 @@ export interface ControlService {
   serialize: Serialize;
   /** 010: runs the escalation sweep (L2-4.3) inside the serialized section at `now()`. */
   sweep: () => Promise<unknown>;
+  /** 012: present when backchannel approval is on (resume after a restart, stop on shutdown). */
+  backchannel?: Backchannel;
 }
 
 const DAY_MS = 86_400_000;
@@ -91,7 +101,9 @@ function validIntent(body: unknown): body is PaymentIntent {
     isHttpUrl(b.resourceUrl) &&
     pr !== null &&
     typeof pr === "object" &&
-    Array.isArray(pr.accepts)
+    Array.isArray(pr.accepts) &&
+    // 012 FR-007: optional, boolean only.
+    (b.operatorApprovalOnly === undefined || typeof b.operatorApprovalOnly === "boolean")
   );
 }
 
@@ -108,8 +120,15 @@ export function createControlService(deps: ControlServiceDeps): ControlService {
 
   const remainingFor = (sessionId: string, t: number) =>
     maxZero(BigInt(mandate.sessionBudgetAtomic) - ledger.committedAtomic({ sessionId }, t));
+  const backchannel = deps.backchannel ? new Backchannel({ ...deps.backchannel, ledger, serialize, now }) : undefined;
 
-  async function authorize(intent: PaymentIntent): Promise<AuthorizationDecision> {
+  type Decided = { decision: AuthorizationDecision; start?: StartPlan };
+
+  /**
+   * One serialized decision (L2-5 steps 1–6). `reevaluationOf` marks the second decision after a wait (012): its
+   * INTENT carries the escalation ID, and it never starts an approval request.
+   */
+  async function decideOnce(intent: PaymentIntent, opts: { reevaluationOf?: string } = {}): Promise<Decided> {
     // Step 1: one clock read; INTENT before deciding.
     const t = now();
     // 010: record due expiries and lapses first, so the decision sees current escalation states.
@@ -119,7 +138,17 @@ export function createControlService(deps: ControlServiceDeps): ControlService {
     const key = resourceKey(intent.resourceUrl);
     const accepts = intent.paymentRequired.accepts as PaymentRequirements[];
     ledger.append(
-      { type: "INTENT", sessionId, intentId, data: { resourceUrl: intent.resourceUrl, purpose: String(intent.purpose ?? ""), accepts } },
+      {
+        type: "INTENT",
+        sessionId,
+        intentId,
+        data: {
+          resourceUrl: intent.resourceUrl,
+          purpose: String(intent.purpose ?? ""),
+          accepts,
+          ...(opts.reevaluationOf !== undefined && { reevaluationOf: opts.reevaluationOf }),
+        },
+      },
       t,
     );
 
@@ -146,9 +175,9 @@ export function createControlService(deps: ControlServiceDeps): ControlService {
     // Step 4: pure decision.
     const d = decide(accepts, mandate, ctx);
     const base = { authorizationId, intentId };
-    const deny = (violations: PolicyViolation[]): AuthorizationDecision => {
+    const deny = (violations: PolicyViolation[]): Decided => {
       ledger.append({ type: "DENIED", sessionId, intentId, authorizationId, data: { violations, resourceKey: key } }, t);
-      return { status: "DENIED", ...base, violations };
+      return { decision: { status: "DENIED", ...base, violations } };
     };
 
     if (d.status === "ESCALATE") {
@@ -167,19 +196,38 @@ export function createControlService(deps: ControlServiceDeps): ControlService {
           },
           t,
         );
-        return { status: "ESCALATE", authorizationId: pending.authorizationId, intentId, violations: d.violations };
+        return { decision: { status: "ESCALATE", authorizationId: pending.authorizationId, intentId, violations: d.violations } };
       }
+      // 012 (L2-7): eligibility is decided here, inside the section, from the ledger; recorded on the entry.
+      const approvalRequest = backchannel?.eligibility({
+        operatorOnly: intent.operatorApprovalOnly === true,
+        reevaluation: opts.reevaluationOf !== undefined,
+        nowMs: t,
+      });
       ledger.append(
         {
           type: "ESCALATED",
           sessionId,
           intentId,
           authorizationId,
-          data: { violations: d.violations, resourceKey: key, payTo: chosen.payTo, amount: chosen.amount },
+          data: { violations: d.violations, resourceKey: key, payTo: chosen.payTo, amount: chosen.amount, ...(approvalRequest && { approvalRequest }) },
         },
         t,
       );
-      return { status: "ESCALATE", ...base, violations: d.violations };
+      const decision: AuthorizationDecision = { status: "ESCALATE", ...base, violations: d.violations };
+      if (approvalRequest !== "requested") return { decision };
+      return {
+        decision,
+        start: {
+          escalationId: authorizationId,
+          sessionId,
+          resourceKey: key,
+          payTo: String(chosen.payTo),
+          amount: chosen.amount,
+          requirement: chosen,
+          escalationExpiresAtMs: t + ESCALATION_TTL_MS,
+        },
+      };
     }
     if (d.status === "DENIED") return deny(d.violations);
 
@@ -223,13 +271,15 @@ export function createControlService(deps: ControlServiceDeps): ControlService {
       t,
     );
     return {
-      status: "AUTHORIZED",
-      ...base,
-      requirement: chosen,
-      paymentHeaders: signed.headers,
-      payer: signed.payer,
-      validBefore: signed.validBefore,
-      remainingSessionBudgetAtomic: remainingFor(sessionId, t).toString(),
+      decision: {
+        status: "AUTHORIZED",
+        ...base,
+        requirement: chosen,
+        paymentHeaders: signed.headers,
+        payer: signed.payer,
+        validBefore: signed.validBefore,
+        remainingSessionBudgetAtomic: remainingFor(sessionId, t).toString(),
+      },
     };
   }
 
@@ -239,11 +289,31 @@ export function createControlService(deps: ControlServiceDeps): ControlService {
       return;
     }
     const intent = req.body;
+    // 012 FR-019: the caller leaving during the wait ends it, and nothing is signed for this call.
+    const left = new AbortController();
+    res.on("close", () => {
+      if (!res.writableFinished) left.abort();
+    });
     try {
-      const decision = await serialize(() => authorize(intent));
-      res.json(decision);
+      const first = await serialize(() => decideOnce(intent));
+      if (!first.start || !backchannel) {
+        res.json(first.decision);
+        return;
+      }
+      // 012 FR-016: start the approval request and wait, holding no lock.
+      const escalationId = first.start.escalationId;
+      backchannel.start(first.start);
+      const outcome = await backchannel.waitForFinal(escalationId, backchannel.waitMs, left.signal);
+      if (outcome === "aborted" || left.signal.aborted) return;
+      if (outcome === "approved" || outcome === "denied") {
+        // FR-017: a second serialized decision, re-checking every rule at this moment.
+        const second = await serialize(() => (left.signal.aborted ? null : decideOnce(intent, { reevaluationOf: escalationId })));
+        if (second !== null) res.json(second.decision);
+        return;
+      }
+      res.json(first.decision);
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      if (!res.headersSent) res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
 
@@ -288,7 +358,7 @@ export function createControlService(deps: ControlServiceDeps): ControlService {
 
   if (deps.apiDocs) mountApiDocs(app);
 
-  return { app, serialize, sweep: () => serialize(() => sweep(ledger, now())) };
+  return { app, serialize, sweep: () => serialize(() => sweep(ledger, now())), ...(backchannel && { backchannel }) };
 }
 
 /** `.local/ledger-<network>.jsonl`, from the network name only (no profile resolution). */
@@ -307,6 +377,8 @@ export function listenControl(app: Express, port: number = controlPort(), onList
  */
 export async function main(): Promise<void> {
   loadEnv("l2-control");
+  // 012: the CIBA_* settings are checked before the lock, so a misconfigured revision never takes it (L2-6).
+  const ciba = cibaConfigFromEnv(process.env);
   // L2-6: one writer. Wait in standby while another L2 holds the ledger, then read it only once ours.
   const lock = await acquireLedgerLock(ledgerPathFor());
   // The ledger loads and verifies first, so an integrity failure is reported before anything else.
@@ -319,13 +391,25 @@ export async function main(): Promise<void> {
   }
   const signer = new PaymentSigner(key as `0x${string}`, net, mandate.hardCapPerPaymentAtomic);
   const apiDocs = apiDocsEnabled();
-  const { app, sweep: sweepNow } = createControlService({
+  // 012 (L2-7): the client holds the credential; the rest of L2 sees only the non-secret settings. No network call.
+  let backchannelDeps: BackchannelDeps | undefined;
+  if (ciba.enabled) {
+    const settings = publicSettings(ciba);
+    backchannelDeps = { port: new CibaClient(ciba), ...settings, keys: issuerKeys(settings.issuer), decimals: net.decimals };
+    console.log(`l2-control: backchannel approval on (issuer ${settings.issuer}, approver ${settings.approver})`);
+  } else if (ciba.ignored.length > 0) {
+    console.log(`l2-control: backchannel approval is off; ignoring ${ciba.ignored.join(", ")}`);
+  }
+  const { app, sweep: sweepNow, backchannel } = createControlService({
     mandate,
     signer,
     ledger,
     asset: { address: net.asset, decimals: net.decimals },
     apiDocs,
+    ...(backchannelDeps && { backchannel: backchannelDeps }),
   });
+  // FR-012: resume every open approval request from the ledger, without sending a new one.
+  backchannel?.resume();
   // 010 (L2-4.3): expire escalations and lapse approvals on time even when nobody calls L2. The timer
   // never keeps the process alive; tests never call main(), so they stay deterministic.
   void sweepNow();
@@ -342,6 +426,7 @@ export async function main(): Promise<void> {
   });
   // L2-6: release the lock on shutdown so a replacement revision takes over at once.
   const stop = () => {
+    backchannel?.stop();
     server.close();
     lock.release();
     process.exit(0);

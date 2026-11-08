@@ -294,6 +294,8 @@ jobs:
           for p in /api/weather /api/market-brief; do
             jq -e --arg p "$p" '[.steps[] | select((.url // "") | contains($p)) | select(.result.outcome == "PAID" and .result.payment.settlement.status == "CONFIRMED")] | length >= 1' "$RUNNER_TEMP/smoke.json" > /dev/null
           done
+          # specs/012 research R14: a deployment check never asks the approver; an escalation here fails the run.
+          jq -e '[.steps[] | select(.result.outcome == "ESCALATED")] | length == 0' "$RUNNER_TEMP/smoke.json" > /dev/null
           test "$SECS" -le 120
 
       - name: "9 log secret scan (credential shapes)"

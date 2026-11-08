@@ -493,3 +493,22 @@ describe("findOpenApproval (004 T005)", () => {
     expect(l.findOpenApproval("sess_a", "http://127.0.0.1:4021/api/weather", T0)).toBeUndefined();
   });
 });
+
+describe("012 append listener", () => {
+  it("sees every entry in order, stops after unsubscribe, and a throwing listener never breaks the chain", () => {
+    const l = new AuditLedger(file);
+    const seen: number[] = [];
+    const off = l.subscribe((e) => seen.push(e.seq));
+    l.subscribe(() => {
+      throw new Error("listener failure");
+    });
+    l.append({ type: "INTENT", data: { n: 1 } }, T0);
+    l.append({ type: "INTENT", data: { n: 2 } }, T0 + 1);
+    off();
+    l.append({ type: "INTENT", data: { n: 3 } }, T0 + 2);
+    expect(seen).toEqual([0, 1]);
+    expect(l.entries()).toHaveLength(3);
+    expect(l.verifyChain().ok).toBe(true);
+    expect(new AuditLedger(file).entries()).toHaveLength(3);
+  });
+});

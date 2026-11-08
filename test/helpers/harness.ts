@@ -18,6 +18,7 @@ import { AuditLedger, type LedgerEntry } from "../../src/layer2-control/ledger.j
 import { buildMandate, type SpendingMandate } from "../../src/layer2-control/mandate.js";
 import { PaymentSigner } from "../../src/layer2-control/signer.js";
 import { createControlService } from "../../src/layer2-control/service.js";
+import type { BackchannelDeps } from "../../src/layer2-control/backchannel.js";
 import { ChainSettlementVerifier, type ReadOnlyChainClient } from "../../src/layer3-settlement/verifier.js";
 import { createSettlementService, HttpReconciler } from "../../src/layer3-settlement/service.js";
 import DEFAULT_MANDATE from "../../config/mandate.json" with { type: "json" };
@@ -37,6 +38,8 @@ export interface HarnessOptions {
   sellerFacilitator?: (localFacilitatorUrl: string) => Promise<FacilitatorClient>;
   /** 010: L2's clock (escalation expiry tests). Default: Date.now, as before. */
   controlNow?: () => number;
+  /** 012: L2's backchannel approval (the test builds the stand-in Auth0 and the deps). Default: off, as before. */
+  controlBackchannel?: BackchannelDeps;
 }
 
 export interface Harness {
@@ -64,12 +67,14 @@ export async function startHarness(opts: HarnessOptions = {}): Promise<Harness> 
   const servers: Server[] = [];
   let chain: LocalChain | undefined;
   let l3: { stop(): void } | undefined;
+  let backchannel: { stop(): void } | undefined;
   let closed = false;
 
   const close = async () => {
     if (closed) return;
     closed = true;
     l3?.stop();
+    backchannel?.stop();
     await Promise.all(
       servers.map(
         (s) =>
@@ -123,7 +128,9 @@ export async function startHarness(opts: HarnessOptions = {}): Promise<Harness> 
       tokens: { control: TOKENS.control, settlement: TOKENS.settlement, operator: TOKENS.operator },
       ...(opts.signerLatencyMs !== undefined && { signerLatencyMs: opts.signerLatencyMs }),
       ...(opts.controlNow !== undefined && { now: opts.controlNow }),
+      ...(opts.controlBackchannel !== undefined && { backchannel: opts.controlBackchannel }),
     });
+    backchannel = control.backchannel;
     const controlUrl = await up(control.app, opts.ports?.control);
 
     const verifier = new ChainSettlementVerifier({

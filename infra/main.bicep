@@ -46,6 +46,12 @@ param operatorsGroupId string
 param sellerPayTo string
 @description('The agent revision that keeps serving until the new one passes the regression (empty to give the latest all traffic).')
 param agentStableRevision string = ''
+
+// 012 backchannel approval (SPEC L2-7; specs/012 contracts/config-and-secrets.md "Azure"): non-secret values only,
+// { enabled, issuer, clientId, audience, approver, credential: 'key' | 'secret', clientKeyId }. A plain object, not a
+// user-defined type: a type would switch the compiled template to languageVersion 2.0 (symbolic names).
+@description('012: L2\'s backchannel approval. The credential is the l2 vault\'s ciba-client-credential, seeded by hand in every environment (the placeholder off while enabled is false).')
+param ciba object
 @description('Who uses Claude, declared to Anthropic with the model deployment, which accepts Anthropic\'s Azure Marketplace terms: the legal entity\'s name.')
 param claudeOrganizationName string
 @description('The organization\'s two-letter country code.')
@@ -60,6 +66,12 @@ param claudeIndustry string
 var target = tenant().tenantId == tenantId && subscription().subscriptionId == subscriptionId && resourceGroup().name == names.resourceGroup
   ? names.resourceGroup
   : fail('main: the parameter file names tenant ${tenantId}, subscription ${subscriptionId}, resource group ${names.resourceGroup}; this deployment runs in tenant ${tenant().tenantId}, subscription ${subscription().subscriptionId}, resource group ${resourceGroup().name}')
+
+// 012: an enabled ciba must name an https issuer, a client, an audience and an approver (T-IAC-01 rule 19).
+#disable-next-line no-unused-vars
+var cibaChecked = contains(['key', 'secret'], ciba.credential) && (!ciba.enabled || (startsWith(ciba.issuer, 'https://') && !empty(ciba.clientId) && !empty(ciba.audience) && !empty(ciba.approver)))
+  ? ciba.enabled
+  : fail('main: ciba.credential must be key or secret, and ciba.enabled needs an https:// issuer, a clientId, an audience and an approver (specs/012 contracts/config-and-secrets.md)')
 
 // The identity and vault matrix (contracts/cloud-topology.md "Role assignments"): one identity and one
 // vault per runtime unit, and each identity reads only its own vault. The key names the unit's identity
@@ -164,6 +176,7 @@ module l2 'modules/l2-apps.bicep' = if (unit == 'l2') {
     proxyImage: proxyImage
     acrServer: acrServer
     sellerPayTo: sellerPayTo
+    ciba: ciba
   }
   dependsOn: [ids, registry, vaults, envs]
 }

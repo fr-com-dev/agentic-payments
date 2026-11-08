@@ -116,6 +116,8 @@ export function mountApprovalRoutes(app: Express, deps: ApprovalRoutesDeps): voi
               amount: escalated.data.amount,
               approver: parsed.approver,
               expiresAtMs,
+              // 012 FR-024: which path decided. The backchannel path writes "backchannel".
+              channel: "operator",
             },
           },
           t,
@@ -173,6 +175,7 @@ export function mountApprovalRoutes(app: Express, deps: ApprovalRoutesDeps): voi
               amount: escalated.data.amount,
               operator: parsed.operator,
               ...(parsed.reason !== undefined && { reason: parsed.reason }),
+              channel: "operator",
             },
           },
           t,

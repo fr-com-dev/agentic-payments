@@ -8,6 +8,9 @@
 // - PAYER_PRIVATE_KEY reaches only the l2 container, as a Key Vault reference from the l2 vault;
 // - internal-only ingress through a loopback proxy sidecar that has no env and no secrets;
 // - exactly one replica with the NFS ledger at /app/.local (L2-6); identity lifecycle None.
+// - 012 (rule 19): the Auth0 client credential reaches only the l2 container, as a reference to the l2 vault's
+//   ciba-client-credential, and every other CIBA_* value comes from the ciba parameter. The secret is always referenced,
+//   so every environment seeds it (the placeholder off while ciba.enabled is false); the arrays stay literal.
 param location string
 @description('Every resource name (main.<environment>.bicepparam).')
 param names object
@@ -19,6 +22,8 @@ param proxyImage string
 @description('The registry\'s login server.')
 param acrServer string
 param sellerPayTo string
+@description('012 backchannel approval (SPEC L2-7): the non-secret settings from the parameter file.')
+param ciba object
 
 resource idL2 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' existing = { name: names.identities.l2 }
 resource mainEnv 'Microsoft.App/managedEnvironments@2025-01-01' existing = { name: names.environments.x402 }
@@ -46,6 +51,7 @@ resource control 'Microsoft.App/containerApps@2025-01-01' = {
         { name: 'control-token', keyVaultUrl: '${vaultL2}secrets/control-token', identity: idL2.id }
         { name: 'settlement-token', keyVaultUrl: '${vaultL2}secrets/settlement-token', identity: idL2.id }
         { name: 'operator-token', keyVaultUrl: '${vaultL2}secrets/operator-token', identity: idL2.id }
+        { name: 'ciba-client-credential', keyVaultUrl: '${vaultL2}secrets/ciba-client-credential', identity: idL2.id }
         // The proxy config is not a secret; Container Apps mounts files only through secret volumes.
         #disable-next-line use-secure-value-for-secure-inputs
         { name: 'nginx-conf', value: loadTextContent('../proxy/nginx-l2.conf') }
@@ -67,6 +73,13 @@ resource control 'Microsoft.App/containerApps@2025-01-01' = {
             { name: 'CONTROL_TOKEN', secretRef: 'control-token' }
             { name: 'SETTLEMENT_TOKEN', secretRef: 'settlement-token' }
             { name: 'OPERATOR_TOKEN', secretRef: 'operator-token' }
+            { name: 'CIBA_APPROVAL', value: ciba.enabled ? '1' : '0' }
+            { name: 'CIBA_ISSUER', value: ciba.issuer }
+            { name: 'CIBA_CLIENT_ID', value: ciba.clientId }
+            { name: 'CIBA_AUDIENCE', value: ciba.audience }
+            { name: 'CIBA_APPROVER', value: ciba.approver }
+            { name: 'CIBA_CLIENT_KEY_ID', value: ciba.clientKeyId }
+            { name: ciba.credential == 'secret' ? 'CIBA_CLIENT_SECRET' : 'CIBA_CLIENT_KEY', secretRef: 'ciba-client-credential' }
           ]
           volumeMounts: [{ volumeName: 'ledger', mountPath: '/app/.local' }]
         }

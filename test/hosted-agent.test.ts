@@ -331,3 +331,39 @@ describe("T-AGT-02 must-fail", () => {
     expect(names).toHaveLength(3);
   });
 });
+
+// ---------------------------------------------------------------------------
+// 012 FR-007: the hosted agent can never mark an intent operator-only (its tools stay the two of L1-3).
+// ---------------------------------------------------------------------------
+describe("012 FR-007 operator-only intents (hosted)", () => {
+  it("a hosted run's intents never carry operatorApprovalOnly, even when the model passes it", async () => {
+    const app = express();
+    app.get("/api/premium-report", (_req, res) =>
+      res.status(402).json({
+        x402Version: 2,
+        resource: { url: "http://127.0.0.1/api/premium-report", description: "", mimeType: "application/json" },
+        accepts: [{ scheme: "exact", network: "eip155:31337", asset: "0x0000000000000000000000000000000000000a11", amount: "50000", payTo: "0x0000000000000000000000000000000000000b22", maxTimeoutSeconds: 60, extra: {} }],
+      }),
+    );
+    const server = await new Promise<Server>((r) => {
+      const s = app.listen(0, "127.0.0.1", () => r(s));
+    });
+    cleanups.push(() => new Promise<void>((r) => server.close(() => r())));
+    const seller = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    const intents: Record<string, unknown>[] = [];
+    const { gate, settlement } = fakePorts({
+      authorize: async (i) => {
+        intents.push(i as unknown as Record<string, unknown>);
+        return { status: "ESCALATE", authorizationId: "auth_x", intentId: i.intentId, violations: [{ rule: "human_approval_required", detail: "d" }] };
+      },
+    });
+    const model = mockModel([
+      toolCall("fetch_resource", { url: `${seller}/api/premium-report`, purpose: "p" }),
+      toolCall("fetch_resource", { url: `${seller}/api/premium-report`, purpose: "p", operatorApprovalOnly: true }),
+      text("done"),
+    ]);
+    await runGoal({ goal: "buy it", sessionId: "sess_0123456789abcdef", signal: new AbortController().signal, model, gate, settlement, sellerUrl: seller });
+    expect(intents.length).toBeGreaterThanOrEqual(1);
+    for (const i of intents) expect("operatorApprovalOnly" in i).toBe(false);
+  });
+});

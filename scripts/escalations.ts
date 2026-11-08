@@ -2,6 +2,8 @@
 // Reads only CONTROL_URL and OPERATOR_TOKEN (env/operator.env). List mode prints the pending escalations
 // and exits 0 (1 on an HTTP or network error). Watch mode prints the list, then polls the events feed
 // every second from a ledger cursor, so it resumes exactly after an L2 restart; SIGINT/SIGTERM exit 0.
+// 012 (L2-7): also prints the reference code, the approval request's state and events, and who decided, by which
+// channel. Every field comes from L2's whitelisted views; none can hold a token, a handle or Auth0 text.
 import { pathToFileURL } from "node:url";
 import { loadEnv, serviceUrls, tokenFor } from "../src/shared/config.js";
 
@@ -14,6 +16,8 @@ interface View {
   payTo: string;
   amount: string;
   expiresAt: string;
+  referenceCode?: string;
+  approvalRequest?: string;
 }
 
 interface Event {
@@ -29,21 +33,46 @@ interface Event {
   rejectionId?: string;
   operator?: string;
   reason?: string;
+  referenceCode?: string;
+  approvalRequest?: string;
+  channel?: string;
+  decidedBy?: string;
+  requestId?: string;
+  requestExpiresAt?: string;
+  failure?: string;
+  error?: string;
+  cause?: string;
+  check?: string;
 }
 
+/** `key=value` for each present field, in order. */
+const fields = (o: object, keys: readonly string[]) =>
+  keys.flatMap((k) => {
+    const v = (o as Record<string, unknown>)[k];
+    return v === undefined ? [] : [`${k}=${String(v)}`];
+  });
+
 export function formatPending(v: View): string {
-  return `PENDING ${v.authorizationId} session=${v.sessionId} resource=${v.resourceKey} payTo=${v.payTo} amount=${v.amount} expiresAt=${v.expiresAt}`;
+  const head = `PENDING ${v.authorizationId} session=${v.sessionId} resource=${v.resourceKey} payTo=${v.payTo} amount=${v.amount} expiresAt=${v.expiresAt}`;
+  return [head, ...fields(v, ["referenceCode", "approvalRequest"])].join(" ");
 }
 
 export function formatEvent(e: Event): string {
   const extra: string[] = [];
   if (e.kind === "escalated" || e.kind === "expired") extra.push(`expiresAt=${e.expiresAt}`);
+  if (e.kind === "escalated") extra.push(...fields(e, ["referenceCode", "approvalRequest"]));
   if (e.kind === "approved") extra.push(`approvalId=${e.approvalId}`, `approver=${e.approver}`, `approvalExpiresAt=${e.approvalExpiresAt}`);
   if (e.kind === "denied") {
-    extra.push(`rejectionId=${e.rejectionId}`, `operator=${e.operator}`);
+    extra.push(`rejectionId=${e.rejectionId}`);
+    if (e.operator !== undefined) extra.push(`operator=${e.operator}`);
     if (e.reason !== undefined) extra.push(`reason=${JSON.stringify(e.reason)}`);
   }
+  if (e.kind === "approved" || e.kind === "denied") extra.push(...fields(e, ["channel", "decidedBy"]));
   if (e.kind === "approval_lapsed") extra.push(`approvalId=${e.approvalId}`);
+  if (e.kind === "approval_requested") extra.push(...fields(e, ["requestId", "referenceCode", "requestExpiresAt"]));
+  if (e.kind === "approval_request_failed") extra.push(...fields(e, ["requestId", "failure", "error"]));
+  if (e.kind === "approval_request_lapsed") extra.push(...fields(e, ["requestId", "cause"]));
+  if (e.kind === "approval_verification_failed") extra.push(...fields(e, ["requestId", "check"]));
   return [`${e.kind.toUpperCase()} ${e.authorizationId} session=${e.sessionId} resource=${e.resourceKey} amount=${e.amount}`, ...extra].join(" ");
 }
 

@@ -344,6 +344,8 @@ appended.
 - **NFR-005 (Network exposure)**: The reject and watch operations MUST be reachable only on the
   loopback interface of the control service, and the control service makes no new outbound
   connections. *(SPEC: L2-5)*
+  *Amended by 012 (SPEC v1.8, L2-7):* L2 makes one kind of outbound connection, to the configured approval
+  service (Auth0), to ask the approver. Operator notification stays pull-based, and L2 gains no inbound route.
 - **NFR-006 (Untrusted text)**: The reason and operator label are free text. They MUST be
   length-limited, stored as data only, and never used as a decision input. *(SPEC: INV-5)*
 - **NFR-007 (Notification safety)**: Notifications MUST NOT carry credentials, payment headers or

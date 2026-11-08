@@ -257,6 +257,8 @@ export function workflowProblems(w: Workflow): string[] {
     if (s.run?.includes("run_job ") && (defined < 0 || defined > s.run.indexOf("run_job "))) out.push(`${s.id} must define run_job before calling it (eval "$RUN_JOB")`);
   }
   if (!step("smoke")?.run?.includes('az account get-access-token --resource "${{ steps.target.outputs.authAudience }}"')) out.push("the smoke run's token must be for the API app's client ID (authAudience), the audience the agent accepts");
+  // 012 (research R14): the hosted smoke run buys only auto-approved items; any escalation fails it.
+  if (!step("smoke")?.run?.includes(`jq -e '[.steps[] | select(.result.outcome == "ESCALATED")] | length == 0'`)) out.push("the smoke run must fail when any step escalated (a deployment check never asks the approver)");
   const promote = step("promote")?.run ?? "";
   if (!/if \[\[ "\$UNIT" == l1 \]\]; then\n\s+AGENT_STABLE_REVISION="" az deployment group create/.test(promote)) out.push("promote must give the agent's latest revision its traffic through main.bicep, on L1 only");
   if (!promote.includes('--source "${{ steps.build.outputs.acr }}/x402-$IMAGE:$IMAGE_TAG" --image "x402-$IMAGE:last-good"')) out.push("promote must record the unit's image as last-good");
@@ -571,6 +573,13 @@ describe("T-E2E-AZ deployment workflow gates", () => {
     const problems = workflowProblems(withSteps(w, steps));
     expect(problems).toContain("rollback must redeploy the unit's last-good, with the agent's traffic left on its previous revision");
     expect(problems).toContain("the smoke run's token must be for the API app's client ID (authAudience), the audience the agent accepts");
+  });
+
+  it("T-E2E-AZ 012 must-fail: a smoke run that lets an escalation pass is reported", () => {
+    const steps = stepsOf(w).map((s) =>
+      s.id === "smoke" ? { ...s, run: s.run!.replace(`jq -e '[.steps[] | select(.result.outcome == "ESCALATED")] | length == 0' "$RUNNER_TEMP/smoke.json" > /dev/null\n`, "") } : s,
+    );
+    expect(workflowProblems(withSteps(w, steps))).toEqual(["the smoke run must fail when any step escalated (a deployment check never asks the approver)"]);
   });
 
   it.skipIf(!BICEP_PATH)("T-E2E-AZ must-fail: a hard-coded resource name is reported", () => {

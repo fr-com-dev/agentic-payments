@@ -41,6 +41,11 @@ export interface OrchestratorDeps {
   settlement: SettlementVerifierPort;
   sessionId: string;
   fetchImpl?: typeof fetch;
+  /**
+   * 012 FR-007: true marks every intent operator-only, so an escalation never notifies the approver. Only the L1-4
+   * scripted root (src/main.ts --scripted) sets it; the agents' tools cannot. It only removes an approval path.
+   */
+  operatorApprovalOnly?: boolean;
 }
 
 /** Non-JSON bodies are returned as text truncated to this many characters (L1-1 step 2). */
@@ -99,6 +104,7 @@ export class PaidResourceOrchestrator {
       paymentRequired,
       purpose,
       createdAt: new Date().toISOString(),
+      ...(this.deps.operatorApprovalOnly === true && { operatorApprovalOnly: true }),
     };
     let decision;
     try {

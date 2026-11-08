@@ -19,7 +19,12 @@ export type EntryType =
   | "HUMAN_REJECTION"
   | "ESCALATION_EXPIRED"
   | "APPROVAL_LAPSED"
-  | "ESCALATION_REPEATED";
+  | "ESCALATION_REPEATED"
+  // 012 backchannel approval (L2-7)
+  | "APPROVAL_REQUESTED"
+  | "APPROVAL_REQUEST_FAILED"
+  | "APPROVAL_REQUEST_LAPSED"
+  | "APPROVAL_VERIFICATION_FAILED";
 
 export interface LedgerEntry {
   seq: number;
@@ -115,6 +120,8 @@ function readLines(filePath: string): string[] {
 
 export class AuditLedger {
   private readonly items: LedgerEntry[];
+  /** 012: in-memory observers of appended entries (they wake the authorize wait, L2-7). Never part of the chain. */
+  private readonly listeners = new Set<(e: LedgerEntry) => void>();
 
   constructor(readonly filePath: string) {
     const lines = readLines(filePath);
@@ -143,7 +150,22 @@ export class AuditLedger {
     mkdirSync(dirname(this.filePath), { recursive: true });
     appendFileSync(this.filePath, JSON.stringify(entry) + "\n");
     this.items.push(entry);
+    for (const listener of this.listeners) {
+      try {
+        listener(entry);
+      } catch {
+        // A listener can never fail an append: the entry is already written and chained.
+      }
+    }
     return entry;
+  }
+
+  /** 012: calls `listener` with each entry appended from now on. Returns the unsubscribe function. */
+  subscribe(listener: (e: LedgerEntry) => void): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
   }
 
   entries(): readonly LedgerEntry[] {

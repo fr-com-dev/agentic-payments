@@ -4,7 +4,7 @@
 import type { AddressInfo } from "node:net";
 import { createServer, type Server } from "node:http";
 import { spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import express from "express";
@@ -715,5 +715,40 @@ describe("011 US6 payer-balance preflight", () => {
     const low = await checkBalance(reader(49_999n), asset, payer, 50_000n);
     expect(low.code).toBe(2);
     expect(low.line).toContain("fund the payer");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 012 FR-007: only the scripted root marks intents operator-only; nothing else in L1 can.
+// ---------------------------------------------------------------------------
+describe("012 FR-007 operator-only intents", () => {
+  const capture = () => {
+    const intents: PaymentIntent[] = [];
+    const gate = fakeGate((i) => {
+      intents.push(i);
+      return { status: "ESCALATE", authorizationId: "auth_x", intentId: i.intentId, violations: [{ rule: "human_approval_required", detail: "d" }] };
+    });
+    return { intents, gate };
+  };
+
+  it("an orchestrator built with operatorApprovalOnly sends it on every intent; without it the field is absent", async () => {
+    for (const flag of [true, undefined]) {
+      const { intents, gate } = capture();
+      const seller = fakeSeller();
+      const o = new PaidResourceOrchestrator({ gate, settlement: fakeVerifier(), sessionId: "s", fetchImpl: seller.fetchImpl, ...(flag && { operatorApprovalOnly: flag }) });
+      await o.fetchPaid(URL_W, "p");
+      expect(intents).toHaveLength(1);
+      if (flag) expect(intents[0]!.operatorApprovalOnly).toBe(true);
+      else expect("operatorApprovalOnly" in intents[0]!).toBe(false);
+    }
+  });
+
+  it("src/main.ts sets it only for --scripted, and no other L1 file or tool schema names it", () => {
+    const main = readFileSync("src/main.ts", "utf8");
+    expect(main).toMatch(/\.\.\.\(scripted && \{ operatorApprovalOnly: true \}\)/);
+    const files = ["src/hosted-main.ts", "src/layer1-intent/agent.ts", "src/layer1-intent/scripted.ts", "src/layer1-intent/ports-http.ts"];
+    const hosted = readdirSync("src/layer1-intent/hosted").map((f) => `src/layer1-intent/hosted/${f}`);
+    for (const f of [...files, ...hosted]) expect(readFileSync(f, "utf8"), f).not.toContain("operatorApprovalOnly");
+    expect(JSON.stringify(AGENT_TOOLS)).not.toContain("operatorApprovalOnly");
   });
 });

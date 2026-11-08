@@ -1,8 +1,8 @@
 # Specs index: x402 three-layer agent payments
 
-These spec-kit feature specs decompose `SPEC.md` (v1.0 for 001–008, amended through v1.5 by 009, 010
-and 011; v1.4 added the L2 API docs without a feature spec), which remains normative. Project principles
-live in `.specify/memory/constitution.md` (v1.2.0).
+These spec-kit feature specs decompose `SPEC.md` (v1.0 for 001–008, amended through v1.8 by 009, 010,
+011 and 012; v1.4 added the L2 API docs without a feature spec), which remains normative. Project principles
+live in `.specify/memory/constitution.md` (v1.3.0).
 It covers INV-1..13, the definition of done and the governance rules.
 
 | # | Feature | Layer | Functional scope | Main non-functional scope |
@@ -18,6 +18,7 @@ It covers INV-1..13, the definition of done and the governance rules.
 | 009 | [cdp-facilitator-base-sepolia](009-cdp-facilitator-base-sepolia/spec.md) | Counterparty (+ L3-1 step 2) | CP-3, CFG-1/2 and §3.3 amended (CDP facilitator on Base Sepolia, CDP API key held only by the seller) | Fail-closed credentials, no silent facilitator fallback, offline baseline unchanged. In SPEC v1.2 |
 | 010 | [operator-reject-flow](010-operator-reject-flow/spec.md) | L2 + operator | L2-2 R15, L2-4 entry types, L2-4.2 (one approval per escalation), new L2-4.3 escalation lifecycle, L2-5 rejections and escalation reads, §13 `reject` and `escalations` | Final states never reversed, 300 s expiry, operator notification without outbound calls, no operator text reaches the agent (SEC-12). In SPEC v1.3 |
 | 011 | [l1-hosted-agent-azure](011-l1-hosted-agent-azure/spec.md) | L1 + cloud | L1-6 hosted agent service (Mastra on Azure), §3.1 cloud profile, §3.3 requester and cloud model credentials, CFG-2 agent-service rows | Same two tools and no new authority (SEC-1/2/8), requester authentication and session binding (SEC-14/15), L2/L3 private in Azure, telemetry without secrets (SEC-16). One ledger writer (L2-6). In SPEC v1.5 |
+| 012 | [ciba-escalation-approval](012-ciba-escalation-approval/spec.md) | L2 (+ L1-4 flag) | L2-7 backchannel approval through OpenID CIBA with Auth0: one approval request per eligible escalation, verified answers recorded with a channel, a bounded 120 s wait in the authorize call; L2-4 entry types, L2-5 authorize algorithm and escalation reads, §7 `operatorApprovalOnly`, CFG-2 `CIBA_*`, §3.3 and rule A9; the Auth0 tenant as Terraform in `auth0/` | Fail closed on any approval-service failure; verification of issuer, signature, approver and exact payment (SEC-17); push fatigue capped (SEC-18); no credential, token or handle in the ledger, logs or responses. In SPEC v1.8 |
 
 ## Traceability (SPEC.md ID → feature)
 
@@ -38,6 +39,7 @@ It covers INV-1..13, the definition of done and the governance rules.
 | L2-4.2 | 004 (amended by 010) |
 | L2-4.3 | 010 |
 | L2-6 | 011 |
+| L2-7 | 012 (amends 010 NFR-005 and L2-4.3 notifications) |
 | L2-5 | 002 (authorize, budget), 003 (reconcile, ledger/verify), 004 (approvals), 010 (rejections, escalation reads; approve made state-aware) |
 | L3-1, L3-2 | 005 (L3-1 step 2 amended by 009) |
 | CP-1..CP-5 | 006 (CP-3/CP-5 also in 008; CP-1 failure categories and CP-3 amended by 009) |
@@ -48,11 +50,13 @@ It covers INV-1..13, the definition of done and the governance rules.
 | SEC-10, SEC-11 | 009 (with 007 for A8 and the threat matrix, 005 for L3-1 step 2) |
 | SEC-12 | 010 (with 007 for the threat matrix, 002 for the rule) |
 | SEC-14, SEC-15, SEC-16 | 011 (with 007 for the threat matrix) |
+| SEC-17, SEC-18 | 012 (with 007 for the threat matrix) |
 | §3.1 Azure profile, §3.3 requester and Foundry rows, CFG-2 `l1-hosted.env` | 011 |
 | CFG-2 seller.env, §3.3 CDP row, §4.1 A8 | 009, 007 |
 | T-CDP-01..09, T-E2E-06 | 009 |
 | T-POL-15, T-LED-04, T-E2E-07, T-E2E-08 | 010 |
 | T-AGT-02..05, T-AGT-KEY (hosted), T-LED-05, T-E2E-09, T-IAC-01, T-E2E-AZ | 011 |
+| T-CIBA-01..14, T-ARCH-A9, T-E2E-10, T-E2E-11, T-IAC-02 (`auth0/`) | 012 |
 | T-POL-01..14 | 002 (T-POL-13 also in 004) |
 | T-LED-01..03 | 003 |
 | T-ARCH-* | 007 (T-ARCH-A8 by 009) |

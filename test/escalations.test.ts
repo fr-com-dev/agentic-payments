@@ -4,7 +4,23 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AuditLedger } from "../src/layer2-control/ledger.js";
-import { ESCALATION_TTL_MS, escalationEvents, escalationState, findPendingEscalation, findRejection, pendingEscalations, sweep } from "../src/layer2-control/escalations.js";
+import {
+  activeApprovalRequest,
+  answerIdUsed,
+  approvalRequestCount,
+  approvalRequestState,
+  channelOf,
+  ESCALATION_TTL_MS,
+  escalationEvents,
+  escalationState,
+  findPendingEscalation,
+  findRejection,
+  openApprovalRequest,
+  pendingEscalations,
+  referenceCode,
+  requestsToResume,
+  sweep,
+} from "../src/layer2-control/escalations.js";
 
 const PAY_TO = "0xCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCcCc";
 const KEY = "http://127.0.0.1:4021/api/premium-report";
@@ -284,6 +300,7 @@ describe("T-LED-04 operator views", () => {
       amount: "50000",
       createdAt: new Date(T0 + 10).toISOString(),
       expiresAt: new Date(T0 + 10 + ESCALATION_TTL_MS).toISOString(),
+      referenceCode: referenceCode("auth_early"), // 012: additive (FR-029)
     });
     expect(pendingEscalations(l.entries(), T0 + 20 + ESCALATION_TTL_MS)).toEqual([]);
   });
@@ -321,5 +338,153 @@ describe("T-LED-04 operator views", () => {
     const events = escalationEvents(l.entries(), -1);
     expect(events.map((e) => e.kind)).toEqual(["escalated"]);
     for (const e of events) expect(keysDeep(e).filter((k) => FORBIDDEN.includes(k))).toEqual([]);
+  });
+});
+
+describe("T-LED-04 012 whitelist for the approval request entries", () => {
+  const FORBIDDEN_012 = ["accepts", "purpose", "paymentHeaders", "signature", "token", "handleSealed", "details", "bindingMessage", "evidence", "issuer", "access_token", "auth_req_id"];
+  const keysDeep = (v: unknown): string[] =>
+    v !== null && typeof v === "object" ? Object.entries(v as Record<string, unknown>).flatMap(([k, x]) => [k, ...keysDeep(x)]) : [];
+
+  it("no event or view of the new kinds carries a secret-bearing or payload key", () => {
+    const l = new AuditLedger(file);
+    const base = { resourceKey: KEY, payTo: PAY_TO, amount: "50000", channel: "backchannel" };
+    const esc = (id: string, at: number) =>
+      l.append({ type: "ESCALATED", sessionId: "sess_w", authorizationId: id, data: { violations: [], resourceKey: KEY, payTo: PAY_TO, amount: "50000", approvalRequest: "requested" } }, at);
+    const requested = (id: string, at: number) =>
+      l.append(
+        {
+          type: "APPROVAL_REQUESTED",
+          sessionId: "sess_w",
+          authorizationId: id,
+          data: { escalationId: id, ...base, requestId: `apq_${id}`, issuer: "https://t/", approver: "auth0|a", referenceCode: "abcd1234", bindingMessage: "Pay_x", details: [{ x: 1 }], requestedExpirySec: 300, requestExpiresAtMs: at + 300_000, intervalSec: 5, handleSealed: "v1.a.b.c", attempts: 1 },
+        },
+        at,
+      );
+    esc("auth_w1", T0);
+    requested("auth_w1", T0 + 1);
+    l.append({ type: "HUMAN_APPROVAL", sessionId: "sess_w", authorizationId: "auth_w1", data: { approvalId: "apr_w", escalationId: "auth_w1", ...base, approver: "auth0|a", expiresAtMs: T0 + 600_000, requestId: "apq_auth_w1", evidence: { issuer: "https://t/", subject: "auth0|a", answerId: "jti", issuedAt: "x", detailsSource: "token" } } }, T0 + 2);
+    esc("auth_w2", T0 + 3);
+    requested("auth_w2", T0 + 4);
+    l.append({ type: "HUMAN_REJECTION", sessionId: "sess_w", authorizationId: "auth_w2", data: { rejectionId: "rej_w", escalationId: "auth_w2", ...base, approver: "auth0|a", issuer: "https://t/", requestId: "apq_auth_w2" } }, T0 + 5);
+    esc("auth_w3", T0 + 6);
+    l.append({ type: "APPROVAL_REQUEST_FAILED", sessionId: "sess_w", authorizationId: "auth_w3", data: { escalationId: "auth_w3", ...base, phase: "start", failure: "permanent", httpStatus: 400, error: "unknown_user_id", attempts: 1 } }, T0 + 7);
+    esc("auth_w4", T0 + 8);
+    requested("auth_w4", T0 + 9);
+    l.append({ type: "APPROVAL_VERIFICATION_FAILED", sessionId: "sess_w", authorizationId: "auth_w4", data: { escalationId: "auth_w4", ...base, requestId: "apq_auth_w4", check: "details" } }, T0 + 10);
+    esc("auth_w5", T0 + 11);
+    requested("auth_w5", T0 + 12);
+    l.append({ type: "APPROVAL_REQUEST_LAPSED", sessionId: "sess_w", authorizationId: "auth_w5", data: { escalationId: "auth_w5", ...base, requestId: "apq_auth_w5", cause: "expired", requestExpiresAtMs: T0 + 300_000 } }, T0 + 13);
+
+    const events = escalationEvents(l.entries(), -1);
+    expect(new Set(events.map((e) => e.kind))).toEqual(
+      new Set(["escalated", "approval_requested", "approved", "denied", "approval_request_failed", "approval_verification_failed", "approval_request_lapsed"]),
+    );
+    for (const e of events) expect(keysDeep(e).filter((k) => FORBIDDEN_012.includes(k)), e.kind).toEqual([]);
+    const views = pendingEscalations(l.entries(), T0 + 20);
+    expect(views.map((v) => v.approvalRequest)).toEqual(["failed", "verification_failed", "lapsed"]);
+    for (const v of views) expect(keysDeep(v).filter((k) => FORBIDDEN_012.includes(k))).toEqual([]);
+    const denied = events.find((e) => e.kind === "denied")!;
+    expect(denied).toMatchObject({ channel: "backchannel", decidedBy: "auth0|a" });
+    expect(denied.operator).toBeUndefined();
+  });
+});
+
+describe("012 approval request derivations", () => {
+  const mark = (l: AuditLedger, id: string, approvalRequest: string, at = T0) => {
+    const e = escalate(l, id, { at, sessionId: `sess_${id}` });
+    // Re-append with the mark: the helper writes the 010 shape, so write the 012 shape directly here.
+    return { e, marked: l.append({ type: "ESCALATED", sessionId: `sess_${id}m`, authorizationId: `${id}m`, data: { ...e.data, approvalRequest } }, at) };
+  };
+  const requested = (l: AuditLedger, id: string, at = T0, expiresIn = 300_000) => {
+    l.append({ type: "ESCALATED", sessionId: "sess_r", authorizationId: id, data: { violations: [], resourceKey: KEY, payTo: PAY_TO, amount: "50000", approvalRequest: "requested" } }, at);
+    return (requestId = `apq_${id}`) =>
+      l.append(
+        {
+          type: "APPROVAL_REQUESTED",
+          sessionId: "sess_r",
+          authorizationId: id,
+          data: { escalationId: id, resourceKey: KEY, payTo: PAY_TO, amount: "50000", channel: "backchannel", requestId, requestExpiresAtMs: at + expiresIn, handleSealed: "v1.a.b.c" },
+        },
+        at + 10,
+      );
+  };
+  const end = (l: AuditLedger, id: string, type: "APPROVAL_REQUEST_FAILED" | "APPROVAL_REQUEST_LAPSED" | "APPROVAL_VERIFICATION_FAILED", at = T0 + 20) =>
+    l.append({ type, sessionId: "sess_r", authorizationId: id, data: { escalationId: id, requestId: `apq_${id}`, channel: "backchannel" } }, at);
+
+  it("referenceCode and channelOf (an entry without channel reads as operator)", () => {
+    expect(referenceCode("auth_3f9c2a1b-7d4e-4a51-9c0e-2b8f6d1e9a77")).toBe("3f9c2a1b");
+    const l = new AuditLedger(file);
+    escalate(l, "auth_a");
+    expect(channelOf(approveEntry(l, "auth_a", "apr_1"))).toBe("operator");
+  });
+
+  it("approvalRequestState: unmarked, each mark, requested, answered, failed, lapsed, verification_failed, abandoned", () => {
+    const l = new AuditLedger(file);
+    escalate(l, "auth_plain");
+    expect(approvalRequestState(l.entries(), "auth_plain")).toBeUndefined();
+    for (const m of ["capped", "operator_only", "reevaluation"]) {
+      const { marked } = mark(l, `auth_${m}`, m);
+      expect(approvalRequestState(l.entries(), marked.authorizationId!)).toBe(m);
+    }
+    requested(l, "auth_r1")();
+    expect(approvalRequestState(l.entries(), "auth_r1")).toBe("requested");
+    requested(l, "auth_r0");
+    expect(approvalRequestState(l.entries(), "auth_r0")).toBe("requested");
+    requested(l, "auth_f")();
+    end(l, "auth_f", "APPROVAL_REQUEST_FAILED");
+    expect(approvalRequestState(l.entries(), "auth_f")).toBe("failed");
+    requested(l, "auth_l")();
+    end(l, "auth_l", "APPROVAL_REQUEST_LAPSED");
+    expect(approvalRequestState(l.entries(), "auth_l")).toBe("lapsed");
+    requested(l, "auth_v")();
+    end(l, "auth_v", "APPROVAL_VERIFICATION_FAILED");
+    expect(approvalRequestState(l.entries(), "auth_v")).toBe("verification_failed");
+    requested(l, "auth_ab")();
+    approveEntry(l, "auth_ab", "apr_ab");
+    expect(approvalRequestState(l.entries(), "auth_ab")).toBe("abandoned");
+    requested(l, "auth_ans")();
+    l.append({ type: "HUMAN_APPROVAL", sessionId: "sess_r", authorizationId: "auth_ans", data: { approvalId: "apr_b", escalationId: "auth_ans", resourceKey: KEY, payTo: PAY_TO, amount: "50000", approver: "auth0|x", expiresAtMs: T0 + 600_000, channel: "backchannel", evidence: { answerId: "jti-9" } } }, T0 + 30);
+    expect(approvalRequestState(l.entries(), "auth_ans")).toBe("answered");
+    expect(answerIdUsed(l.entries(), "jti-9")).toBe(true);
+    expect(answerIdUsed(l.entries(), "jti-8")).toBe(false);
+  });
+
+  it("approvalRequestCount counts `requested` marks in the trailing hour; exactly 3 600 000 ms later the first drops out", () => {
+    const l = new AuditLedger(file);
+    requested(l, "auth_1", T0);
+    requested(l, "auth_2", T0 + 1000);
+    mark(l, "auth_c", "capped", T0 + 2000);
+    expect(approvalRequestCount(l.entries(), T0 + 5000)).toBe(2);
+    expect(approvalRequestCount(l.entries(), T0 + 3_600_000 - 1)).toBe(2);
+    expect(approvalRequestCount(l.entries(), T0 + 3_600_000)).toBe(1);
+    expect(approvalRequestCount(l.entries(), T0 + 3_601_000)).toBe(0);
+  });
+
+  it("openApprovalRequest needs a pending escalation, no ending entry and the request's own expiry ahead", () => {
+    const l = new AuditLedger(file);
+    requested(l, "auth_o", T0, 100_000)();
+    expect(openApprovalRequest(l.entries(), "auth_o", T0 + 50_000)?.data.requestId).toBe("apq_auth_o");
+    expect(openApprovalRequest(l.entries(), "auth_o", T0 + 100_000)).toBeUndefined();
+    expect(activeApprovalRequest(l.entries(), "auth_o")).toBeDefined();
+    expect(openApprovalRequest(l.entries(), "auth_o", T0 + ESCALATION_TTL_MS)).toBeUndefined();
+    end(l, "auth_o", "APPROVAL_REQUEST_LAPSED");
+    expect(activeApprovalRequest(l.entries(), "auth_o")).toBeUndefined();
+  });
+
+  it("requestsToResume: open, stale and interrupted; never a decided or expired escalation", () => {
+    const l = new AuditLedger(file);
+    requested(l, "auth_open", T0)();
+    requested(l, "auth_stale", T0, 60_000)();
+    requested(l, "auth_int", T0);
+    requested(l, "auth_done", T0)();
+    approveEntry(l, "auth_done", "apr_d");
+    requested(l, "auth_failed", T0);
+    end(l, "auth_failed", "APPROVAL_REQUEST_FAILED");
+    const r = requestsToResume(l.entries(), T0 + 120_000);
+    expect(r.open.map((e) => e.data.escalationId)).toEqual(["auth_open"]);
+    expect(r.stale.map((e) => e.data.escalationId)).toEqual(["auth_stale"]);
+    expect(r.interrupted.map((e) => e.authorizationId)).toEqual(["auth_int"]);
+    expect(requestsToResume(l.entries(), T0 + ESCALATION_TTL_MS)).toEqual({ open: [], stale: [], interrupted: [] });
   });
 });

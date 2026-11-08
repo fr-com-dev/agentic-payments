@@ -10,7 +10,7 @@ import { describe, expect, it } from "vitest";
 // Scanner core (T004–T006)
 // ---------------------------------------------------------------------------
 
-export type Rule = "A1" | "A2" | "A3" | "A4" | "A5" | "A6" | "A7" | "A8";
+export type Rule = "A1" | "A2" | "A3" | "A4" | "A5" | "A6" | "A7" | "A8" | "A9";
 export interface ArchViolation {
   rule: Rule;
   file: string;
@@ -265,6 +265,22 @@ export function checkCdpConfinement(path: string, source: string): ArchViolation
 }
 
 // ---------------------------------------------------------------------------
+// A9 (012, SPEC v1.8 §4.1, FR-030): L2's Auth0 client credential is confined to one file, like A8. Same scope:
+// src/**, scripts/** and env templates (test/** is exempt). CIBA_CLIENT_KEY_ID is not the credential.
+// ---------------------------------------------------------------------------
+
+const A9_ALLOWED = new Set(["src/layer2-control/ciba-client.ts", "env/l2-control.env.example"]);
+const A9_NAME = /\bCIBA_CLIENT_(?:KEY|SECRET)\b/;
+
+export function checkCibaConfinement(path: string, source: string): ArchViolation[] {
+  if (A9_ALLOWED.has(path)) return [];
+  const template = /^env\/[^/]+\.env\.example$/.test(path);
+  if (!template && !path.startsWith("src/") && !path.startsWith("scripts/")) return [];
+  const text = template ? source : lex(source).noComments;
+  return matches(text, A9_NAME).map((off) => ({ rule: "A9" as const, file: path, line: lineAt(source, off), detail: text.slice(off).match(/^\w+/)![0] }));
+}
+
+// ---------------------------------------------------------------------------
 // Repository walk
 // ---------------------------------------------------------------------------
 
@@ -421,7 +437,19 @@ const TEMPLATES: Record<string, TemplateSpec> = {
   },
   "l2-control": {
     required: ["NETWORK", "PAYER_PRIVATE_KEY", "ALLOWED_PAYEES", "ALLOWED_HOSTS", "CONTROL_TOKEN", "SETTLEMENT_TOKEN", "OPERATOR_TOKEN"],
-    optional: ["CONTROL_PORT", "API_DOCS"],
+    optional: [
+      "CONTROL_PORT",
+      "API_DOCS",
+      // 012 backchannel approval (CFG-2)
+      "CIBA_APPROVAL",
+      "CIBA_ISSUER",
+      "CIBA_CLIENT_ID",
+      "CIBA_AUDIENCE",
+      "CIBA_APPROVER",
+      "CIBA_CLIENT_KEY",
+      "CIBA_CLIENT_SECRET",
+      "CIBA_CLIENT_KEY_ID",
+    ],
   },
   "l3-verifier": {
     required: ["NETWORK", "CONTROL_URL", "VERIFIER_TOKEN", "SETTLEMENT_TOKEN"],
@@ -513,6 +541,33 @@ describe("T-ARCH-ENV per-process env templates (US4)", () => {
     expect(checkCdpConfinement("test/x.test.ts", 'process.env.CDP_API_KEY_SECRET = "x";')).toEqual([]);
   });
 
+  it("T-ARCH-A9 fixture trips A9, and no other rule catches it (must fail without the rule)", () => {
+    const { path, source } = fixture(9);
+    expect(checkFile(path, source)).toEqual([]);
+    expect(checkCdpConfinement(path, source)).toEqual([]);
+    const violations = checkCibaConfinement(path, source);
+    expect(violations.map((v) => [v.rule, v.detail])).toEqual([["A9", "CIBA_CLIENT_KEY"]]);
+  });
+
+  it("T-ARCH-A9 repository is clean: the Auth0 credential lives only in ciba-client.ts and the L2 template", () => {
+    const templates = readdirSync("env")
+      .filter((f) => f.endsWith(".env.example"))
+      .map((f) => `env/${f}`);
+    const files = [...walk("src"), ...walk("scripts"), ...templates];
+    const violations = files.flatMap((f) => checkCibaConfinement(f, readFileSync(f, "utf8")));
+    expect(violations.map(format)).toEqual([]);
+    // The allowed files really hold it, so the rule is not vacuous.
+    expect(checkCibaConfinement("src/layer2-control/service.ts", readFileSync("src/layer2-control/ciba-client.ts", "utf8")).length).toBeGreaterThan(0);
+    expect(checkCibaConfinement("env/l1-hosted.env.example", readFileSync("env/l2-control.env.example", "utf8")).length).toBeGreaterThan(0);
+  });
+
+  it("T-ARCH-A9 CIBA_CLIENT_KEY_ID never trips it; a comment never does; any other template naming CIBA_CLIENT_SECRET does", () => {
+    expect(checkCibaConfinement("src/layer2-control/x.ts", 'export const k = process.env.CIBA_CLIENT_KEY_ID;\n')).toEqual([]);
+    expect(checkCibaConfinement("scripts/x.ts", "// CIBA_CLIENT_SECRET\nexport {};\n")).toEqual([]);
+    expect(checkCibaConfinement("env/operator.env.example", "# CIBA_CLIENT_SECRET=\n").map((v) => v.rule)).toEqual(["A9"]);
+    expect(checkCibaConfinement("test/x.test.ts", 'process.env.CIBA_CLIENT_KEY = "x";')).toEqual([]);
+  });
+
   it("no root .env exists, and only src/shared/config.ts uses dotenv", () => {
     expect(existsSync(".env")).toBe(false);
     const users = [...walk("src"), ...walk("scripts")].filter((f) =>
@@ -556,8 +611,8 @@ function missingIds(rows: { sec: string; ids: string[] }[], titles: string[]): s
 
 describe("T-ARCH-TRACE threat matrix → test titles (007 T051)", () => {
   // SEC-10 and SEC-11 were added by 009 (SPEC v1.2), SEC-12 by 010 (v1.3), SEC-13 by the API docs (v1.4),
-  // SEC-14..16 by 011 (v1.5, hosted agent service).
-  const SEC_ROWS = Array.from({ length: 16 }, (_, i) => `SEC-${i + 1}`);
+  // SEC-14..16 by 011 (v1.5, hosted agent service), SEC-17..18 by 012 (v1.8, backchannel approval).
+  const SEC_ROWS = Array.from({ length: 18 }, (_, i) => `SEC-${i + 1}`);
   it(`every ${SEC_ROWS[0]}..${SEC_ROWS.at(-1)} row names at least one test, and each named ID is a test title`, () => {
     const rows = matrixRows(readFileSync(THREAT_MATRIX, "utf8"));
     expect(rows.map((r) => r.sec)).toEqual(SEC_ROWS);
