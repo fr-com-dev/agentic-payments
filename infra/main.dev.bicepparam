@@ -61,6 +61,18 @@ param operatorsGroupId = '6d09c1a1-ae43-4b55-b6d3-277b546adf3c'
 param sellerPayTo = '0x95Aca02416F949489C1128223B35fBBE8c04f057'
 param payerAddress = '0x0048A66969cE8886A5e9bC00059Cb8c5D3989516'
 
+// 012 backchannel approval (SPEC L2-7): off in dev until an Auth0 tenant exists (specs/012 quickstart §6). The l2 vault
+// holds ciba-client-credential either way: the placeholder off now, the client key once enabled.
+param ciba = {
+  enabled: false
+  issuer: ''
+  clientId: ''
+  audience: ''
+  approver: ''
+  credential: 'key'
+  clientKeyId: ''
+}
+
 // Declared to Anthropic with the Claude deployment, which accepts its Azure Marketplace terms (owner's consent,
 // 2026-11-01).
 param claudeOrganizationName = 'Fabricio Rojas'

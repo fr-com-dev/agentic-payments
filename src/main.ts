@@ -30,10 +30,11 @@ async function main(argv: string[]): Promise<void> {
   const sessionId = resolveSessionId();
   const gate = new HttpAuthorizationGate(urls.control, tokenFor("agent-control"));
   const settlement = new HttpSettlementVerifier(urls.settlement, tokenFor("agent-verifier"));
-  const orchestrator = new PaidResourceOrchestrator({ gate, settlement, sessionId });
+  const scripted = argv.includes("--scripted");
+  // 012 FR-007: the scripted regression (L1-4) is operator-only, so it never notifies the approver.
+  const orchestrator = new PaidResourceOrchestrator({ gate, settlement, sessionId, ...(scripted && { operatorApprovalOnly: true }) });
   console.log(`session ${sessionId}`);
 
-  const scripted = argv.includes("--scripted");
   if (scripted) {
     const { checkBaseline, runScriptedAgent } = await import("./layer1-intent/scripted.js");
     const aliasUrl = process.env.SELLER_ALIAS_URL;

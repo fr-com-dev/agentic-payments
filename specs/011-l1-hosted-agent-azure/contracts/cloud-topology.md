@@ -97,7 +97,7 @@ computed in Bicep.
 | Unit / container | Env |
 |---|---|
 | `ca-l1-eastus2-dev/agent` | `NETWORK=base-sepolia`, `SELLER_URL=https://ca-seller-eastus2-dev.<cp-domain>`, `CONTROL_URL=http://ca-l2-eastus2-dev.internal.<main-domain>`, `SETTLEMENT_URL=http://ca-l3-eastus2-dev.internal.<main-domain>`, `MODEL_PROVIDER=foundry`, `ANTHROPIC_MODEL=claude-sonnet-5-5`, `FOUNDRY_BASE_URL=https://ais-x402-eastus2-dev.services.ai.azure.com/anthropic/v1`, `AZURE_CLIENT_ID=<id-l1-eastus2-dev clientId>`, `AUTH_TENANT_ID`, `AUTH_AUDIENCE=<the API app's client ID>`, `AGENT_BIND_HOST=0.0.0.0`, `AGENT_PORT=4024`, `MASTRA_TELEMETRY_DISABLED=1` |
-| `ca-l2-eastus2-dev/l2` | `NETWORK=base-sepolia`, `ALLOWED_PAYEES=<seller payTo>`, `ALLOWED_HOSTS=ca-seller-eastus2-dev.<cp-domain>` (no port: the policy compares `URL.host`, and an https URL on 443 has none; never the alias FQDN) |
+| `ca-l2-eastus2-dev/l2` | `NETWORK=base-sepolia`, `ALLOWED_PAYEES=<seller payTo>`, `ALLOWED_HOSTS=ca-seller-eastus2-dev.<cp-domain>` (no port: the policy compares `URL.host`, and an https URL on 443 has none; never the alias FQDN); 012: `CIBA_APPROVAL` (`1` or `0`), `CIBA_ISSUER`, `CIBA_CLIENT_ID`, `CIBA_AUDIENCE`, `CIBA_APPROVER`, `CIBA_CLIENT_KEY_ID`, all from the `ciba` parameter (empty while it is off) |
 | `ca-l3-eastus2-dev/l3` | `NETWORK=base-sepolia`, `CONTROL_URL=http://ca-l2-eastus2-dev.internal.<main-domain>`, optional `BASE_SEPOLIA_RPC_URL` |
 | `caj-l1-eastus2-dev/regression` | `NETWORK=base-sepolia`, `SELLER_URL=https://ca-seller-eastus2-dev.<cp-domain>`, `SELLER_ALIAS_URL=https://ca-seller-alias-eastus2-dev.<cp-domain>`, `CONTROL_URL` and `SETTLEMENT_URL` as for the agent |
 | `caj-l2-eastus2-dev/operator` | `CONTROL_URL=http://ca-l2-eastus2-dev.internal.<main-domain>` |
@@ -109,7 +109,7 @@ computed in Bicep.
 | Unit / container | Env from secrets | Vault |
 |---|---|---|
 | `ca-l1-eastus2-dev/agent` | `CONTROL_TOKEN`, `VERIFIER_TOKEN`, `SESSION_REF_SECRET`, (`ANTHROPIC_API_KEY`) | `kv-l1-eastus2-dev` |
-| `ca-l2-eastus2-dev/l2` | `PAYER_PRIVATE_KEY`, `CONTROL_TOKEN`, `SETTLEMENT_TOKEN`, `OPERATOR_TOKEN` | `kv-l2-eastus2-dev` |
+| `ca-l2-eastus2-dev/l2` | `PAYER_PRIVATE_KEY`, `CONTROL_TOKEN`, `SETTLEMENT_TOKEN`, `OPERATOR_TOKEN`; 012: `CIBA_CLIENT_KEY` or `CIBA_CLIENT_SECRET` (by `ciba.credential`) from `ciba-client-credential`, always referenced, so every environment seeds it: the placeholder `off` while backchannel approval is off | `kv-l2-eastus2-dev` |
 | `ca-l2-eastus2-dev/proxy` | **none** | — |
 | `ca-l3-eastus2-dev/l3` | `VERIFIER_TOKEN`, `SETTLEMENT_TOKEN` | `kv-l3-eastus2-dev` |
 | `ca-l3-eastus2-dev/proxy` | **none** | — |
@@ -202,6 +202,12 @@ both copies, then restarts both units.
     logs, identities, registry, vaults, storage, Foundry, environments) only when `unit` is `platform`,
     each unit's apps module only when `unit` is that unit. `unit` is required and is one of `platform`,
     `l1`, `l2`, `l3`, `operator` and `seller`.
+19. (012, SPEC L2-7) L2's Auth0 client credential reaches only `ca-l2-eastus2-dev/l2`, as a reference to the l2
+    vault's `ciba-client-credential`, named `CIBA_CLIENT_KEY` or `CIBA_CLIENT_SECRET` by `ciba.credential`. Every
+    other `CIBA_*` value comes from the `ciba` parameter, which `main.bicep` passes to `l2-apps` whole, and
+    `main.bicep` refuses (`fail()`) a `ciba` with another credential kind, or one that is enabled without an `https://`
+    issuer, a client ID, an audience and an approver. No other app, job or container gets a `CIBA_*` variable or the
+    secret.
 
 **Must fail**: mutated copies of the templates and parameter files, each must trip its check:
 - an extra role assignment of `id-l1-eastus2-dev` on `kv-l2-eastus2-dev` (rule 1);
@@ -223,4 +229,6 @@ both copies, then restarts both units.
 - `main.bicep` without its target check, a configuration value or the environment's name read from the
   environment, and the two parameter files naming different subscriptions (rule 17);
 - L1's apps deployed by the platform's runs too, Foundry deployed by every run, and a seventh value of
-  `unit` (rule 18).
+  `unit` (rule 18);
+- the CIBA credential on the agent, as a literal secret, or under one fixed name; a `CIBA_ISSUER` written in the
+  template; and `main.bicep` without its `ciba` check (rule 19).

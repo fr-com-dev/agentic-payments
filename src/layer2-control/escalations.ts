@@ -4,6 +4,9 @@
 // entry and ends exactly once: approved (HUMAN_APPROVAL), denied (HUMAN_REJECTION) or expired
 // (ESCALATION_EXPIRED, or the clock passing createdMs + ESCALATION_TTL_MS). Final states are never left.
 import type { AuditLedger, LedgerEntry } from "./ledger.js";
+import { referenceCode } from "./payment-details.js";
+
+export { referenceCode };
 
 /** Fixed escalation window (clarification Q3). Not configurable. */
 export const ESCALATION_TTL_MS = 300_000;
@@ -152,9 +155,23 @@ export interface EscalationView {
   amount: string;
   createdAt: string;
   expiresAt: string;
+  /** 012: the first 8 hex characters of the ID, shown to the approver too. */
+  referenceCode: string;
+  /** 012: present when the escalation carries an approval-request mark (backchannel approval on). */
+  approvalRequest?: ApprovalRequestState;
 }
 
-export type EscalationEventKind = "escalated" | "approved" | "denied" | "expired" | "approval_lapsed";
+export type EscalationEventKind =
+  | "escalated"
+  | "approved"
+  | "denied"
+  | "expired"
+  | "approval_lapsed"
+  // 012 (L2-7): the approval request's own events
+  | "approval_requested"
+  | "approval_request_failed"
+  | "approval_request_lapsed"
+  | "approval_verification_failed";
 
 /**
  * One lifecycle event (GET /v1/escalations/events). Built field by field from a whitelist, never by
@@ -176,6 +193,17 @@ export interface EscalationEvent {
   rejectionId?: string;
   operator?: string;
   reason?: string;
+  // 012 (FR-029): whitelisted fields only. Never a token, a handle, details, the binding message or evidence.
+  referenceCode?: string;
+  approvalRequest?: string;
+  channel?: DecisionChannel;
+  decidedBy?: string;
+  requestId?: string;
+  requestExpiresAt?: string;
+  failure?: string;
+  error?: string;
+  cause?: string;
+  check?: string;
 }
 
 const iso = (ms: number) => new Date(ms).toISOString();
@@ -204,6 +232,8 @@ export function pendingEscalations(entries: Entries, nowMs: number): EscalationV
       amount: String(e.data.amount),
       createdAt: e.ts,
       expiresAt: iso(expiresAtMsOf(e)),
+      referenceCode: referenceCode(e.authorizationId!),
+      ...(typeof e.data.approvalRequest === "string" && { approvalRequest: approvalRequestState(entries, e.authorizationId!)! }),
     }))
     .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
 }
@@ -214,6 +244,10 @@ const KIND: Partial<Record<LedgerEntry["type"], EscalationEventKind>> = {
   HUMAN_REJECTION: "denied",
   ESCALATION_EXPIRED: "expired",
   APPROVAL_LAPSED: "approval_lapsed",
+  APPROVAL_REQUESTED: "approval_requested",
+  APPROVAL_REQUEST_FAILED: "approval_request_failed",
+  APPROVAL_REQUEST_LAPSED: "approval_request_lapsed",
+  APPROVAL_VERIFICATION_FAILED: "approval_verification_failed",
 };
 
 /** Lifecycle events with `seq > after`, in ledger order. ESCALATION_REPEATED produces none. */
@@ -234,15 +268,139 @@ export function escalationEvents(entries: Entries, after: number): EscalationEve
       payTo: String(d.payTo),
       amount: String(d.amount),
     };
-    if (kind === "escalated") ev.expiresAt = iso(expiresAtMsOf(e));
-    if (kind === "approved") Object.assign(ev, { approvalId: String(d.approvalId), approver: String(d.approver), approvalExpiresAt: iso(d.expiresAtMs as number) });
+    if (kind === "escalated") {
+      ev.expiresAt = iso(expiresAtMsOf(e));
+      ev.referenceCode = referenceCode(String(e.authorizationId));
+      if (typeof d.approvalRequest === "string") ev.approvalRequest = d.approvalRequest;
+    }
+    if (kind === "approved") {
+      Object.assign(ev, { approvalId: String(d.approvalId), approver: String(d.approver), approvalExpiresAt: iso(d.expiresAtMs as number) });
+      Object.assign(ev, { channel: channelOf(e), decidedBy: String(d.approver) });
+    }
     if (kind === "denied") {
-      Object.assign(ev, { rejectionId: String(d.rejectionId), operator: String(d.operator) });
-      if (typeof d.reason === "string") ev.reason = d.reason;
+      const channel = channelOf(e);
+      ev.rejectionId = String(d.rejectionId);
+      if (channel === "operator") {
+        ev.operator = String(d.operator);
+        if (typeof d.reason === "string") ev.reason = d.reason;
+      }
+      Object.assign(ev, { channel, decidedBy: channel === "operator" ? String(d.operator) : String(d.approver) });
     }
     if (kind === "expired") ev.expiresAt = iso(d.expiresAtMs as number);
     if (kind === "approval_lapsed") ev.approvalId = String(d.approvalId);
+    if (kind === "approval_requested") {
+      Object.assign(ev, { requestId: String(d.requestId), referenceCode: String(d.referenceCode), requestExpiresAt: iso(d.requestExpiresAtMs as number) });
+    }
+    if (kind === "approval_request_failed") {
+      if (typeof d.requestId === "string") ev.requestId = d.requestId;
+      ev.failure = String(d.failure);
+      if (typeof d.error === "string") ev.error = d.error;
+    }
+    if (kind === "approval_request_lapsed") Object.assign(ev, { requestId: String(d.requestId), cause: String(d.cause) });
+    if (kind === "approval_verification_failed") Object.assign(ev, { requestId: String(d.requestId), check: String(d.check) });
     events.push(ev);
   }
   return events;
+}
+
+// ---------------------------------------------------------------------------
+// 012 approval request derivations (SPEC L2-7; specs/012 data-model.md "Derived functions"). Pure, like the rest
+// of this file: every function takes `nowMs` when it needs time.
+// ---------------------------------------------------------------------------
+
+export type DecisionChannel = "operator" | "backchannel";
+
+/** The channel of an approval or rejection. An entry written before 012 has none, and reads as `operator`. */
+export const channelOf = (e: LedgerEntry): DecisionChannel => (e.data.channel === "backchannel" ? "backchannel" : "operator");
+
+export type ApprovalRequestMark = "requested" | "capped" | "operator_only" | "reevaluation";
+export type ApprovalRequestState =
+  | ApprovalRequestMark
+  | "failed"
+  | "verification_failed"
+  | "lapsed"
+  | "answered"
+  | "abandoned";
+
+const REQUEST_ENDINGS: ReadonlySet<LedgerEntry["type"]> = new Set([
+  "APPROVAL_REQUEST_FAILED",
+  "APPROVAL_REQUEST_LAPSED",
+  "APPROVAL_VERIFICATION_FAILED",
+]);
+
+/** FR-008: `ESCALATED` entries marked `requested` within the trailing window (an attempt counts, sent or not). */
+export function approvalRequestCount(entries: Entries, nowMs: number, windowMs = 3_600_000): number {
+  let n = 0;
+  for (const e of entries) {
+    if (e.type === "ESCALATED" && e.data.approvalRequest === "requested" && Date.parse(e.ts) > nowMs - windowMs) n++;
+  }
+  return n;
+}
+
+/** The first entry that ended the escalation's approval request, if any. */
+function requestEnding(entries: Entries, escalationId: string): LedgerEntry | undefined {
+  return entries.find((e) => REQUEST_ENDINGS.has(e.type) && e.data.escalationId === escalationId);
+}
+
+/** The approval request's state, or undefined when the escalation carries no mark (feature off, or before 012). */
+export function approvalRequestState(entries: Entries, escalationId: string): ApprovalRequestState | undefined {
+  const mark = findEscalation(entries, escalationId)?.data.approvalRequest;
+  if (typeof mark !== "string") return undefined;
+  if (mark !== "requested") return mark as ApprovalRequestMark;
+  const decision = decisionEntry(entries, escalationId);
+  if (decision && decision.type !== "ESCALATION_EXPIRED" && channelOf(decision) === "backchannel") return "answered";
+  const ending = requestEnding(entries, escalationId);
+  if (ending) {
+    if (ending.type === "APPROVAL_REQUEST_FAILED") return "failed";
+    if (ending.type === "APPROVAL_REQUEST_LAPSED") return "lapsed";
+    return "verification_failed";
+  }
+  return decision ? "abandoned" : "requested";
+}
+
+/** The escalation's APPROVAL_REQUESTED with no ending entry, whatever the time (lapse and failure recording). */
+export function activeApprovalRequest(entries: Entries, escalationId: string): LedgerEntry | undefined {
+  if (requestEnding(entries, escalationId)) return undefined;
+  return entries.find((e) => e.type === "APPROVAL_REQUESTED" && e.data.escalationId === escalationId);
+}
+
+/** The request an answer may approve: active, its escalation pending, and before its own expiry. */
+export function openApprovalRequest(entries: Entries, escalationId: string, nowMs: number): LedgerEntry | undefined {
+  if (escalationState(entries, escalationId, nowMs) !== "pending") return undefined;
+  const req = activeApprovalRequest(entries, escalationId);
+  if (!req || nowMs >= (req.data.requestExpiresAtMs as number)) return undefined;
+  return req;
+}
+
+export interface ResumeSet {
+  /** Open requests: poll again from their sealed handles. */
+  open: LedgerEntry[];
+  /** Active requests past their own expiry while the escalation is pending: record the lapse. */
+  stale: LedgerEntry[];
+  /** `requested` escalations still pending with no request entry at all: L2 died between the two sections. */
+  interrupted: LedgerEntry[];
+}
+
+/** What `resume()` must do after a restart (FR-012). Never resends a request. */
+export function requestsToResume(entries: Entries, nowMs: number): ResumeSet {
+  const out: ResumeSet = { open: [], stale: [], interrupted: [] };
+  for (const esc of entries) {
+    if (esc.type !== "ESCALATED" || esc.data.approvalRequest !== "requested" || esc.authorizationId === undefined) continue;
+    const id = esc.authorizationId;
+    if (escalationState(entries, id, nowMs) !== "pending") continue;
+    const hasRequest = entries.some((e) => e.type === "APPROVAL_REQUESTED" && e.data.escalationId === id);
+    if (!hasRequest) {
+      if (!requestEnding(entries, id)) out.interrupted.push(esc);
+      continue;
+    }
+    const req = activeApprovalRequest(entries, id);
+    if (!req) continue;
+    (nowMs < (req.data.requestExpiresAtMs as number) ? out.open : out.stale).push(req);
+  }
+  return out;
+}
+
+/** Check `replay`: an answer approves at most one escalation. */
+export function answerIdUsed(entries: Entries, answerId: string): boolean {
+  return entries.some((e) => e.type === "HUMAN_APPROVAL" && (e.data.evidence as { answerId?: unknown } | undefined)?.answerId === answerId);
 }

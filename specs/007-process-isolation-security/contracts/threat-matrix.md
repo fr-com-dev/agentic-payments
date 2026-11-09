@@ -18,6 +18,8 @@
 | SEC-14 | Anyone who can reach the public hosted agent endpoint spends from the budget | Entra ID token with `Agent.Run` checked before any model or L2 call; per-requester limits; L2's rules and budgets unchanged (SPEC v1.5 L1-6) | 011 | T-AGT-03 |
 | SEC-15 | A requester continues another requester's session and uses its approvals or budget | HMAC-bound session references; raw session IDs refused; a foreign reference → 404 (SPEC v1.5 L1-6) | 011 | T-AGT-04 |
 | SEC-16 | Secrets, requester tokens or payment headers reach logs or telemetry | Whitelisted JSON run log; Mastra logger silenced and no telemetry export; known-value tests offline and a shape scan of cloud logs (SPEC v1.5) | 011 | T-AGT-05, T-E2E-AZ |
+| SEC-17 | A forged, replayed or swapped backchannel approval pays something nobody approved | L2 verifies the approver's token before recording it (JWKS signature, issuer, audience, client, validity, approver, the open request, payment details field for field, single use); outcomes recorded inside the serialized section; the Auth0 credential confined to `ciba-client.ts` (A9) (SPEC v1.8 L2-7) | 012 | T-CIBA-08, T-CIBA-10, T-ARCH-A9 |
+| SEC-18 | Push fatigue: a prompt-injected agent escalates again and again until the approver taps "approve" | Repeats reuse the pending escalation; at most 10 approval requests per rolling hour from the ledger; the scripted regression is operator-only and the hosted smoke run fails on any escalation (SPEC v1.8 L2-7) | 012 | T-CIBA-03, T-CIBA-04, T-E2E-10 |
 
 ## Accepted residual risks (v1)
 
@@ -31,4 +33,6 @@
 | A settle that times out with no transaction hash is indeterminate (009) | Amount stays committed until `validBefore` (SEC-9); applies to every facilitator | follow-up: EIP-3009 nonce check |
 | Operator label is self-declared; one shared operator token for every operator (010) | Single-operator PoC; the token is still role-scoped (INV-13) | EXT-7 |
 | A rejection blocks a (session, resource) for good, with no undo (010) | By design: final states are never reversed; a new session can buy again | none planned |
+| The approval service (Auth0) is trusted to authenticate the approver; the approver's phone is a new place where approvals happen (012) | The approval must still verify against the exact payment, and fails closed; the operator path remains | none planned |
+| Payment details checked against the unsigned token response when Auth0's CIBA token lacks them (012) | Same authenticated connection, answer to L2's own poll; recorded as `detailsSource: "response"` | Auth0 putting `authorization_details` in the token |
 | No refund path | Micro-amounts; testnet only | EXT-9 |

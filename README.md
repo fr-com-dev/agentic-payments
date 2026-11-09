@@ -99,6 +99,18 @@ npm run escalations -- --watch    # lists pending escalations, then shows each n
 
 While an escalation is pending, a repeat of the same purchase returns the same `authorizationId`. An approval never overrides a DENY rule. A rejection's reason is shown to the operator only, never to the agent. For a step-by-step run on Base Sepolia, see [Approving an escalated payment](#approving-an-escalated-payment).
 
+#### From the approver's phone (backchannel approval, optional)
+
+With backchannel approval on (`CIBA_APPROVAL=1` in L2's env file, SPEC L2-7), L2 also asks one configured approver directly: an OpenID CIBA request to an Auth0 tenant, delivered as a Guardian push. The phone shows the amount in USDC, the payee, the resource and a reference code, such as `Pay_0.05_USDC_to_0x95Ac..f057_for_premium-report_#3f9c2a1b`. The reference code is the start of the escalation's `authorizationId`.
+
+- **Within 2 minutes**, the agent's same request goes on to pay after an approval, or is refused with `human_rejected` after a refusal.
+- **Later**, the approval pays on the agent's next request for the purchase.
+- **L2 checks the answer** before it counts: issuer, signature, approver, and the exact payment, field for field. Anything else approves nothing.
+- **The operator path keeps working** whatever happens on the phone, and the first decision recorded wins. `npm run escalations -- --watch` shows each request's state and who decided, through which channel.
+- **Automated checks never ask the approver**: the scripted regression is operator-only, there are at most 10 requests per hour, and repeats of a pending purchase reuse its escalation.
+
+The Auth0 tenant is Terraform in [`auth0/`](auth0/README.md), applied by a tenant administrator. Its outputs are the env values and the `ciba` object for Azure. The steps and a live check are in [specs/012 quickstart](specs/012-ciba-escalation-approval/quickstart.md). It is off by default, and the local demo never uses it.
+
 ## Base Sepolia
 
 Base Sepolia uses Circle's test USDC. No local chain or facilitator runs.

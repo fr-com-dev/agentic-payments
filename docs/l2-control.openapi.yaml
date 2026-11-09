@@ -498,6 +498,12 @@ components:
           description: The model's stated reason. Audit only; never a decision input (INV-5).
         createdAt:
           $ref: "#/components/schemas/IsoTime"
+        operatorApprovalOnly:
+          type: boolean
+          description: >-
+            v1.8 (L2-7, FR-007). true marks the intent operator-only: an escalation it creates sends no backchannel
+            approval request and returns at once. It can only remove an approval path. Set by the L1-4 scripted
+            agent; the hosted agent never sets it. A non-boolean value is 400.
 
     PolicyViolation:
       type: object
@@ -731,7 +737,7 @@ components:
     PendingEscalation:
       type: object
       additionalProperties: false
-      required: [authorizationId, sessionId, resourceKey, payTo, amount, createdAt, expiresAt]
+      required: [authorizationId, sessionId, resourceKey, payTo, amount, createdAt, expiresAt, referenceCode]
       properties:
         authorizationId:
           type: string
@@ -747,6 +753,19 @@ components:
           $ref: "#/components/schemas/IsoTime"
         expiresAt:
           $ref: "#/components/schemas/IsoTime"
+        referenceCode:
+          type: string
+          pattern: "^[0-9a-f]{8}$"
+          description: v1.8. The first 8 hex characters of the escalation ID; the approver's phone shows the same code.
+        approvalRequest:
+          $ref: "#/components/schemas/ApprovalRequestState"
+
+    ApprovalRequestState:
+      type: string
+      description: >-
+        v1.8 (L2-7). The backchannel approval request's state for a pending escalation. Present only when backchannel
+        approval is on.
+      enum: [requested, capped, operator_only, reevaluation, failed, verification_failed, lapsed]
 
     PendingEscalations:
       type: object
@@ -772,7 +791,16 @@ components:
           $ref: "#/components/schemas/IsoTime"
         kind:
           type: string
-          enum: [escalated, approved, denied, expired, approval_lapsed]
+          enum:
+            - escalated
+            - approved
+            - denied
+            - expired
+            - approval_lapsed
+            - approval_requested
+            - approval_request_failed
+            - approval_request_lapsed
+            - approval_verification_failed
         authorizationId:
           type: string
         sessionId:
@@ -795,8 +823,40 @@ components:
           type: string
         operator:
           type: string
+          description: Operator-channel rejections only.
         reason:
           type: string
+          description: Operator-channel rejections only.
+        referenceCode:
+          type: string
+          pattern: "^[0-9a-f]{8}$"
+        approvalRequest:
+          type: string
+          enum: [requested, capped, operator_only, reevaluation]
+          description: v1.8. On `escalated` events, when backchannel approval is on.
+        channel:
+          type: string
+          enum: [operator, backchannel]
+          description: v1.8. On `approved` and `denied` events, the path that decided.
+        decidedBy:
+          type: string
+          description: v1.8. The operator's label, or the approver's verified identity (`sub`).
+        requestId:
+          type: string
+        requestExpiresAt:
+          $ref: "#/components/schemas/IsoTime"
+        failure:
+          type: string
+          enum: [unreachable, transient, permanent, interrupted, unrecoverable]
+        error:
+          type: string
+          description: An OAuth error code from a fixed list, or `other`. Never the service's text.
+        cause:
+          type: string
+          enum: [expired, late_refusal]
+        check:
+          type: string
+          enum: [malformed, signature, issuer, audience, client, expired, approver, request, details, replay]
 
     EscalationEvents:
       type: object

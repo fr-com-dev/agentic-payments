@@ -11,6 +11,9 @@ export interface PaymentIntent {
   paymentRequired: PaymentRequired; // verbatim decoded challenge
   purpose: string; // LLM text, audit only (INV-5)
   createdAt: string; // ISO
+  // 012 FR-007: true removes the backchannel approval path, never adds one. Set only by the L1-4 scripted root; the
+  // hosted agent never sets it.
+  operatorApprovalOnly?: boolean;
 }
 
 // L2 -> L1
