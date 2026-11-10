@@ -10,7 +10,7 @@ npm install
 npm run typecheck          # also checks web/portal (new tsconfig)
 npm test                   # every suite, with user accounts off by default
 npm run demo:local         # expect "spent on-chain: 0.006 USDC" and "hash chain ok=true", unchanged
-BICEP_PATH=~/.azure/bin/bicep npm test   # adds T-IAC-01 (rule 20), cleanup and github-setup tests
+BICEP_PATH=~/.azure/bin/bicep npm test   # adds T-IAC-01 (rule 21), cleanup and github-setup tests
 ```
 
 Single areas:

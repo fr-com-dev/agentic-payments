@@ -8,9 +8,9 @@ Sync Impact Report
 - Modified sections: Technology & Scope Constraints (multi-tenancy leaves the out-of-scope list: user accounts
   are in scope, organizations and card payments are not; the stack adds, for the portal's web app only and at
   build time, React, Vite and `@azure/msal-browser`, and a card vault, Stripe in test mode, reached over HTTPS
-  from the portal only; residual risks for v1.9)
+  from the portal only; residual risks for v1.10)
 - Templates reviewed: plan-template.md, spec-template.md, tasks-template.md (no change)
-- Source: SPEC.md v1.9 (Changes in 1.9, §1.3, §3.3, §4.1 A10–A12, L2-8, §11 SEC-19..SEC-24)
+- Source: SPEC.md v1.10 (Changes in 1.10, §1.3, §3.3, §4.1 A10–A12, L2-8, §11 SEC-19..SEC-24)
 - Deferred TODOs: none. Vite's React plugin, named in the plan, was not needed: Vite compiles the JSX itself.
 
 Previous report (1.3.0)

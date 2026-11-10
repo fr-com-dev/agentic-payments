@@ -11,7 +11,7 @@
 // - 012 (rule 19): the Auth0 client credential reaches only the l2 container, as a reference to the l2 vault's
 //   ciba-client-credential, and every other CIBA_* value comes from the ciba parameter. The secret is always referenced,
 //   so every environment seeds it (the placeholder off while ciba.enabled is false); the arrays stay literal.
-// - 013 (rule 20): the portal's token and the user wallet mnemonic reach only the l2 container, as references to the l2
+// - 013 (rule 21): the portal's token and the user wallet mnemonic reach only the l2 container, as references to the l2
 //   vault's portal-token and user-wallet-mnemonic, always referenced like the CIBA credential (the placeholder off
 //   while userAccounts.enabled is false, when L2 ignores both). USER_ACCOUNTS comes from the userAccounts parameter,
 //   and PLATFORM_SELLERS is the one seller L2 allows: the same host as ALLOWED_HOSTS, never the alias.

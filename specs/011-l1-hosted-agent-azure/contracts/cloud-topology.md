@@ -280,4 +280,4 @@ place, because L2 refuses to start when recorded wallet addresses no longer matc
   `PLATFORM_SELLERS` naming the alias, a second seller or no payee; a portal with `CONTROL_TOKEN`,
   `PAYER_PRIVATE_KEY`, `API_DOCS` or a `SETTLEMENT_URL`; `PORTAL_TOKEN` on L3; a client ID written in a
   template; the agent without `PORTAL_CLIENT_ID`; a portal secret behind a flag; `userAccounts` passed in
-  part; and `main.bicep` without its `userAccounts` check (rule 20).
+  part; and `main.bicep` without its `userAccounts` check (rule 21).

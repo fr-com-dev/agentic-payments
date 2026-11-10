@@ -8,7 +8,7 @@
 // without it this suite is skipped. Each rule has a must-fail mutant. Every name is in the parameter files (`names`):
 // names are resolved with the dev files' values, and rule 15 checks each one against the naming standard.
 // 013 (specs/013 contracts/config-and-secrets.md "T-IAC-01 changes"): the portal unit joins the tables, rules 2, 3, 4,
-// 8 and 16 are extended for it, and rule 20 covers user accounts.
+// 8 and 16 are extended for it, and rule 21 covers user accounts.
 import { cpSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -789,7 +789,7 @@ export function violations(arms: Templates, params: Params, infraFiles: Record<s
     }
   }
 
-  // Rule 20 (013, SPEC L2-8; specs/013 contracts/config-and-secrets.md): user accounts. L2's control app (container
+  // Rule 21 (013, SPEC L2-8; specs/013 contracts/config-and-secrets.md): user accounts. L2's control app (container
   // l2) always references the l2 vault's portal-token and user-wallet-mnemonic, so every environment seeds them (the
   // placeholder off while userAccounts.enabled is false); USER_ACCOUNTS comes from userAccounts, and PLATFORM_SELLERS
   // is one seller: the host L2 allows (ALLOWED_HOSTS' own expression, never the alias), userAccounts.sellerName and
@@ -811,8 +811,8 @@ export function violations(arms: Templates, params: Params, infraFiles: Record<s
     });
   };
   if (l2) {
-    if (!alwaysReferenced(l2, "l2", L2_USER_SECRETS, "l2")) v.push(`rule 20: ${MN.apps.l2}/l2 must always reference the l2 vault's ${Object.values(L2_USER_SECRETS).join(" and ")}, as ${Object.keys(L2_USER_SECRETS).join(" and ")}`);
-    if (l2Env.find((e) => e.name === "USER_ACCOUNTS")?.value !== `[if(${UA}.enabled, '1', '0')]`) v.push("rule 20: USER_ACCOUNTS must come from the userAccounts parameter");
+    if (!alwaysReferenced(l2, "l2", L2_USER_SECRETS, "l2")) v.push(`rule 21: ${MN.apps.l2}/l2 must always reference the l2 vault's ${Object.values(L2_USER_SECRETS).join(" and ")}, as ${Object.keys(L2_USER_SECRETS).join(" and ")}`);
+    if (l2Env.find((e) => e.name === "USER_ACCOUNTS")?.value !== `[if(${UA}.enabled, '1', '0')]`) v.push("rule 21: USER_ACCOUNTS must come from the userAccounts parameter");
     const sellers = String(l2Env.find((e) => e.name === "PLATFORM_SELLERS")?.value ?? "");
     const host = String(l2Env.find((e) => e.name === "ALLOWED_HOSTS")?.value ?? "[]").slice(1, -1);
     if (
@@ -823,31 +823,31 @@ export function violations(arms: Templates, params: Params, infraFiles: Record<s
       !sellers.includes("'payees', createArray(parameters('sellerPayTo'))") ||
       sellers.includes("sellerAlias")
     ) {
-      v.push("rule 20: PLATFORM_SELLERS must be one seller: ALLOWED_HOSTS' own host, userAccounts.sellerName and sellerPayTo");
+      v.push("rule 21: PLATFORM_SELLERS must be one seller: ALLOWED_HOSTS' own host, userAccounts.sellerName and sellerPayTo");
     }
   }
   for (const a of apps(main)) {
     const isL2 = namesOf(a).includes(MN.apps.l2);
     const isPortal = namesOf(a).includes(MN.apps.portal);
     for (const s of secretsOf(a)) {
-      if (s.name === "user-wallet-mnemonic" && !isL2) v.push(`rule 20: ${label(a)} has the user wallet mnemonic`);
-      if (s.name === "portal-token" && !isL2 && !isPortal) v.push(`rule 20: ${label(a)} has the portal token`);
-      if (s.name === "card-vault-key" && !isPortal) v.push(`rule 20: ${label(a)} has the card vault key`);
-      if (isPortal && JSON.stringify(vaultKeysOf(a, s.keyVaultUrl)) !== '["portal"]') v.push(`rule 20: ${label(a)} reads ${s.name} from a vault other than the portal's`);
+      if (s.name === "user-wallet-mnemonic" && !isL2) v.push(`rule 21: ${label(a)} has the user wallet mnemonic`);
+      if (s.name === "portal-token" && !isL2 && !isPortal) v.push(`rule 21: ${label(a)} has the portal token`);
+      if (s.name === "card-vault-key" && !isPortal) v.push(`rule 21: ${label(a)} has the card vault key`);
+      if (isPortal && JSON.stringify(vaultKeysOf(a, s.keyVaultUrl)) !== '["portal"]') v.push(`rule 21: ${label(a)} reads ${s.name} from a vault other than the portal's`);
     }
     for (const c of containersOf(a)) {
       for (const e of c.env ?? []) {
-        if (e.name === "API_DOCS") v.push(`rule 20: API_DOCS in ${label(a)}/${c.name}: the API docs are never served in Azure`);
-        if ((e.name === "PORTAL_TOKEN" || e.secretRef === "portal-token") && !((isL2 && c.name === "l2") || isPortal)) v.push(`rule 20: ${e.name} in ${label(a)}/${c.name}`);
-        if ((/^CARD_VAULT/.test(e.name) || e.secretRef === "card-vault-key") && !isPortal) v.push(`rule 20: ${e.name} in ${label(a)}/${c.name}`);
-        if (/^(USER_ACCOUNTS|PLATFORM_SELLERS|PLATFORM_FILE)$/.test(e.name) && !(isL2 && c.name === "l2")) v.push(`rule 20: ${e.name} in ${label(a)}/${c.name}`);
-        if (isPortal && (PAYMENT_KEYS.includes(e.name) || (/TOKEN/.test(e.name) && e.name !== "PORTAL_TOKEN"))) v.push(`rule 20: ${e.name} in ${label(a)}/${c.name}`);
+        if (e.name === "API_DOCS") v.push(`rule 21: API_DOCS in ${label(a)}/${c.name}: the API docs are never served in Azure`);
+        if ((e.name === "PORTAL_TOKEN" || e.secretRef === "portal-token") && !((isL2 && c.name === "l2") || isPortal)) v.push(`rule 21: ${e.name} in ${label(a)}/${c.name}`);
+        if ((/^CARD_VAULT/.test(e.name) || e.secretRef === "card-vault-key") && !isPortal) v.push(`rule 21: ${e.name} in ${label(a)}/${c.name}`);
+        if (/^(USER_ACCOUNTS|PLATFORM_SELLERS|PLATFORM_FILE)$/.test(e.name) && !(isL2 && c.name === "l2")) v.push(`rule 21: ${e.name} in ${label(a)}/${c.name}`);
+        if (isPortal && (PAYMENT_KEYS.includes(e.name) || (/TOKEN/.test(e.name) && e.name !== "PORTAL_TOKEN"))) v.push(`rule 21: ${e.name} in ${label(a)}/${c.name}`);
       }
     }
   }
   if (portal) {
     if (!alwaysReferenced(portal, "portal", PORTAL_SECRETS, "portal") || secretsOf(portal).length !== Object.keys(PORTAL_SECRETS).length) {
-      v.push(`rule 20: ${MN.apps.portal}/portal must always reference the portal vault's ${Object.values(PORTAL_SECRETS).join(" and ")}, as ${Object.keys(PORTAL_SECRETS).join(" and ")}, and hold no other secret`);
+      v.push(`rule 21: ${MN.apps.portal}/portal must always reference the portal vault's ${Object.values(PORTAL_SECRETS).join(" and ")}, as ${Object.keys(PORTAL_SECRETS).join(" and ")}, and hold no other secret`);
     }
     const env = containersOf(portal).find((c) => c.name === "portal")?.env ?? [];
     const FROM_PARAM: Record<string, string> = {
@@ -859,23 +859,23 @@ export function violations(arms: Templates, params: Params, infraFiles: Record<s
     };
     for (const [name, want] of Object.entries(FROM_PARAM)) {
       const got = env.find((e) => e.name === name);
-      if (got?.value !== want || got.secretRef !== undefined) v.push(`rule 20: the portal's ${name} must come from its parameter`);
+      if (got?.value !== want || got.secretRef !== undefined) v.push(`rule 21: the portal's ${name} must come from its parameter`);
     }
     for (const [param, from] of [["authTenantId", "tenantId"], ["authAudience", "authAudience"]]) {
-      if (deploymentParam(main, "portal-apps", param!) !== JSON.stringify({ value: `[parameters('${from}')]` })) v.push(`rule 20: main must pass ${from} to portal-apps as ${param}`);
+      if (deploymentParam(main, "portal-apps", param!) !== JSON.stringify({ value: `[parameters('${from}')]` })) v.push(`rule 21: main must pass ${from} to portal-apps as ${param}`);
     }
     const control = resolved(env.find((e) => e.name === "CONTROL_URL")?.value ?? "", portal.vars, devParams.main!);
-    if (JSON.stringify(control) !== JSON.stringify([`http://${MN.apps.l2}.internal.*`])) v.push("rule 20: the portal's CONTROL_URL must be L2's internal address");
-    if (env.some((e) => /^(SETTLEMENT_URL|SELLER_URL|SELLER_ALIAS_URL)$/.test(e.name))) v.push("rule 20: the portal calls L2 only");
+    if (JSON.stringify(control) !== JSON.stringify([`http://${MN.apps.l2}.internal.*`])) v.push("rule 21: the portal's CONTROL_URL must be L2's internal address");
+    if (env.some((e) => /^(SETTLEMENT_URL|SELLER_URL|SELLER_ALIAS_URL)$/.test(e.name))) v.push("rule 21: the portal calls L2 only");
   }
-  if (agentEnv.find((e) => e.name === "PORTAL_CLIENT_ID")?.value !== `[${UA}.portalClientId]`) v.push("rule 20: the agent's PORTAL_CLIENT_ID (the azp it refuses) must come from the userAccounts parameter");
+  if (agentEnv.find((e) => e.name === "PORTAL_CLIENT_ID")?.value !== `[${UA}.portalClientId]`) v.push("rule 21: the agent's PORTAL_CLIENT_ID (the azp it refuses) must come from the userAccounts parameter");
   for (const module of ["l1-apps", "l2-apps", "portal-apps"]) {
-    if (deploymentParam(main, module, "userAccounts") !== JSON.stringify({ value: `[${UA}]` })) v.push(`rule 20: main must pass the userAccounts parameter to ${module} whole`);
+    if (deploymentParam(main, module, "userAccounts") !== JSON.stringify({ value: `[${UA}]` })) v.push(`rule 21: main must pass the userAccounts parameter to ${module} whole`);
   }
   const userAccountsChecked = String(((arms.main.variables ?? {}) as Json).userAccountsChecked ?? "");
   for (const part of ["fail(", `contains(createArray('off', 'stripe'), ${UA}.cardVault)`, `equals(length(${UA}.portalClientId), 36)`, "not(equals(parameters('unit'), 'portal'))", `startsWith(${UA}.cardVaultPublishableKey, 'pk_test_')`]) {
     if (!userAccountsChecked.includes(part)) {
-      v.push("rule 20: main must refuse (fail()) a userAccounts whose cardVault is not off or stripe, that is enabled without a 36-character portalClientId, or whose cardVault is stripe without a pk_test_ publishable key");
+      v.push("rule 21: main must refuse (fail()) a userAccounts whose cardVault is not off or stripe, that is enabled without a 36-character portalClientId, or whose cardVault is stripe without a pk_test_ publishable key");
       break;
     }
   }
@@ -990,7 +990,7 @@ resource extraRead 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   it("T-IAC-01 must-fail rule 2: the user wallet mnemonic on the portal, or as a literal on L2, is reported", async () => {
     const onPortal = await mutant("modules/portal-apps.bicep", "            { name: 'PORTAL_TOKEN', secretRef: 'portal-token' }\n", "            { name: 'PORTAL_TOKEN', secretRef: 'portal-token' }\n            { name: 'USER_WALLET_MNEMONIC', secretRef: 'portal-token' }\n");
     expect(onPortal).toContain(`rule 2: USER_WALLET_MNEMONIC in ${N.main.apps.portal}/portal`);
-    expect(onPortal).toContain(`rule 20: USER_WALLET_MNEMONIC in ${N.main.apps.portal}/portal`);
+    expect(onPortal).toContain(`rule 21: USER_WALLET_MNEMONIC in ${N.main.apps.portal}/portal`);
     const literal = await mutant("modules/l2-apps.bicep", "{ name: 'USER_WALLET_MNEMONIC', secretRef: 'user-wallet-mnemonic' }", "{ name: 'USER_WALLET_MNEMONIC', value: 'off' }");
     expect(literal).toContain("rule 2: USER_WALLET_MNEMONIC is not a secret reference");
     expect(literal).toContain(`rule 8: ${N.main.apps.l2}/l2 USER_WALLET_MNEMONIC is a literal`);
@@ -1000,7 +1000,7 @@ resource extraRead 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
     const v = await mutant("modules/portal-apps.bicep", "keyVaultUrl: '${vaultPortal}secrets/portal-token'", "keyVaultUrl: 'https://${names.vaults.l2}${az.environment().suffixes.keyvaultDns}/secrets/portal-token'");
     expect(v).toContain(`rule 2: ${N.main.apps.portal} reads the l2 vault`);
     expect(v).toContain("rule 13: portal-apps looks up vaults l2,portal, not its own (portal)");
-    expect(v).toContain(`rule 20: ${N.main.apps.portal} reads portal-token from a vault other than the portal's`);
+    expect(v).toContain(`rule 21: ${N.main.apps.portal} reads portal-token from a vault other than the portal's`);
   }, 60_000);
 
   it("T-IAC-01 must-fail rule 3: external ingress on L2's control app is reported", async () => {
@@ -1035,13 +1035,13 @@ resource extraRead 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   it("T-IAC-01 must-fail rule 8: the card vault key as a literal is reported", async () => {
     const v = await mutant("modules/portal-apps.bicep", "{ name: 'CARD_VAULT_KEY', secretRef: 'card-vault-key' }", "{ name: 'CARD_VAULT_KEY', value: 'off' }");
     expect(v).toContain(`rule 8: ${N.main.apps.portal}/portal CARD_VAULT_KEY is a literal`);
-    expect(v.some((m) => m.startsWith(`rule 20: ${N.main.apps.portal}/portal must always reference the portal vault's`))).toBe(true);
+    expect(v.some((m) => m.startsWith(`rule 21: ${N.main.apps.portal}/portal must always reference the portal vault's`))).toBe(true);
   }, 60_000);
 
   it("T-IAC-01 must-fail rule 9: ALLOWED_HOSTS pointing at the alias seller is reported", async () => {
     const v = await mutant("modules/l2-apps.bicep", "var sellerHost = '${names.apps.seller}.${sellerDomain}'", "var sellerHost = '${names.apps.sellerAlias}.${sellerDomain}'");
     expect(v).toContain("rule 9: ALLOWED_HOSTS must be the seller's FQDN, not the alias");
-    expect(v).toContain("rule 20: PLATFORM_SELLERS must be one seller: ALLOWED_HOSTS' own host, userAccounts.sellerName and sellerPayTo");
+    expect(v).toContain("rule 21: PLATFORM_SELLERS must be one seller: ALLOWED_HOSTS' own host, userAccounts.sellerName and sellerPayTo");
   }, 60_000);
 
   it("T-IAC-01 must-fail rule 10: a vault firewall that allows by default is reported", async () => {
@@ -1197,8 +1197,8 @@ resource extraRead 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
     expect(web).toContain("rule 16: the portal web app must have no web");
   }, 180_000);
 
-  it("T-IAC-01 must-fail rule 20: L2 without one of its always-referenced secrets, with one behind the flag's value, or with a literal USER_ACCOUNTS, is reported", async () => {
-    const always = `rule 20: ${N.main.apps.l2}/l2 must always reference the l2 vault's portal-token and user-wallet-mnemonic, as PORTAL_TOKEN and USER_WALLET_MNEMONIC`;
+  it("T-IAC-01 must-fail rule 21: L2 without one of its always-referenced secrets, with one behind the flag's value, or with a literal USER_ACCOUNTS, is reported", async () => {
+    const always = `rule 21: ${N.main.apps.l2}/l2 must always reference the l2 vault's portal-token and user-wallet-mnemonic, as PORTAL_TOKEN and USER_WALLET_MNEMONIC`;
     const missing = await mutant("modules/l2-apps.bicep", "            { name: 'PORTAL_TOKEN', secretRef: 'portal-token' }\n", "");
     expect(missing).toContain(always);
     const literal = await mutant(
@@ -1212,50 +1212,50 @@ resource extraRead 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
       "            { name: 'USER_ACCOUNTS', value: userAccounts.enabled ? '1' : '0' }",
       "            { name: 'USER_ACCOUNTS', value: '1' }",
     );
-    expect(flagged).toContain("rule 20: USER_ACCOUNTS must come from the userAccounts parameter");
+    expect(flagged).toContain("rule 21: USER_ACCOUNTS must come from the userAccounts parameter");
   }, 180_000);
 
-  it("T-IAC-01 must-fail rule 20: PLATFORM_SELLERS naming the alias, a second seller, or another payee, is reported", async () => {
-    const message = "rule 20: PLATFORM_SELLERS must be one seller: ALLOWED_HOSTS' own host, userAccounts.sellerName and sellerPayTo";
+  it("T-IAC-01 must-fail rule 21: PLATFORM_SELLERS naming the alias, a second seller, or another payee, is reported", async () => {
+    const message = "rule 21: PLATFORM_SELLERS must be one seller: ALLOWED_HOSTS' own host, userAccounts.sellerName and sellerPayTo";
     const from = "string([{ host: sellerHost, name: userAccounts.sellerName, payees: [sellerPayTo] }])";
     expect(await mutant("modules/l2-apps.bicep", from, "string([{ host: '${names.apps.sellerAlias}.${sellerDomain}', name: userAccounts.sellerName, payees: [sellerPayTo] }])")).toContain(message);
     expect(await mutant("modules/l2-apps.bicep", from, "string([{ host: sellerHost, name: userAccounts.sellerName, payees: [sellerPayTo] }, { host: 'seller.example', name: 'another', payees: [] }])")).toContain(message);
     expect(await mutant("modules/l2-apps.bicep", from, "string([{ host: sellerHost, name: userAccounts.sellerName, payees: [] }])")).toContain(message);
   }, 180_000);
 
-  it("T-IAC-01 must-fail rule 20: a portal with another role's token, the portal token on L3, API docs turned on, or a portal that calls L3, is reported", async () => {
+  it("T-IAC-01 must-fail rule 21: a portal with another role's token, the portal token on L3, API docs turned on, or a portal that calls L3, is reported", async () => {
     const anchor = "            { name: 'PORTAL_TOKEN', secretRef: 'portal-token' }\n            { name: 'CARD_VAULT_KEY'";
     const control = await mutant("modules/portal-apps.bicep", anchor, `            { name: 'CONTROL_TOKEN', secretRef: 'portal-token' }\n${anchor}`);
-    expect(control).toContain(`rule 20: CONTROL_TOKEN in ${N.main.apps.portal}/portal`);
+    expect(control).toContain(`rule 21: CONTROL_TOKEN in ${N.main.apps.portal}/portal`);
     const payer = await mutant("modules/portal-apps.bicep", anchor, `            { name: 'PAYER_PRIVATE_KEY', secretRef: 'portal-token' }\n${anchor}`);
-    expect(payer).toContain(`rule 20: PAYER_PRIVATE_KEY in ${N.main.apps.portal}/portal`);
+    expect(payer).toContain(`rule 21: PAYER_PRIVATE_KEY in ${N.main.apps.portal}/portal`);
     expect(payer).toContain(`rule 2: PAYER_PRIVATE_KEY in ${N.main.apps.portal}/portal`);
     const docs = await mutant("modules/portal-apps.bicep", anchor, `            { name: 'API_DOCS', value: '1' }\n${anchor}`);
-    expect(docs).toContain(`rule 20: API_DOCS in ${N.main.apps.portal}/portal: the API docs are never served in Azure`);
+    expect(docs).toContain(`rule 21: API_DOCS in ${N.main.apps.portal}/portal: the API docs are never served in Azure`);
     const l3 = await mutant("modules/portal-apps.bicep", anchor, `            { name: 'SETTLEMENT_URL', value: 'http://\${names.apps.l3}.internal.\${mainDomain}' }\n${anchor}`);
-    expect(l3).toContain("rule 20: the portal calls L2 only");
+    expect(l3).toContain("rule 21: the portal calls L2 only");
     const onL3 = await mutant("modules/l3-apps.bicep", "            { name: 'VERIFIER_TOKEN', secretRef: 'verifier-token' }\n", "            { name: 'VERIFIER_TOKEN', secretRef: 'verifier-token' }\n            { name: 'PORTAL_TOKEN', secretRef: 'verifier-token' }\n");
-    expect(onL3).toContain(`rule 20: PORTAL_TOKEN in ${N.main.apps.l3}/l3`);
+    expect(onL3).toContain(`rule 21: PORTAL_TOKEN in ${N.main.apps.l3}/l3`);
   }, 240_000);
 
-  it("T-IAC-01 must-fail rule 20: a client ID written in a template, a portal secret behind a flag, userAccounts passed in part, or main without its check, is reported", async () => {
+  it("T-IAC-01 must-fail rule 21: a client ID written in a template, a portal secret behind a flag, userAccounts passed in part, or main without its check, is reported", async () => {
     const written = await mutant("modules/portal-apps.bicep", "{ name: 'PORTAL_CLIENT_ID', value: userAccounts.portalClientId }", "{ name: 'PORTAL_CLIENT_ID', value: '00000000-0000-4000-8000-000000000000' }");
-    expect(written).toContain("rule 20: the portal's PORTAL_CLIENT_ID must come from its parameter");
+    expect(written).toContain("rule 21: the portal's PORTAL_CLIENT_ID must come from its parameter");
     const agent = await mutant("modules/l1-apps.bicep", "            { name: 'PORTAL_CLIENT_ID', value: userAccounts.portalClientId }\n", "");
-    expect(agent).toContain("rule 20: the agent's PORTAL_CLIENT_ID (the azp it refuses) must come from the userAccounts parameter");
+    expect(agent).toContain("rule 21: the agent's PORTAL_CLIENT_ID (the azp it refuses) must come from the userAccounts parameter");
     const flagged = await mutant(
       "modules/portal-apps.bicep",
       "      secrets: [\n        { name: 'portal-token', keyVaultUrl: '${vaultPortal}secrets/portal-token', identity: idPortal.id }\n        { name: 'card-vault-key', keyVaultUrl: '${vaultPortal}secrets/card-vault-key', identity: idPortal.id }\n      ]",
       "      secrets: concat([{ name: 'portal-token', keyVaultUrl: '${vaultPortal}secrets/portal-token', identity: idPortal.id }], userAccounts.cardVault == 'stripe' ? [{ name: 'card-vault-key', keyVaultUrl: '${vaultPortal}secrets/card-vault-key', identity: idPortal.id }] : [])",
     );
-    expect(flagged.some((m) => m.startsWith(`rule 20: ${N.main.apps.portal}/portal must always reference the portal vault's portal-token and card-vault-key`))).toBe(true);
+    expect(flagged.some((m) => m.startsWith(`rule 21: ${N.main.apps.portal}/portal must always reference the portal vault's portal-token and card-vault-key`))).toBe(true);
     const part = await mutant("main.bicep", "    ciba: ciba\n    userAccounts: userAccounts\n", "    ciba: ciba\n    userAccounts: { enabled: userAccounts.enabled, sellerName: userAccounts.sellerName }\n");
-    expect(part).toContain("rule 20: main must pass the userAccounts parameter to l2-apps whole");
+    expect(part).toContain("rule 21: main must pass the userAccounts parameter to l2-apps whole");
     const unchecked = await mutant("main.bicep", " && ((!userAccounts.enabled && unit != 'portal') || length(userAccounts.portalClientId) == 36)", "");
-    expect(unchecked).toContain("rule 20: main must refuse (fail()) a userAccounts whose cardVault is not off or stripe, that is enabled without a 36-character portalClientId, or whose cardVault is stripe without a pk_test_ publishable key");
+    expect(unchecked).toContain("rule 21: main must refuse (fail()) a userAccounts whose cardVault is not off or stripe, that is enabled without a 36-character portalClientId, or whose cardVault is stripe without a pk_test_ publishable key");
     // The portal doesn't start without the web app's client ID, so its own deployment needs it even while the feature is off.
     const portalUnchecked = await mutant("main.bicep", "(!userAccounts.enabled && unit != 'portal')", "!userAccounts.enabled");
-    expect(portalUnchecked).toContain("rule 20: main must refuse (fail()) a userAccounts whose cardVault is not off or stripe, that is enabled without a 36-character portalClientId, or whose cardVault is stripe without a pk_test_ publishable key");
+    expect(portalUnchecked).toContain("rule 21: main must refuse (fail()) a userAccounts whose cardVault is not off or stripe, that is enabled without a 36-character portalClientId, or whose cardVault is stripe without a pk_test_ publishable key");
   }, 240_000);
 
   it("T-IAC-01 must-fail rule 19: the CIBA credential on the agent, as a literal, or under one name only is reported", async () => {

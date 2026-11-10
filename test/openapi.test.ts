@@ -47,7 +47,7 @@ const SCHEME_TOKENS: Record<string, string> = {
   operatorToken: TOKENS.operator,
   portalToken: TOKENS.portal,
 };
-/** The v1.9 user-account operations (tag `portal`), mounted only with user accounts on. */
+/** The v1.10 user-account operations (tag `portal`), mounted only with user accounts on. */
 const isUserRoute = (op: { tags?: string[] }) => op.tags?.includes("portal") === true;
 const loadDoc = () => loadDocFile(DOC_FILE);
 
@@ -70,7 +70,7 @@ afterEach(async () => {
 /**
  * T-API-01..03 describe the full surface, so API docs are on by default here. `startService({})` leaves
  * `apiDocs` unset, which is what main() passes without API_DOCS, so it tests the service's own default.
- * User accounts (v1.9) are on unless `users: false`, which is main() without USER_ACCOUNTS=1.
+ * User accounts (v1.10) are on unless `users: false`, which is main() without USER_ACCOUNTS=1.
  */
 async function startService(opts: { apiDocs?: boolean; users?: boolean } = { apiDocs: true }) {
   let t = NOW;
@@ -235,7 +235,7 @@ describe("T-API-03 live responses match the documented status and schema", () =>
     expect((await authorize(intent("sess_a", "/api/dataset-export", "200000"))).status).toBe("DENIED");
     await call("POST", "/v1/authorize", { ...C, body: { sessionId: "sess_a" } });
 
-    // v1.9 user accounts: the agent's calls for a user, then every portal operation and each of its statuses
+    // v1.10 user accounts: the agent's calls for a user, then every portal operation and each of its statuses
     const P = { token: TOKENS.portal };
     const [U, B, CAROL, DAVE] = ["alice", "bob", "carol", "dave"].map((n) => userIdFor("dev", n)) as [string, string, string, string];
     const fresh = () => ({ identityConfirmedAtMs: now() });

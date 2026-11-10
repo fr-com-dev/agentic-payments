@@ -13,7 +13,7 @@ info:
     - **Loopback only.** L2 binds `127.0.0.1` (SPEC §3.1); `CONTROL_PORT` changes the port, never the host.
     - **One bearer token per caller** (INV-13). Each `/v1` operation accepts exactly one of the four tokens,
       and a wrong or missing token gets 401 before the body is read, so it never appends a ledger entry.
-    - **User accounts** (v1.9, L2-8). With `USER_ACCOUNTS=1`, L2 also serves the `portal` operations to the
+    - **User accounts** (v1.10, L2-8). With `USER_ACCOUNTS=1`, L2 also serves the `portal` operations to the
       portal's own token, and an intent that names a user is decided against that user's policy and signed with
       that user's account. Off (the default), those operations are not mounted and answer 404, and
       `PaymentIntent.userId` is ignored.
@@ -33,7 +33,7 @@ tags:
     description: Called by the human operator's CLIs with `OPERATOR_TOKEN`.
   - name: portal
     description: >-
-      v1.9 user accounts (L2-8). Called by the portal process with `PORTAL_TOKEN`. Mounted only when
+      v1.10 user accounts (L2-8). Called by the portal process with `PORTAL_TOKEN`. Mounted only when
       `USER_ACCOUNTS=1`. No body carries text typed by a person: only identifiers, seller hosts, ISO dates and
       atomic amounts.
   - name: docs
@@ -87,7 +87,7 @@ paths:
       operationId: getBudget
       summary: Session budget, derived from the ledger
       description: |
-        An unknown session returns 200 with zero spend. v1.9: with user accounts on, `?userId=` returns the user
+        An unknown session returns 200 with zero spend. v1.10: with user accounts on, `?userId=` returns the user
         view instead (`scope: user_daily`): the user daily ceiling, the user's committed spend over the last 24
         hours, and the highest auto-approve limit among the user's active policies. A user who has not finished
         onboarding or is disabled gets zeros.
@@ -102,7 +102,7 @@ paths:
         - name: userId
           in: query
           required: false
-          description: v1.9. A user identifier. Ignored when user accounts are off.
+          description: v1.10. A user identifier. Ignored when user accounts are off.
           schema:
             $ref: "#/components/schemas/UserId"
       responses:
@@ -113,7 +113,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/BudgetStatus"
         "400":
-          description: v1.9. `userId` is not a user identifier (user accounts on only).
+          description: v1.10. `userId` is not a user identifier (user accounts on only).
           content:
             application/json:
               schema:
@@ -878,7 +878,7 @@ components:
     portalToken:
       type: http
       scheme: bearer
-      description: "`PORTAL_TOKEN`, held by the portal process (v1.9). It reaches the `portal` operations only."
+      description: "`PORTAL_TOKEN`, held by the portal process (v1.10). It reaches the `portal` operations only."
 
   parameters:
     AuthorizationId:
@@ -1064,7 +1064,7 @@ components:
         userId:
           $ref: "#/components/schemas/UserId"
           description: >-
-            v1.9 (L2-8, FR-033). The verified person who started the run, set by the hosted agent service and never
+            v1.10 (L2-8, FR-033). The verified person who started the run, set by the hosted agent service and never
             from model text or a tool input. With user accounts on, the intent is decided against this user's
             policy and signed with this user's account. Absent: the platform account. Ignored when user accounts
             are off.
@@ -1160,7 +1160,7 @@ components:
           type: string
           enum: [session, user_daily]
           description: >-
-            v1.9. What the figures count. Absent means the session (the platform account). `user_daily`: the user
+            v1.10. What the figures count. Absent means the session (the platform account). `user_daily`: the user
             daily ceiling and the user's last 24 hours, with the highest auto-approve limit among their policies.
 
     SettlementReport:
@@ -1331,7 +1331,7 @@ components:
           $ref: "#/components/schemas/ApprovalRequestState"
         userId:
           $ref: "#/components/schemas/UserId"
-          description: v1.9. Whose payment it is, when the escalation is a user's. An identifier, never a name.
+          description: v1.10. Whose payment it is, when the escalation is a user's. An identifier, never a name.
 
     ApprovalRequestState:
       type: string
@@ -1432,7 +1432,7 @@ components:
           enum: [malformed, signature, issuer, audience, client, expired, approver, request, details, replay]
         userId:
           $ref: "#/components/schemas/UserId"
-          description: v1.9. On `escalated` events of a user's payment.
+          description: v1.10. On `escalated` events of a user's payment.
 
     EscalationEvents:
       type: object
@@ -1459,13 +1459,13 @@ components:
           type: integer
           description: "`seq` of the first entry that fails verification."
 
-    # ---- v1.9 user accounts (L2-8) ---------------------------------------------------------------
+    # ---- v1.10 user accounts (L2-8) ---------------------------------------------------------------
 
     UserId:
       type: string
       pattern: "^usr_[0-9a-f]{32}$"
       description: >-
-        v1.9. An opaque user identifier, derived from the person's verified sign-in. It reveals neither a name nor
+        v1.10. An opaque user identifier, derived from the person's verified sign-in. It reveals neither a name nor
         an email.
       examples: [usr_deeee4478bc01dab1b0afa3fbe31f010]
 

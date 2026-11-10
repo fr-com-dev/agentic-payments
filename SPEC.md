@@ -3,14 +3,14 @@
 | Field | Value |
 |---|---|
 | Spec ID | X402-3L-SPEC |
-| Version | 1.9 (2026-11-10). v1.0 described the original PoC; v1.1 is the build target for the spec-kit plans in `specs/`; v1.2 adds the CDP facilitator on Base Sepolia (`specs/009`); v1.3 adds the escalation lifecycle: operator rejection, expiry and notification (`specs/010`); v1.4 adds an OpenAPI copy of L2-5 and opt-in Swagger UI on L2 (`API_DOCS=1`); v1.5 adds the hosted agent service on Mastra and Azure (`specs/011`); v1.6 adds OpenAPI copies of L1-6 and the seller (CP-1), with opt-in Swagger UI on both (`API_DOCS=1`); v1.7 declares the seller's endpoints with decorators and a monetization model, freemium discovery plus pay-per-use tiers (CP-1); v1.8 adds backchannel approval of escalations through OpenID CIBA with Auth0 (L2-7, `specs/012`); v1.9 adds user accounts and the L2 web portal: onboarding, a profile, a wallet per user and expense policies (L2-8, `specs/013`) |
+| Version | 1.10 (2026-11-10). v1.0 described the original PoC; v1.1 is the build target for the spec-kit plans in `specs/`; v1.2 adds the CDP facilitator on Base Sepolia (`specs/009`); v1.3 adds the escalation lifecycle: operator rejection, expiry and notification (`specs/010`); v1.4 adds an OpenAPI copy of L2-5 and opt-in Swagger UI on L2 (`API_DOCS=1`); v1.5 adds the hosted agent service on Mastra and Azure (`specs/011`); v1.6 adds OpenAPI copies of L1-6 and the seller (CP-1), with opt-in Swagger UI on both (`API_DOCS=1`); v1.7 declares the seller's endpoints with decorators and a monetization model, freemium discovery plus pay-per-use tiers (CP-1); v1.8 adds backchannel approval of escalations through OpenID CIBA with Auth0 (L2-7, `specs/012`); v1.10 adds user accounts and the L2 web portal: onboarding, a profile, a wallet per user and expense policies (L2-8, `specs/013`) |
 | Owner | Fabricio Rojas |
 | Status | Implemented PoC; this spec is the source of truth for changes |
 | Reference | IMF Note 2026/004, *How Agentic AI Will Reshape Payments* (three-layer model) |
 
 ---
 
-## Changes in 1.9
+## Changes in 1.10
 
 User accounts and the L2 web portal (`specs/013`). Off unless L2 is configured for it (`USER_ACCOUNTS=1`); without it L2, L3, the seller and the scripted agent behave as in 1.8. Two things change either way: the hosted agent service accepts a person's token only when it was issued for that service (L1-6), and `PaymentIntent.userId`, when present, must be well formed. Additive contract fields: `PaymentIntent.userId`, `BudgetStatus.scope` and a second argument of `AuthorizationGatePort.budget`.
 
@@ -31,8 +31,8 @@ User accounts and the L2 web portal (`specs/013`). Off unless L2 is configured f
 | L2-5 | `userId` on authorize and budget, `userId` in the operator's escalation reads, and fourteen portal routes behind `PORTAL_TOKEN`. |
 | L2-8 (new) | User accounts and the portal: derived state, policy validation, loosening and step-up, disable and enable, cards, the portal's API and web app, and what is never stored. |
 | CFG-2, CFG-4 | `USER_ACCOUNTS`, `PORTAL_TOKEN`, `USER_WALLET_MNEMONIC`, `PLATFORM_FILE` and `PLATFORM_SELLERS` for L2; `PORTAL_CLIENT_ID` for the hosted agent; the new `env/portal.env`. `config/platform.json` (CFG-4) holds the platform limits and the seller list. |
-| §11 | SEC-19..SEC-24 and the v1.9 residual risks. |
-| §12, §13 | Tests T-USR-01..12, T-POL-16..19, T-LED-06, T-PRT-01..09, T-CARD-01..06, T-WEB-01..08, T-API-12..15, T-AGT-06..07, T-ARCH-A10..A12 and T-E2E-12..13; T-IAC-01 rule 20; commands `portal`, `build:web`, `fund-user`, `wallet-mnemonic`, `stack:local -- --users` and `dev-token -- --portal`. |
+| §11 | SEC-19..SEC-24 and the v1.10 residual risks. |
+| §12, §13 | Tests T-USR-01..12, T-POL-16..19, T-LED-06, T-PRT-01..09, T-CARD-01..06, T-WEB-01..08, T-API-12..15, T-AGT-06..07, T-ARCH-A10..A12 and T-E2E-12..13; T-IAC-01 rule 21; commands `portal`, `build:web`, `fund-user`, `wallet-mnemonic`, `stack:local -- --users` and `dev-token -- --portal`. |
 
 ## Changes in 1.8
 
@@ -175,10 +175,10 @@ Show, as runnable code, that an LLM agent can buy HTTP resources with x402 stabl
 - Networks: `local` (ganache, chainId 31337, MockUSDC) and `base-sepolia` (chainId 84532, Circle USDC).
 - One buyer agent (Claude tool-use, or a scripted agent with no LLM), one seller API, one facilitator. On `base-sepolia` the facilitator is Coinbase Developer Platform's hosted x402 facilitator by default (CP-3).
 - Spending mandate, human-in-the-loop (HITL) escalation, hash-chained audit ledger, on-chain settlement verification.
-- User accounts (v1.9, off by default): many users, self-service. Every person who may start agent runs can onboard in the L2 web portal: a profile, one crypto account of their own that only L2 signs with, and expense policies that say where their agent may pay, how much, and when a person is asked first (L2-8). Cards can be registered at a card vault (Stripe test mode) and are never a way to pay.
+- User accounts (v1.10, off by default): many users, self-service. Every person who may start agent runs can onboard in the L2 web portal: a profile, one crypto account of their own that only L2 signs with, and expense policies that say where their agent may pay, how much, and when a person is asked first (L2-8). Cards can be registered at a card vault (Stripe test mode) and are never a way to pay.
 
 ### 1.3 Out of scope (v1)
-Mainnet. Refunds and disputes. Schemes `upto` and `batch-settlement`. Solana. AP2 / ACP / Visa TAP / Mastercard Agent Pay integration. Organizations or teams of users, and roles among them (v1.9 has users, each on their own). Paying with a card. Moving funds out of a user's account. Per-user approvers: an escalation still goes to the operator and the one configured approver. Deleting a user: an account is disabled, never deleted. Persistent DB beyond JSONL. Production authentication (mTLS). These are covered in §15. The Azure profile (§3.1, v1.5) is in scope on testnet only.
+Mainnet. Refunds and disputes. Schemes `upto` and `batch-settlement`. Solana. AP2 / ACP / Visa TAP / Mastercard Agent Pay integration. Organizations or teams of users, and roles among them (v1.10 has users, each on their own). Paying with a card. Moving funds out of a user's account. Per-user approvers: an escalation still goes to the operator and the one configured approver. Deleting a user: an account is disabled, never deleted. Persistent DB beyond JSONL. Production authentication (mTLS). These are covered in §15. The Azure profile (§3.1, v1.5) is in scope on testnet only.
 
 ---
 
@@ -195,7 +195,7 @@ Mainnet. Refunds and disputes. Schemes `upto` and `batch-settlement`. Solana. AP
 | Committed spend | Sum of authorizations that can still move money (§8.2.6) |
 | Facilitator | Service that verifies and settles x402 payments on-chain and pays gas |
 | HITL | Human-in-the-loop approval of an `ESCALATE` decision |
-| User (v1.9) | A person who signed in to the portal with the permission to start agent runs. Known to L2 only as `userId` (`usr_` + 32 hex, from the tenant and object IDs of their sign-in); never by name or email |
+| User (v1.10) | A person who signed in to the portal with the permission to start agent runs. Known to L2 only as `userId` (`usr_` + 32 hex, from the tenant and object IDs of their sign-in); never by name or email |
 | Portal | The web portal process (`src/portal/`, port 4025): the web app and its API. It holds no key and decides nothing |
 | Wallet | What a user pays with: one crypto account that L2 derives and signs for, plus the cards they registered. Cards never pay |
 | Expense policy | A user's own spending rules for a set of sellers: auto-approve limit, per-payment cap, per-run and per-day budgets, payments per minute, end date. Versioned; active, paused or removed |
@@ -218,26 +218,26 @@ Mainnet. Refunds and disputes. Schemes `upto` and `batch-settlement`. Solana. AP
 | L3 verifier | `src/layer3-settlement/service.ts` | 4023 (127.0.0.1) | `l3:verifier` | `env/l3-verifier.env` |
 | Seller (counterparty) | `src/counterparty/seller.ts` | 4021 (all interfaces) | `seller` | `env/seller.env` |
 | Facilitator (counterparty, local only) | `scripts/facilitator.ts` (wraps the `src/counterparty/facilitator.ts` factory) | 4022 | `facilitator` | `env/facilitator.env` |
-| Portal (v1.9) | `src/portal-main.ts` | 4025 (127.0.0.1; `0.0.0.0` in a container) | `portal` | `env/portal.env` |
+| Portal (v1.10) | `src/portal-main.ts` | 4025 (127.0.0.1; `0.0.0.0` in a container) | `portal` | `env/portal.env` |
 | Local chain | `scripts/local-chain.ts` | 8545 | `local:chain` | none |
 
 Ports are overridable with `CONTROL_PORT`, `SELLER_PORT`, `FACILITATOR_PORT`, `SETTLEMENT_PORT`, `AGENT_PORT` and `PORTAL_PORT`. The chain port 8545 is fixed. Each entry point loads its env with `loadEnv()` from `src/shared/config.ts`. When `ENV_FILE` is unset, it defaults to the file in the last column. Ports are read through getter functions (`controlPort()`, `sellerPort()`, `facilitatorPort()`, `settlementPort()`) at call time, so env loaded at startup applies. L2 and L3 bind only through `listenControl()` and `listenSettlement()`, which always use `127.0.0.1`.
 
-**The portal (v1.9, L2-8)** serves the web app (`web/portal/`, built to `dist/portal-web`) and a JSON API under `/api` to the signed-in person. It calls L2's portal routes with its own role token and reads balances from the chain's RPC; it has no key and no route that decides, signs, approves or reconciles. It is never on the decision path: with the portal down, agents pay exactly as before, and with L2 down the portal answers 502 and grants nothing. It runs only when user accounts are on (`npm run stack:local -- --users`); `demo:local` never starts it.
+**The portal (v1.10, L2-8)** serves the web app (`web/portal/`, built to `dist/portal-web`) and a JSON API under `/api` to the signed-in person. It calls L2's portal routes with its own role token and reads balances from the chain's RPC; it has no key and no route that decides, signs, approves or reconciles. It is never on the decision path: with the portal down, agents pay exactly as before, and with L2 down the portal answers 502 and grants nothing. It runs only when user accounts are on (`npm run stack:local -- --users`); `demo:local` never starts it.
 
 **Azure profile (v1.5, `specs/011` contracts/cloud-topology.md).**
 
-- **Naming.** Every resource and Entra app registration is `{type}-{app}-{location}-{env}`, written only in the parameter files' `names` (the templates and the pipelines take every name from there) and checked by T-IAC-01 rule 15. `{app}` is `l1`, `l2`, `l3`, `op`, `portal` (v1.9), `seller` or `seller-alias`, or `x402` for what the layers share and `deploy` for the deploy app. The registry and storage account drop the hyphens (`crx402eastus2dev`). The names below are dev's in `eastus2`; the resource group is `rg-x402-eastus2-dev`, the API app `app-l1-eastus2-dev` (`api://app-l1-eastus2-dev`).
+- **Naming.** Every resource and Entra app registration is `{type}-{app}-{location}-{env}`, written only in the parameter files' `names` (the templates and the pipelines take every name from there) and checked by T-IAC-01 rule 15. `{app}` is `l1`, `l2`, `l3`, `op`, `portal` (v1.10), `seller` or `seller-alias`, or `x402` for what the layers share and `deploy` for the deploy app. The registry and storage account drop the hyphens (`crx402eastus2dev`). The names below are dev's in `eastus2`; the resource group is `rg-x402-eastus2-dev`, the API app `app-l1-eastus2-dev` (`api://app-l1-eastus2-dev`).
 - **Environments.** One workload-profiles Container Apps environment, `cae-x402-eastus2-dev`, on a custom VNet with peer-to-peer encryption. The sellers live in a second environment, `cae-seller-eastus2-dev`, so they can't reach internal-only apps.
 - **Apps and jobs** in `cae-x402-eastus2-dev`:
   - `ca-l1-eastus2-dev`: the hosted agent service, external ingress on 4024, 0–1 replicas;
   - `ca-l2-eastus2-dev` and `ca-l3-eastus2-dev`: internal-only ingress, exactly one replica each;
   - `caj-l1-eastus2-dev`: the scripted baseline with `--check-baseline`;
   - `caj-l2-eastus2-dev`: the operator commands, a unit of its own (the operator's identity, vault, image and pipeline);
-  - `ca-portal-eastus2-dev` (v1.9): the portal, a unit of its own, external ingress on 4025, 0–1 replicas, single revision.
+  - `ca-portal-eastus2-dev` (v1.10): the portal, a unit of its own, external ingress on 4025, 0–1 replicas, single revision.
 - **Loopback kept.** L2 and L3 still bind 127.0.0.1. A proxy sidecar in the same app forwards from port 8080 to the loopback port; it gets no env and no secrets.
 - **Backchannel approval (v1.8).** L2's container always references `ciba-client-credential` in the l2 vault and always gets the `CIBA_*` values of the `ciba` parameter, so every environment seeds that secret (`off` while `ciba.enabled` is false). Turning the feature on is a vault update plus `ciba.enabled: true` and a `deploy-l2.yml` run.
-- **User accounts (v1.9).** `main.bicep` takes a `userAccounts` object (`enabled`, `portalClientId`, `sellerName`, `cardVault`, `cardVaultPublishableKey`; no secret). L2's container always references `portal-token` and `user-wallet-mnemonic` in the l2 vault, and the portal always references `portal-token` and `card-vault-key` in its own vault (`kv-portal-eastus2-dev`), so every environment seeds all four, as `off` while the feature is off. L2 gets `USER_ACCOUNTS` and `PLATFORM_SELLERS` (one entry: the seller's own host, `userAccounts.sellerName` and the seller's payee) from the parameter file; the agent gets `PORTAL_CLIENT_ID`. The portal's profile files live on a second NFS share, `profiles`, mounted at `/app/.local/portal` by the portal only. Turning the feature on is the vault updates, `userAccounts.enabled: true`, and runs of `deploy-l2.yml`, `deploy-portal.yml` and `deploy-l1.yml`. The mnemonic is never rotated in place: with another one L2 refuses to start (L2-3).
+- **User accounts (v1.10).** `main.bicep` takes a `userAccounts` object (`enabled`, `portalClientId`, `sellerName`, `cardVault`, `cardVaultPublishableKey`; no secret). L2's container always references `portal-token` and `user-wallet-mnemonic` in the l2 vault, and the portal always references `portal-token` and `card-vault-key` in its own vault (`kv-portal-eastus2-dev`), so every environment seeds all four, as `off` while the feature is off. L2 gets `USER_ACCOUNTS` and `PLATFORM_SELLERS` (one entry: the seller's own host, `userAccounts.sellerName` and the seller's payee) from the parameter file; the agent gets `PORTAL_CLIENT_ID`. The portal's profile files live on a second NFS share, `profiles`, mounted at `/app/.local/portal` by the portal only. Turning the feature on is the vault updates, `userAccounts.enabled: true`, and runs of `deploy-l2.yml`, `deploy-portal.yml` and `deploy-l1.yml`. The mnemonic is never rotated in place: with another one L2 refuses to start (L2-3).
 - **Identity and secrets.** Each runtime unit has its own user-assigned identity and Key Vault. The identity lifecycle is `None` everywhere except the agent, so no container in L2 or L3 can request a token at run time. Secrets reach containers only as Key Vault references.
 - **Ledger.** L2's ledger lives on an NFS Azure Files share mounted at `/app/.local`, with the L2-6 lock.
 - **Images.** One image per unit, each tagged with the commit that its own pipeline built:
@@ -245,15 +245,15 @@ Ports are overridable with `CONTROL_PORT`, `SELLER_PORT`, `FACILITATOR_PORT`, `S
   - `x402-l2-control`: L2;
   - `x402-l3-verifier`: L3;
   - `x402-operator`: `caj-l2-eastus2-dev`, the operator scripts only;
-  - `x402-portal` (v1.9): the portal and the built web app, with no file of any layer;
+  - `x402-portal` (v1.10): the portal and the built web app, with no file of any layer;
   - `x402-seller`: the sellers.
 
   Each image holds only its own unit's code and the packages that code imports, so only L2's image contains the signer, or any L2 code (T-IMG-01). Each app and job runs from its own unit's image (T-IAC-01 rule 12).
 - **Templates.** Azure is provisioned by Bicep only.
-  - `infra/pre-deploy.bicep` (subscription scope, deployed by an administrator by hand) makes the resource group, the API app registration (Agent.Run, `user_impersonation` with the Azure CLI pre-authorized, assignment required; v1.9: a second scope, `Portal.Access`, pre-authorized for the portal's web app only, and the optional claims `auth_time` and `idtyp`), the portal's web app registration (v1.9: a single-page app with its redirect URIs, no secret and no role), the deploy app registration with a GitHub federated credential and no secret, `Agent.Run` for the deploy app and the listed people, the operators' group, and the deploy app's roles: Contributor and Role Based Access Control Administrator, limited to `main.bicep`'s four roles, on the resource group only (T-IAC-01 rule 16). The Entra objects use the Microsoft Graph Bicep extension.
+  - `infra/pre-deploy.bicep` (subscription scope, deployed by an administrator by hand) makes the resource group, the API app registration (Agent.Run, `user_impersonation` with the Azure CLI pre-authorized, assignment required; v1.10: a second scope, `Portal.Access`, pre-authorized for the portal's web app only, and the optional claims `auth_time` and `idtyp`), the portal's web app registration (v1.10: a single-page app with its redirect URIs, no secret and no role), the deploy app registration with a GitHub federated credential and no secret, `Agent.Run` for the deploy app and the listed people, the operators' group, and the deploy app's roles: Contributor and Role Based Access Control Administrator, limited to `main.bicep`'s four roles, on the resource group only (T-IAC-01 rule 16). The Entra objects use the Microsoft Graph Bicep extension.
   - `infra/main.bicep` makes everything in the resource group: the platform (network, identities, registry, vaults, storage, Foundry with the Claude deployment, both environments) and each unit's apps (L1, L2, L3, the operator, the portal, the sellers), each from its own image and with only its own identities and vaults (T-IAC-01 rules 12 and 13). One deployment deploys one of them, chosen by its `unit` parameter, and leaves the rest as it is (T-IAC-01 rule 18). Its modules take names, never other modules' outputs, so what-if previews even a first deployment.
   - Every value is in `infra/pre-deploy.<env>.bicepparam` and `infra/main.<env>.bicepparam`, the tenant, subscription and resource group included; each template fails validation anywhere else (T-IAC-01 rule 17).
-- **Pipelines.** One per unit in `.github/workflows/`, each run by hand or on its own tag, one at a time (one concurrency group): `deploy-infra.yml` deploys the platform (`unit` platform), and `deploy-l1.yml`, `deploy-l2.yml`, `deploy-l3.yml`, `deploy-operator.yml`, `deploy-portal.yml` (v1.9) and `deploy-seller.yml` each build their unit's image and deploy their unit's apps. All seven call the same steps, the reusable `deploy.yml`, with their unit; each deployment is previewed with what-if. It signs in with OIDC from the parameter file at the start of every step that calls Azure (GitHub's token is valid for 5 minutes) and reads no GitHub secret. Every run checks the deployed units together (the cloud regression, the chain, the hosted smoke, since v1.9 the portal smoke, and the log scan); a unit's image becomes `last-good` only after they pass, and a failure rolls back only that unit. The platform is fixed forward. L1's run moves the agent's traffic by redeploying `main.bicep`. On a new environment each pipeline but L1's starts with a first deployment, which skips the checks through units not deployed yet (T-E2E-AZ).
+- **Pipelines.** One per unit in `.github/workflows/`, each run by hand or on its own tag, one at a time (one concurrency group): `deploy-infra.yml` deploys the platform (`unit` platform), and `deploy-l1.yml`, `deploy-l2.yml`, `deploy-l3.yml`, `deploy-operator.yml`, `deploy-portal.yml` (v1.10) and `deploy-seller.yml` each build their unit's image and deploy their unit's apps. All seven call the same steps, the reusable `deploy.yml`, with their unit; each deployment is previewed with what-if. It signs in with OIDC from the parameter file at the start of every step that calls Azure (GitHub's token is valid for 5 minutes) and reads no GitHub secret. Every run checks the deployed units together (the cloud regression, the chain, the hosted smoke, since v1.10 the portal smoke, and the log scan); a unit's image becomes `last-good` only after they pass, and a failure rolls back only that unit. The platform is fixed forward. L1's run moves the agent's traffic by redeploying `main.bicep`. On a new environment each pipeline but L1's starts with a first deployment, which skips the checks through units not deployed yet (T-E2E-AZ).
 
 ### 3.2 Data flow
 
@@ -282,7 +282,7 @@ sequenceDiagram
 
 ### 3.3 Credential matrix (who holds what)
 
-| Secret | L1 | L2 | L3 | Seller | Facilitator | Human operator | Portal (v1.9) |
+| Secret | L1 | L2 | L3 | Seller | Facilitator | Human operator | Portal (v1.10) |
 |---|---|---|---|---|---|---|---|
 | `PAYER_PRIVATE_KEY` | **never** | ✅ | — | — | — | — | **never** |
 | `ANTHROPIC_API_KEY` | ✅ | — | — | — | — | — | — |
@@ -296,16 +296,16 @@ sequenceDiagram
 | `FACILITATOR_PRIVATE_KEY` | — | — | — | — | ✅ (local) | — | — |
 | `CDP_API_KEY_ID` / `CDP_API_KEY_SECRET` | — | — | — | ✅ (`FACILITATOR=cdp`) | — | — | — |
 | `CIBA_CLIENT_KEY` or `CIBA_CLIENT_SECRET` (L2→Auth0, v1.8) | — | ✅ (`ciba-client.ts` only) | — | — | — | — | — |
-| `PORTAL_TOKEN` (portal→L2, v1.9) | **never** | ✅ verifies | — | — | — | — | ✅ |
-| `USER_WALLET_MNEMONIC` (v1.9) | **never** | ✅ (`signer.ts` only) | — | — | — | — | **never** |
-| Person's portal token (browser→portal, v1.9) | refuses it | — | — | — | — | — | ✅ verifies, never forwards |
-| `CARD_VAULT_KEY` (portal→card vault, v1.9) | — | — | — | — | — | — | ✅ (`card-vault.ts` only) |
+| `PORTAL_TOKEN` (portal→L2, v1.10) | **never** | ✅ verifies | — | — | — | — | ✅ |
+| `USER_WALLET_MNEMONIC` (v1.10) | **never** | ✅ (`signer.ts` only) | — | — | — | — | **never** |
+| Person's portal token (browser→portal, v1.10) | refuses it | — | — | — | — | — | ✅ verifies, never forwards |
+| `CARD_VAULT_KEY` (portal→card vault, v1.10) | — | — | — | — | — | — | ✅ (`card-vault.ts` only) |
 
 The CDP API credential authenticates the seller to the CDP facilitator. It cannot authorize an on-chain transfer, so it is not payment key material (INV-2). Rule A8 confines it to one file.
 
 The Auth0 client credential (v1.8, L2-7) authenticates L2 to the approval service, for starting and polling approval requests. It cannot sign a payment or approve one by itself: an approval counts only when the approver's signed answer verifies. Rule A9 confines it to one file. The approver's Guardian enrollment lives on their phone and in Auth0, never in this system.
 
-v1.9 (L2-8):
+v1.10 (L2-8):
 - The wallet mnemonic is payment key material, like `PAYER_PRIVATE_KEY`: every user's account is derived from it. INV-2 and rules A3 and A11 keep it in `signer.ts`, and the portal refuses to start when it can see it.
 - `PORTAL_TOKEN` opens only L2's portal routes. It cannot authorize, approve, reject or reconcile, and none of the other four tokens opens a portal route (INV-13).
 - The person's portal token is an Entra access token for the scope `Portal.Access`, issued to the portal's web app. The portal verifies it and never forwards it; the hosted agent service refuses it, and the portal refuses the agent's (SEC-20).
@@ -318,7 +318,7 @@ v1.9 (L2-8):
 | ID | Invariant | Enforced by |
 |---|---|---|
 | INV-1 | A layer imports only `src/shared/**` and its own folder. Only `src/main.ts`, `scripts/**` and `test/**` may import across layers. | `test/architecture.test.ts` |
-| INV-2 | Only `src/layer2-control/signer.ts` turns key material into an account (`privateKeyToAccount`, `mnemonicToAccount`). v1.9: that includes the wallet mnemonic (`USER_WALLET_MNEMONIC`), from which every user's account is derived; only `signer.ts` reads it. | architecture test (A3, A11), T-USR-08 |
+| INV-2 | Only `src/layer2-control/signer.ts` turns key material into an account (`privateKeyToAccount`, `mnemonicToAccount`). v1.10: that includes the wallet mnemonic (`USER_WALLET_MNEMONIC`), from which every user's account is derived; only `signer.ts` reads it. | architecture test (A3, A11), T-USR-08 |
 | INV-3 | L1 code never references `PAYER_PRIVATE_KEY`. Both L1 entry points, `src/main.ts` and `src/hosted-main.ts` (v1.5), sit outside `src/layer1-intent/`. Each loads its env file and then exits with code 1 if that variable is present, from the process environment or from the file. | architecture test, manual check (§12) |
 | INV-4 | L3 has no signing or write capability (no `createWalletClient`, `signTypedData`, `writeContract`, `sendTransaction`, `privateKeyToAccount`). | architecture test |
 | INV-5 | The L2 decision is a pure function of (accepts[], mandate, context). No I/O, no clock reads (time is passed in), no LLM text. `PaymentIntent.purpose` is logged, never evaluated. | `policy.ts` design, T-POL-02 |
@@ -329,7 +329,7 @@ v1.9 (L2-8):
 | INV-10 | L3 trusts the chain, not the seller's `PAYMENT-RESPONSE`. CONFIRMED requires a matching Transfer log. | T-E2E-03 |
 | INV-11 | CONFIRMED is final in L2. A later contradicting report is recorded with `anomaly: true` and does not change the effective status. | T-E2E-03, T-LED-03 |
 | INV-12 | A human approval never overrides a DENY rule. It only lifts `human_approval_required` for one exact (session, resource, payTo, amount) tuple, once. "Once" means once per approval: each approval is a separate human act and is consumed by the first payment that uses it. Since v1.3 an escalation has at most one approval, and a `HUMAN_REJECTION` (R15) is a DENY that no approval can lift. | T-POL-13, T-POL-15, T-E2E-02 |
-| INV-13 | Each caller has its own bearer token. L1 cannot reconcile or approve; L3 cannot authorize. v1.9: a fifth role, `portal-control` (`PORTAL_TOKEN`), opens only the portal routes of L2-5 and none of the others, and no other token opens them; L2 refuses to start when the portal's token equals another role's. | T-E2E-02, T-E2E-05, T-USR-02, T-USR-07 |
+| INV-13 | Each caller has its own bearer token. L1 cannot reconcile or approve; L3 cannot authorize. v1.10: a fifth role, `portal-control` (`PORTAL_TOKEN`), opens only the portal routes of L2-5 and none of the others, and no other token opens them; L2 refuses to start when the portal's token equals another role's. | T-E2E-02, T-E2E-05, T-USR-02, T-USR-07 |
 
 ---
 
@@ -337,20 +337,20 @@ v1.9 (L2-8):
 
 | Rule | Invariant | Scope | Violation |
 |---|---|---|---|
-| A1 | INV-1 | all layer folders, and since v1.9 the area `src/portal/**` | an import resolves into another layer's folder; a portal file imports a layer, or a layer imports the portal |
+| A1 | INV-1 | all layer folders, and since v1.10 the area `src/portal/**` | an import resolves into another layer's folder; a portal file imports a layer, or a layer imports the portal |
 | A2 | INV-1 | `src/shared/**` | shared code re-exports or imports layer code |
 | A3 | INV-2 | `src/**` except `src/layer2-control/signer.ts` (`scripts/**` is out of scope) | identifier `privateKeyToAccount` or `mnemonicToAccount`, or an import of `viem/accounts` |
-| A4 | INV-4 | `src/layer3-settlement/**`, and since v1.9 `src/portal/**` | `createWalletClient`, `signTypedData`, `writeContract`, `sendTransaction`, `privateKeyToAccount` |
+| A4 | INV-4 | `src/layer3-settlement/**`, and since v1.10 `src/portal/**` | `createWalletClient`, `signTypedData`, `writeContract`, `sendTransaction`, `privateKeyToAccount` |
 | A5 | INV-3 | `src/layer1-intent/**` | string or identifier `PAYER_PRIVATE_KEY` |
 | A6 | INV-5 | `src/layer2-control/policy.ts` | I/O or clock imports and calls (`node:*`, `fs`, `http`, `express`, `viem`, `@anthropic-ai/*`, `Date.now`, `new Date()`, `fetch(`, `Math.random`, `console.`), or code access to `purpose` |
 | A7 | §10 | all layer folders | `Buffer.from(…, "base64")`, `atob` or `btoa` in a file that mentions an x402 header name |
 | A8 | §3.3, SEC-10 | `src/**`, `scripts/**`, `env/*.env.example` (`test/**` exempt) | `CDP_API_KEY_ID`, `CDP_API_KEY_SECRET` or an `@coinbase/cdp-sdk` import outside `src/counterparty/cdp-facilitator.ts` and `env/seller.env.example` |
 | A9 (v1.8) | §3.3, SEC-17 | `src/**`, `scripts/**`, `env/*.env.example` (`test/**` exempt) | `CIBA_CLIENT_KEY` or `CIBA_CLIENT_SECRET` outside `src/layer2-control/ciba-client.ts` and `env/l2-control.env.example` (comments in TS don't count; `CIBA_CLIENT_KEY_ID` is not the credential) |
-| A10 (v1.9) | §3.3, SEC-22 | `src/**`, `scripts/**`, `env/*.env.example` (`test/**` exempt) | `CARD_VAULT_KEY` (not `CARD_VAULT_KEY_…` or the publishable key), or the string `api.stripe.com`, outside `src/portal/card-vault.ts` and `env/portal.env.example` |
-| A11 (v1.9) | INV-2, SEC-24 | `src/**`, `scripts/**`, `env/*.env.example` (`test/**` exempt) | `USER_WALLET_MNEMONIC` outside `src/layer2-control/signer.ts`, `src/portal-main.ts` (the refusal), `scripts/demo-lib.ts` (the local dev value) and `env/l2-control.env.example` |
-| A12 (v1.9) | INV-13, SEC-19 | `src/layer1-intent/**`, `src/layer3-settlement/**`, `src/counterparty/**`; and `src/portal/**` | in a layer: `PORTAL_TOKEN`. In the portal: `PAYER_PRIVATE_KEY`, `CONTROL_TOKEN`, `OPERATOR_TOKEN`, `SETTLEMENT_TOKEN` or `VERIFIER_TOKEN` |
+| A10 (v1.10) | §3.3, SEC-22 | `src/**`, `scripts/**`, `env/*.env.example` (`test/**` exempt) | `CARD_VAULT_KEY` (not `CARD_VAULT_KEY_…` or the publishable key), or the string `api.stripe.com`, outside `src/portal/card-vault.ts` and `env/portal.env.example` |
+| A11 (v1.10) | INV-2, SEC-24 | `src/**`, `scripts/**`, `env/*.env.example` (`test/**` exempt) | `USER_WALLET_MNEMONIC` outside `src/layer2-control/signer.ts`, `src/portal-main.ts` (the refusal), `scripts/demo-lib.ts` (the local dev value) and `env/l2-control.env.example` |
+| A12 (v1.10) | INV-13, SEC-19 | `src/layer1-intent/**`, `src/layer3-settlement/**`, `src/counterparty/**`; and `src/portal/**` | in a layer: `PORTAL_TOKEN`. In the portal: `PAYER_PRIVATE_KEY`, `CONTROL_TOKEN`, `OPERATOR_TOKEN`, `SETTLEMENT_TOKEN` or `VERIFIER_TOKEN` |
 
-Each rule has a fixture under `test/fixtures/arch/` that must trip it (Principle VIII). T-ARCH-ENV checks that each `env/*.env.example` holds only the variables its process may see (§3.3, CFG-2); since v1.9 that includes `env/portal.env.example`, and a key ending in `_MNEMONIC` or named `CARD_VAULT_KEY` must be empty.
+Each rule has a fixture under `test/fixtures/arch/` that must trip it (Principle VIII). T-ARCH-ENV checks that each `env/*.env.example` holds only the variables its process may see (§3.3, CFG-2); since v1.10 that includes `env/portal.env.example`, and a key ending in `_MNEMONIC` or named `CARD_VAULT_KEY` must be empty.
 
 ## 5. Technology stack (pinned)
 
@@ -375,10 +375,10 @@ Each rule has a fixture under `test/fixtures/arch/` that must trip it (Principle
 | The Auth0 tenant (v1.8, `auth0/`; administrator only, never a runtime dependency) | Terraform, provider `auth0/auth0` | >= 1.11.0; >= 1.60.0, < 2.0.0 |
 | Hosted agent and infrastructure tests (dev only) | `ai` (`MockLanguageModelV3`), `@ai-sdk/provider`, `@azure/bicep-rpc-client`; Bicep CLI | ^6.0.302 / ^3.0.18 / ^0.4.1; 0.47.16 |
 | Azure profile images | `node:22-bookworm-slim`, `nginxinc/nginx-unprivileged:1.29-alpine` | pinned by digest (the Dockerfiles in `docker/`, `infra/main.bicep`) |
-| Portal web app (v1.9, `web/portal/`; dev-only packages, bundled by `npm run build:web` into static files, so none is a runtime dependency of any image) | react, react-dom; `@azure/msal-browser` (sign-in in a popup, authorization code with PKCE, no secret); vite (the build, with its own JSX transform and no plugin) | ^19.3.1; ^5.29.0; 8.x |
+| Portal web app (v1.10, `web/portal/`; dev-only packages, bundled by `npm run build:web` into static files, so none is a runtime dependency of any image) | react, react-dom; `@azure/msal-browser` (sign-in in a popup, authorization code with PKCE, no secret); vite (the build, with its own JSX transform and no plugin) | ^19.3.1; ^5.29.0; 8.x |
 | Portal web tests (dev only) | jsdom, `@testing-library/react`, `@testing-library/user-event`, `@testing-library/dom`, axe-core | ^31.0 / ^16.3.3 / ^14.6.9 / ^10.4.2 / ^4.14 |
-| Card vault (v1.9, the portal only, `CARD_VAULT=stripe`) | Stripe's REST API in test mode, called with `fetch` (no SDK): SetupIntents, PaymentMethods and Customers, six calls. Stripe.js is loaded by the browser from Stripe only when a person adds a card | API version `2026-10-28.endive`, pinned in `src/portal/card-vault.ts` |
-| Requester and portal tokens (v1.9: one verifier, `src/shared/entra-token.ts`, for the hosted agent and the portal) | jose | ^6.2.12 |
+| Card vault (v1.10, the portal only, `CARD_VAULT=stripe`) | Stripe's REST API in test mode, called with `fetch` (no SDK): SetupIntents, PaymentMethods and Customers, six calls. Stripe.js is loaded by the browser from Stripe only when a person adds a card | API version `2026-10-28.endive`, pinned in `src/portal/card-vault.ts` |
+| Requester and portal tokens (v1.10: one verifier, `src/shared/entra-token.ts`, for the hosted agent and the portal) | jose | ^6.2.12 |
 
 Resolved versions (v1.1, `package-lock.json`): typescript 7.0.2, tsx 4.23.15, vitest 5.0.5, viem 2.57.7, express 5.3.0, `@x402/*` 2.28.0, `@anthropic-ai/sdk` 0.135.0, dotenv 18.0.8, ganache 7.9.2, solc 0.8.24, `@types/node` 22.x; v1.4 adds yaml 2.9.1 and swagger-ui-dist 5.33.1. `scarfSettings.enabled: false` in `package.json` turns off the install analytics of swagger-ui-dist's `@scarf/scarf` dependency. `engines.node` is `>=22`; development also runs on Node 26. npm ≥ 11 skips dependency install scripts by default. Ganache falls back to its JavaScript implementations, which is harmless. v1.5 adds `@mastra/core` 1.75.0, `@ai-sdk/anthropic` 3.0.128, zod 4.6.5, jose 6.2.12 and `@azure/identity` 4.13.3 (runtime), and `ai` 6.0.302, `@ai-sdk/provider` 3.0.18 and `@azure/bicep-rpc-client` 0.4.1 (dev). In library use Mastra sends no telemetry; the image also sets `MASTRA_TELEMETRY_DISABLED=1`.
 
@@ -403,24 +403,24 @@ SDK entry points in use:
 ```
 .github/workflows/               one pipeline per unit, by hand or on its own tag (T-E2E-AZ, v1.5):
   deploy-infra.yml               the platform (infra/main.bicep with unit platform)
-  deploy-l1.yml  deploy-l2.yml  deploy-l3.yml  deploy-operator.yml  deploy-portal.yml (v1.9)  deploy-seller.yml
+  deploy-l1.yml  deploy-l2.yml  deploy-l3.yml  deploy-operator.yml  deploy-portal.yml (v1.10)  deploy-seller.yml
                                  one unit each: its image, its apps, the checks through every unit, last-good
   deploy.yml                     the steps all seven call with their unit (reusable): OIDC, what-if, gates, rollback
 Dockerfile                       the seller's image, x402-seller (v1.5)
 docker/                          one image per unit: l1-agent.Dockerfile, l2-control.Dockerfile, l3-verifier.Dockerfile,
-                                 operator.Dockerfile, portal.Dockerfile (v1.9: the portal and the built web app);
+                                 operator.Dockerfile, portal.Dockerfile (v1.10: the portal and the built web app);
                                  each holds only its unit's code and packages (T-IMG-01, v1.5)
 .dockerignore                    no env file, key or local state in any build context (v1.5)
 tsconfig.build.json              emits dist/ for src/ and the operator commands (v1.5)
 config/mandate.json              spending mandate (CFG-3): the platform account's
-config/platform.json             platform limits and the seller list for user accounts (CFG-4, v1.9)
+config/platform.json             platform limits and the seller list for user accounts (CFG-4, v1.10)
 contracts/MockUSDC.sol           local-only EIP-3009 token (CP-4)
 docs/l2-control.openapi.yaml     OpenAPI 3.1 copy of the L2 HTTP API (L2-5); kept in sync by T-API-01..03; L2 serves it with API_DOCS=1
 docs/l1-hosted.openapi.yaml      OpenAPI 3.1 copy of the hosted agent's HTTP API (L1-6, v1.6); kept in sync by T-API-05..07;
                                  the agent serves it with API_DOCS=1
 docs/seller.openapi.yaml         OpenAPI 3.1 copy of the seller's HTTP API (CP-1, v1.6); kept in sync by T-API-09..10;
                                  the seller serves it with API_DOCS=1
-docs/portal.openapi.yaml         OpenAPI 3.1 copy of the portal's HTTP API (L2-8, v1.9); kept in sync by T-API-12..14;
+docs/portal.openapi.yaml         OpenAPI 3.1 copy of the portal's HTTP API (L2-8, v1.10); kept in sync by T-API-12..14;
                                  the portal serves it with API_DOCS=1
 env/*.env.example                one env template per process (CFG-2)
 infra/                           Azure profile (§3.1, v1.5; T-IAC-01): pre-deploy.bicep (resource group, Entra apps,
@@ -443,22 +443,22 @@ scripts/
   payer-balance.ts               read-only payer USDC balance, the deploy preflight (v1.5)
   secret-scan-lib.ts, scan-logs.ts   credential-shape scan of logs (SEC-16, v1.5)
   dev-issuer-lib.ts, dev-token.ts    local dev issuer and tokens for the hosted service and, with --portal, the portal
-                                 (NETWORK=local only, v1.5; scp, azp and auth_time claims since v1.9)
-  fund-user.ts                   local only: mint test USDC to a user's account address (v1.9)
-  wallet-mnemonic.ts             prints one new 24-word mnemonic; reads no env file and derives no account (v1.9)
+                                 (NETWORK=local only, v1.5; scp, azp and auth_time claims since v1.10)
+  fund-user.ts                   local only: mint test USDC to a user's account address (v1.10)
+  wallet-mnemonic.ts             prints one new 24-word mnemonic; reads no env file and derives no account (v1.10)
   stack-local.ts                 the local stack without an agent, for the hosted service (v1.5); its processes, ports and
                                  readiness probes are demo-lib's localStack(), shared with the VS Code runner;
-                                 --users turns user accounts on in L2 with the local dev mnemonic (v1.9)
+                                 --users turns user accounts on in L2 with the local dev mnemonic (v1.10)
   vscode-local.ts                the VS Code runner: `chain` (start or reuse), `stack` (reuse, wait for or start each stack
-                                 process; `--users` with user accounts on in L2, v1.9), `run <role>`, always NETWORK=local
+                                 process; `--users` with user accounts on in L2, v1.10), `run <role>`, always NETWORK=local
   image-closure.ts               each image's files and packages from the import graph; fails the build on another
                                  layer's file (T-IMG-01, v1.5)
   solc.d.ts                      type shim
 src/
   shared/contracts.ts            ALL cross-layer types and ports (§7)
-  shared/config.ts               network profiles, ports, bind hosts, URLs, tokens, loadEnv, formatAtomic, parseUsdc (v1.9)
-  shared/user-id.ts              userIdFor(tid, oid) and USER_ID_RE: the one way a sign-in becomes a userId (v1.9)
-  shared/entra-token.ts          Entra (and local dev issuer) access token verification, for the hosted agent and the portal (v1.9)
+  shared/config.ts               network profiles, ports, bind hosts, URLs, tokens, loadEnv, formatAtomic, parseUsdc (v1.10)
+  shared/user-id.ts              userIdFor(tid, oid) and USER_ID_RE: the one way a sign-in becomes a userId (v1.10)
+  shared/entra-token.ts          Entra (and local dev issuer) access token verification, for the hosted agent and the portal (v1.10)
   shared/auth.ts                 requireRole(role): per-caller bearer check, constant-time compare
   shared/api-docs.ts             Swagger UI routes over one OpenAPI document, for L2, the hosted agent and the seller (SEC-13; v1.6)
   layer1-intent/
@@ -472,7 +472,7 @@ src/
   layer2-control/
     mandate.ts                   mandate type + loader (L2-1)
     policy.ts                    pure rule engine (L2-2)
-    signer.ts                    sole key holder (L2-3); since v1.9 also the keyring: one account per user from the mnemonic
+    signer.ts                    sole key holder (L2-3); since v1.10 also the keyring: one account per user from the mnemonic
     ledger.ts                    hash-chained ledger (L2-4)
     ledger-lock.ts               one ledger writer: exclusive lock, standby, heartbeat (L2-6, v1.5)
     escalations.ts               escalation lifecycle derivations and the sweep (L2-4.3)
@@ -482,10 +482,10 @@ src/
     approval-evidence.ts         verification of the approver's access token, one check per step (L2-7; v1.8)
     payment-details.ts           the authorization_details object and binding message shown to the approver (L2-7; v1.8)
     backchannel.ts               approval requests: start, poll, verify, record, resume, the bounded wait (L2-7; v1.8)
-    platform.ts                  platform limits and the seller list: load, validate, digest (CFG-4; v1.9)
+    platform.ts                  platform limits and the seller list: load, validate, digest (CFG-4; v1.10)
     users.ts                     user accounts as pure functions over ledger entries: state, policy validation, loosening,
-                                 policy selection, the effective mandate, views (L2-8; v1.9)
-    user-routes.ts               the portal routes of L2-5, each write inside the serialized section (L2-8; v1.9)
+                                 policy selection, the effective mandate, views (L2-8; v1.10)
+    user-routes.ts               the portal routes of L2-5, each write inside the serialized section (L2-8; v1.10)
     api-docs.ts                  L2's OpenAPI document for src/shared/api-docs.ts, only with API_DOCS=1 (L2-5, SEC-13)
     service.ts                   HTTP API (L2-5)
   layer3-settlement/
@@ -500,7 +500,7 @@ src/
     facilitator-client.ts        facilitator client selection and failure categories (CP-1, CP-3); no credentials
     cdp-facilitator.ts           CDP JWT-authenticated facilitator client; the only reader of the CDP credential (A8)
     facilitator.ts               local facilitator factory, takes a ready account (CP-2)
-  portal/                        the portal's backend (L2-8, v1.9): server.ts (createPortalApp, headers, limits), access.ts
+  portal/                        the portal's backend (L2-8, v1.10): server.ts (createPortalApp, headers, limits), access.ts
                                  (the person's token), routes.ts (/api), control-client.ts (L2's portal routes),
                                  profile-store.ts (one file per user), balance.ts (read-only balance), cards.ts and
                                  card-vault.ts (the only reader of the card vault key, A10), config.ts, log.ts, api-docs.ts
@@ -508,7 +508,7 @@ src/
   main.ts                        composition root for the agent process
   hosted-main.ts                 composition root for the hosted agent service: loadEnv → INV-3 refusal → listen (L1-6)
   refusal.ts                     the INV-3 refusal text both L1 roots print (outside the layer: rule A5)
-web/portal/                      the portal's web app (L2-8, v1.9): React, built by `npm run build:web` to dist/portal-web
+web/portal/                      the portal's web app (L2-8, v1.10): React, built by `npm run build:web` to dist/portal-web
   index.html, redirect.html      the app, and the sign-in library's redirect page (no application code)
   src/                           app.tsx (shell, routes), api.ts, routes.ts, money.ts, summary.ts, messages.ts, flags.ts,
                                  auth/ (Entra, dev, step-up), components/, screens/, styles.css
@@ -521,10 +521,10 @@ test/
   hosted-agent.test.ts  hosted-access.test.ts  hosted-sessions.test.ts  hosted-run.test.ts   (L1-6, v1.5)
   ledger-lock.test.ts  infra.test.ts  images.test.ts  deploy-workflow.test.ts
   github-setup.test.ts  cleanup.test.ts   (L2-6, Azure, v1.5)
-  users.test.ts  user-id.test.ts  portal.test.ts  card-vault.test.ts  openapi-portal.test.ts   (L2-8, v1.9)
-  helpers/users.ts               in-process L2 with user accounts on, a movable clock, two users (v1.9)
-  helpers/portal.ts              in-process portal against that L2, the dev issuer and the stand-in card vault (v1.9)
-  helpers/card-vault-stub.ts     stand-in card vault: the six calls, test and live answers, failures (v1.9)
+  users.test.ts  user-id.test.ts  portal.test.ts  card-vault.test.ts  openapi-portal.test.ts   (L2-8, v1.10)
+  helpers/users.ts               in-process L2 with user accounts on, a movable clock, two users (v1.10)
+  helpers/portal.ts              in-process portal against that L2, the dev issuer and the stand-in card vault (v1.10)
+  helpers/card-vault-stub.ts     stand-in card vault: the six calls, test and live answers, failures (v1.10)
   helpers/hosted.ts              in-process hosted service: dev issuer, mock model, fake or harness ports
   helpers/openapi.ts             OpenAPI document helpers for T-API: routes, a schema subset checker, a client (v1.6)
   fixtures/lock-holder.ts        child process holding the ledger lock until SIGTERM (T-LED-05)
@@ -542,7 +542,7 @@ auth0/                           the Auth0 tenant for backchannel approval as Te
   main.tf, outputs.tf            API, L2's CIBA client, grant, credential, Guardian push; the ciba object and CIBA_* lines
 ```
 
-Runtime artifacts go in `.local/` (gitignored): `deployment.json`, `ledger-<network>.jsonl` and, since v1.9, the portal's `portal/profiles/<userId>.json`.
+Runtime artifacts go in `.local/` (gitignored): `deployment.json`, `ledger-<network>.jsonl` and, since v1.10, the portal's `portal/profiles/<userId>.json`.
 
 ---
 
@@ -562,7 +562,7 @@ export interface PaymentIntent {
   purpose: string;             // LLM text, audit only (INV-5)
   createdAt: string;           // ISO
   operatorApprovalOnly?: boolean; // v1.8 (L2-7): true removes the backchannel approval path; never adds one
-  userId?: string;             // v1.9 (L2-8): ^usr_[0-9a-f]{32}$, the verified person who started the run. Set by the
+  userId?: string;             // v1.10 (L2-8): ^usr_[0-9a-f]{32}$, the verified person who started the run. Set by the
                                // hosted agent service only, never from model text or a tool input. Absent: the platform account
 }
 
@@ -594,17 +594,17 @@ export interface SettlementReport {
 // Ports
 export interface AuthorizationGatePort {
   authorize(intent: PaymentIntent): Promise<AuthorizationDecision>;
-  budget(sessionId: string, userId?: string): Promise<BudgetStatus>; // v1.9: with a user, that user's view
+  budget(sessionId: string, userId?: string): Promise<BudgetStatus>; // v1.10: with a user, that user's view
 }
 export interface SettlementVerifierPort { verify(claim: SettlementClaim): Promise<SettlementReport> }
 export interface ReconciliationPort { reconcile(report: SettlementReport): Promise<void> }
 export interface BudgetStatus {
   sessionId: string; asset: string; decimals: number; sessionCapAtomic: string;
   spentOrReservedAtomic: string; remainingAtomic: string; perPaymentCapAtomic: string;
-  scope?: "session" | "user_daily"; // v1.9: what the figures count; absent means "session"
+  scope?: "session" | "user_daily"; // v1.10: what the figures count; absent means "session"
 }
 
-// v1.9 (L2-8): portal <-> L2. No field holds text a person typed.
+// v1.10 (L2-8): portal <-> L2. No field holds text a person typed.
 export interface PolicyValues {
   sellers: string[]; autoApproveMaxAtomic: string; hardCapPerPaymentAtomic: string;
   sessionBudgetAtomic: string; dailyBudgetAtomic: string; maxAuthorizationsPerMinute: number;
@@ -627,7 +627,7 @@ export interface PlatformView { platformId: string; digest: string; limits: Plat
 
 All amounts are **decimal strings of atomic units**. Use `BigInt` for arithmetic, never `Number`.
 
-v1.9: `src/shared/user-id.ts` holds `userIdFor(tid, oid)` = `usr_` + the first 32 hex characters of SHA-256 over `x402-user-v1|<tid>|<oid>`, and `USER_ID_RE`. It is pure, so the hosted agent and the portal compute the same identifier without sharing a secret; an empty value, or one containing `|`, is refused. `parseUsdc(text, decimals)` in `src/shared/config.ts` turns USDC text into an atomic string, or says why not (`not_a_number`, `too_many_decimals`, `negative`); it never rounds.
+v1.10: `src/shared/user-id.ts` holds `userIdFor(tid, oid)` = `usr_` + the first 32 hex characters of SHA-256 over `x402-user-v1|<tid>|<oid>`, and `USER_ID_RE`. It is pure, so the hosted agent and the portal compute the same identifier without sharing a secret; an empty value, or one containing `|`, is refused. `parseUsdc(text, decimals)` in `src/shared/config.ts` turns USDC text into an atomic string, or says why not (`not_a_number`, `too_many_decimals`, `negative`); it never rounds.
 
 ---
 
@@ -648,7 +648,7 @@ v1.9: `src/shared/user-id.ts` holds `userIdFor(tid, oid)` = `usr_` + the first 3
 
 `PaidFetchResult = { outcome: FREE|PAID|DENIED|ESCALATED|PAYMENT_FAILED|ERROR, url, httpStatus, body, payment?, violations?, authorizationId?, error? }`.
 
-**L1-2 Port adapters** (`ports-http.ts`): `HttpAuthorizationGate` (POST `/v1/authorize`, GET `/v1/budget/:id`, with `?userId=` when the run has a user, v1.9) and `HttpSettlementVerifier` (POST `/v1/settlements`). Bearer auth. Non-2xx responses throw.
+**L1-2 Port adapters** (`ports-http.ts`): `HttpAuthorizationGate` (POST `/v1/authorize`, GET `/v1/budget/:id`, with `?userId=` when the run has a user, v1.10) and `HttpSettlementVerifier` (POST `/v1/settlements`). Bearer auth. Non-2xx responses throw.
 
 **L1-3 Claude agent** (`runClaudeAgent`)
 - Model: `ANTHROPIC_MODEL`, default `claude-sonnet-5-5`. `max_tokens` 2048. At most 10 turns. The client is injectable (`opts.client`) for tests.
@@ -697,8 +697,8 @@ v1.9: `src/shared/user-id.ts` holds `userIdFor(tid, oid)` = `usr_` + the first 3
 - **Routes.** `POST /v1/runs` runs a goal. `GET /healthz` and `GET /readyz` report health. Every other path returns 404 after auth, and unauthenticated callers get 401 everywhere except the health routes (and the docs routes, when mounted). No Mastra server, Studio or tool-execute route exists.
 - **API docs** (v1.6). `docs/l1-hosted.openapi.yaml` describes these routes in OpenAPI 3.1. When a route, status, header or response field changes, update this section, the contract and the document together; T-API-05..07 fail until they match. With `API_DOCS=1` (CFG-2), `GET /docs`, `GET /docs/:asset` and `GET /openapi.yaml` serve Swagger UI over that document with no token, mounted before auth like the health routes and from the same shared module as L2's (L2-5, SEC-13). They serve files read at startup and never reach the model, a session, L2 or L3. The Azure deployment never sets `API_DOCS` (T-API-08).
 - **Auth.** An Entra ID v2.0 access token, verified with the tenant's JWKS: issuer, `tid`, `aud` (the API app's client ID: v2.0 tokens never carry the `api://` URI, so with Entra any other `AUTH_AUDIENCE` is a startup error), `exp`/`nbf` (60 s tolerance), `oid`, and role `Agent.Run` (else 403). People and service principals are both allowed; people get a token from the Azure CLI for `api://app-l1-eastus2-dev/user_impersonation`, which `infra/pre-deploy.bicep` pre-authorizes. After verification the `Authorization` header is deleted, so it never reaches L2 or L3. With `NETWORK=local` only, `AUTH_JWKS_FILE` selects the dev issuer (`npm run dev-token`).
-- **Whose token (v1.9, SEC-20).** A token is a system identity's only when `idtyp` is `app`. Any other token is a person's: it must carry the scope `user_impersonation` in `scp`, and its `azp` must not be `PORTAL_CLIENT_ID` when that variable is set; otherwise 403, before any model or L2 call. So a token issued for the portal (`Portal.Access`) never starts a run. The verification itself is shared with the portal (`src/shared/entra-token.ts`).
-- **The user (v1.9, L2-8).** For a person, every `PaymentIntent` of the run carries `userId = userIdFor(tid, oid)`, and `check_budget` passes it to `GET /v1/budget`. For a system identity there is no user, so the platform account pays. The value is fixed when the run starts, from the verified token: no goal text, model output or tool input can change it, and neither tool has an input for a user, a policy or a wallet.
+- **Whose token (v1.10, SEC-20).** A token is a system identity's only when `idtyp` is `app`. Any other token is a person's: it must carry the scope `user_impersonation` in `scp`, and its `azp` must not be `PORTAL_CLIENT_ID` when that variable is set; otherwise 403, before any model or L2 call. So a token issued for the portal (`Portal.Access`) never starts a run. The verification itself is shared with the portal (`src/shared/entra-token.ts`).
+- **The user (v1.10, L2-8).** For a person, every `PaymentIntent` of the run carries `userId = userIdFor(tid, oid)`, and `check_budget` passes it to `GET /v1/budget`. For a system identity there is no user, so the platform account pays. The value is fixed when the run starts, from the verified token: no goal text, model output or tool input can change it, and neither tool has an input for a user, a policy or a wallet.
 - **Limits.** Goal 1–4,000 characters; body ≤ 16 KB (413); 2 concurrent runs and 20 starts per sliding hour per requester (429 with `Retry-After`); a 200 s deadline per run, under the ingress's 240 s idle timeout; client disconnect aborts. An abort stops the run before its next step, and a paid fetch in progress completes.
 - **Agent.** A Mastra `Agent` used as a library, with exactly `fetch_resource` and `check_budget`. The descriptions are L1-3's, and the JSON schema adds `additionalProperties: false`. It has no memory, workspace, sub-agents, workflows or processors. Limits: `maxSteps` 10, `maxOutputTokens` 2048. Tool results use the L1-3 format.
 - **Model.** `MODEL_PROVIDER=foundry` (Microsoft Foundry, keyless Entra token for scope `https://ai.azure.com/.default`) or `anthropic` (API key). The model id must be on the allow-list (`claude-sonnet-5-5` by default), and the Foundry deployment name must equal it; otherwise the AI SDK provider would add a third `json` tool.
@@ -712,7 +712,7 @@ v1.9: `src/shared/user-id.ts` holds `userIdFor(tid, oid)` = `usr_` + the first 3
 - `ALLOWED_PAYEES` and `ALLOWED_HOSTS` (comma-separated) override the JSON values when set.
 - Payees are compared lower-cased.
 - If the mandate breaks `autoApproveMax < hardCap ≤ sessionBudget` (CFG-3), loading fails and L2 refuses to start.
-- **User payments (v1.9, L2-8).** This mandate is the platform account's and stays as it is. A payment that names a user is decided against an *effective mandate*, built for that decision from the user's one active policy for the requested seller and the platform limits (CFG-4):
+- **User payments (v1.10, L2-8).** This mandate is the platform account's and stays as it is. A payment that names a user is decided against an *effective mandate*, built for that decision from the user's one active policy for the requested seller and the platform limits (CFG-4):
 
   | Mandate field | Value |
   |---|---|
@@ -731,14 +731,14 @@ v1.9: `src/shared/user-id.ts` holds `userIdFor(tid, oid)` = `usr_` + the first 3
 
 Inputs: `(req, mandate, ctx)` where `ctx = { nowMs, requestedUrl, challengeResourceUrl, sessionCommittedAtomic, dailyCommittedAtomic, authorizationsLastMinute, humanApprovedFor?, humanRejected? }`. `humanRejected = { rejectionId }` is present when a `HUMAN_REJECTION` exists for the request's (session, resource key); `service.ts` derives it from the ledger.
 
-v1.9: for a user payment, `ctx` also has `user = { gate?, dailyCommittedAtomic, dailyCeilingAtomic }`. `gate` is `not_onboarded` or `disabled`. `sessionCommittedAtomic`, `dailyCommittedAtomic` and `authorizationsLastMinute` then count only this user's entries under this policy; `user.dailyCommittedAtomic` counts the user's entries under any policy over the trailing 24 h; approvals and rejections are looked up for the same user only. Without `ctx.user` (the platform account) the engine behaves exactly as in v1.8, and its figures count only entries without a user.
+v1.10: for a user payment, `ctx` also has `user = { gate?, dailyCommittedAtomic, dailyCeilingAtomic }`. `gate` is `not_onboarded` or `disabled`. `sessionCommittedAtomic`, `dailyCommittedAtomic` and `authorizationsLastMinute` then count only this user's entries under this policy; `user.dailyCommittedAtomic` counts the user's entries under any policy over the trailing 24 h; approvals and rejections are looked up for the same user only. Without `ctx.user` (the platform account) the engine behaves exactly as in v1.8, and its figures count only entries without a user.
 
 Rules are evaluated in this order. All DENY violations are collected; evaluation does not stop at the first.
 
 | # | Rule ID | Condition for violation | Effect |
 |---|---|---|---|
-| R16 (v1.9) | `user_not_onboarded` | `ctx.user.gate` is `not_onboarded`: the user has no registration, no wallet or has never saved a policy. Detail: `the user's setup is incomplete`, nothing else. Evaluated first, although numbered last | DENY, **return immediately** |
-| R17 (v1.9) | `user_disabled` | `ctx.user.gate` is `disabled`. Detail: `the user's account can't pay`. Evaluated first; no approval lifts it | DENY, **return immediately** |
+| R16 (v1.10) | `user_not_onboarded` | `ctx.user.gate` is `not_onboarded`: the user has no registration, no wallet or has never saved a policy. Detail: `the user's setup is incomplete`, nothing else. Evaluated first, although numbered last | DENY, **return immediately** |
+| R17 (v1.10) | `user_disabled` | `ctx.user.gate` is `disabled`. Detail: `the user's account can't pay`. Evaluated first; no approval lifts it | DENY, **return immediately** |
 | R1 | `mandate_expired` | `nowMs > expiresAt` | DENY |
 | R2 | `scheme_not_allowed` | `req.scheme ∉ allowedSchemes` | DENY |
 | R3 | `network_not_allowed` | `req.network ∉ allowedNetworks` | DENY |
@@ -750,7 +750,7 @@ Rules are evaluated in this order. All DENY violations are collected; evaluation
 | R9 | `amount_invalid` | amount is not `^\d+$` or is ≤ 0 | DENY, **return immediately** |
 | R10 | `hard_cap_exceeded` | `amount > hardCapPerPaymentAtomic` | DENY |
 | R11 | `session_budget_exceeded` | `sessionCommitted + amount > sessionBudgetAtomic` | DENY |
-| R12 | `daily_budget_exceeded` | `dailyCommitted + amount > dailyBudgetAtomic`; v1.9: or, when `ctx.user` is present and that passes, `user.dailyCommitted + amount > user.dailyCeiling` (the user daily ceiling, across all the user's policies). One violation at most | DENY |
+| R12 | `daily_budget_exceeded` | `dailyCommitted + amount > dailyBudgetAtomic`; v1.10: or, when `ctx.user` is present and that passes, `user.dailyCommitted + amount > user.dailyCeiling` (the user daily ceiling, across all the user's policies). One violation at most | DENY |
 | R13 | `velocity_limit` | `authorizationsLastMinute ≥ maxAuthorizationsPerMinute` | DENY |
 | R15 | `human_rejected` | `humanRejected` is present (the operator rejected this session and resource key; any amount or payee). Detail: `rejected by the operator (<rejectionId>)`, never the operator's label or reason (SEC-12). Listed here because evaluation follows table order. | DENY |
 | R14 | `human_approval_required` | no DENY, and `amount > autoApproveMaxAtomic`, and no matching `humanApprovedFor` (same payTo, case-insensitive, and the exact amount string) | ESCALATE |
@@ -762,12 +762,12 @@ Rules are evaluated in this order. All DENY violations are collected; evaluation
 - Else → DENIED with all violations flattened, or `no_payment_options` if `accepts` is empty.
 
 **L2-3 Signer** (`PaymentSigner`)
-- Constructed with `(privateKey, net, hardCapAtomic)`; since v1.9 the first argument may be a ready local account instead of a key.
+- Constructed with `(privateKey, net, hardCapAtomic)`; since v1.10 the first argument may be a ready local account instead of a key.
 - Registers `ExactEvmScheme(account)` for `net.caip2`.
 - SDK spend controls: `{ maxAmountPerPayment: false, allowedAssets: [{ network, asset, maxAmountPerPayment: hardCapAtomic }] }`. This is an independent second cap.
 - `sign(challenge, approved)` calls `x402HTTPClient.createPaymentPayload({...challenge, accepts:[approved]})` and returns `{ headers: encodePaymentSignatureHeader(payload), payer: authorization.from, validBefore: Number(authorization.validBefore) }`.
 - If the SDK throws, L2 records `DENIED` with rule `signer_rejected` (detail truncated to 300 chars).
-- **Keyring (v1.9, `WalletKeyring`, in `signer.ts` only).** With user accounts on, `keyringFromEnv` reads `USER_WALLET_MNEMONIC`, which must be a valid 24-word BIP-39 phrase (the error names the variable, never the phrase). `addressOf(index)` and `signerFor(index, hardCapAtomic)` derive the account at `m/44'/60'/0'/0/<index>`. A user's `walletIndex` is the number of `WALLET_CREATED` entries before theirs, so indexes are never reused. A user payment is signed by `signerFor(wallet.walletIndex, the effective hard cap)`; when the derived address differs from the recorded one, the decision is DENIED `signer_rejected`. At startup, after the ledger loads, every recorded wallet's address is derived again and compared: a different mnemonic stops L2. No route, log line, ledger entry or response ever carries the mnemonic or a derived key.
+- **Keyring (v1.10, `WalletKeyring`, in `signer.ts` only).** With user accounts on, `keyringFromEnv` reads `USER_WALLET_MNEMONIC`, which must be a valid 24-word BIP-39 phrase (the error names the variable, never the phrase). `addressOf(index)` and `signerFor(index, hardCapAtomic)` derive the account at `m/44'/60'/0'/0/<index>`. A user's `walletIndex` is the number of `WALLET_CREATED` entries before theirs, so indexes are never reused. A user payment is signed by `signerFor(wallet.walletIndex, the effective hard cap)`; when the derived address differs from the recorded one, the decision is DENIED `signer_rejected`. At startup, after the ledger loads, every recorded wallet's address is derived again and compared: a different mnemonic stops L2. No route, log line, ledger entry or response ever carries the mnemonic or a derived key.
 
 **L2-4 Ledger** (`AuditLedger`, JSONL at `.local/ledger-<network>.jsonl`)
 
@@ -795,7 +795,7 @@ Entry: `{ seq, ts (ISO), type, sessionId?, intentId?, authorizationId?, data, pr
 
 `resourceKey = origin + pathname` of the resource URL (the query string is excluded).
 
-v1.9 (L2-8) adds twelve entry types. None has `sessionId`, `intentId` or `authorizationId`, and none holds a name, an email or any other text a person typed:
+v1.10 (L2-8) adds twelve entry types. None has `sessionId`, `intentId` or `authorizationId`, and none holds a name, an email or any other text a person typed:
 
 | Type | Written when | `data` fields |
 |---|---|---|
@@ -811,15 +811,15 @@ v1.9 (L2-8) adds twelve entry types. None has `sessionId`, `intentId` or `author
 | `USER_DISABLED` | the user disables their account | `userId` |
 | `USER_ENABLED` | the user enables it again, after the `POLICY_PAUSED` entries of the same serialized section | `userId, identityConfirmedAtMs` |
 
-For a user payment, `INTENT` also carries `userId`; `AUTHORIZED`, `ESCALATED` and `ESCALATION_REPEATED` carry `userId, policyId, policyVersion`; `DENIED` carries `userId`, and the policy fields when a policy applied. On `AUTHORIZED`, `mandateId` is `<policyId>@<version>` and `payer` is the user's account. An entry without `userId` belongs to the platform account, which is every entry written before v1.9. The approval, rejection, expiry and settlement entries are unchanged: their user is the one on the `ESCALATED` or `AUTHORIZED` entry they refer to.
+For a user payment, `INTENT` also carries `userId`; `AUTHORIZED`, `ESCALATED` and `ESCALATION_REPEATED` carry `userId, policyId, policyVersion`; `DENIED` carries `userId`, and the policy fields when a policy applied. On `AUTHORIZED`, `mandateId` is `<policyId>@<version>` and `payer` is the user's account. An entry without `userId` belongs to the platform account, which is every entry written before v1.10. The approval, rejection, expiry and settlement entries are unchanged: their user is the one on the `ESCALATED` or `AUTHORIZED` entry they refer to.
 
 **L2-4.1 Committed spend** `committedAtomic({sessionId?, sinceMs?}, nowMs)`
 - The effective report per authorization is the latest `SETTLEMENT` entry with `anomaly !== true`.
 - Sum the `amount` of every `AUTHORIZED` entry in the filter **except** those whose effective report is `NOT_SETTLED` **and** where `nowMs > validBefore*1000` (the signature can no longer settle).
 - `MISMATCH` and `PENDING` keep counting (conservative).
-- v1.9: the filter also takes an owner, `{ userId?, policyId? }`. `userId: "usr_…"` counts that user's entries, `userId: null` counts the platform account's (entries without a user), and an absent `userId` counts all. `authorizedSince` (velocity) takes the same owner. With user accounts on, the platform account's figures use `userId: null`, so no user's spending uses up the platform account's budget, and the reverse.
+- v1.10: the filter also takes an owner, `{ userId?, policyId? }`. `userId: "usr_…"` counts that user's entries, `userId: null` counts the platform account's (entries without a user), and an absent `userId` counts all. `authorizedSince` (velocity) takes the same owner. With user accounts on, the platform account's figures use `userId: null`, so no user's spending uses up the platform account's budget, and the reverse.
 
-**L2-4.2 Approvals**: `findOpenApproval(sessionId, resourceKey, nowMs)` returns the **most recent** `HUMAN_APPROVAL` entry for that (session, resourceKey) that has not expired and is not yet consumed. An approval is single-use. It is consumed when an `AUTHORIZED` entry's `approvalRef` equals its `approvalId`. An escalation has at most one approval (L2-4.3), so it authorizes at most one payment; approving an approved escalation returns the existing approval. An approval is consumed only when it is what lifted R14 (same payee, exact amount, amount above `autoApproveMaxAtomic`); a matching approval seen on a payment that needed no approval stays open. v1.9: with an owner, only an approval of that owner's escalation is found, so an approval for one user's purchase never lifts R14 for another user or for the platform account.
+**L2-4.2 Approvals**: `findOpenApproval(sessionId, resourceKey, nowMs)` returns the **most recent** `HUMAN_APPROVAL` entry for that (session, resourceKey) that has not expired and is not yet consumed. An approval is single-use. It is consumed when an `AUTHORIZED` entry's `approvalRef` equals its `approvalId`. An escalation has at most one approval (L2-4.3), so it authorizes at most one payment; approving an approved escalation returns the existing approval. An approval is consumed only when it is what lifted R14 (same payee, exact amount, amount above `autoApproveMaxAtomic`); a matching approval seen on a payment that needed no approval stays open. v1.10: with an owner, only an approval of that owner's escalation is found, so an approval for one user's purchase never lifts R14 for another user or for the platform account.
 
 **L2-4.3 Escalation lifecycle** (v1.3, `src/layer2-control/escalations.ts`)
 
@@ -841,15 +841,15 @@ An escalation is created by its `ESCALATED` entry at `createdMs = Date.parse(ts)
 
 | Method & path | Auth | Request | 200 response | Errors |
 |---|---|---|---|---|
-| `POST /v1/authorize` | `CONTROL_TOKEN` | `PaymentIntent` | `AuthorizationDecision`. v1.8: with backchannel approval on, a call that creates an eligible escalation may take up to 120 s and return the re-evaluated decision (L2-7) | 400 malformed (missing ids, `accepts` not an array, non-http(s) URL, a non-boolean `operatorApprovalOnly`; v1.9: a `userId` that does not match `^usr_[0-9a-f]{32}$`, whether user accounts are on or off), 401 |
-| `GET /v1/budget/:sessionId` | `CONTROL_TOKEN` | v1.9: optional query `userId` | `BudgetStatus` (`perPaymentCapAtomic` = auto-approve limit). An unknown session returns 200 with zero spend. `remainingAtomic` is never below 0. v1.9: with `userId` and user accounts on, the user's view (`scope: "user_daily"`): the cap is the user daily ceiling, the spend is the user's committed spend over 24 h, and `perPaymentCapAtomic` is the highest auto-approve limit among the user's active policies, bounded by the platform cap; zeros for a user who is not onboarded or is disabled | 400 malformed `userId`, 401 |
+| `POST /v1/authorize` | `CONTROL_TOKEN` | `PaymentIntent` | `AuthorizationDecision`. v1.8: with backchannel approval on, a call that creates an eligible escalation may take up to 120 s and return the re-evaluated decision (L2-7) | 400 malformed (missing ids, `accepts` not an array, non-http(s) URL, a non-boolean `operatorApprovalOnly`; v1.10: a `userId` that does not match `^usr_[0-9a-f]{32}$`, whether user accounts are on or off), 401 |
+| `GET /v1/budget/:sessionId` | `CONTROL_TOKEN` | v1.10: optional query `userId` | `BudgetStatus` (`perPaymentCapAtomic` = auto-approve limit). An unknown session returns 200 with zero spend. `remainingAtomic` is never below 0. v1.10: with `userId` and user accounts on, the user's view (`scope: "user_daily"`): the cap is the user daily ceiling, the spend is the user's committed spend over 24 h, and `perPaymentCapAtomic` is the highest auto-approve limit among the user's active policies, bounded by the platform cap; zeros for a user who is not onboarded or is disabled | 400 malformed `userId`, 401 |
 | `POST /v1/reconcile` | `SETTLEMENT_TOKEN` | `SettlementReport` | `{ ok, anomaly }` | 400 malformed report (missing `authorizationId` or `verified`), 404 unknown authorizationId, 401 |
 | `POST /v1/approvals/:authorizationId` | `OPERATOR_TOKEN` | `{ approver? = "operator", ttlSeconds? = 600 }` | Pending: `{ ok, approvalId, expiresAt }` and one `HUMAN_APPROVAL`. Already approved: the existing approval plus `alreadyApproved: true`; nothing is appended and the request's `ttlSeconds`/`approver` are ignored (v1.3). | 400 `ttlSeconds` not a positive integer, 404 no ESCALATED entry, 409 `{ error, state: "denied", rejectionId }` or `{ error, state: "expired", expiresAt }`, 401 |
 | `POST /v1/rejections/:authorizationId` | `OPERATOR_TOKEN` | `{ operator? = "operator" (1–64 chars), reason? (≤ 280 chars) }` | Pending: `{ ok, rejectionId, rejectedAt, alreadyRejected: false }` and one `HUMAN_REJECTION`. Already denied: the first rejection with `alreadyRejected: true`; nothing is appended. | 400 invalid `operator` or `reason`, 404 no ESCALATED entry, 409 `{ error, state: "approved", approvalId }` or `{ error, state: "expired", expiresAt }`, 401 |
 | `GET /v1/escalations` | `OPERATOR_TOKEN` | — | `{ pending: [{ authorizationId, sessionId, resourceKey, payTo, amount, createdAt, expiresAt, referenceCode, approvalRequest? }], cursor }`, oldest first; `cursor` is the last ledger `seq` (-1 when empty). v1.8: `referenceCode` (8 hex characters of the ID) always; `approvalRequest` (`requested`, `capped`, `operator_only`, `reevaluation`, `failed`, `verification_failed` or `lapsed`) when backchannel approval is on | 401 |
 | `GET /v1/escalations/events?after=<seq>` | `OPERATOR_TOKEN` | `after`: integer ≥ -1, default -1 | `{ events, cursor }`: one event per lifecycle entry with `seq > after` (`escalated`, `approved`, `denied`, `expired`, `approval_lapsed`; v1.8 adds `approval_requested`, `approval_request_failed`, `approval_request_lapsed`, `approval_verification_failed`, and `channel`, `decidedBy`, `referenceCode` where they apply), built from a field whitelist; never tokens, request handles, payment headers, `accepts`, `purpose`, `details` or the approval service's text | 400 bad `after`, 401 |
 | `GET /v1/ledger/verify` | `OPERATOR_TOKEN` | — | `{ entries, ok, brokenAt? }` | 401 |
-| `GET /v1/platform` (v1.9) | `PORTAL_TOKEN` | — | `PlatformView` | 401 |
+| `GET /v1/platform` (v1.10) | `PORTAL_TOKEN` | — | `PlatformView` | 401 |
 | `GET /v1/users/:userId` | `PORTAL_TOKEN` | — | `UserView`. An unknown user: `registered: false` and empty lists, never 404 | 400, 401 |
 | `PUT /v1/users/:userId/registration` | `PORTAL_TOKEN` | `{ acknowledgedTestFunds: true }` | `UserView`. The first call appends `USER_REGISTERED`; later calls append nothing | 400 (the flag is not `true`, or any other field), 401 |
 | `PUT /v1/users/:userId/wallet` | `PORTAL_TOKEN` | — | `UserView`. The first call appends `WALLET_CREATED`; later calls append nothing and return the same address | 401, 409 `not_registered`, 409 `account_disabled` |
@@ -871,14 +871,14 @@ An escalation is created by its `ESCALATED` entry at `createdMs = Date.parse(ts)
 
 With `API_DOCS=1` (CFG-2), L2 also serves that document and Swagger UI over it; without it, those three routes are not mounted and answer 404. They are the only L2 routes without a token. They serve files read at startup (a missing file fails startup) and never touch the ledger, mandate or signer. Swagger UI comes from the pinned `swagger-ui-dist` package, never a CDN. The page's Content-Security-Policy allows scripts and requests to its own origin only, because tokens typed into the page share that origin with the signing API (SEC-13). Swagger UI keeps entered tokens in memory only, and "Try it out" calls the live L2.
 
-The fourteen `PORTAL_TOKEN` routes (v1.9, L2-8) exist only with `USER_ACCOUNTS=1`; without it each answers 404. `:userId` must match `^usr_[0-9a-f]{32}$` (else 400, after the token check). Bodies are JSON of at most 16 KB with no unknown field, and no field is free text: every string is an identifier, a host, an ISO date or an atomic amount. A `policyId` of another user is 404 with the same body as an unknown one, and no route reads a policy by its ID alone. Every write runs inside the serialized section. With user accounts on, the pending items of `GET /v1/escalations` and the `escalated` events gain `userId` when the escalation has one.
+The fourteen `PORTAL_TOKEN` routes (v1.10, L2-8) exist only with `USER_ACCOUNTS=1`; without it each answers 404. `:userId` must match `^usr_[0-9a-f]{32}$` (else 400, after the token check). Bodies are JSON of at most 16 KB with no unknown field, and no field is free text: every string is an identifier, a host, an ISO date or an atomic amount. A `policyId` of another user is 404 with the same body as an unknown one, and no route reads a policy by its ID alone. Every write runs inside the serialized section. With user accounts on, the pending items of `GET /v1/escalations` and the `escalated` events gain `userId` when the escalation has one.
 
 Authorize algorithm. Each decision runs inside one serialized critical section (INV-8: a promise-chain mutex):
 1. `t = now()`, sweep. Append `INTENT`.
 2. Look up an open approval for (session, resourceKey).
-3. Build `ctx`. Committed spend is per session and over the trailing 24 h; velocity counts AUTHORIZED entries in the trailing 60 s. v1.9: when the intent names a user and user accounts are on, derive the user's state from the ledger, select their active policy for the requested host, build the effective mandate (L2-1) and count every figure for that user and policy (L2-2); a person never falls back to the platform account.
+3. Build `ctx`. Committed spend is per session and over the trailing 24 h; velocity counts AUTHORIZED entries in the trailing 60 s. v1.10: when the intent names a user and user accounts are on, derive the user's state from the ledger, select their active policy for the requested host, build the effective mandate (L2-1) and count every figure for that user and policy (L2-2); a person never falls back to the platform account.
 4. `decide`.
-5. If AUTHORIZED: optionally wait `signerLatencyMs` (a test hook that simulates a remote signer), then sign. On a signer error, the decision becomes DENIED with `signer_rejected`. v1.9: a user payment is signed with the user's own account (L2-3).
+5. If AUTHORIZED: optionally wait `signerLatencyMs` (a test hook that simulates a remote signer), then sign. On a signer error, the decision becomes DENIED with `signer_rejected`. v1.10: a user payment is signed with the user's own account (L2-3).
 6. Append `AUTHORIZED`, `DENIED` or `ESCALATED` (v1.8: a new `ESCALATED` records `approvalRequest` when backchannel approval is on). Return the decision.
 
 v1.8 (L2-7), only for a new `ESCALATED` with `approvalRequest: "requested"`:
@@ -918,7 +918,7 @@ Reconcile algorithm. It runs inside the same serialized section as authorize, so
 - **Equivalence.** L2-2 consumes a backchannel approval or rejection exactly like an operator one, through `humanApprovedFor` and `humanRejected`. INV-12 is unchanged.
 - **Never stored or shown**: the client credential, tokens, request handles (only sealed) and the service's free text, in the ledger, logs, events, responses, L1 or L3. Only whitelisted OAuth error codes are kept.
 
-**L2-8 User accounts and the portal** (v1.9, `specs/013` data-model.md and contracts/control-api.md, portal-api.md, portal-ui.md, card-vault.md, config-and-secrets.md)
+**L2-8 User accounts and the portal** (v1.10, `specs/013` data-model.md and contracts/control-api.md, portal-api.md, portal-ui.md, card-vault.md, config-and-secrets.md)
 
 - **Off by default.** On only with `USER_ACCOUNTS=1` (CFG-2). Off, L2 ignores `PaymentIntent.userId` beyond checking its form, answers 404 on every portal route, and behaves as in v1.8. On, startup runs env → the user-account settings and the platform config (CFG-4) are validated → ledger lock → ledger load → every recorded wallet's address is derived again and compared (L2-3) → a `PLATFORM_CONFIG` entry if the digest changed → listen. A failure before the lock never takes it, and an error names the variable or the field, never a value.
 - **Three stores, one owner each.** No text a person typed ever reaches L2.
@@ -1105,24 +1105,24 @@ With `cdp`, a missing or empty `CDP_API_KEY_ID` or `CDP_API_KEY_SECRET`, or a se
 | File | Variables |
 |---|---|
 | `l1-agent.env` | `NETWORK, ANTHROPIC_API_KEY, ANTHROPIC_MODEL?, SELLER_URL, CONTROL_URL, SETTLEMENT_URL, CONTROL_TOKEN, VERIFIER_TOKEN, SESSION_ID?, SELLER_ALIAS_URL? (v1.5)` |
-| `l1-hosted.env` (v1.5) | `NETWORK, SELLER_URL, CONTROL_URL, SETTLEMENT_URL, CONTROL_TOKEN, VERIFIER_TOKEN, MODEL_PROVIDER, ANTHROPIC_MODEL?, ANTHROPIC_API_KEY? (anthropic only), FOUNDRY_BASE_URL? and AZURE_CLIENT_ID? (foundry only), AUTH_TENANT_ID, AUTH_AUDIENCE, AUTH_JWKS_FILE? (local only), SESSION_REF_SECRET, AGENT_PORT?, AGENT_BIND_HOST?, API_DOCS? (v1.6), PORTAL_CLIENT_ID? (v1.9: the portal web app's client ID, the `azp` the agent refuses)` |
-| `l2-control.env` | `NETWORK, PAYER_PRIVATE_KEY, ALLOWED_PAYEES, ALLOWED_HOSTS, CONTROL_TOKEN, SETTLEMENT_TOKEN, OPERATOR_TOKEN, API_DOCS?`; v1.8 (L2-7): `CIBA_APPROVAL?` (`1` on), and when on `CIBA_ISSUER` (https), `CIBA_CLIENT_ID`, `CIBA_AUDIENCE`, `CIBA_APPROVER`, exactly one of `CIBA_CLIENT_KEY` (RSA 2048–4096, PKCS#8 PEM) and `CIBA_CLIENT_SECRET`, and `CIBA_CLIENT_KEY_ID?`; v1.9 (L2-8): `USER_ACCOUNTS?` (`1` on; otherwise off, and the next four are ignored and only named in one log line), and when on `PORTAL_TOKEN` (different from the other four tokens), `USER_WALLET_MNEMONIC` (24 words, read only by `signer.ts`), `PLATFORM_FILE?` (default `config/platform.json`) and `PLATFORM_SELLERS?` (a JSON array that replaces the file's `sellers`) |
+| `l1-hosted.env` (v1.5) | `NETWORK, SELLER_URL, CONTROL_URL, SETTLEMENT_URL, CONTROL_TOKEN, VERIFIER_TOKEN, MODEL_PROVIDER, ANTHROPIC_MODEL?, ANTHROPIC_API_KEY? (anthropic only), FOUNDRY_BASE_URL? and AZURE_CLIENT_ID? (foundry only), AUTH_TENANT_ID, AUTH_AUDIENCE, AUTH_JWKS_FILE? (local only), SESSION_REF_SECRET, AGENT_PORT?, AGENT_BIND_HOST?, API_DOCS? (v1.6), PORTAL_CLIENT_ID? (v1.10: the portal web app's client ID, the `azp` the agent refuses)` |
+| `l2-control.env` | `NETWORK, PAYER_PRIVATE_KEY, ALLOWED_PAYEES, ALLOWED_HOSTS, CONTROL_TOKEN, SETTLEMENT_TOKEN, OPERATOR_TOKEN, API_DOCS?`; v1.8 (L2-7): `CIBA_APPROVAL?` (`1` on), and when on `CIBA_ISSUER` (https), `CIBA_CLIENT_ID`, `CIBA_AUDIENCE`, `CIBA_APPROVER`, exactly one of `CIBA_CLIENT_KEY` (RSA 2048–4096, PKCS#8 PEM) and `CIBA_CLIENT_SECRET`, and `CIBA_CLIENT_KEY_ID?`; v1.10 (L2-8): `USER_ACCOUNTS?` (`1` on; otherwise off, and the next four are ignored and only named in one log line), and when on `PORTAL_TOKEN` (different from the other four tokens), `USER_WALLET_MNEMONIC` (24 words, read only by `signer.ts`), `PLATFORM_FILE?` (default `config/platform.json`) and `PLATFORM_SELLERS?` (a JSON array that replaces the file's `sellers`) |
 | `l3-verifier.env` | `NETWORK, BASE_SEPOLIA_RPC_URL?, CONTROL_URL, VERIFIER_TOKEN, SETTLEMENT_TOKEN` |
 | `seller.env` | `NETWORK, SELLER_PAY_TO, FACILITATOR?, FACILITATOR_URL?, CDP_API_KEY_ID?, CDP_API_KEY_SECRET?, API_DOCS? (v1.6)` (the CDP pair is required when the choice is `cdp`) |
 | `facilitator.env` | `NETWORK=local, FACILITATOR_PRIVATE_KEY` |
 | `operator.env` | `CONTROL_URL, OPERATOR_TOKEN` |
-| `portal.env` (v1.9) | `NETWORK, CONTROL_URL, PORTAL_TOKEN, AUTH_TENANT_ID, AUTH_AUDIENCE, PORTAL_CLIENT_ID, PORTAL_SCOPE?, AUTH_JWKS_FILE? (local only), PROFILE_DIR? (default `.local/portal/profiles`), PORTAL_WEB_ROOT? (default `dist/portal-web`), CARD_VAULT? (`stripe` turns cards on), CARD_VAULT_KEY and CARD_VAULT_PUBLISHABLE_KEY (with `stripe`; test-mode keys only), BASE_SEPOLIA_RPC_URL?, PORTAL_PORT?, PORTAL_BIND_HOST?, API_DOCS?` |
+| `portal.env` (v1.10) | `NETWORK, CONTROL_URL, PORTAL_TOKEN, AUTH_TENANT_ID, AUTH_AUDIENCE, PORTAL_CLIENT_ID, PORTAL_SCOPE?, AUTH_JWKS_FILE? (local only), PROFILE_DIR? (default `.local/portal/profiles`), PORTAL_WEB_ROOT? (default `dist/portal-web`), CARD_VAULT? (`stripe` turns cards on), CARD_VAULT_KEY and CARD_VAULT_PUBLISHABLE_KEY (with `stripe`; test-mode keys only), BASE_SEPOLIA_RPC_URL?, PORTAL_PORT?, PORTAL_BIND_HOST?, API_DOCS?` |
 | `pre-deploy.<env>.bicepparam`, `main.<env>.bicepparam` (v1.5, in `infra/`) | Not env files: every value the two Azure deployments use. The target (`tenantId, subscriptionId, location`), every resource name (`names`, with the resource group), the GitHub repository and environment, the app and group IDs from `pre-deploy.bicep`'s outputs, public addresses and the Claude attestation. Only `unit, imageTag, seedIp, recoverVaults, agentStableRevision` come from `deploy.yml`'s environment. Only Bicep reads them (`bicep build-params`). No secret values |
 
-Token defaults (`dev-control-token`, `dev-settlement-token`, `dev-verifier-token`, `dev-operator-token`, and since v1.9 `dev-portal-token`) apply only when `NETWORK=local`. On any other network, a missing or empty token is a startup error. An empty token is always a startup error.
+Token defaults (`dev-control-token`, `dev-settlement-token`, `dev-verifier-token`, `dev-operator-token`, and since v1.10 `dev-portal-token`) apply only when `NETWORK=local`. On any other network, a missing or empty token is a startup error. An empty token is always a startup error.
 - Each entry point calls `loadEnv()`. `ENV_FILE` defaults to the process's own file (§3.1), and a caller can override it.
 - Templates leave private keys empty (`# set me`).
 - `API_DOCS` (L2 and, since v1.6, the hosted agent and the seller; read by `apiDocsEnabled()`): `1` mounts the docs routes (L2-5, L1-6, CP-1); unset, empty or `0` leaves them off; any other value is a startup error. No Azure template or workflow sets it.
 - `npm run demo:local` gives each child only `PATH`, `HOME`, `NODE_*` and its own `ENV_FILE`. On `local`, if `env/l2-control.env` or `env/facilitator.env` is missing or the key is empty, the demo derives that key with `localDevKeys()`. It passes the payer key only to the L2 child and the facilitator key only to the facilitator child.
 - The demo spawns `node_modules/.bin/tsx` directly (not `npx`) and reads each child's env file with a minimal `KEY=value` reader for its fallback decisions; only `src/shared/config.ts` uses dotenv (architecture test). On `local`, when `SELLER_PAY_TO` or `ALLOWED_PAYEES` is empty, the demo sets it to account #3 (CP-5).
-- `src/portal-main.ts` (v1.9) loads `env/portal.env` and then exits 1 if `PAYER_PRIVATE_KEY` or `USER_WALLET_MNEMONIC` is visible, from the process environment or from the file, naming the variable and printing no value (as INV-3 does for L1). A missing or invalid portal setting stops it the same way.
-- `npm run stack:local -- --users` (v1.9) gives the L2 child `USER_ACCOUNTS=1` and a fixed local dev mnemonic (`scripts/demo-lib.ts`, local only). `npm run demo:local` never does, so its summary is unchanged.
-- `main.<env>.bicepparam` (v1.9) gains the `userAccounts` object; `pre-deploy.<env>.bicepparam` gains `names.portalApp` and `portalOrigin`. Neither holds a secret.
+- `src/portal-main.ts` (v1.10) loads `env/portal.env` and then exits 1 if `PAYER_PRIVATE_KEY` or `USER_WALLET_MNEMONIC` is visible, from the process environment or from the file, naming the variable and printing no value (as INV-3 does for L1). A missing or invalid portal setting stops it the same way.
+- `npm run stack:local -- --users` (v1.10) gives the L2 child `USER_ACCOUNTS=1` and a fixed local dev mnemonic (`scripts/demo-lib.ts`, local only). `npm run demo:local` never does, so its summary is unchanged.
+- `main.<env>.bicepparam` (v1.10) gains the `userAccounts` object; `pre-deploy.<env>.bicepparam` gains `names.portalApp` and `portalOrigin`. Neither holds a secret.
 - `npm run approve`, `npm run reject` and `npm run escalations` resolve their bearer token with `tokenFor("operator")`, so on `local` the dev operator token applies when `OPERATOR_TOKEN` is unset. They read only `env/operator.env` (or `ENV_FILE`).
 
 **CFG-3 `config/mandate.json`** (all amounts are atomic strings):
@@ -1143,7 +1143,7 @@ Token defaults (`dev-control-token`, `dev-settlement-token`, `dev-verifier-token
 
 Constraint: keep `autoApproveMax < hardCap ≤ sessionBudget`. Otherwise an approved escalation can never pay.
 
-**CFG-4 `config/platform.json`** (v1.9, L2-8; read by L2 only when user accounts are on, validated before the ledger lock):
+**CFG-4 `config/platform.json`** (v1.10, L2-8; read by L2 only when user accounts are on, validated before the ledger lock):
 
 | Field | Default | Notes |
 |---|---|---|
@@ -1193,7 +1193,7 @@ Only use the SDK helpers to encode and decode these headers. Never hand-roll bas
 | SEC-16 | Secrets, requester tokens or payment headers reach logs or telemetry | Whitelisted JSON run logs; no Mastra observability or OTel export; known-value tests offline and a shape scan of cloud logs | T-AGT-05, T-E2E-AZ |
 | SEC-17 | A forged, replayed or swapped backchannel approval pays something nobody approved (v1.8) | L2 verifies the answer before recording it: signature through the issuer's JWKS, issuer, audience, client, validity, approver, the open request, the payment details field for field, single use; outcomes recorded inside the serialized section; the client credential confined to one module (A9) | T-CIBA-08, T-CIBA-10 |
 | SEC-18 | Push fatigue: a prompt-injected agent escalates again and again until the approver taps "approve" (v1.8) | Repeats reuse the pending escalation; at most 10 approval requests per rolling hour, counted from the ledger; automated checks are operator-only | T-CIBA-03, T-CIBA-04, T-E2E-10 |
-| SEC-19 | A person reads or changes another person's profile, wallet, policies or cards (v1.9) | The user comes only from the verified token: no portal route takes a user identifier. L2 looks a policy up through its owner and answers 404 for another user's as for an unknown one. A profile file is read only for its own user. Each user has their own account, budgets and approvals. The portal's token opens nothing but the portal routes (A12) | T-PRT-02, T-USR-03, T-USR-11, T-USR-02 |
+| SEC-19 | A person reads or changes another person's profile, wallet, policies or cards (v1.10) | The user comes only from the verified token: no portal route takes a user identifier. L2 looks a policy up through its owner and answers 404 for another user's as for an unknown one. A profile file is read only for its own user. Each user has their own account, budgets and approvals. The portal's token opens nothing but the portal routes (A12) | T-PRT-02, T-USR-03, T-USR-11, T-USR-02 |
 | SEC-20 | A token issued for one service is used at the other: the agent's at the portal, or the portal's at the agent | One scope and one client each. The portal requires `Portal.Access`, its own client as `azp` and `idtyp: user`; the agent requires `user_impersonation` and refuses the portal's client | T-PRT-01, T-AGT-07 |
 | SEC-21 | A stolen or left-open portal sign-in loosens a policy | Every loosening operation needs credentials entered within 15 minutes, judged by L2; the platform limits bound what any policy can allow; the token lives in memory and session storage only; a strict CSP; typed text is never rendered as HTML | T-USR-05, T-USR-10, T-PRT-07 |
 | SEC-22 | Card details or the card vault key are exposed | Card numbers and codes go from the browser to the vault only; the ledger holds an identifier, the portal's views only brand, last four and expiry; the key is a restricted test-mode key confined to one file (A10); a live key stops the portal; whitelisted logs | T-CARD-01, T-CARD-06, T-ARCH-A10 |
@@ -1226,7 +1226,7 @@ Residual risks added in v1.8:
 - An LLM run of the hosted agent that strays to an item above the auto-approve limit notifies the approver once; the cap bounds it, and the deployment's hosted smoke run fails on any escalation.
 - A refusal is an unsigned error answer; accepting it can only make L2 more restrictive.
 
-Residual risks added in v1.9:
+Residual risks added in v1.10:
 - The hosted agent service is trusted to name the right user. If it were compromised it could name another onboarded user, and spend within that user's policies, or no user, and spend within the platform mandate. The platform limits bound both.
 - Step-up relies on `auth_time` in Entra's access token being the time credentials were last entered, also after a forced sign-in and across a silent renewal. That is assumed from the documentation and must be checked against the tenant before `userAccounts.enabled` is set anywhere (`specs/013` quickstart §5). If the claim is missing, loosening is always refused.
 - The mnemonic sits in Key Vault beside the payer key, so that vault's RBAC holders are trusted. Losing it makes every user's test funds unreachable, and it can't be rotated in place.
@@ -1259,10 +1259,10 @@ Residual risks added in v1.4:
 | T-LED-02 | ledger | a NOT_SETTLED authorization is released only after `validBefore` |
 | T-LED-03 | ledger | anomaly reports are ignored for the effective status |
 | T-LED-04 | escalations | L2-4.3 state derivation and the 300 s boundary; `findRejection`, `findPendingEscalation`; the sweep appends each expiry and lapse once, also after a restart; operator views and events carry no secret-bearing keys. **Must fail without the clock check**: with no sweep, the state is already expired at 300 s |
-| T-ARCH-* | architecture | rules A1–A7 (§4.1). Each fixture under `test/fixtures/arch/` trips its rule. (A8–A12 have their own rows.) v1.9: A1 and A4 also cover `src/portal/` |
-| T-ARCH-ENV | architecture | each `env/*.env.example` holds only its process's variables; private keys and secrets are empty. v1.9: eight templates with `portal.env.example`; a mnemonic and the card vault key are empty |
-| T-DEV-01 | vscode-local | every configuration in `.vscode/launch.json` runs through `scripts/vscode-local.ts run <role>` with tsx and child attach, or is the vitest one with `NETWORK=local`; every role is reachable; the stack's services have no pre-launch task and every L1 and operator configuration runs `local: stack` first; pre-launch tasks, compound members and `${input:…}` names resolve; no compound starts two members on the same pre-launch task. **Must fail**: another program, an unknown role, an env the runner drops, a service with a pre-launch task, an L1 configuration without `local: stack`, a missing task and a shared pre-launch task are reported. v1.9: the role `portal` and its configuration, which must run `local: stack: users` first |
-| T-DEV-02 | vscode-local | `localRunEnv` gives each role its own env file and on local only its own key (the payer key to L2, the facilitator key to the facilitator, payTo to the seller), `NETWORK=local` whatever the file says, `API_DOCS`, and the debugger's attach variables; warnings name a missing model key without its value. **Must fail**: a `base-sepolia` file still runs locally, and VS Code's own `PAYER_PRIVATE_KEY`, `ANTHROPIC_API_KEY` or ports never reach a process. v1.9: with `--users` the mnemonic goes only to L2, the portal gets no key at all, and the users stack refuses an L2 that runs without user accounts |
+| T-ARCH-* | architecture | rules A1–A7 (§4.1). Each fixture under `test/fixtures/arch/` trips its rule. (A8–A12 have their own rows.) v1.10: A1 and A4 also cover `src/portal/` |
+| T-ARCH-ENV | architecture | each `env/*.env.example` holds only its process's variables; private keys and secrets are empty. v1.10: eight templates with `portal.env.example`; a mnemonic and the card vault key are empty |
+| T-DEV-01 | vscode-local | every configuration in `.vscode/launch.json` runs through `scripts/vscode-local.ts run <role>` with tsx and child attach, or is the vitest one with `NETWORK=local`; every role is reachable; the stack's services have no pre-launch task and every L1 and operator configuration runs `local: stack` first; pre-launch tasks, compound members and `${input:…}` names resolve; no compound starts two members on the same pre-launch task. **Must fail**: another program, an unknown role, an env the runner drops, a service with a pre-launch task, an L1 configuration without `local: stack`, a missing task and a shared pre-launch task are reported. v1.10: the role `portal` and its configuration, which must run `local: stack: users` first |
+| T-DEV-02 | vscode-local | `localRunEnv` gives each role its own env file and on local only its own key (the payer key to L2, the facilitator key to the facilitator, payTo to the seller), `NETWORK=local` whatever the file says, `API_DOCS`, and the debugger's attach variables; warnings name a missing model key without its value. **Must fail**: a `base-sepolia` file still runs locally, and VS Code's own `PAYER_PRIVATE_KEY`, `ANTHROPIC_API_KEY` or ports never reach a process. v1.10: with `--users` the mnemonic goes only to L2, the portal gets no key at all, and the users stack refuses an L2 that runs without user accounts |
 | T-DEV-03 | vscode-local | `local: stack` (`vscode-local.ts stack`) decides per stack process: reuse it when it answers, wait for it when its port is taken (a compound starting it), start it when the port is free. Checked by hand: from nothing it starts all five; with the chain up it starts the four services; a second call reuses everything; SIGTERM and SIGHUP stop what it started; `run l2` on a taken port is refused |
 | T-ARCH-TRACE | architecture | every test ID named in the §11 threat matrix (specs/007 contracts) appears in a test title; a row naming a missing test fails |
 | T-ARCH-BIND | e2e | `listenControl`/`listenSettlement` bind 127.0.0.1 with `CONTROL_PORT`/`SETTLEMENT_PORT` overridden |
@@ -1334,9 +1334,9 @@ Residual risks added in v1.4:
 | T-WEB-06 | web/portal/test/wallet | the wallet step and screen: one button, the address, how to fund it, the figures, no control that moves funds out; the card notice always present; Add a card disabled with its reason at 5 cards, when unavailable and when disabled; the vault's fields and only a setup reference and a nickname reach the portal; a vault failure leaves the page working; Remove asks first; in the editor a card can't be chosen. In `account.test.tsx`: disable asks first, the banner on every screen, every create and change control disabled, name and email still editable, enabling says the policies are paused |
 | T-WEB-07 | web/portal/test/safety | no source file can inject HTML or run text as code; a name, policy name or nickname containing markup renders as text; no source file names a platform secret or keeps a token itself; the token travels only in the `Authorization` header and no call carries a user identifier |
 | T-WEB-08 | web/portal/test/a11y | an axe pass on every screen in its main states, with dialogs, errors, the step-up prompt and a version conflict, reports no violation (and reports an unlabelled field when one is planted); every text color of the stylesheet has a contrast of at least 4.5:1 on its backgrounds; onboarding is completed with the keyboard alone |
-| T-ARCH-A10 | architecture | rule A10 (v1.9) trips on its fixture, for the key and for the vault's host; the tree is clean; the publishable key never trips it |
-| T-ARCH-A11 | architecture | rule A11 (v1.9) trips on its fixture and the tree is clean |
-| T-ARCH-A12 | architecture | rule A12 (v1.9) trips on its fixture and the tree is clean: no layer names the portal's token, and the portal names no other role's secret |
+| T-ARCH-A10 | architecture | rule A10 (v1.10) trips on its fixture, for the key and for the vault's host; the tree is clean; the publishable key never trips it |
+| T-ARCH-A11 | architecture | rule A11 (v1.10) trips on its fixture and the tree is clean |
+| T-ARCH-A12 | architecture | rule A12 (v1.10) trips on its fixture and the tree is clean: no layer names the portal's token, and the portal names no other role's secret |
 | T-E2E-12 | e2e | two users on the local chain: each payment is signed by, and settles from, its own user's account, and the platform payer's balance is untouched; an account that can't cover a payment is refused by the facilitator and nothing is spent |
 | T-E2E-13 | e2e | disable and enable through the portal and the chain: an escalation approved after the disable is denied; after enable the policy is paused; after resume it pays once |
 | T-E2E-01 | e2e | scripted plan outcomes `[FREE, PAID, PAID, ESCALATED, DENIED, DENIED]`; on-chain delta exactly 6000; two CONFIRMED settlements; chain ok; budget `spentOrReserved = 6000` |
@@ -1348,9 +1348,9 @@ Residual risks added in v1.4:
 | T-E2E-08 | e2e | expiry on L2's clock: a repeat while pending reuses the ID; after 300 s the escalation expires, approve and reject are 409, the next request escalates under a new ID, and re-approving returns the same approval so one payment happens |
 | T-E2E-09 | e2e | the hosted service on the harness: FREE, PAID, PAID, ESCALATED with both payments CONFIRMED and 6000 spent; continuation after an operator approval pays once with `approvalRef`, and another requester's use of the reference → 404 with the ledger unchanged |
 | T-LED-05 | ledger-lock | one ledger writer (L2-6): a second acquirer waits while a fresh lock is held and takes it within 2 s of SIGTERM; a 31 s stale lock is taken over; a lost lock is reported; `main()` locks before loading. **Must fail**: two unlocked writers fork the chain and the reload throws `integrity` |
-| T-IAC-01 | infra (needs `BICEP_PATH`) | the compiled `infra/main.bicep` and `infra/pre-deploy.bicep`, with their parameter files: role assignments only per the identity–vault matrix (the operators' group on the operator job only); the payer key only in `ca-l2-eastus2-dev/l2` from the l2 vault; internal-only L2/L3; one L2 replica on NFS; sidecars without env or secrets; identity lifecycle `Main` only for the agent; sellers in their own environment; no secret literals; `ALLOWED_HOSTS` is the seller, not the alias; vault firewalls deny by default, open only to `seedIp`, recovered only through `recoverVaults`; the agent's audience is a required client ID; each app and job on its own unit's image, which contains its command's entry point (the operator job on `x402-operator`), and the operator job's own command `ledger-verify`; each unit's apps look up only their own identities and vaults and wait for the platform; the model is keyless (Foundry refuses API keys, no container gets an Anthropic key, the agent signs in as `id-l1-eastus2-dev`) and the agent's model is the Claude deployment with its attestation; every name in the parameter files' `names` is the standard one for its place there and fits Azure's limits, every resource is named from `names`, each of `names` is deployed, every module gets `names` whole, and no template builds a name from the location or writes one out; the API app (v2.0 tokens, its standard URI, only Agent.Run, only `user_impersonation` with only the Azure CLI pre-authorized, assignment required), the deploy app (no secret, one federated credential for the deploy environment), Agent.Run for the deploy app and `agentUsers` only, the operators' security group, and the deploy app's Contributor and condition-limited Role Based Access Control Administrator on the resource group only; every template parameter set in its parameter file, only the five per-run values from the environment, both files agreeing on the target, and each template refusing to run elsewhere; each module of `main.bicep` deployed by exactly one unit's runs (`unit`: the platform's modules by the platform's, each unit's apps by that unit's), with `unit` required and one of the six. **Must fail**: 25 mutant tests (rules 1, 2, 3, 9, 10, 11 and 18; two each for rules 14 and 17; three each for rules 12, 13 and 16; five for rule 15) v1.8, rule 19: the Auth0 client credential only in `ca-l2-eastus2-dev/l2`, from the l2 vault, under the name `ciba.credential` chooses; every other `CIBA_*` value from the `ciba` parameter; `main.bicep` refuses an enabled `ciba` it can't use. **Must fail**: the credential on the agent, a literal credential, one fixed name, a written-out `CIBA_ISSUER`, no `ciba` check. v1.9: the portal is a unit (its app, identity, vault, image and the `profiles` share, mounted by the portal only; the ledger share by L2 only); the mnemonic only in `ca-l2-eastus2-dev/l2` from the l2 vault; the portal is the second app with external ingress; the API app has one role, two scopes, two pre-authorized clients and the optional claims `auth_time` and `idtyp`, and the portal's web app has no credential and no role; rule 20: L2 always references `portal-token` and `user-wallet-mnemonic`, `USER_ACCOUNTS` and `PLATFORM_SELLERS` come from `userAccounts` and the seller's own host, the portal reads only its own vault and gets no payer key, no mnemonic and no token but `PORTAL_TOKEN`, and `main.bicep` passes `userAccounts` whole. Each changed rule keeps a must-fail mutant. |
-| T-IMG-01 | images | each image's import graph (`scripts/image-closure.ts`) stays in its own folders and uses only runtime dependencies; only the L2 image holds the signer or any L2 code (the operator's holds only the operator scripts and `src/shared`); only the L1 image holds Mastra and the model SDKs; every Dockerfile builds its own image from the same pinned base and loads every module once. **Must fail**: L1 reaching the signer; a package resolved at run time but not listed; an imported package missing from `dependencies`. v1.9: the portal image holds `src/portal/` and `src/shared/` only, none of the agent's packages and no web package (the web app is bundled at build time and copied as static files) |
-| T-E2E-AZ | deploy-workflow, github-setup, cleanup (static) and the live workflows | `.github/workflows` holds the pipelines (six, and seven since v1.9) and `deploy.yml`, nothing else: each pipeline runs by hand or on its own `deploy-<unit>-*` tag, holds the concurrency group `deploy-azure`, passes no secret, and only calls `deploy.yml` with its unit and its own inputs (`first-deployment` for all but L1, `seed-ip` and `recover-vaults` for the platform), and each image is built by exactly one pipeline. `deploy.yml`: only `workflow_call`, and no concurrency group of its own (it would deadlock with its caller); OIDC sign-in with the tenant, subscription, resource group and deploy app compiled from `infra/main.<env>.bicepparam` by the pinned Bicep CLI, which every step uses, and no GitHub secret or variable; a fresh sign-in (`SIGN_IN`) first in every step that calls Azure, and no `azure/login`; Azure provisioned by Bicep only (every `az` command in the workflows and the two scripts is a Bicep deployment, a read, a job start, an image copy or a clean-up deletion), and `infra/` holds only `github-setup.sh` and `cleanup.sh`; every step with pipefail; `main.bicep` deployed with `UNIT`, what-if first; every gate (tests, T-IAC-01, image scan, deploy, wait, balance, `--check-baseline` regression, chain, smoke ≤ 120 s, log scan) before promotion; the image steps, promotion and rollback skipped only on the platform, the checks only on a first deployment; L2's ledger lock handover awaited after a platform or L2 deployment; step 0 mapping the unit to its image and refusing `seed-ip` or `recover-vaults` on a unit, `recover-vaults` without `first-deployment`, and a first deployment of L1, before anything else (the guard run for every unit with every combination of the three inputs); promotion records the unit's image as `last-good`, and on L1 first moves the agent's traffic through `main.bicep`; rollback of the unit to its `last-good` on any failure once the deploy step ran, even partway, without touching the agent's traffic; every job started with its own command (the deploy identity never approves or rejects); the smoke token for the API app's client ID; names from the parameter file right after the checkout, none hard-coded. `infra/github-setup.sh` (fake `gh`) creates only the GitHub environment its parameter file names and reports leftover secrets. `infra/cleanup.sh` (fake tenant and `gh`) deletes the GitHub environment, the deploy app's role assignments before the app (none orphaned), the resource group, both app registrations and the operators' group, and nothing else; it purges with `--purge`, reports the vaults that purge protection keeps, and deletes nothing with `--dry-run`, unconfirmed, or for another tenant. **Must fail**: a pipeline outside the group, on another unit, on `deploy-*` tags or a merge, with secrets or with steps of its own, and a missing or extra pipeline; `deploy.yml` with its own trigger or concurrency group; promoting before the regression; a regression skipped by another condition, a platform run that builds an image or promotes, or a rollback of the platform; no guard, a guard that lets `seed-ip` through on a unit or a first deployment of L1, a unit built from another image, or the inputs pasted into the script; a GitHub secret, or a sign-in that isn't OIDC from the parameter file; one `azure/login` for the whole job, or a step that calls Azure before signing in; provisioning outside Bicep (`az group create`, traffic moved with `az`); a deployment without what-if, an image built under another name, or a promotion of another image; the operator job started with an approve command; the target step run late, a missing name, an L2 deployment that doesn't wait for the lock handover, or no pipefail; a rollback that redeploys the new image, or a smoke token for another audience; a hard-coded name; a third script in `infra/`; the setup script without its environment check; the clean-up without its role-assignment step or its dry-run guard v1.8: the hosted smoke step fails when any step escalated, so a deployment check never asks the approver (L2-7). v1.9: a seventh pipeline, `deploy-portal.yml`; the guard and the image mapping for `portal`; the build's env scan also refuses a mnemonic or a card vault key; a `portal-smoke` step after the hosted smoke (`/healthz` 200, `/api/config` 200 in `entra` mode, `/api/me` without a token 401); `infra/cleanup.sh` deletes three app registrations. |
+| T-IAC-01 | infra (needs `BICEP_PATH`) | the compiled `infra/main.bicep` and `infra/pre-deploy.bicep`, with their parameter files: role assignments only per the identity–vault matrix (the operators' group on the operator job only); the payer key only in `ca-l2-eastus2-dev/l2` from the l2 vault; internal-only L2/L3; one L2 replica on NFS; sidecars without env or secrets; identity lifecycle `Main` only for the agent; sellers in their own environment; no secret literals; `ALLOWED_HOSTS` is the seller, not the alias; vault firewalls deny by default, open only to `seedIp`, recovered only through `recoverVaults`; the agent's audience is a required client ID; each app and job on its own unit's image, which contains its command's entry point (the operator job on `x402-operator`), and the operator job's own command `ledger-verify`; each unit's apps look up only their own identities and vaults and wait for the platform; the model is keyless (Foundry refuses API keys, no container gets an Anthropic key, the agent signs in as `id-l1-eastus2-dev`) and the agent's model is the Claude deployment with its attestation; every name in the parameter files' `names` is the standard one for its place there and fits Azure's limits, every resource is named from `names`, each of `names` is deployed, every module gets `names` whole, and no template builds a name from the location or writes one out; the API app (v2.0 tokens, its standard URI, only Agent.Run, only `user_impersonation` with only the Azure CLI pre-authorized, assignment required), the deploy app (no secret, one federated credential for the deploy environment), Agent.Run for the deploy app and `agentUsers` only, the operators' security group, and the deploy app's Contributor and condition-limited Role Based Access Control Administrator on the resource group only; every template parameter set in its parameter file, only the five per-run values from the environment, both files agreeing on the target, and each template refusing to run elsewhere; each module of `main.bicep` deployed by exactly one unit's runs (`unit`: the platform's modules by the platform's, each unit's apps by that unit's), with `unit` required and one of the six. **Must fail**: 25 mutant tests (rules 1, 2, 3, 9, 10, 11 and 18; two each for rules 14 and 17; three each for rules 12, 13 and 16; five for rule 15) v1.8, rule 19: the Auth0 client credential only in `ca-l2-eastus2-dev/l2`, from the l2 vault, under the name `ciba.credential` chooses; every other `CIBA_*` value from the `ciba` parameter; `main.bicep` refuses an enabled `ciba` it can't use. **Must fail**: the credential on the agent, a literal credential, one fixed name, a written-out `CIBA_ISSUER`, no `ciba` check. v1.10: the portal is a unit (its app, identity, vault, image and the `profiles` share, mounted by the portal only; the ledger share by L2 only); the mnemonic only in `ca-l2-eastus2-dev/l2` from the l2 vault; the portal is the second app with external ingress; the API app has one role, two scopes, two pre-authorized clients and the optional claims `auth_time` and `idtyp`, and the portal's web app has no credential and no role; rule 21: L2 always references `portal-token` and `user-wallet-mnemonic`, `USER_ACCOUNTS` and `PLATFORM_SELLERS` come from `userAccounts` and the seller's own host, the portal reads only its own vault and gets no payer key, no mnemonic and no token but `PORTAL_TOKEN`, and `main.bicep` passes `userAccounts` whole. Each changed rule keeps a must-fail mutant. |
+| T-IMG-01 | images | each image's import graph (`scripts/image-closure.ts`) stays in its own folders and uses only runtime dependencies; only the L2 image holds the signer or any L2 code (the operator's holds only the operator scripts and `src/shared`); only the L1 image holds Mastra and the model SDKs; every Dockerfile builds its own image from the same pinned base and loads every module once. **Must fail**: L1 reaching the signer; a package resolved at run time but not listed; an imported package missing from `dependencies`. v1.10: the portal image holds `src/portal/` and `src/shared/` only, none of the agent's packages and no web package (the web app is bundled at build time and copied as static files) |
+| T-E2E-AZ | deploy-workflow, github-setup, cleanup (static) and the live workflows | `.github/workflows` holds the pipelines (six, and seven since v1.10) and `deploy.yml`, nothing else: each pipeline runs by hand or on its own `deploy-<unit>-*` tag, holds the concurrency group `deploy-azure`, passes no secret, and only calls `deploy.yml` with its unit and its own inputs (`first-deployment` for all but L1, `seed-ip` and `recover-vaults` for the platform), and each image is built by exactly one pipeline. `deploy.yml`: only `workflow_call`, and no concurrency group of its own (it would deadlock with its caller); OIDC sign-in with the tenant, subscription, resource group and deploy app compiled from `infra/main.<env>.bicepparam` by the pinned Bicep CLI, which every step uses, and no GitHub secret or variable; a fresh sign-in (`SIGN_IN`) first in every step that calls Azure, and no `azure/login`; Azure provisioned by Bicep only (every `az` command in the workflows and the two scripts is a Bicep deployment, a read, a job start, an image copy or a clean-up deletion), and `infra/` holds only `github-setup.sh` and `cleanup.sh`; every step with pipefail; `main.bicep` deployed with `UNIT`, what-if first; every gate (tests, T-IAC-01, image scan, deploy, wait, balance, `--check-baseline` regression, chain, smoke ≤ 120 s, log scan) before promotion; the image steps, promotion and rollback skipped only on the platform, the checks only on a first deployment; L2's ledger lock handover awaited after a platform or L2 deployment; step 0 mapping the unit to its image and refusing `seed-ip` or `recover-vaults` on a unit, `recover-vaults` without `first-deployment`, and a first deployment of L1, before anything else (the guard run for every unit with every combination of the three inputs); promotion records the unit's image as `last-good`, and on L1 first moves the agent's traffic through `main.bicep`; rollback of the unit to its `last-good` on any failure once the deploy step ran, even partway, without touching the agent's traffic; every job started with its own command (the deploy identity never approves or rejects); the smoke token for the API app's client ID; names from the parameter file right after the checkout, none hard-coded. `infra/github-setup.sh` (fake `gh`) creates only the GitHub environment its parameter file names and reports leftover secrets. `infra/cleanup.sh` (fake tenant and `gh`) deletes the GitHub environment, the deploy app's role assignments before the app (none orphaned), the resource group, both app registrations and the operators' group, and nothing else; it purges with `--purge`, reports the vaults that purge protection keeps, and deletes nothing with `--dry-run`, unconfirmed, or for another tenant. **Must fail**: a pipeline outside the group, on another unit, on `deploy-*` tags or a merge, with secrets or with steps of its own, and a missing or extra pipeline; `deploy.yml` with its own trigger or concurrency group; promoting before the regression; a regression skipped by another condition, a platform run that builds an image or promotes, or a rollback of the platform; no guard, a guard that lets `seed-ip` through on a unit or a first deployment of L1, a unit built from another image, or the inputs pasted into the script; a GitHub secret, or a sign-in that isn't OIDC from the parameter file; one `azure/login` for the whole job, or a step that calls Azure before signing in; provisioning outside Bicep (`az group create`, traffic moved with `az`); a deployment without what-if, an image built under another name, or a promotion of another image; the operator job started with an approve command; the target step run late, a missing name, an L2 deployment that doesn't wait for the lock handover, or no pipefail; a rollback that redeploys the new image, or a smoke token for another audience; a hard-coded name; a third script in `infra/`; the setup script without its environment check; the clean-up without its role-assignment step or its dry-run guard v1.8: the hosted smoke step fails when any step escalated, so a deployment check never asks the approver (L2-7). v1.10: a seventh pipeline, `deploy-portal.yml`; the guard and the image mapping for `portal`; the build's env scan also refuses a mnemonic or a card vault key; a `portal-smoke` step after the hosted smoke (`/healthz` 200, `/api/config` 200 in `entra` mode, `/api/me` without a token 401); `infra/cleanup.sh` deletes three app registrations. |
 | T-CDP-01 | cdp-config | the `facilitatorChoice` matrix (CP-3), and the public path sends no credential |
 | T-CDP-02 | cdp-isolation | seller startup fails closed: missing ID or secret, malformed secret, conflicts; the log line format; the unused-credential warning |
 | T-CDP-03 | cdp-auth | JWT headers (EdDSA, ES256 from PKCS#8 and SEC1); the scripted plan through a JWT-verifying CDP stub matches T-E2E-01 |
@@ -1385,8 +1385,8 @@ Suites added in v1.1: `counterparty.test.ts` (seller, facilitator, MockUSDC, M2/
 Manual checks:
 - `PAYER_PRIVATE_KEY=0x1 ENV_FILE=/dev/null npx tsx src/main.ts --scripted` exits 1 with the refusal message.
 - T-E2E-06 (opt-in, needs a CDP key and a funded Base Sepolia payer): `npm run demo:base-sepolia` exits 0 three times in a row. Each run prints the demo summary plus `settlements:        2 CONFIRMED`, `payer gas spent:    0 wei` and `secret scan:        clean`.
-- v1.9, needs outside accounts (`specs/013` quickstart §4 and §5): a card saved and removed against a Stripe sandbox; a sign-in to the portal against the Entra tenant, with `auth_time` checked after a forced sign-in and across a silent renewal.
-- `npm run demo:local` summary shows `spent on-chain: 0.006 USDC` and `hash chain ok=true entries=<n>` (`entries` counts the persistent `.local` ledger and grows across runs), and no listeners remain on ports 8545 or 4020–4023 afterwards. User accounts are off in the demo, so v1.9 leaves this summary unchanged.
+- v1.10, needs outside accounts (`specs/013` quickstart §4 and §5): a card saved and removed against a Stripe sandbox; a sign-in to the portal against the Entra tenant, with `auth_time` checked after a forced sign-in and across a silent renewal.
+- `npm run demo:local` summary shows `spent on-chain: 0.006 USDC` and `hash chain ok=true entries=<n>` (`entries` counts the persistent `.local` ledger and grows across runs), and no listeners remain on ports 8545 or 4020–4023 afterwards. User accounts are off in the demo, so v1.10 leaves this summary unchanged.
 
 ---
 
@@ -1412,7 +1412,7 @@ npm run agent:hosted        # L1-6 on 127.0.0.1:4024 (env/l1-hosted.env)
 API_DOCS=1 npm run agent:hosted   # plus Swagger UI at http://127.0.0.1:4024/docs (no token; off by default; never in Azure; v1.6)
 API_DOCS=1 npm run seller        # the seller plus Swagger UI at http://127.0.0.1:4021/docs (off by default; never in Azure; v1.6)
 npm run dev-token -- [--subject <name>] [--no-role] [--expired] [--service]   # local dev issuer (NETWORK=local only)
-# v1.9 user accounts and the portal (L2-8):
+# v1.10 user accounts and the portal (L2-8):
 npm run stack:local -- --users   # the local stack with user accounts on in L2 (local dev mnemonic)
 npm run build:web           # the portal's web app, to dist/portal-web
 npm run portal              # the portal on 127.0.0.1:4025 (env/portal.env); API_DOCS=1 adds /docs
@@ -1474,7 +1474,7 @@ Each item must preserve every `INV-*` invariant.
 | EXT-3 | **`upto` scheme** | Allow `upto` in the mandate. L2 signs a Permit2 max. Budgets reserve the max until L3 reports the settled `amount` from `SettleResponse.amount`; then the committed figure becomes the settled amount. | L2-2/4, L3-1 |
 | EXT-4 | **Solana (SVM)** | Network profile `solana-devnet`. `ExactSvmScheme` signer in L2. L3 verifies an SPL `TransferChecked` via RPC `getTransaction` with `finalized` commitment. | config, L2-3, L3-1 |
 | EXT-5 | **MCP server front-end** | Expose `fetch_resource` and `check_budget` as MCP tools from a new L1 process. It is just another L1 composition root; same ports. | new `src/layer1-intent/mcp.ts` |
-| EXT-6 | **Durable ledger** | SQLite with the same entry schema and hash chain; `committedAtomic` as a SQL view; WAL mode. v1.9: user state (L2-8) is derived by scanning the ledger, so this is also what real growth in users needs. | L2-4 |
+| EXT-6 | **Durable ledger** | SQLite with the same entry schema and hash chain; `committedAtomic` as a SQL view; WAL mode. v1.10: user state (L2-8) is derived by scanning the ledger, so this is also what real growth in users needs. | L2-4 |
 | EXT-7 | **mTLS between layers** | Replace bearer tokens with client certificates; pin the CN per caller. v1.5: in the Azure profile, the L2/L3 proxy sidecars are where mTLS would terminate. | L1-2, L2-5, L3-2 |
 | EXT-8 | **Observability** | OpenTelemetry spans with `intentId`/`authorizationId` as attributes across L1→L2→L3; metrics for decisions by rule and settlement latency by finality class. v1.5 adds a partial step: the hosted service's whitelisted run log correlates runs with the ledger by IDs. | all services |
 | EXT-9 | **Refund / revert-grant handling** | When the seller returns non-2xx after a CONFIRMED settlement, L1 reports `PAID_NOT_SERVED`. L2 opens a dispute record; a refund flow uses the escrow scheme. | contracts, L1-1, L2-4 |
@@ -1490,7 +1490,7 @@ Each item must preserve every `INV-*` invariant.
 - Base Sepolia USDC's EIP-712 name is `"USDC"`, not `"USD Coin"`. A wrong `extra.name` makes signatures fail verification.
 - CDP JWTs expire 120 s after they are signed. A skewed seller clock shows up as `facilitator authentication` errors.
 - `generateJwt` accepts EC keys only as PKCS#8 (`-----BEGIN PRIVATE KEY-----`, and no leading whitespace). The seller converts SEC1 (`-----BEGIN EC PRIVATE KEY-----`) keys before use.
-- The wallet mnemonic (v1.9) is never rotated in place: L2 compares every recorded wallet address at startup and refuses to start with another phrase. Back it up where the payer key is backed up.
+- The wallet mnemonic (v1.10) is never rotated in place: L2 compares every recorded wallet address at startup and refuses to start with another phrase. Back it up where the payer key is backed up.
 - Stripe's API has two breaking releases a year. The version is pinned in one constant (`API_VERSION` in `src/portal/card-vault.ts`) and in the Stripe.js URL the web app loads; re-check the six calls when moving it.
 - A sign-in window can only open from a click, so the web app parks a save that needs step-up behind a "Confirm it's you" button instead of opening the window by itself.
 - Child processes spawned through `npx` must be started `detached` and killed by process group (`process.kill(-pid)`), or ganache keeps port 8545 open.

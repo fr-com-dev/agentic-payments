@@ -7,7 +7,7 @@
 // - secrets come only from the l1 vault, as Key Vault references;
 // - identity lifecycle is Main only for the agent (Foundry tokens), None for the regression job;
 // - the agent's AUTH_AUDIENCE comes from the authAudience parameter;
-// - 013 (rule 20): the agent's PORTAL_CLIENT_ID, the azp it refuses, comes from the userAccounts parameter.
+// - 013 (rule 21): the agent's PORTAL_CLIENT_ID, the azp it refuses, comes from the userAccounts parameter.
 param location string
 @description('Every resource name (main.<environment>.bicepparam).')
 param names object

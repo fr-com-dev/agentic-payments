@@ -81,7 +81,7 @@ var cibaChecked = contains(['key', 'secret'], ciba.credential) && (!ciba.enabled
 
 // 013: an enabled userAccounts must name the portal web app's client ID (a GUID), and so must any deployment of the
 // portal itself, enabled or not: the portal doesn't start without it. A stripe card vault needs a test-mode
-// publishable key (T-IAC-01 rule 20).
+// publishable key (T-IAC-01 rule 21).
 #disable-next-line no-unused-vars
 var userAccountsChecked = contains(['off', 'stripe'], userAccounts.cardVault) && ((!userAccounts.enabled && unit != 'portal') || length(userAccounts.portalClientId) == 36) && (userAccounts.cardVault != 'stripe' || startsWith(userAccounts.cardVaultPublishableKey, 'pk_test_'))
   ? userAccounts.enabled

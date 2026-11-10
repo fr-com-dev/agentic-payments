@@ -9,8 +9,8 @@
 // - one replica at most, single revision, the NFS profiles storage at /app/.local/portal, which only it mounts
 //   (rule 4);
 // - secrets only from the portal vault, portal-token and card-vault-key, always referenced, so every environment
-//   seeds both (the placeholder off while user accounts or cards are off); the arrays stay literal (rule 20);
-// - no payment key and no token but PORTAL_TOKEN; it calls L2 only; the API docs switch is never set (rule 20).
+//   seeds both (the placeholder off while user accounts or cards are off); the arrays stay literal (rule 21);
+// - no payment key and no token but PORTAL_TOKEN; it calls L2 only; the API docs switch is never set (rule 21).
 param location string
 @description('Every resource name (main.<environment>.bicepparam).')
 param names object

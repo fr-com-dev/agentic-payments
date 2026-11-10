@@ -200,7 +200,7 @@ no longer match (R3). Back it up where the payer key is backed up.
 | 8 | the secret-name pattern gains `MNEMONIC` and `CARD_VAULT_KEY`: never literals |
 | 12, 13, 15, 17, 18 | the `UNITS`, `APP_UNIT`, `APPS`, `STANDARD`, `MainNames`, `DEPLOY_UNITS` tables gain the portal |
 | 16 | the API app has exactly one role, two scopes, two pre-authorized clients (the Azure CLI for `user_impersonation`, the web app for `Portal.Access`), and the two optional claims; the web app has no credential and no role |
-| 20 (new) | user accounts: L2 always references both new secrets; `USER_ACCOUNTS` and `PLATFORM_SELLERS` come from `userAccounts` and the seller's own host; the portal reads only `kv-portal`; the portal app gets no `PAYER_PRIVATE_KEY`, no `USER_WALLET_MNEMONIC` and no token other than `PORTAL_TOKEN`; `main.bicep` passes `userAccounts` whole |
+| 21 (new) | user accounts: L2 always references both new secrets; `USER_ACCOUNTS` and `PLATFORM_SELLERS` come from `userAccounts` and the seller's own host; the portal reads only `kv-portal`; the portal app gets no `PAYER_PRIVATE_KEY`, no `USER_WALLET_MNEMONIC` and no token other than `PORTAL_TOKEN`; `main.bicep` passes `userAccounts` whole |
 
 Each changed rule keeps a must-fail mutant.
 
@@ -235,7 +235,7 @@ Each changed rule keeps a must-fail mutant.
 | T-PRT-09 | portal entry point refuses when a payment key name is visible; config errors name the variable only |
 | T-ARCH-A10, A11, A12 | the three new rules, each with its fixture, clean walk and not-vacuous check; A1 and A4 over `src/portal/` |
 | T-ARCH-ENV | 8 templates; the new names; secret-like keys empty |
-| T-IAC-01 | rules 2, 3, 4, 8, 12, 13, 15–18 updated, rule 20 new, with mutants |
+| T-IAC-01 | rules 2, 3, 4, 8, 12, 13, 15–18 updated, rule 21 new, with mutants |
 | T-IMG-01 | the portal image's closure and Dockerfile shape |
 | T-DEV-01, 02 | the `portal` role and its launch configuration |
 | T-E2E-AZ | the new pipeline, the guard for `portal`, the new step's place and condition |

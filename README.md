@@ -10,7 +10,7 @@ A Claude agent buys HTTP resources with x402 (protocol v2, scheme `exact`, EIP-3
 | Counterparty | `src/counterparty/`, `scripts/facilitator.ts` | Seller API and local facilitator | 4021, 4022 |
 | Portal (optional) | `src/portal/`, `src/portal-main.ts`, `web/portal/` | Web portal for user accounts: profile, wallet and expense policies. No keys, decides nothing. | 4025 |
 
-`SPEC.md` (v1.9) is normative. Feature specs, plans and task lists live under `specs/` (spec-kit). Agent guidance is in `CLAUDE.md`.
+`SPEC.md` (v1.10) is normative. Feature specs, plans and task lists live under `specs/` (spec-kit). Agent guidance is in `CLAUDE.md`.
 
 ## Diagrams
 

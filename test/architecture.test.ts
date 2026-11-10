@@ -283,7 +283,7 @@ export function checkCibaConfinement(path: string, source: string): ArchViolatio
 }
 
 // ---------------------------------------------------------------------------
-// A10 (013, SPEC v1.9 §4.1, SEC-22): the card vault credential is confined to one file, like A8 and A9. Same scope:
+// A10 (013, SPEC v1.10 §4.1, SEC-22): the card vault credential is confined to one file, like A8 and A9. Same scope:
 // src/**, scripts/** and env templates (test/** is exempt). It also confines the vault's API host, so no other file
 // can call it. CARD_VAULT_KEY_… names and the publishable key are not the credential.
 // ---------------------------------------------------------------------------
@@ -303,7 +303,7 @@ export function checkCardVaultConfinement(path: string, source: string): ArchVio
 }
 
 // ---------------------------------------------------------------------------
-// A11 (013, SPEC v1.9 §4.1, INV-2): the user wallets' mnemonic is payment key material. Its name appears only where
+// A11 (013, SPEC v1.10 §4.1, INV-2): the user wallets' mnemonic is payment key material. Its name appears only where
 // it is read (the signer), where it is refused (the portal's entry point), where the local development value is set
 // (scripts/demo-lib.ts) and in L2's template. Same scope as A8.
 // ---------------------------------------------------------------------------
@@ -320,7 +320,7 @@ export function checkMnemonicConfinement(path: string, source: string): ArchViol
 }
 
 // ---------------------------------------------------------------------------
-// A12 (013, SPEC v1.9 §4.1, INV-13, FR-006): role isolation around the portal. No agent, verifier or counterparty
+// A12 (013, SPEC v1.10 §4.1, INV-13, FR-006): role isolation around the portal. No agent, verifier or counterparty
 // code names the portal's token; no portal code names the payer key or another role's token. src/** only.
 // ---------------------------------------------------------------------------
 
@@ -776,7 +776,7 @@ function missingIds(rows: { sec: string; ids: string[] }[], titles: string[]): s
 describe("T-ARCH-TRACE threat matrix → test titles (007 T051)", () => {
   // SEC-10 and SEC-11 were added by 009 (SPEC v1.2), SEC-12 by 010 (v1.3), SEC-13 by the API docs (v1.4),
   // SEC-14..16 by 011 (v1.5, hosted agent service), SEC-17..18 by 012 (v1.8, backchannel approval),
-  // SEC-19..24 by 013 (v1.9, user accounts and the portal).
+  // SEC-19..24 by 013 (v1.10, user accounts and the portal).
   const SEC_ROWS = Array.from({ length: 24 }, (_, i) => `SEC-${i + 1}`);
   it(`every ${SEC_ROWS[0]}..${SEC_ROWS.at(-1)} row names at least one test, and each named ID is a test title`, () => {
     const rows = matrixRows(readFileSync(THREAT_MATRIX, "utf8"));

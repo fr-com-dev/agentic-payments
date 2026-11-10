@@ -107,7 +107,7 @@ external facts that could not be confirmed from documentation, each with a check
 | VI. Exact money arithmetic | Atomic strings and `BigInt` in L2, the portal and the web app. USDC text is parsed by one shared function that refuses a seventh decimal instead of rounding (FR-025). | PASS | PASS |
 | VII. Protocol fidelity | x402 handling is unchanged; the signer still signs one requirement through the SDK, now with a per-user account. Cards are outside x402 and never pay. | PASS | PASS |
 | VIII. Proven safety | Ten must-fail proofs ([Proofs](#proofs-constitution-viii)). Every new rule, entry, route and field has a test. | PASS | PASS |
-| Quality gates | typecheck (now two projects), the full suite, an unchanged demo summary, SPEC v1.9 in the same change, requirement IDs in test names. | PASS | PASS |
+| Quality gates | typecheck (now two projects), the full suite, an unchanged demo summary, SPEC v1.10 in the same change, requirement IDs in test names. | PASS | PASS |
 
 **Amendments made in the same change, not violations** (the spec's Assumptions asked for them):
 
@@ -327,7 +327,7 @@ Per [config-and-secrets.md](contracts/config-and-secrets.md#azure) and
 | FR-037..FR-040 disable and enable | `users.ts`, `policy.ts` R17 | T-POL-17, T-USR-11, T-E2E-13 |
 | FR-041..FR-043 platform limits; seller list; flags | `platform.ts`, `effectiveMandate`, views | T-USR-07, T-USR-10 |
 | FR-044..FR-047 recording; no personal data; history | `ledger.ts`, views | T-LED-06, T-USR-01, T-PRT-08 |
-| FR-048, FR-049 portal apart; its own role | process and folder; `auth.ts` | T-USR-02, T-PRT-09, T-ARCH (A1, A4, A12), T-IAC-01 rule 20 |
+| FR-048, FR-049 portal apart; its own role | process and folder; `auth.ts` | T-USR-02, T-PRT-09, T-ARCH (A1, A4, A12), T-IAC-01 rule 21 |
 | NFR-001, NFR-002 monotonic; fail closed | `effectiveMandate`; gates | T-USR-10, T-USR-11 |
 | NFR-003, NFR-004 secrets; privacy | log whitelists; R6 | T-PRT-08, T-CARD-06, scan in T-E2E-12 |
 | NFR-005 availability | nothing on the decision path | T-PRT-06, T-CARD-05 |
@@ -376,7 +376,7 @@ T-ARCH-A10..A12. The rest:
 
 ## SPEC and governance changes (same change)
 
-SPEC.md v1.8 → **v1.9**, with a "Changes in 1.9" table:
+SPEC.md v1.8 → **v1.10**, with a "Changes in 1.10" table:
 
 | Section | Change |
 |---|---|
