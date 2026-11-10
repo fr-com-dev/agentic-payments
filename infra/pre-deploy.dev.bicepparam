@@ -14,6 +14,7 @@ param names = {
   apiApp: 'app-l1-${location}-${environment}'
   deployApp: 'app-deploy-${location}-${environment}'
   operators: 'grp-op-${location}-${environment}'
+  stateStorage: 'sttfstate${location}${environment}'
 }
 
 // GitHub: the repository and environment whose deploy job signs in as the deploy app (OIDC), and the IDs in GitHub's
@@ -23,6 +24,8 @@ param githubRepository = 'fr-com-dev/agentic-payments'
 param githubOwnerId = '274163174'
 param githubRepositoryId = '1422461966'
 param githubEnvironment = environment
+// provision-auth0.yml's job runs in its own GitHub environment, which holds the Auth0 Management API credential.
+param githubAuth0Environment = 'auth0-${environment}'
 
 // People: who may run the agent (Agent.Run), and who may start the operator job (the operators' group).
 param agentUsers = ['me@fabriciorojas.com']

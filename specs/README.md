@@ -1,6 +1,6 @@
 # Specs index: x402 three-layer agent payments
 
-These spec-kit feature specs decompose `SPEC.md` (v1.0 for 001–008, amended through v1.8 by 009, 010,
+These spec-kit feature specs decompose `SPEC.md` (v1.0 for 001–008, amended through v1.9 by 009, 010,
 011 and 012; v1.4 added the L2 API docs without a feature spec), which remains normative. Project principles
 live in `.specify/memory/constitution.md` (v1.3.0).
 It covers INV-1..13, the definition of done and the governance rules.

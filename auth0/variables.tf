@@ -1,5 +1,6 @@
-# Every value comes from <env>.tfvars (gitignored; dev.tfvars.example is the template), except the ephemeral client
-# secret, which comes from TF_VAR_client_secret only when credential = "secret". No variable holds a private key.
+# Every value comes from <environment>.tfvars, committed (dev.tfvars.example is the template; none is a secret),
+# except the ephemeral client secret: with credential = "secret" only, the pipeline passes it as TF_VAR_client_secret
+# from its GitHub environment. No variable holds a private key.
 
 variable "environment" {
   description = "The deployment environment these objects serve, as in infra/main.<environment>.bicepparam (dev)."
@@ -48,7 +49,7 @@ variable "credential" {
 }
 
 variable "client_public_key_file" {
-  description = "Path to the PUBLIC half (SPKI PEM, RSA 2048-4096) of L2's client key, when credential = key. Keep both halves outside the repository; only the private half goes into the l2 vault."
+  description = "Path, relative to auth0/, to the PUBLIC half (SPKI PEM, RSA 2048-4096) of L2's client key, when credential = key. Commit the public half next to the tfvars; the private half goes only into the l2 vault, never into the repository."
   type        = string
   default     = ""
   validation {
@@ -58,7 +59,7 @@ variable "client_public_key_file" {
 }
 
 variable "client_secret" {
-  description = "L2's client secret, when credential = secret: generate it yourself (16+ characters), pass it as TF_VAR_client_secret, and seed the same value into the l2 vault. Write-only: never stored in state or plan."
+  description = "L2's client secret, when credential = secret: generate it yourself (16+ characters), store it as the secret AUTH0_L2_CLIENT_SECRET of the pipeline's GitHub environment (it becomes TF_VAR_client_secret), and seed the same value into the l2 vault. Write-only: never stored in state or plan."
   type        = string
   default     = null
   sensitive   = true

@@ -37,7 +37,7 @@ P=infra/pre-deploy.dev.bicepparam; az deployment sub what-if -n pre-deploy-dev -
   --subscription <the file's subscriptionId> -l <its location>   # then `create`; admin, by hand
 infra/github-setup.sh [--dry-run]            # the GitHub environment the pipelines run in, from pre-deploy.<env>.bicepparam
 infra/cleanup.sh [--dry-run] [--purge]       # delete everything of the dev environment (asks first)
-terraform -chdir=auth0 init && terraform -chdir=auth0 plan -var-file=dev.tfvars -out=dev.tfplan   # the Auth0 tenant (admin, by hand)
+gh workflow run provision-auth0.yml -f environment=dev [-f apply=true]   # the Auth0 tenant (auth0/, Terraform): plan, or plan and apply
 npx vitest run test/policy.test.ts -t "<name>"   # single test
 ```
 
@@ -83,7 +83,7 @@ npx vitest run test/policy.test.ts -t "<name>"   # single test
 
 ## Gotchas
 - Auth0 CIBA (L2-7): Guardian push is used only for requests that live 300 s or less (`requested_expiry`); the binding message allows at most 64 characters from `A-Za-z0-9+-_.,:#` (no spaces, no `/`); `private_key_jwt` is Enterprise-only and RS256/RS384/PS256, never ES256; Guardian displays `authorization_details` only in Auth0's schema (`urn:auth0:schemas:authorization-details:v1:…`, exactly one object); `access_denied` can also mean expired (the 5 s rule).
-- The Auth0 tenant is Terraform in `auth0/` (T-IAC-02), applied by a tenant administrator with their own Management API credentials in the shell; never Terraform for Azure, never a pipeline. State, plans and `*.tfvars` are gitignored and excluded from Docker builds; commit `.terraform.lock.hcl`. The provider refuses `consent_policy = "standard"` (use `"null"`), and `auth0_guardian` is a tenant-wide singleton kept by `prevent_destroy`.
+- The Auth0 tenant is Terraform in `auth0/` (T-IAC-02), applied only by `provision-auth0.yml`: by hand, a plan on every run, applied only with `apply`. Never Terraform for Azure. Its GitHub environment `auth0-<env>` holds the only secrets in GitHub (`AUTH0_CLIENT_ID`, `AUTH0_CLIENT_SECRET`, optionally `AUTH0_L2_CLIENT_SECRET`), set by hand and visible to its plan and apply steps only; no other workflow may read a secret (T-E2E-AZ). The state is a blob in `names.stateStorage` (`pre-deploy.bicep`, T-IAC-01 rule 20), reached with OIDC as the deploy app through its second federated credential. Commit `.terraform.lock.hcl`, each `<env>.tfvars` and the public half of L2's key; local state and plans are gitignored, and `auth0/` is excluded from Docker builds. `infra/cleanup.sh` deletes the state with the resource group but nothing in Auth0. The provider refuses `consent_policy = "standard"` (use `"null"`), and `auth0_guardian` is a tenant-wide singleton kept by `prevent_destroy`.
 - In Azure, L2 always references the l2 vault's `ciba-client-credential` (rule 19). Seed it before an environment's first L2 deployment with 012, as `off` while `ciba.enabled` is false; otherwise the L2 revision fails and the pipeline rolls back. `ciba` in `main.bicep` is a plain object: a user-defined type switches the template to `languageVersion` 2.0, which T-IAC-01 rule 13 can't read.
 - The authorize call that creates an eligible escalation waits up to 120 s outside the lock (L2-7). A must-fail switch (`serializeOutcomes`, `skipChecks`, `approvalRequestCap`) is a test-only dep of the backchannel, never env.
 - Ignore ganache's `uws_linux` warning.

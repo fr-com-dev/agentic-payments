@@ -40,41 +40,39 @@ What the stand-in Auth0 (`test/helpers/ciba-stub.ts`) shows, one scenario per us
 
 ## 2. Auth0 tenant setup (Terraform, once)
 
-The tenant is code in [`auth0/`](../../auth0/README.md) (research R17). A tenant administrator applies it by hand
-with Terraform 1.11 or later. You need CIBA, which comes with the Enterprise plan or an add-on; `private_key_jwt`
-is Enterprise-only, otherwise set `credential = "secret"` (research R3).
+The tenant is code in [`auth0/`](../../auth0/README.md) (research R17). Its pipeline, `provision-auth0.yml`, applies
+it (SPEC v1.9). You need CIBA, which comes with the Enterprise plan or an add-on; `private_key_jwt` is
+Enterprise-only, otherwise set `credential = "secret"` (research R3).
 
 1. **By hand, first**:
-   - a Management API application with the scopes listed in [`auth0/README.md`](../../auth0/README.md), its
-     credentials exported as `AUTH0_CLIENT_ID` and `AUTH0_CLIENT_SECRET`;
-   - the approver's user account. Its user ID (`auth0|…`) becomes `approver_user_id`.
-2. **L2's key pair**, outside the repository. Use `openssl genpkey`, then `openssl pkey -pubout`, as in the README.
-3. **Variables**: copy `auth0/dev.tfvars.example` to `auth0/dev.tfvars` (gitignored) and fill it in.
-4. **Apply**:
+   - a Management API application with the scopes listed in [`auth0/README.md`](../../auth0/README.md);
+   - the approver's user account. Its user ID (`auth0|…`) becomes `approver_user_id`;
+   - in Azure and GitHub: `infra/pre-deploy.bicep` deployed again (the state's storage and the second sign-in),
+     then `infra/github-setup.sh`, which creates the GitHub environment `auth0-dev`. Give that environment required
+     reviewers, and set the Management API application's credential as its secrets `AUTH0_CLIENT_ID` and
+     `AUTH0_CLIENT_SECRET`.
+2. **L2's key pair**. Use `openssl genpkey`, then `openssl pkey -pubout`, as in the README. Commit only the public
+   half, as `auth0/ciba-client-key.dev.pub.pem`.
+3. **Variables**: copy `auth0/dev.tfvars.example` to `auth0/dev.tfvars`, fill it in and commit it. It holds no secret.
+4. **Plan, then apply**: run the pipeline once to see the plan, then again with `apply`.
 
    ```bash
-   terraform -chdir=auth0 init
+   gh workflow run provision-auth0.yml -f environment=dev
    ```
 
    ```bash
-   terraform -chdir=auth0 plan -var-file=dev.tfvars -out=dev.tfplan
-   ```
-
-   ```bash
-   terraform -chdir=auth0 apply dev.tfplan
+   gh workflow run provision-auth0.yml -f environment=dev -f apply=true
    ```
 
    This makes the API (RS256, RFC 9068 tokens, the payment-details type, standard consent, users through a grant
-   only), L2's CIBA-only client with Guardian push and its RS256 public key, the grant, and Guardian push. Commit
-   the `.terraform.lock.hcl` that `init` writes.
-5. **Outputs**:
-   - `terraform -chdir=auth0 output -json bicepparam_ciba` is the `ciba` object for §6;
-   - `terraform -chdir=auth0 output -raw l2_env` prints the `CIBA_*` lines for §3.
+   only), L2's CIBA-only client with Guardian push and its RS256 public key, the grant, and Guardian push.
+5. **Outputs**: the apply run's summary shows the `ciba` object for §6. For §3, take the `CIBA_*` values from it
+   (`issuer`, `clientId`, `audience`, `approver`).
 6. **The approver enrolls their phone in Guardian push**, by scanning the enrollment QR code in the Guardian app.
 
 ## 3. Local run against the real tenant
 
-Add the values to `env/l2-control.env` only (`terraform -chdir=auth0 output -raw l2_env` prints them). No other
+Add the values to `env/l2-control.env` only (they are in the apply run's summary, §2 step 5). No other
 env file gets them (rule A9, T-ARCH-ENV):
 
 ```bash

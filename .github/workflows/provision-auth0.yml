@@ -1,0 +1,154 @@
+# The Auth0 tenant's pipeline (SPEC.md §13; specs/012 research R17): applies auth0/, the Terraform for what L2's
+# backchannel approval needs from Auth0 (SPEC L2-7). By hand only. Every run shows the plan; it applies that same plan
+# only when `apply` is checked. T-IAC-02 (test/auth0-iac.test.ts) checks this file.
+# - The job runs in the GitHub environment auth0-<environment>, never the deploy pipelines' one. Protect it with
+#   required reviewers: it holds the only secrets in GitHub, the Auth0 Management API application's credential
+#   (AUTH0_CLIENT_ID, AUTH0_CLIENT_SECRET) and, with credential = "secret" only, L2's client secret
+#   (AUTH0_L2_CLIENT_SECRET). Auth0 has no sign-in without a credential for this. Only the plan and apply steps see them.
+# - The state is a blob in the storage account infra/pre-deploy.bicep makes (names.stateStorage). Terraform signs in
+#   to Azure as the deploy app with OIDC, for that container only, and asks GitHub for a fresh token itself on each
+#   command. No Azure credential exists, and the state holds no secret.
+# - The values come from files in the repository: the Azure sign-in and names from the Bicep parameter files, as in
+#   deploy.yml, and the tenant's from auth0/<environment>.tfvars.
+name: provision-auth0
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment (auth0/<environment>.tfvars, infra/pre-deploy.<environment>.bicepparam)
+        required: true
+        default: dev
+        type: choice
+        options: [dev]
+      apply:
+        description: Apply the plan this run shows. Unchecked, the run only plans
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  id-token: write
+  contents: read
+
+# One run at a time for the tenant: a second one waits, and the state's lock refuses anything else.
+concurrency:
+  group: provision-auth0
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  ENVIRONMENT: ${{ inputs.environment }}
+  BICEP_VERSION: v0.47.16
+  TERRAFORM_VERSION: 1.15.5
+  TERRAFORM_SHA256: 702b2136af6728c8ff037f843dd2dbce2b7ad88786b7381d1d72aefa250f601c
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "0"
+  # The state's sign-in: OIDC as the deploy app, Entra authorization on the blob (the account has no key access).
+  ARM_USE_OIDC: "true"
+  ARM_USE_AZUREAD: "true"
+
+jobs:
+  provision:
+    runs-on: ubuntu-latest
+    # The deploy app's second federated credential trusts this repository's jobs in this GitHub environment only.
+    environment: auth0-${{ inputs.environment }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      # Before anything is downloaded: the tenant's variables must be in the repository. Then the pinned Bicep CLI
+      # compiles the parameter files (the sign-in, target and the state's storage account, never GitHub secrets), and
+      # the pinned Terraform CLI is checked against its published SHA-256.
+      - name: "0 the tenant's variables, the Bicep and Terraform CLIs, then the sign-in and the state's storage"
+        id: target
+        run: |
+          if [[ ! "$ENVIRONMENT" =~ ^[a-z0-9]+$ || ! -s "auth0/$ENVIRONMENT.tfvars" ]]; then
+            echo "::error::no auth0/$ENVIRONMENT.tfvars: copy auth0/dev.tfvars.example, fill it in and commit it (auth0/README.md). Nothing was planned."
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/bicep" "$RUNNER_TEMP/terraform"
+          curl -fsSL -o "$RUNNER_TEMP/bicep/bicep" "https://github.com/Azure/bicep/releases/download/${BICEP_VERSION}/bicep-linux-x64"
+          chmod +x "$RUNNER_TEMP/bicep/bicep"
+          for t in main pre-deploy; do
+            "$RUNNER_TEMP/bicep/bicep" build-params "infra/$t.$ENVIRONMENT.bicepparam" --stdout | jq '.parametersJson | fromjson | .parameters | map_values(.value)' > "$RUNNER_TEMP/$t.json"
+          done
+          jq -r 'def v(p): getpath(p) // error("the parameter file has no \(p | join("."))");
+            "ARM_TENANT_ID=\(v(["tenantId"]))", "ARM_SUBSCRIPTION_ID=\(v(["subscriptionId"]))", "ARM_CLIENT_ID=\(v(["deployClientId"]))"' "$RUNNER_TEMP/main.json" >> "$GITHUB_ENV"
+          jq -r 'def v(p): getpath(p) // error("the parameter file has no \(p | join("."))");
+            "STATE_STORAGE=\(v(["names", "stateStorage"]))"' "$RUNNER_TEMP/pre-deploy.json" >> "$GITHUB_ENV"
+          trusted=$(jq -r '.githubAuth0Environment' "$RUNNER_TEMP/pre-deploy.json")
+          if [[ "$trusted" != "auth0-$ENVIRONMENT" ]]; then
+            echo "::error::infra/pre-deploy.$ENVIRONMENT.bicepparam's githubAuth0Environment is $trusted, not auth0-$ENVIRONMENT, the environment this job runs in. Nothing was planned."
+            exit 1
+          fi
+          curl -fsSL -o "$RUNNER_TEMP/terraform.zip" "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip"
+          echo "$TERRAFORM_SHA256  $RUNNER_TEMP/terraform.zip" | sha256sum -c -
+          unzip -q -o "$RUNNER_TEMP/terraform.zip" terraform -d "$RUNNER_TEMP/terraform"
+          echo "$RUNNER_TEMP/terraform" >> "$GITHUB_PATH"
+
+      # No dependency cache, as in deploy.yml: this job can change the tenant.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          package-manager-cache: false
+
+      # T-IAC-02 on this commit, with `terraform fmt -check`: least privilege, no secret in the folder or the state.
+      - name: "1 the offline checks (T-IAC-02)"
+        id: tests
+        run: |
+          npm install --no-audit --no-fund
+          npx vitest run test/auth0-iac.test.ts
+
+      # The provider exactly as .terraform.lock.hcl pins it; the state at auth0.<environment>.tfstate.
+      - name: "2 init with the locked provider and the state in Azure, then validate"
+        id: init
+        run: |
+          terraform -chdir=auth0 init -lockfile=readonly \
+            -backend-config="storage_account_name=$STATE_STORAGE" \
+            -backend-config="container_name=tfstate" \
+            -backend-config="key=auth0.$ENVIRONMENT.tfstate"
+          terraform -chdir=auth0 validate -no-color
+
+      # L2's client secret reaches Terraform only when the environment holds one (credential = "secret"): it is an
+      # ephemeral, write-only value, in neither the plan file nor the state.
+      - name: "3 plan"
+        id: plan
+        env:
+          AUTH0_CLIENT_ID: ${{ secrets.AUTH0_CLIENT_ID }}
+          AUTH0_CLIENT_SECRET: ${{ secrets.AUTH0_CLIENT_SECRET }}
+          L2_CLIENT_SECRET: ${{ secrets.AUTH0_L2_CLIENT_SECRET }}
+        run: |
+          if [[ -z "$AUTH0_CLIENT_ID" || -z "$AUTH0_CLIENT_SECRET" ]]; then
+            echo "::error::the GitHub environment auth0-$ENVIRONMENT has no AUTH0_CLIENT_ID or AUTH0_CLIENT_SECRET (auth0/README.md). Nothing was planned."
+            exit 1
+          fi
+          if [[ -n "$L2_CLIENT_SECRET" ]]; then export TF_VAR_client_secret="$L2_CLIENT_SECRET"; fi
+          terraform -chdir=auth0 plan -no-color -lock-timeout=120s -var-file="$ENVIRONMENT.tfvars" -out="$RUNNER_TEMP/auth0.tfplan"
+          {
+            echo "### Plan for the Auth0 tenant ($ENVIRONMENT)"
+            echo '```'
+            terraform -chdir=auth0 show -no-color "$RUNNER_TEMP/auth0.tfplan"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Exactly the plan of step 3, never a new one. Then the values L2 needs, none of them secret.
+      - name: "4 apply the plan"
+        id: apply
+        if: ${{ inputs.apply }}
+        env:
+          AUTH0_CLIENT_ID: ${{ secrets.AUTH0_CLIENT_ID }}
+          AUTH0_CLIENT_SECRET: ${{ secrets.AUTH0_CLIENT_SECRET }}
+          L2_CLIENT_SECRET: ${{ secrets.AUTH0_L2_CLIENT_SECRET }}
+        run: |
+          if [[ -n "$L2_CLIENT_SECRET" ]]; then export TF_VAR_client_secret="$L2_CLIENT_SECRET"; fi
+          terraform -chdir=auth0 apply -no-color -lock-timeout=120s "$RUNNER_TEMP/auth0.tfplan"
+          {
+            echo "### Applied. The ciba object for infra/main.$ENVIRONMENT.bicepparam"
+            echo '```json'
+            terraform -chdir=auth0 output -json bicepparam_ciba
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

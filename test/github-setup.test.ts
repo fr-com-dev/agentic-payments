@@ -1,9 +1,11 @@
 // T-E2E-AZ GitHub setup (specs/011 contracts/deploy-pipeline.md; quickstart §4 step 1): infra/github-setup.sh
 // against a fake `gh` (test/fixtures/fake-gh.mjs) and an `az` that only compiles parameter files with the real Bicep
 // CLI (test/fixtures/fake-azure.mjs; needs BICEP_PATH). From infra/pre-deploy.<environment>.bicepparam it must
-// create the GitHub environment deploy.yml's job runs in, in the repository named there, and set nothing else:
-// deploy.yml reads no secret. A secret left in the repository or the environment is reported, never used. It
-// refuses, sending nothing, a parameter file whose GitHub environment isn't the deploy environment, a malformed
+// create the GitHub environment deploy.yml's job runs in and the one provision-auth0.yml's job runs in
+// (auth0-<environment>), in the repository named there, and set nothing else: deploy.yml reads no secret, and the
+// Auth0 environment's are set by hand. A secret left in the repository or the deploy environment is reported, never
+// used. It refuses, sending nothing, a parameter file whose GitHub environment isn't the deploy environment or whose
+// Auth0 environment isn't auth0-<environment>, a malformed
 // repository and a file Bicep can't compile, and changes nothing when GitHub would sign the deploy job with another
 // OIDC subject than the deploy app's federated credential trusts (azure/login's AADSTS700213).
 import { spawnSync } from "node:child_process";
@@ -74,23 +76,25 @@ function setup(params: string, opts: { mutate?: [string, string]; existing?: str
   return { status: r.status, out: r.stdout + r.stderr, calls };
 }
 
-/** What a completed run must have done: create the environment once, and change nothing else. */
+/** What a completed run must have done: create the two environments once each, and change nothing else. */
 function problems(r: Run): string[] {
   if (r.status !== 0) return [`exit ${r.status}: ${r.out.trim()}`];
   const p: string[] = [];
   const changes = r.calls.filter((c) => c.includes("--method") || (c[0] === "secret" && c[1] !== "list"));
-  if (JSON.stringify(changes) !== JSON.stringify([["api", "--method", "PUT", "repos/acme/agentic-payments/environments/dev", "--silent"]])) {
-    p.push(`changed ${JSON.stringify(changes)}, not only the environment dev in acme/agentic-payments`);
+  const put = (name: string) => ["api", "--method", "PUT", `repos/acme/agentic-payments/environments/${name}`, "--silent"];
+  if (JSON.stringify(changes) !== JSON.stringify([put("dev"), put("auth0-dev")])) {
+    p.push(`changed ${JSON.stringify(changes)}, not only the environments dev and auth0-dev in acme/agentic-payments`);
   }
   return p;
 }
 
 // Each run spawns node once per `gh` call, and the Bicep CLI once.
 describe.skipIf(!BICEP_PATH)("T-E2E-AZ GitHub setup (infra/github-setup.sh against a fake gh)", { timeout: 30_000 }, () => {
-  it("T-E2E-AZ github-setup.sh creates the deploy job's GitHub environment, in the repository the parameter file names, and sets no secret", () => {
+  it("T-E2E-AZ github-setup.sh creates the deploy job's and the Auth0 job's GitHub environments, in the repository the parameter file names, and sets no secret", () => {
     const r = setup(PARAMS);
     expect(problems(r)).toEqual([]);
     expect(r.out).toContain("environment dev: ready in acme/agentic-payments");
+    expect(r.out).toContain("environment auth0-dev: ready in acme/agentic-payments");
     expect(r.out).not.toContain("warning");
   });
 
@@ -99,6 +103,7 @@ describe.skipIf(!BICEP_PATH)("T-E2E-AZ GitHub setup (infra/github-setup.sh again
     expect(r.status).toBe(0);
     expect(r.calls).toEqual([["api", "repos/acme/agentic-payments/actions/oidc/customization/sub"]]);
     expect(r.out).toContain("dry run: would create the environment dev in acme/agentic-payments");
+    expect(r.out).toContain("dry run: would create the environment auth0-dev in acme/agentic-payments");
   });
 
   it("T-E2E-AZ github-setup.sh reports secrets left in the repository or the environment, and keeps them", () => {
@@ -109,6 +114,7 @@ describe.skipIf(!BICEP_PATH)("T-E2E-AZ GitHub setup (infra/github-setup.sh again
 
   it.each([
     ["a GitHub environment other than the deploy environment", PARAMS.replace("param githubEnvironment = environment", "param githubEnvironment = 'production'"), "githubEnvironment production is not dev"],
+    ["an Auth0 environment other than auth0-<environment>", PARAMS.replace("param githubAuth0Environment = 'auth0-${environment}'", "param githubAuth0Environment = environment"), "githubAuth0Environment dev is not auth0-dev"],
     ["a malformed repository", PARAMS.replace("'acme/agentic-payments'", "'agentic-payments'"), "githubRepository agentic-payments is not owner/name"],
     ["a parameter file Bicep can't compile", PARAMS.replace("param githubRepository = 'acme/agentic-payments'", "param githubRepository = 42"), "Bicep can't compile"],
   ])("T-E2E-AZ github-setup.sh refuses %s, and sends nothing", (_, params, message) => {
@@ -142,6 +148,12 @@ describe.skipIf(!BICEP_PATH)("T-E2E-AZ GitHub setup (infra/github-setup.sh again
     const r = setup(PARAMS, { oidc, mutate: ['if [[ "$SIGNED" != "$TRUSTED" ]]; then', "if false; then"] });
     expect(r.status).toBe(0);
     expect(r.calls.some((c) => c.includes("PUT"))).toBe(true);
+  });
+
+  it("T-E2E-AZ must-fail: without the Auth0 environment check, the Auth0 job's secrets would go in the deploy environment, and it is reported", () => {
+    const params = PARAMS.replace("param githubAuth0Environment = 'auth0-${environment}'", "param githubAuth0Environment = environment");
+    const r = setup(params, { mutate: ['[[ "$GH_AUTH0_ENV" == "auth0-$ENVIRONMENT" ]] ||', "true ||"] });
+    expect(problems(r)[0]).toMatch(/not only the environments dev and auth0-dev/);
   });
 
   it("T-E2E-AZ must-fail: without the environment check, a GitHub environment the deploy job never runs in is created, and it is reported", () => {
