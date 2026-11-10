@@ -61,24 +61,25 @@ export const toolNamesSeen = (model: MockLanguageModelV3) => model.doGenerateCal
 
 export interface FakePortsOptions {
   authorize?: (intent: PaymentIntent) => Promise<AuthorizationDecision>;
-  budget?: (sessionId: string) => Promise<BudgetStatus>;
+  budget?: (sessionId: string, userId?: string) => Promise<BudgetStatus>;
   verify?: (claim: SettlementClaim) => Promise<SettlementReport>;
 }
 
 export function fakePorts(o: FakePortsOptions = {}) {
-  const gateCalls: { op: "authorize" | "budget"; sessionId: string }[] = [];
+  /** 013: `userId` is what the service named for the call (absent for a system identity). */
+  const gateCalls: { op: "authorize" | "budget"; sessionId: string; userId?: string }[] = [];
   const settlementCalls: SettlementClaim[] = [];
   const gate: AuthorizationGatePort = {
     authorize: async (intent) => {
-      gateCalls.push({ op: "authorize", sessionId: intent.sessionId });
+      gateCalls.push({ op: "authorize", sessionId: intent.sessionId, ...(intent.userId !== undefined && { userId: intent.userId }) });
       return o.authorize
         ? o.authorize(intent)
         : { status: "DENIED", authorizationId: "auth_fake", intentId: intent.intentId, violations: [{ rule: "fake", detail: "fake gate" }] };
     },
-    budget: async (sessionId) => {
-      gateCalls.push({ op: "budget", sessionId });
+    budget: async (sessionId, userId) => {
+      gateCalls.push({ op: "budget", sessionId, ...(userId !== undefined && { userId }) });
       return o.budget
-        ? o.budget(sessionId)
+        ? o.budget(sessionId, userId)
         : { sessionId, asset: "0xasset", decimals: 6, sessionCapAtomic: "100000", spentOrReservedAtomic: "0", remainingAtomic: "100000", perPaymentCapAtomic: "20000" };
     },
   };

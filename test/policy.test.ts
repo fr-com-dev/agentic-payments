@@ -1158,3 +1158,114 @@ describe("010 US6 operator reject CLI (scripts/reject.ts)", () => {
     expect(imports.filter((s) => s.startsWith(".")).every((s) => s.startsWith("../src/shared/"))).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// 013 user accounts: the two early rules and the user daily ceiling (SPEC L2-2 R16, R17, R12; specs/013 data-model.md)
+// ---------------------------------------------------------------------------
+
+describe("013 user rules (T-POL-16..19)", () => {
+  const m = mandate();
+  const user = (over: Partial<NonNullable<PolicyContext["user"]>> = {}): NonNullable<PolicyContext["user"]> => ({
+    dailyCommittedAtomic: 0n,
+    dailyCeilingAtomic: "500000",
+    ...over,
+  });
+
+  it("T-POL-16 user_not_onboarded: evaluated first, returns immediately, with a fixed detail and no other violation", () => {
+    // A request that would break R2, R3, R6, R9, R10 and R15 at once still shows only the one rule.
+    const worst = baseRequirement({ scheme: "upto", network: "eip155:1" as never, amount: "-5" });
+    const ctx = baseCtx({ requestedUrl: "http://evil.example/x", humanRejected: { rejectionId: "rej_1" }, user: user({ gate: "not_onboarded" }) });
+    const r = evaluateRequirement(worst, mandate({ expiresAt: "2020-01-01T00:00:00Z" }), ctx);
+    expect(r).toEqual({ status: "DENIED", violations: [{ rule: "user_not_onboarded", detail: "the user's setup is incomplete" }] });
+    // Compliant request: still denied, and never escalated or authorized.
+    expect(rules(evaluateRequirement(baseRequirement(), m, baseCtx({ user: user({ gate: "not_onboarded" }) })))).toEqual(["user_not_onboarded"]);
+    expect(decide([baseRequirement(), baseRequirement({ amount: "50000" })], m, baseCtx({ user: user({ gate: "not_onboarded" }) })).status).toBe("DENIED");
+  });
+
+  it("T-POL-16 the detail says nothing about which step is missing (FR-012, SEC-12)", () => {
+    const detail = evaluateRequirement(baseRequirement(), m, baseCtx({ user: user({ gate: "not_onboarded" }) })).violations[0]!.detail;
+    expect(detail).not.toMatch(/profile|wallet|policy|account|card/i);
+  });
+
+  it("T-POL-17 user_disabled: the same shape, and an approval never lifts it", () => {
+    const ctx = baseCtx({ user: user({ gate: "disabled" }), humanApprovedFor: { payTo: PAY_TO, amount: "50000", approvalId: "apr_1" } });
+    const r = evaluateRequirement(baseRequirement({ amount: "50000" }), m, ctx);
+    expect(r).toEqual({ status: "DENIED", violations: [{ rule: "user_disabled", detail: "the user's account can't pay" }] });
+    expect(rules(evaluateRequirement(baseRequirement({ amount: "999999999" }), m, baseCtx({ user: user({ gate: "disabled" }) })))).toEqual(["user_disabled"]);
+  });
+
+  it("T-POL-17 must fail without the rule: the same request with no gate is AUTHORIZED", () => {
+    expect(evaluateRequirement(baseRequirement(), m, baseCtx({ user: user() })).status).toBe("AUTHORIZED");
+  });
+
+  it("T-POL-18 the user daily ceiling denies with daily_budget_exceeded although the policy's own budget passes", () => {
+    const at = (committed: bigint, amount: string) =>
+      evaluateRequirement(baseRequirement({ amount }), m, baseCtx({ dailyCommittedAtomic: 0n, user: user({ dailyCommittedAtomic: committed, dailyCeilingAtomic: "60000" }) }));
+    // Exactly at the ceiling passes; one atomic unit over fails.
+    expect(at(59_000n, "1000").status).toBe("AUTHORIZED");
+    expect(at(59_000n, "1001")).toEqual({ status: "DENIED", violations: [{ rule: "daily_budget_exceeded", detail: "59000 + 1001 > 60000" }] });
+    expect(at(60_000n, "1").status).toBe("DENIED");
+  });
+
+  it("T-POL-18 when the policy's own daily budget also fails there is one daily_budget_exceeded, not two", () => {
+    const r = evaluateRequirement(
+      baseRequirement({ amount: "1000" }),
+      mandate({ dailyBudgetAtomic: "100000" }),
+      baseCtx({ dailyCommittedAtomic: 100_000n, user: user({ dailyCommittedAtomic: 100_000n, dailyCeilingAtomic: "60000" }) }),
+    );
+    expect(r.violations).toEqual([{ rule: "daily_budget_exceeded", detail: "100000 + 1000 > 100000" }]);
+  });
+
+  it("T-POL-18 the ceiling is collected with the other DENY rules, and an approval never lifts it (INV-12)", () => {
+    const ctx = baseCtx({
+      authorizationsLastMinute: 10,
+      humanApprovedFor: { payTo: PAY_TO, amount: "50000", approvalId: "apr_1" },
+      user: user({ dailyCommittedAtomic: 30_000n, dailyCeilingAtomic: "60000" }),
+    });
+    expect(rules(evaluateRequirement(baseRequirement({ amount: "50000" }), m, ctx))).toEqual(["daily_budget_exceeded", "velocity_limit"]);
+  });
+
+  it("T-POL-18 must fail without the ceiling: the same request with no ceiling is AUTHORIZED", () => {
+    const { dailyCeilingAtomic: _, ...noCeiling } = user({ dailyCommittedAtomic: 60_000n, dailyCeilingAtomic: "60000" });
+    expect(evaluateRequirement(baseRequirement(), m, baseCtx({ user: noCeiling })).status).toBe("AUTHORIZED");
+    expect(evaluateRequirement(baseRequirement(), m, baseCtx({ user: user({ dailyCommittedAtomic: 60_000n, dailyCeilingAtomic: "60000" }) })).status).toBe("DENIED");
+  });
+
+  it("T-POL-19 without ctx.user, and with a user who has no gate and room under the ceiling, every rule gives the v1.8 result", () => {
+    // One case per rule, in table order, plus the three outcomes.
+    const cases: Array<[string, PaymentRequirements, SpendingMandate, PolicyContext]> = [
+      ["authorized", baseRequirement(), m, baseCtx()],
+      ["escalate", baseRequirement({ amount: "50000" }), m, baseCtx()],
+      ["approved", baseRequirement({ amount: "50000" }), m, baseCtx({ humanApprovedFor: { payTo: PAY_TO, amount: "50000", approvalId: "apr_1" } })],
+      ["R1", baseRequirement(), mandate({ expiresAt: "2020-01-01T00:00:00Z" }), baseCtx()],
+      ["R2", baseRequirement({ scheme: "upto" }), m, baseCtx()],
+      ["R3", baseRequirement({ network: "eip155:1" as never }), m, baseCtx()],
+      ["R4", baseRequirement({ asset: "0x1111111111111111111111111111111111111111" }), m, baseCtx()],
+      ["R5", baseRequirement(), mandate({}, { ALLOWED_PAYEES: "0x2222222222222222222222222222222222222222" }), baseCtx()],
+      ["R6", baseRequirement(), m, baseCtx({ requestedUrl: "http://localhost:4021/api/weather", challengeResourceUrl: "http://localhost:4021/api/weather" })],
+      ["R7", baseRequirement(), m, baseCtx({ challengeResourceUrl: "http://127.0.0.1:9999/api/weather" })],
+      ["R8", baseRequirement({ maxTimeoutSeconds: 301 }), m, baseCtx()],
+      ["R9", baseRequirement({ amount: "1.5" }), m, baseCtx()],
+      ["R10", baseRequirement({ amount: "100001" }), m, baseCtx()],
+      ["R11", baseRequirement(), m, baseCtx({ sessionCommittedAtomic: 99_500n })],
+      ["R12", baseRequirement(), m, baseCtx({ dailyCommittedAtomic: 499_500n })],
+      ["R13", baseRequirement(), m, baseCtx({ authorizationsLastMinute: 10 })],
+      ["R15", baseRequirement(), m, baseCtx({ humanRejected: { rejectionId: "rej_1" } })],
+    ];
+    for (const [name, req, mand, ctx] of cases) {
+      const plain = evaluateRequirement(req, mand, ctx);
+      const withUser = evaluateRequirement(req, mand, { ...ctx, user: user({ dailyCommittedAtomic: 0n, dailyCeilingAtomic: "999999999" }) });
+      expect(withUser, name).toEqual(plain);
+    }
+    // And a context whose `user` is explicitly undefined is the platform account.
+    expect(evaluateRequirement(baseRequirement(), m, { ...baseCtx(), user: undefined } as PolicyContext).status).toBe("AUTHORIZED");
+  });
+
+  it("T-POL-19 the engine is still deterministic: the same inputs give the same decision, and nothing is read from a clock", () => {
+    const ctx = baseCtx({ user: user({ dailyCommittedAtomic: 10n }) });
+    const a = decide([baseRequirement(), baseRequirement({ amount: "500" })], m, ctx);
+    const b = decide([baseRequirement(), baseRequirement({ amount: "500" })], m, ctx);
+    expect(a).toEqual(b);
+    expect(a.chosen?.amount).toBe("500");
+  });
+});

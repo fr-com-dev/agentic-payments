@@ -6,7 +6,8 @@
 // T-IAC-01 asserts on the compiled form of this file:
 // - secrets come only from the l1 vault, as Key Vault references;
 // - identity lifecycle is Main only for the agent (Foundry tokens), None for the regression job;
-// - the agent's AUTH_AUDIENCE comes from the authAudience parameter.
+// - the agent's AUTH_AUDIENCE comes from the authAudience parameter;
+// - 013 (rule 21): the agent's PORTAL_CLIENT_ID, the azp it refuses, comes from the userAccounts parameter.
 param location string
 @description('Every resource name (main.<environment>.bicepparam).')
 param names object
@@ -20,6 +21,8 @@ param authAudience string
 param modelDeployment string
 @description('The agent revision that keeps serving until the new one passes the regression (empty on the first deployment).')
 param agentStableRevision string = ''
+@description('013 user accounts (SPEC L2-8): the non-secret settings from the parameter file. The agent reads portalClientId only.')
+param userAccounts object
 
 resource idL1 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' existing = { name: names.identities.l1 }
 resource mainEnv 'Microsoft.App/managedEnvironments@2025-01-01' existing = { name: names.environments.x402 }
@@ -80,7 +83,11 @@ resource agent 'Microsoft.App/containerApps@2025-01-01' = {
             { name: 'AZURE_CLIENT_ID', value: idL1.properties.clientId }
             { name: 'AUTH_TENANT_ID', value: authTenantId }
             { name: 'AUTH_AUDIENCE', value: authAudience }
+            { name: 'PORTAL_CLIENT_ID', value: userAccounts.portalClientId }
             { name: 'AGENT_BIND_HOST', value: '0.0.0.0' }
+            // One proxy, the environment's ingress, is in front: the per-address request limit reads the client's
+            // address from X-Forwarded-For (T-IAC-01 rule 3).
+            { name: 'TRUSTED_PROXY_HOPS', value: '1' }
             { name: 'AGENT_PORT', value: '4024' }
             { name: 'MASTRA_TELEMETRY_DISABLED', value: '1' }
             { name: 'CONTROL_TOKEN', secretRef: 'control-token' }

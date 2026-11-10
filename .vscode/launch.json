@@ -108,6 +108,23 @@
       "skipFiles": ["<node_internals>/**", "${workspaceFolder}/node_modules/**"],
       "presentation": { "group": "2 L1", "order": 3 }
     },
+    // The L2 web portal (013) on http://127.0.0.1:4025. Its pre-launch task starts the stack with user accounts on in
+    // L2. Build the web app first (task "build: web"), and sign in with a token from the task "local: portal token".
+    {
+      "name": "Portal",
+      "type": "node",
+      "request": "launch",
+      "program": "${workspaceFolder}/scripts/vscode-local.ts",
+      "args": ["run", "portal"],
+      "runtimeArgs": ["--import", "tsx"],
+      "cwd": "${workspaceFolder}",
+      "env": { "API_DOCS": "1" },
+      "preLaunchTask": "local: stack: users",
+      "console": "integratedTerminal",
+      "autoAttachChildProcesses": true,
+      "skipFiles": ["<node_internals>/**", "${workspaceFolder}/node_modules/**"],
+      "presentation": { "group": "3 portal", "order": 1 }
+    },
     {
       "name": "Operator: watch escalations",
       "type": "node",

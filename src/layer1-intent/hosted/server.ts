@@ -8,7 +8,9 @@ import { randomUUID } from "node:crypto";
 import express, { type Express, type NextFunction, type Request, type Response } from "express";
 import type { JWTVerifyGetKey } from "jose";
 import type { MastraModelConfig } from "@mastra/core/llm";
+import { addressLimit, trustProxies } from "../../shared/address-limit.js";
 import type { AuthorizationGatePort, SettlementVerifierPort } from "../../shared/contracts.js";
+import { userIdFor } from "../../shared/user-id.js";
 import { runGoal } from "./agent.js";
 import { mountHostedApiDocs } from "./api-docs.js";
 import type { HostedConfig } from "./config.js";
@@ -37,6 +39,11 @@ export interface HostedDeps {
   now?: () => number;
   /** Test hook: accept any well-formed session reference (T-AGT-04 must-fail). Never set by the entry point. */
   skipSessionMac?: boolean;
+  /** Test hook: accept a person's token without this service's scope (T-AGT-07 must-fail). Never set by the entry point. */
+  skipScopeCheck?: boolean;
+  /** Test hooks (T-AGT-03): another limit per address, or none at all (the must-fail). Never set by the entry point. */
+  maxRequestsPerAddress?: number;
+  skipAddressLimit?: boolean;
   /** Where run-log lines go (default: stdout, one JSON line each). */
   log?: (line: string) => void;
 }
@@ -63,6 +70,7 @@ function parseBody(body: unknown): { goal: string; sessionRef?: string } | { err
 export function createHostedApp(deps: HostedDeps): HostedApp {
   const app = express();
   app.disable("x-powered-by");
+  trustProxies(app, deps.config.trustedProxyHops);
   let ready = false;
   const limiter = createRunLimiter({ ...(deps.now && { now: deps.now }) });
   const runLog = createRunLog(deps.log);
@@ -78,6 +86,9 @@ export function createHostedApp(deps: HostedDeps): HostedApp {
   // API_DOCS=1 only (SEC-13): Swagger UI and the document, token-free like the health routes, so before auth.
   if (deps.config.apiDocs) mountHostedApiDocs(app);
 
+  // Per address, before any token is verified: a caller without a valid token is bounded too (SEC-14).
+  if (!deps.skipAddressLimit) app.use(addressLimit({ ...(deps.maxRequestsPerAddress !== undefined && { max: deps.maxRequestsPerAddress }) }));
+
   if (!deps.bypassAuth) {
     app.use(
       requesterAuth({
@@ -85,6 +96,8 @@ export function createHostedApp(deps: HostedDeps): HostedApp {
         audience: deps.config.auth.audience,
         issuer: deps.config.auth.issuer,
         keys: deps.keys,
+        ...(deps.config.auth.portalClientId !== undefined && { portalClientId: deps.config.auth.portalClientId }),
+        ...(deps.skipScopeCheck && { skipScopeCheck: true }),
       }),
     );
   }
@@ -132,10 +145,15 @@ export function createHostedApp(deps: HostedDeps): HostedApp {
     res.on("close", () => {
       if (!res.writableEnded) controller.abort("client_disconnected");
     });
+    // 013 FR-033: the user every payment of this run is for. Fixed here, from the verified requester, before the
+    // model sees anything: a person's own identifier, and none for a system identity (FR-002). Neither the goal
+    // text nor a tool input can change it.
+    const userId = !deps.bypassAuth && requester.kind === "user" ? userIdFor(requester.tenantId, requester.objectId) : undefined;
     try {
       const outcome = await runGoal({
         goal: parsed.goal,
         sessionId,
+        ...(userId !== undefined && { userId }),
         signal: controller.signal,
         model: deps.model,
         gate: deps.gate,

@@ -13,6 +13,21 @@ export const ENDPOINT_ROLES = {
   "POST /v1/reconcile": "verifier-control",
   "POST /v1/approvals/:authorizationId": "operator",
   "GET /v1/ledger/verify": "operator",
+  // 013 user accounts (L2-8): the portal's role, and nothing else, reaches these; it reaches nothing above.
+  "GET /v1/platform": "portal-control",
+  "GET /v1/users/:userId": "portal-control",
+  "PUT /v1/users/:userId/registration": "portal-control",
+  "PUT /v1/users/:userId/wallet": "portal-control",
+  "POST /v1/users/:userId/policies": "portal-control",
+  "GET /v1/users/:userId/policies/:policyId": "portal-control",
+  "PUT /v1/users/:userId/policies/:policyId": "portal-control",
+  "POST /v1/users/:userId/policies/:policyId/pause": "portal-control",
+  "POST /v1/users/:userId/policies/:policyId/resume": "portal-control",
+  "POST /v1/users/:userId/policies/:policyId/remove": "portal-control",
+  "POST /v1/users/:userId/disable": "portal-control",
+  "POST /v1/users/:userId/enable": "portal-control",
+  "PUT /v1/users/:userId/cards/:cardId": "portal-control",
+  "DELETE /v1/users/:userId/cards/:cardId": "portal-control",
 } as const satisfies Record<string, Role>;
 
 const digest = (s: string) => createHash("sha256").update(s, "utf8").digest();

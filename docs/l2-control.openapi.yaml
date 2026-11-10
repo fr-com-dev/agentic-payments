@@ -11,8 +11,12 @@ info:
     mandate, signs the approved ones, and records everything in a hash-chained, append-only ledger.
 
     - **Loopback only.** L2 binds `127.0.0.1` (SPEC §3.1); `CONTROL_PORT` changes the port, never the host.
-    - **One bearer token per caller** (INV-13). Each `/v1` operation accepts exactly one of the three tokens,
+    - **One bearer token per caller** (INV-13). Each `/v1` operation accepts exactly one of the four tokens,
       and a wrong or missing token gets 401 before the body is read, so it never appends a ledger entry.
+    - **User accounts** (v1.10, L2-8). With `USER_ACCOUNTS=1`, L2 also serves the `portal` operations to the
+      portal's own token, and an intent that names a user is decided against that user's policy and signed with
+      that user's account. Off (the default), those operations are not mounted and answer 404, and
+      `PaymentIntent.userId` is ignored.
     - **Amounts** are decimal strings of atomic units (USDC has 6 decimals: `"1000"` is 0.001 USDC).
     - **Single writer.** Writes run in one serialized section; run one L2 per ledger file.
     - **API docs.** With `API_DOCS=1`, L2 also serves this document and Swagger UI at `/docs`. Those
@@ -27,6 +31,11 @@ tags:
     description: Called by the settlement verifier (L3) with `SETTLEMENT_TOKEN`.
   - name: operator
     description: Called by the human operator's CLIs with `OPERATOR_TOKEN`.
+  - name: portal
+    description: >-
+      v1.10 user accounts (L2-8). Called by the portal process with `PORTAL_TOKEN`. Mounted only when
+      `USER_ACCOUNTS=1`. No body carries text typed by a person: only identifiers, seller hosts, ISO dates and
+      atomic amounts.
   - name: docs
     description: Swagger UI and this document. Mounted only when `API_DOCS=1`; no token.
 
@@ -56,7 +65,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/AuthorizationDecision"
         "400":
-          description: Malformed intent (missing ids, `paymentRequired.accepts` not an array, non-http(s) URL).
+          description: >-
+            Malformed intent (missing ids, `paymentRequired.accepts` not an array, non-http(s) URL, a non-boolean
+            `operatorApprovalOnly`, or a `userId` that is not a user identifier).
           content:
             application/json:
               schema:
@@ -75,7 +86,11 @@ paths:
       tags: [agent]
       operationId: getBudget
       summary: Session budget, derived from the ledger
-      description: An unknown session returns 200 with zero spend.
+      description: |
+        An unknown session returns 200 with zero spend. v1.10: with user accounts on, `?userId=` returns the user
+        view instead (`scope: user_daily`): the user daily ceiling, the user's committed spend over the last 24
+        hours, and the highest auto-approve limit among the user's active policies. A user who has not finished
+        onboarding or is disabled gets zeros.
       security:
         - controlToken: []
       parameters:
@@ -84,6 +99,12 @@ paths:
           required: true
           schema:
             type: string
+        - name: userId
+          in: query
+          required: false
+          description: v1.10. A user identifier. Ignored when user accounts are off.
+          schema:
+            $ref: "#/components/schemas/UserId"
       responses:
         "200":
           description: Budget status.
@@ -91,6 +112,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/BudgetStatus"
+        "400":
+          description: v1.10. `userId` is not a user identifier (user accounts on only).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "401":
           $ref: "#/components/responses/Unauthorized"
 
@@ -293,6 +320,484 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
 
+  /v1/platform:
+    get:
+      tags: [portal]
+      operationId: getPlatform
+      summary: The platform limits and the seller list in force
+      description: |
+        The operator's ceilings for every user and the sellers users may list (CFG-4). Read-only.
+      security:
+        - portalToken: []
+      responses:
+        "200":
+          description: The platform configuration.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlatformView"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /v1/users/{userId}:
+    get:
+      tags: [portal]
+      operationId: getUser
+      summary: One user's state, derived from the ledger
+      description: |
+        Registration, account state, onboarding steps, wallet figures, card identifiers and policies.
+        An unknown user returns 200 with `registered: false` and empty lists, never 404: it is the caller's own user.
+      security:
+        - portalToken: []
+      parameters:
+        - $ref: "#/components/parameters/UserId"
+      responses:
+        "200":
+          description: The user.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserView"
+        "400":
+          $ref: "#/components/responses/InvalidUserId"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /v1/users/{userId}/registration:
+    put:
+      tags: [portal]
+      operationId: registerUser
+      summary: Record that the user completed their profile
+      description: |
+        The first call appends `USER_REGISTERED`; later calls append nothing. The profile itself (name, email)
+        stays in the portal and never reaches L2.
+      security:
+        - portalToken: []
+      parameters:
+        - $ref: "#/components/parameters/UserId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegistrationRequest"
+      responses:
+        "200":
+          description: The user, registered.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserView"
+        "400":
+          description: "`userId` is not a user identifier, `acknowledgedTestFunds` is not `true`, or the body has another field."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /v1/users/{userId}/wallet:
+    put:
+      tags: [portal]
+      operationId: createWallet
+      summary: Create the user's crypto account, once
+      description: |
+        The first call appends `WALLET_CREATED` with the next wallet index and its address; later calls append
+        nothing and return the same address. The key never leaves the signer.
+      security:
+        - portalToken: []
+      parameters:
+        - $ref: "#/components/parameters/UserId"
+      responses:
+        "200":
+          description: The user, with the wallet.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserView"
+        "400":
+          $ref: "#/components/responses/InvalidUserId"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          description: "`not_registered`, or `account_disabled` when the user has no wallet yet."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/users/{userId}/policies:
+    post:
+      tags: [portal]
+      operationId: createPolicy
+      summary: Create an expense policy
+      description: |
+        Appends `POLICY_CREATED` (version 1). Creating a policy always counts as loosening, so it needs a fresh
+        `identityConfirmedAtMs` (at most 15 minutes old).
+      security:
+        - portalToken: []
+      parameters:
+        - $ref: "#/components/parameters/UserId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PolicyCreateRequest"
+      responses:
+        "201":
+          description: The new policy, with its history.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PolicyView"
+        "400":
+          description: "`userId` is not a user identifier, or the body is malformed (a wrong type, a missing or unknown field, an unparsable date)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/StepUpRequired"
+        "409":
+          description: "`not_registered`, `no_wallet` or `account_disabled`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          $ref: "#/components/responses/InvalidPolicy"
+
+  /v1/users/{userId}/policies/{policyId}:
+    get:
+      tags: [portal]
+      operationId: getPolicy
+      summary: One policy with its full history
+      security:
+        - portalToken: []
+      parameters:
+        - $ref: "#/components/parameters/UserId"
+        - $ref: "#/components/parameters/PolicyId"
+      responses:
+        "200":
+          description: The policy.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PolicyView"
+        "400":
+          $ref: "#/components/responses/InvalidUserId"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/PolicyNotFound"
+    put:
+      tags: [portal]
+      operationId: changePolicy
+      summary: Change a policy's values
+      description: |
+        Appends `POLICY_CHANGED` with the next version. The same values again append nothing and return the current
+        policy. A change that raises a limit or the rate, adds a seller or moves the end date later is loosening and
+        needs a fresh `identityConfirmedAtMs`; a change that only tightens does not.
+      security:
+        - portalToken: []
+      parameters:
+        - $ref: "#/components/parameters/UserId"
+        - $ref: "#/components/parameters/PolicyId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PolicyChangeRequest"
+      responses:
+        "200":
+          description: The policy after the change.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PolicyView"
+        "400":
+          description: "`userId` is not a user identifier, or the body is malformed."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/StepUpRequired"
+        "404":
+          $ref: "#/components/responses/PolicyNotFound"
+        "409":
+          description: "`policy_removed`, `account_disabled`, or `version_conflict` with the current policy."
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/Error"
+                  - $ref: "#/components/schemas/VersionConflict"
+        "422":
+          $ref: "#/components/responses/InvalidPolicy"
+
+  /v1/users/{userId}/policies/{policyId}/pause:
+    post:
+      tags: [portal]
+      operationId: pausePolicy
+      summary: Pause a policy
+      description: |
+        Appends `POLICY_PAUSED` unless it is already paused. A paused policy authorizes nothing.
+      security:
+        - portalToken: []
+      parameters:
+        - $ref: "#/components/parameters/UserId"
+        - $ref: "#/components/parameters/PolicyId"
+      responses:
+        "200":
+          description: The policy, paused.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PolicyView"
+        "400":
+          description: "`userId` is not a user identifier, or the body is not empty."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/PolicyNotFound"
+        "409":
+          description: "`policy_removed` or `account_disabled`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/users/{userId}/policies/{policyId}/resume:
+    post:
+      tags: [portal]
+      operationId: resumePolicy
+      summary: Resume a paused policy
+      description: |
+        Appends `POLICY_RESUMED` unless it is already active. Resuming restores spending, so it needs a fresh
+        `identityConfirmedAtMs`, and the policy is validated again against today's seller list and the user's other
+        policies.
+      security:
+        - portalToken: []
+      parameters:
+        - $ref: "#/components/parameters/UserId"
+        - $ref: "#/components/parameters/PolicyId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StepUpRequest"
+      responses:
+        "200":
+          description: The policy, active.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PolicyView"
+        "400":
+          description: "`userId` is not a user identifier, or the body has an unknown field."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/StepUpRequired"
+        "404":
+          $ref: "#/components/responses/PolicyNotFound"
+        "409":
+          description: "`policy_removed` or `account_disabled`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          $ref: "#/components/responses/InvalidPolicy"
+
+  /v1/users/{userId}/policies/{policyId}/remove:
+    post:
+      tags: [portal]
+      operationId: removePolicy
+      summary: Remove a policy
+      description: |
+        Appends `POLICY_REMOVED` unless it is already removed. A removed policy never authorizes again and stays
+        in the history.
+      security:
+        - portalToken: []
+      parameters:
+        - $ref: "#/components/parameters/UserId"
+        - $ref: "#/components/parameters/PolicyId"
+      responses:
+        "200":
+          description: The policy, removed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PolicyView"
+        "400":
+          description: "`userId` is not a user identifier, or the body is not empty."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/PolicyNotFound"
+        "409":
+          description: "`account_disabled`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/users/{userId}/disable:
+    post:
+      tags: [portal]
+      operationId: disableUser
+      summary: Disable the user's account
+      description: |
+        Appends `USER_DISABLED` unless already disabled. From the next decision on, every payment for the user is
+        DENIED with `user_disabled`. Nothing is deleted.
+      security:
+        - portalToken: []
+      parameters:
+        - $ref: "#/components/parameters/UserId"
+      responses:
+        "200":
+          description: The user, disabled.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserView"
+        "400":
+          $ref: "#/components/responses/InvalidUserId"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          description: "`not_registered`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/users/{userId}/enable:
+    post:
+      tags: [portal]
+      operationId: enableUser
+      summary: Enable a disabled account
+      description: |
+        Needs a fresh `identityConfirmedAtMs`. In one serialized section it appends one `POLICY_PAUSED` (cause
+        `account_enabled`) for each active policy and then `USER_ENABLED`, so enabling alone never restarts
+        spending. Nothing is appended when the account is already enabled.
+      security:
+        - portalToken: []
+      parameters:
+        - $ref: "#/components/parameters/UserId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StepUpRequest"
+      responses:
+        "200":
+          description: The user, enabled, with every policy that was active now paused.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserView"
+        "400":
+          description: "`userId` is not a user identifier, or the body has an unknown field."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/StepUpRequired"
+        "409":
+          description: "`not_registered`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /v1/users/{userId}/cards/{cardId}:
+    put:
+      tags: [portal]
+      operationId: addCard
+      summary: Record a registered card
+      description: |
+        Appends `CARD_ADDED` with the card's identifier unless it is already there. The ledger never holds a
+        brand, digits or an expiry, and a card never pays (FR-021).
+      security:
+        - portalToken: []
+      parameters:
+        - $ref: "#/components/parameters/UserId"
+        - $ref: "#/components/parameters/CardId"
+      responses:
+        "200":
+          description: The user's card identifiers.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CardList"
+        "400":
+          description: "`userId` is not a user identifier, or `cardId` is not a card identifier."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          description: "`not_registered`, `account_disabled` or `card_limit` (5 cards)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      tags: [portal]
+      operationId: removeCard
+      summary: Record a removed card
+      description: |
+        Appends `CARD_REMOVED` if the card is there. Allowed while the account is disabled.
+      security:
+        - portalToken: []
+      parameters:
+        - $ref: "#/components/parameters/UserId"
+        - $ref: "#/components/parameters/CardId"
+      responses:
+        "200":
+          description: The user's card identifiers.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CardList"
+        "400":
+          description: "`userId` is not a user identifier, or `cardId` is not a card identifier."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
   /docs:
     get:
       tags: [docs]
@@ -370,6 +875,10 @@ components:
       type: http
       scheme: bearer
       description: "`OPERATOR_TOKEN`, held by the operator CLIs."
+    portalToken:
+      type: http
+      scheme: bearer
+      description: "`PORTAL_TOKEN`, held by the portal process (v1.10). It reaches the `portal` operations only."
 
   parameters:
     AuthorizationId:
@@ -380,6 +889,29 @@ components:
       schema:
         type: string
         examples: [auth_009b55fe-307f-43ea-9014-a50e72f5576c]
+    UserId:
+      name: userId
+      in: path
+      required: true
+      description: The user identifier the portal derived from the person's verified sign-in.
+      schema:
+        $ref: "#/components/schemas/UserId"
+    PolicyId:
+      name: policyId
+      in: path
+      required: true
+      description: A policy of this user. Another user's policy is 404, like an unknown one.
+      schema:
+        type: string
+        examples: [pol_5d261ce5-d9c0-4e73-a3ec-ce1e79af4be4]
+    CardId:
+      name: cardId
+      in: path
+      required: true
+      description: The opaque identifier the portal gave the card.
+      schema:
+        type: string
+        pattern: "^card_[0-9a-f-]{36}$"
 
   responses:
     Unauthorized:
@@ -394,6 +926,31 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
+    InvalidUserId:
+      description: "`userId` is not a user identifier."
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    PolicyNotFound:
+      description: This user has no policy with this ID. Another user's policy answers the same.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    StepUpRequired:
+      description: >-
+        A loosening change without a sign-in time at most 15 minutes old (60 s tolerance). Nothing is appended.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/StepUpRequired"
+    InvalidPolicy:
+      description: The policy breaks one or more rules. Every issue is listed. Nothing is appended.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/InvalidPolicy"
 
   schemas:
     Error:
@@ -504,6 +1061,13 @@ components:
             v1.8 (L2-7, FR-007). true marks the intent operator-only: an escalation it creates sends no backchannel
             approval request and returns at once. It can only remove an approval path. Set by the L1-4 scripted
             agent; the hosted agent never sets it. A non-boolean value is 400.
+        userId:
+          $ref: "#/components/schemas/UserId"
+          description: >-
+            v1.10 (L2-8, FR-033). The verified person who started the run, set by the hosted agent service and never
+            from model text or a tool input. With user accounts on, the intent is decided against this user's
+            policy and signed with this user's account. Absent: the platform account. Ignored when user accounts
+            are off.
 
     PolicyViolation:
       type: object
@@ -592,6 +1156,12 @@ components:
         perPaymentCapAtomic:
           $ref: "#/components/schemas/AtomicAmount"
           description: The auto-approve limit; larger payments escalate.
+        scope:
+          type: string
+          enum: [session, user_daily]
+          description: >-
+            v1.10. What the figures count. Absent means the session (the platform account). `user_daily`: the user
+            daily ceiling and the user's last 24 hours, with the highest auto-approve limit among their policies.
 
     SettlementReport:
       type: object
@@ -759,6 +1329,9 @@ components:
           description: v1.8. The first 8 hex characters of the escalation ID; the approver's phone shows the same code.
         approvalRequest:
           $ref: "#/components/schemas/ApprovalRequestState"
+        userId:
+          $ref: "#/components/schemas/UserId"
+          description: v1.10. Whose payment it is, when the escalation is a user's. An identifier, never a name.
 
     ApprovalRequestState:
       type: string
@@ -857,6 +1430,9 @@ components:
         check:
           type: string
           enum: [malformed, signature, issuer, audience, client, expired, approver, request, details, replay]
+        userId:
+          $ref: "#/components/schemas/UserId"
+          description: v1.10. On `escalated` events of a user's payment.
 
     EscalationEvents:
       type: object
@@ -882,3 +1458,385 @@ components:
         brokenAt:
           type: integer
           description: "`seq` of the first entry that fails verification."
+
+    # ---- v1.10 user accounts (L2-8) ---------------------------------------------------------------
+
+    UserId:
+      type: string
+      pattern: "^usr_[0-9a-f]{32}$"
+      description: >-
+        v1.10. An opaque user identifier, derived from the person's verified sign-in. It reveals neither a name nor
+        an email.
+      examples: [usr_deeee4478bc01dab1b0afa3fbe31f010]
+
+    RegistrationRequest:
+      type: object
+      additionalProperties: false
+      required: [acknowledgedTestFunds]
+      properties:
+        acknowledgedTestFunds:
+          const: true
+          description: The person acknowledged that the wallet holds test funds only.
+
+    StepUpRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        identityConfirmedAtMs:
+          type: integer
+          description: >-
+            When the person last signed in interactively (epoch milliseconds), as the portal verified it. L2
+            accepts it for a loosening change when it is at most 15 minutes old.
+
+    PolicyValues:
+      type: object
+      required:
+        - sellers
+        - autoApproveMaxAtomic
+        - hardCapPerPaymentAtomic
+        - sessionBudgetAtomic
+        - dailyBudgetAtomic
+        - maxAuthorizationsPerMinute
+        - expiresAt
+        - paymentMethod
+      properties:
+        sellers:
+          type: array
+          description: Where. Seller hosts (`host[:port]`) from the operator's seller list; 1 to 20.
+          items:
+            type: string
+        autoApproveMaxAtomic:
+          $ref: "#/components/schemas/AtomicAmount"
+          description: How much without asking. `0` means every payment needs a person.
+        hardCapPerPaymentAtomic:
+          $ref: "#/components/schemas/AtomicAmount"
+        sessionBudgetAtomic:
+          $ref: "#/components/schemas/AtomicAmount"
+          description: Per agent run.
+        dailyBudgetAtomic:
+          $ref: "#/components/schemas/AtomicAmount"
+          description: Per trailing 24 hours, for this policy.
+        maxAuthorizationsPerMinute:
+          type: integer
+        expiresAt:
+          $ref: "#/components/schemas/IsoTime"
+        paymentMethod:
+          type: string
+          enum: [crypto_account]
+          description: How. A registered card can't pay (FR-021).
+
+    PolicyCreateRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - sellers
+        - autoApproveMaxAtomic
+        - hardCapPerPaymentAtomic
+        - sessionBudgetAtomic
+        - dailyBudgetAtomic
+        - maxAuthorizationsPerMinute
+        - expiresAt
+        - paymentMethod
+      properties:
+        sellers:
+          type: array
+          items:
+            type: string
+        autoApproveMaxAtomic:
+          type: string
+        hardCapPerPaymentAtomic:
+          type: string
+        sessionBudgetAtomic:
+          type: string
+        dailyBudgetAtomic:
+          type: string
+        maxAuthorizationsPerMinute:
+          type: number
+        expiresAt:
+          $ref: "#/components/schemas/IsoTime"
+        paymentMethod:
+          type: string
+        identityConfirmedAtMs:
+          type: integer
+
+    PolicyChangeRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - sellers
+        - autoApproveMaxAtomic
+        - hardCapPerPaymentAtomic
+        - sessionBudgetAtomic
+        - dailyBudgetAtomic
+        - maxAuthorizationsPerMinute
+        - expiresAt
+        - paymentMethod
+        - expectedVersion
+      properties:
+        sellers:
+          type: array
+          items:
+            type: string
+        autoApproveMaxAtomic:
+          type: string
+        hardCapPerPaymentAtomic:
+          type: string
+        sessionBudgetAtomic:
+          type: string
+        dailyBudgetAtomic:
+          type: string
+        maxAuthorizationsPerMinute:
+          type: number
+        expiresAt:
+          $ref: "#/components/schemas/IsoTime"
+        paymentMethod:
+          type: string
+        expectedVersion:
+          type: integer
+          description: The version the caller edited. A mismatch is 409 `version_conflict`.
+        identityConfirmedAtMs:
+          type: integer
+
+    PolicyVersion:
+      type: object
+      additionalProperties: false
+      required: [seq, ts, kind, version]
+      properties:
+        seq:
+          type: integer
+        ts:
+          $ref: "#/components/schemas/IsoTime"
+        kind:
+          type: string
+          enum: [created, changed, paused, resumed, removed]
+        version:
+          type: integer
+        values:
+          $ref: "#/components/schemas/PolicyValues"
+        cause:
+          type: string
+          enum: [user, account_enabled]
+
+    PolicyView:
+      type: object
+      additionalProperties: false
+      required: [policyId, version, values, state, displayState, expired, limitedByPlatform, unlistedSellers, updatedAt]
+      properties:
+        policyId:
+          type: string
+        version:
+          type: integer
+        values:
+          $ref: "#/components/schemas/PolicyValues"
+        state:
+          type: string
+          enum: [active, paused, removed]
+        displayState:
+          type: string
+          enum: [active, paused, removed, expired, disabled]
+        expired:
+          type: boolean
+        limitedByPlatform:
+          type: array
+          description: Fields where the platform limit is currently stricter than the saved value (FR-043).
+          items:
+            type: string
+        unlistedSellers:
+          type: array
+          description: Sellers no longer on the seller list (FR-042).
+          items:
+            type: string
+        updatedAt:
+          $ref: "#/components/schemas/IsoTime"
+        history:
+          type: array
+          items:
+            $ref: "#/components/schemas/PolicyVersion"
+
+    UserWallet:
+      type: object
+      additionalProperties: false
+      required: [address, network, asset, decimals, committedAtomic, spent24hAtomic, dailyCeilingAtomic, dailyRemainingAtomic]
+      properties:
+        address:
+          type: string
+        network:
+          type: string
+        asset:
+          type: string
+        decimals:
+          type: integer
+        committedAtomic:
+          $ref: "#/components/schemas/AtomicAmount"
+          description: Authorized amounts that can still settle.
+        spent24hAtomic:
+          $ref: "#/components/schemas/AtomicAmount"
+          description: Committed spend over the last 24 hours, the figure the daily budget counts.
+        dailyCeilingAtomic:
+          $ref: "#/components/schemas/AtomicAmount"
+        dailyRemainingAtomic:
+          $ref: "#/components/schemas/AtomicAmount"
+
+    UserView:
+      type: object
+      additionalProperties: false
+      required: [userId, registered, enabled, onboarding, cards, policies]
+      properties:
+        userId:
+          $ref: "#/components/schemas/UserId"
+        registered:
+          type: boolean
+        enabled:
+          type: boolean
+        onboarding:
+          type: object
+          additionalProperties: false
+          required: [profile, wallet, policy]
+          properties:
+            profile:
+              type: boolean
+            wallet:
+              type: boolean
+            policy:
+              type: boolean
+        wallet:
+          $ref: "#/components/schemas/UserWallet"
+        cards:
+          type: array
+          items:
+            type: string
+        policies:
+          type: array
+          items:
+            $ref: "#/components/schemas/PolicyView"
+
+    CardList:
+      type: object
+      additionalProperties: false
+      required: [cards]
+      properties:
+        cards:
+          type: array
+          items:
+            type: string
+            pattern: "^card_[0-9a-f-]{36}$"
+
+    PlatformLimits:
+      type: object
+      additionalProperties: false
+      required: [hardCapPerPaymentAtomic, sessionBudgetAtomic, userDailyCeilingAtomic, maxAuthorizationsPerMinute, maxPolicyDays]
+      properties:
+        hardCapPerPaymentAtomic:
+          $ref: "#/components/schemas/AtomicAmount"
+        sessionBudgetAtomic:
+          $ref: "#/components/schemas/AtomicAmount"
+        userDailyCeilingAtomic:
+          $ref: "#/components/schemas/AtomicAmount"
+          description: The user daily ceiling (FR-032), and the highest daily budget one policy may have.
+        maxAuthorizationsPerMinute:
+          type: integer
+        maxPolicyDays:
+          type: integer
+
+    PlatformSeller:
+      type: object
+      additionalProperties: false
+      required: [host, name, payees]
+      properties:
+        host:
+          type: string
+        name:
+          type: string
+          description: The operator's name for the seller, shown to users.
+        payees:
+          type: array
+          description: Accepted payee addresses, lower-cased. Empty means any payee at that host.
+          items:
+            type: string
+
+    PlatformView:
+      type: object
+      additionalProperties: false
+      required: [platformId, digest, limits, sellers, network, asset, decimals]
+      properties:
+        platformId:
+          type: string
+        digest:
+          type: string
+          pattern: "^[0-9a-f]{64}$"
+        limits:
+          $ref: "#/components/schemas/PlatformLimits"
+        sellers:
+          type: array
+          items:
+            $ref: "#/components/schemas/PlatformSeller"
+        network:
+          type: string
+        asset:
+          type: string
+        decimals:
+          type: integer
+
+    PolicyIssue:
+      type: object
+      additionalProperties: false
+      required: [field, code]
+      properties:
+        field:
+          type: string
+        code:
+          type: string
+          enum:
+            - not_atomic
+            - order_auto_below_cap
+            - order_cap_within_session
+            - above_platform_limit
+            - rate_invalid
+            - no_sellers
+            - too_many_sellers
+            - seller_not_listed
+            - seller_conflict
+            - expires_in_past
+            - expires_too_late
+            - payment_method_unsupported
+            - policy_limit
+        host:
+          type: string
+        policyId:
+          type: string
+        limitAtomic:
+          $ref: "#/components/schemas/AtomicAmount"
+        limit:
+          type: integer
+
+    InvalidPolicy:
+      type: object
+      additionalProperties: false
+      required: [error, issues]
+      properties:
+        error:
+          const: invalid_policy
+        issues:
+          type: array
+          items:
+            $ref: "#/components/schemas/PolicyIssue"
+
+    StepUpRequired:
+      type: object
+      additionalProperties: false
+      required: [error, maxAgeSec]
+      properties:
+        error:
+          const: step_up_required
+        maxAgeSec:
+          type: integer
+
+    VersionConflict:
+      type: object
+      additionalProperties: false
+      required: [error, current]
+      properties:
+        error:
+          const: version_conflict
+        current:
+          $ref: "#/components/schemas/PolicyView"

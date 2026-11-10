@@ -1,17 +1,18 @@
 # The steps every pipeline runs (SPEC.md §3.1 Azure profile; specs/011 contracts/deploy-pipeline.md): one reusable
-# workflow, called with its unit by the six pipelines, each run by hand or on its own tag:
+# workflow, called with its unit by the seven pipelines, each run by hand or on its own tag:
 #   deploy-infra.yml     unit platform   the platform (network, logs, identities, registry, vaults, storage, Foundry,
 #                                        the environments); no image, no promotion, fixed forward
 #   deploy-l1.yml        unit l1         x402-l1-agent: the agent and the regression job
 #   deploy-l2.yml        unit l2         x402-l2-control: the control service
 #   deploy-l3.yml        unit l3         x402-l3-verifier: the verifier
 #   deploy-operator.yml  unit operator   x402-operator: the operator job
+#   deploy-portal.yml    unit portal     x402-portal: the web portal (013)
 #   deploy-seller.yml    unit seller     x402-seller: the seller and its alias
 # A run deploys infra/main.bicep with UNIT set, so only that unit's modules (everything else stays as it is), each
 # deployment previewed with what-if first. Azure is provisioned by Bicep only. A unit's new image is promoted to
-# last-good only after the cloud regression, the chain check, the hosted smoke run and the log scan pass through every
-# unit; a failure rolls that unit back to its last-good. T-E2E-AZ: test/deploy-workflow.test.ts checks this file and
-# the six pipelines offline.
+# last-good only after the cloud regression, the chain check, the hosted smoke run, the portal smoke and the log scan
+# pass through every unit; a failure rolls that unit back to its last-good. T-E2E-AZ: test/deploy-workflow.test.ts
+# checks this file and the seven pipelines offline.
 #
 # No GitHub secrets: the sign-in (OIDC, as pre-deploy.bicep's deploy app, in each step that calls Azure), the target
 # (tenant, subscription, resource group) and every resource name come from infra/main.<environment>.bicepparam, which
@@ -26,7 +27,7 @@ on:
   workflow_call:
     inputs:
       unit:
-        description: What the run deploys (main.bicep's unit) - platform, l1, l2, l3, operator or seller
+        description: What the run deploys (main.bicep's unit) - platform, l1, l2, l3, operator, portal or seller
         required: true
         type: string
       environment:
@@ -125,8 +126,9 @@ jobs:
             l2) image=l2-control dockerfile=docker/l2-control.Dockerfile ;;
             l3) image=l3-verifier dockerfile=docker/l3-verifier.Dockerfile ;;
             operator) image=operator dockerfile=docker/operator.Dockerfile ;;
+            portal) image=portal dockerfile=docker/portal.Dockerfile ;;
             seller) image=seller dockerfile=Dockerfile ;;
-            *) echo "::error::unit $UNIT is not platform, l1, l2, l3, operator or seller. Nothing was deployed."; exit 1 ;;
+            *) echo "::error::unit $UNIT is not platform, l1, l2, l3, operator, portal or seller. Nothing was deployed."; exit 1 ;;
           esac
           if [[ "$UNIT" != platform && ( -n "$INPUT_SEED_IP" || "$INPUT_RECOVER_VAULTS" == true ) ]]; then
             echo "::error::seed-ip and recover-vaults are for the platform: run deploy-infra (quickstart §4 and §6). Nothing was deployed."
@@ -154,8 +156,9 @@ jobs:
             "TENANT_ID=\(v(["tenantId"]))", "SUBSCRIPTION_ID=\(v(["subscriptionId"]))", "DEPLOY_CLIENT_ID=\(v(["deployClientId"]))"' "$RUNNER_TEMP/params.json" >> "$GITHUB_ENV"
           jq -r 'def v(p): getpath(["names"] + p) // error("the parameter file has no names.\(p | join("."))");
             "RG=\(v(["resourceGroup"]))", "LOG_X402=\(v(["logs"]))", "CR_X402=\(v(["registry"]))",
-            "CA_L1=\(v(["apps", "l1"]))", "CA_L3=\(v(["apps", "l3"]))", "CA_SELLER=\(v(["apps", "seller"]))",
-            "CA_SELLER_ALIAS=\(v(["apps", "sellerAlias"]))", "CAJ_L1=\(v(["jobs", "l1"]))", "CAJ_L2=\(v(["jobs", "l2"]))"' "$RUNNER_TEMP/params.json" >> "$GITHUB_ENV"
+            "CA_L1=\(v(["apps", "l1"]))", "CA_L3=\(v(["apps", "l3"]))", "CA_PORTAL=\(v(["apps", "portal"]))",
+            "CA_SELLER=\(v(["apps", "seller"]))", "CA_SELLER_ALIAS=\(v(["apps", "sellerAlias"]))",
+            "CAJ_L1=\(v(["jobs", "l1"]))", "CAJ_L2=\(v(["jobs", "l2"]))"' "$RUNNER_TEMP/params.json" >> "$GITHUB_ENV"
 
       # No dependency cache: this job can deploy, and a restored cache would be code no commit holds. setup-node v5+
       # turns caching on by itself once package.json names a packageManager.
@@ -188,7 +191,7 @@ jobs:
         if: ${{ inputs.unit != 'platform' }}
         run: |
           IMG="${{ steps.build.outputs.acr }}/x402-$IMAGE:$IMAGE_TAG"
-          if (docker history --no-trunc "$IMG"; docker run --rm "$IMG" env) | grep -E 'PRIVATE_KEY[=]|_SECRET[=]|_TOKEN[=]'; then
+          if (docker history --no-trunc "$IMG"; docker run --rm "$IMG" env) | grep -E 'PRIVATE_KEY[=]|_SECRET[=]|_TOKEN[=]|_MNEMONIC[=]|CARD_VAULT_KEY[=]'; then
             echo "secret assignment found in $IMG"; exit 1
           fi
 
@@ -233,8 +236,8 @@ jobs:
             done
             if [ -z "$ok" ]; then echo "L2 did not answer ledger-verify within 5 minutes"; exit 1; fi
           fi
-          if [[ "$UNIT" == l1 || "$UNIT" == l3 ]]; then
-            if [[ "$UNIT" == l1 ]]; then app="$CA_L1"; else app="$CA_L3"; fi
+          if [[ "$UNIT" == l1 || "$UNIT" == l3 || "$UNIT" == portal ]]; then
+            case "$UNIT" in l1) app="$CA_L1" ;; l3) app="$CA_L3" ;; portal) app="$CA_PORTAL" ;; esac
             state=""
             for _ in $(seq 1 30); do
               LATEST=$(az containerapp show -n "$app" -g "$RG" --query properties.latestRevisionName -o tsv)
@@ -297,6 +300,25 @@ jobs:
           # specs/012 research R14: a deployment check never asks the approver; an escalation here fails the run.
           jq -e '[.steps[] | select(.result.outcome == "ESCALATED")] | length == 0' "$RUNNER_TEMP/smoke.json" > /dev/null
           test "$SECS" -le 120
+
+      # 013: the portal answers, verifies Entra tokens (never the dev issuer's) and refuses a request without one. No
+      # token is sent: the pipeline's identity is an application, which the portal refuses by design. Skipped on a
+      # first deployment of a unit that precedes the portal; the portal's own first deployment runs it.
+      - name: "8b portal smoke: health, Entra sign-in mode, and 401 without a token"
+        id: portal-smoke
+        if: ${{ !inputs.first-deployment || inputs.unit == 'portal' }}
+        run: |
+          eval "$SIGN_IN"
+          PORTAL=$(az containerapp show -n "$CA_PORTAL" -g "$RG" --query properties.configuration.ingress.fqdn -o tsv)
+          ok=""
+          for _ in $(seq 1 18); do
+            if curl -fsS -m 10 -o /dev/null "https://$PORTAL/healthz"; then ok=1; break; fi
+            sleep 10
+          done
+          if [ -z "$ok" ]; then echo "$PORTAL did not answer /healthz within 3 minutes"; exit 1; fi
+          curl -fsS -m 30 "https://$PORTAL/api/config" | jq -e '.auth.mode == "entra"' > /dev/null
+          code=$(curl -sS -m 30 -o /dev/null -w '%{http_code}' "https://$PORTAL/api/me")
+          if [ "$code" != 401 ]; then echo "/api/me without a token answered $code, not 401"; exit 1; fi
 
       - name: "9 log secret scan (credential shapes)"
         id: log-scan

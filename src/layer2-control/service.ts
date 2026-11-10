@@ -6,13 +6,17 @@
 // 012 (L2-7): with backchannel approval on, a new eligible escalation starts an approval request and the call waits
 // up to 120 s outside the section; if the escalation reaches approved or denied meanwhile, a second serialized
 // decision (a new INTENT for the same intentId) is returned instead of ESCALATE.
+// 013 (L2-8): with user accounts on, an intent that names a user is decided against that user's one active policy for
+// the requested seller, bounded by the platform limits, and signed with that user's own account. An intent without a
+// user is the platform account, exactly as before. The user routes come from ./user-routes.ts.
 import { randomUUID } from "node:crypto";
 import type { Server } from "node:http";
 import { pathToFileURL } from "node:url";
 import express, { type Express } from "express";
 import type { PaymentRequirements } from "@x402/core/types";
 import { requireRole } from "../shared/auth.js";
-import { apiDocsEnabled, CONTROL_BIND_HOST, controlPort, loadEnv, networkProfile } from "../shared/config.js";
+import { apiDocsEnabled, ConfigError, CONTROL_BIND_HOST, controlPort, loadEnv, networkProfile, ROLE_TOKEN_VAR, tokenFor, type NetworkProfile } from "../shared/config.js";
+import { USER_ID_RE } from "../shared/user-id.js";
 import type { AuthorizationDecision, BudgetStatus, PaymentIntent, PolicyViolation } from "../shared/contracts.js";
 import { mountApiDocs } from "./api-docs.js";
 import { issuerKeys } from "./approval-evidence.js";
@@ -25,8 +29,24 @@ import { AuditLedger, resourceKey } from "./ledger.js";
 import { acquireLedgerLock } from "./ledger-lock.js";
 import { mountLedgerRoutes, type Serialize } from "./ledger-routes.js";
 import { loadMandate, type SpendingMandate } from "./mandate.js";
+import { loadPlatform, platformDigest, type PlatformConfig } from "./platform.js";
 import { decide, type PolicyContext } from "./policy.js";
-import { PaymentSigner, type PaymentSignerLike } from "./signer.js";
+import { keyringFromEnv, PaymentSigner, USER_WALLET_ENV, type PaymentSignerLike } from "./signer.js";
+import { mountUserRoutes } from "./user-routes.js";
+import {
+  effectiveMandate,
+  highestAutoApprove,
+  lastPlatformDigest,
+  recordedWallets,
+  selectPolicy,
+  userGate,
+  userState,
+  type UserGate,
+  type PolicyRecord,
+  type UserAccountsDeps,
+  type UserState,
+  type WalletKeyringLike,
+} from "./users.js";
 
 export interface ControlServiceDeps {
   mandate: SpendingMandate;
@@ -37,7 +57,7 @@ export interface ControlServiceDeps {
   /** Test hook (T-E2E-04): simulated remote-signer latency, applied inside the serialized section. */
   signerLatencyMs?: number;
   /** Test hook: explicit tokens instead of resolving them from the environment. */
-  tokens?: { control?: string; settlement?: string; operator?: string };
+  tokens?: { control?: string; settlement?: string; operator?: string; portal?: string };
   /** Test hook: clock. Read once per authorize call. */
   now?: () => number;
   /**
@@ -49,6 +69,10 @@ export interface ControlServiceDeps {
   apiDocs?: boolean;
   /** 012 (L2-7): backchannel approval through the approval service. Absent: off, behavior as in v1.7. */
   backchannel?: BackchannelDeps;
+  /** 013 (L2-8): user accounts. Absent: off, behavior as in v1.8, and `PaymentIntent.userId` is ignored. */
+  users?: UserAccountsDeps;
+  /** 013: the network, for the effective mandate and the views. Required with `users`. */
+  net?: Pick<NetworkProfile, "caip2" | "asset" | "decimals">;
 }
 
 export interface ControlService {
@@ -103,12 +127,34 @@ function validIntent(body: unknown): body is PaymentIntent {
     typeof pr === "object" &&
     Array.isArray(pr.accepts) &&
     // 012 FR-007: optional, boolean only.
-    (b.operatorApprovalOnly === undefined || typeof b.operatorApprovalOnly === "boolean")
+    (b.operatorApprovalOnly === undefined || typeof b.operatorApprovalOnly === "boolean") &&
+    // 013 FR-033: optional; a user identifier only.
+    (b.userId === undefined || (typeof b.userId === "string" && USER_ID_RE.test(b.userId)))
   );
 }
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 const maxZero = (n: bigint) => (n < 0n ? 0n : n);
+const minOf = (...ns: bigint[]) => ns.reduce((a, b) => (b < a ? b : a));
+
+function hostOf(url: string): string | null {
+  try {
+    const u = new URL(url);
+    return u.host.length > 0 ? u.host : null;
+  } catch {
+    return null;
+  }
+}
+
+/** 013: everything one decision needs about the user, derived inside the serialized section. */
+interface UserDecision {
+  userId: string;
+  state: UserState;
+  /** R16, R17: why this user can't pay at all, if so. */
+  gate: UserGate | undefined;
+  policy: PolicyRecord | undefined;
+  mandate: SpendingMandate;
+}
 
 export function createControlService(deps: ControlServiceDeps): ControlService {
   const { mandate, signer, ledger } = deps;
@@ -118,8 +164,40 @@ export function createControlService(deps: ControlServiceDeps): ControlService {
   const app = express();
   const tok = (t?: string) => (t === undefined ? {} : { token: t });
 
+  const users = deps.users;
+  const userNet: Pick<NetworkProfile, "caip2" | "asset" | "decimals"> = deps.net ?? {
+    caip2: (mandate.allowedNetworks[0] ?? "eip155:0") as NetworkProfile["caip2"],
+    asset: deps.asset.address as NetworkProfile["asset"],
+    decimals: deps.asset.decimals,
+  };
+  // 013: with user accounts on, the platform account counts only its own entries (no `userId`), so users never use
+  // up its budgets. Off, the filter is absent and every figure is exactly what it was.
+  const platformOwner = users ? ({ userId: null } as const) : {};
   const remainingFor = (sessionId: string, t: number) =>
-    maxZero(BigInt(mandate.sessionBudgetAtomic) - ledger.committedAtomic({ sessionId }, t));
+    maxZero(BigInt(mandate.sessionBudgetAtomic) - ledger.committedAtomic({ sessionId, ...platformOwner }, t));
+
+  /** 013: the user, their one applicable policy and the mandate the engine will evaluate (data-model.md). */
+  function userDecision(userId: string, resourceUrl: string): UserDecision {
+    const state = userState(ledger.entries(), userId);
+    const host = hostOf(resourceUrl);
+    // `skipUserGate` is the must-fail proof of R16 and R17: without the gate, a disabled user's policy applies.
+    const gate = users!.skipUserGate ? undefined : userGate(state);
+    const policy = gate === undefined ? selectPolicy(state, host, users!.platform) : undefined;
+    return {
+      userId,
+      state,
+      gate,
+      policy,
+      mandate: effectiveMandate({
+        policy,
+        host,
+        platform: users!.platform,
+        platformMandate: mandate,
+        net: userNet,
+        ...(users!.skipPlatformBound && { skipPlatformBound: true }),
+      }),
+    };
+  }
   const backchannel = deps.backchannel ? new Backchannel({ ...deps.backchannel, ledger, serialize, now }) : undefined;
 
   type Decided = { decision: AuthorizationDecision; start?: StartPlan };
@@ -137,6 +215,16 @@ export function createControlService(deps: ControlServiceDeps): ControlService {
     const { intentId, sessionId } = intent;
     const key = resourceKey(intent.resourceUrl);
     const accepts = intent.paymentRequired.accepts as PaymentRequirements[];
+    // 013: the user named by the agent service. Off, the field is ignored and never recorded (FR-001).
+    let u = users && intent.userId !== undefined ? userDecision(intent.userId, intent.resourceUrl) : undefined;
+    // Test-only must-fail proof of FR-002 (never set by main()): a person who has not onboarded falls back.
+    if (u?.gate === "not_onboarded" && users!.fallbackToPlatform) u = undefined;
+    const gate = u?.gate;
+    // What every entry of this decision says about its owner: the user, and the policy and version when one applied.
+    const who = u && {
+      userId: u.userId,
+      ...(u.policy && { policyId: u.policy.policyId, policyVersion: u.policy.version }),
+    };
     ledger.append(
       {
         type: "INTENT",
@@ -147,36 +235,51 @@ export function createControlService(deps: ControlServiceDeps): ControlService {
           purpose: String(intent.purpose ?? ""),
           accepts,
           ...(opts.reevaluationOf !== undefined && { reevaluationOf: opts.reevaluationOf }),
+          ...(u && { userId: u.userId }),
         },
       },
       t,
     );
+    // The mandate the engine evaluates: the user's effective one, or the platform account's.
+    const m = u ? u.mandate : mandate;
+    // Whose approvals, rejections and pending escalations count: this user's, or the platform account's.
+    const owner = users ? (u ? u.userId : null) : undefined;
 
     // Step 2: open approval for (session, resourceKey), most recent wins (L2-4.2).
-    const approval = ledger.findOpenApproval(sessionId, key, t);
+    const approval = ledger.findOpenApproval(sessionId, key, t, owner);
     const approvalData = approval?.data as { payTo: string; amount: string; approvalId: string } | undefined;
     // 010: an operator rejection for (session, resourceKey) feeds R15.
-    const rejection = findRejection(ledger.entries(), sessionId, key);
+    const rejection = findRejection(ledger.entries(), sessionId, key, owner);
 
-    // Step 3: ledger-derived context (INV-7).
+    // Step 3: ledger-derived context (INV-7). For a user: this user's and this policy's entries only, plus the
+    // user-wide figure for the daily ceiling (FR-031, FR-032).
+    const mine = u ? (users!.sharedBudgets ? {} : { userId: u.userId, ...(u.policy && { policyId: u.policy.policyId }) }) : platformOwner;
+    const userDaily = u ? ledger.committedAtomic({ userId: u.userId, sinceMs: t - DAY_MS }, t) : 0n;
     const ctx: PolicyContext = {
       nowMs: t,
       requestedUrl: intent.resourceUrl,
       challengeResourceUrl: String(intent.paymentRequired.resource?.url ?? ""),
-      sessionCommittedAtomic: ledger.committedAtomic({ sessionId }, t),
-      dailyCommittedAtomic: ledger.committedAtomic({ sinceMs: t - DAY_MS }, t),
-      authorizationsLastMinute: ledger.authorizedSince(t - 60_000),
+      sessionCommittedAtomic: ledger.committedAtomic({ sessionId, ...mine }, t),
+      dailyCommittedAtomic: ledger.committedAtomic({ sinceMs: t - DAY_MS, ...mine }, t),
+      authorizationsLastMinute: ledger.authorizedSince(t - 60_000, mine),
       ...(approvalData && {
         humanApprovedFor: { payTo: approvalData.payTo, amount: approvalData.amount, approvalId: approvalData.approvalId },
       }),
       ...(rejection && { humanRejected: { rejectionId: rejection.data.rejectionId as string } }),
+      ...(u && {
+        user: {
+          ...(gate !== undefined && { gate }),
+          dailyCommittedAtomic: userDaily,
+          ...(!users!.skipUserCeiling && { dailyCeilingAtomic: users!.platform.limits.userDailyCeilingAtomic }),
+        },
+      }),
     };
 
     // Step 4: pure decision.
-    const d = decide(accepts, mandate, ctx);
+    const d = decide(accepts, m, ctx);
     const base = { authorizationId, intentId };
     const deny = (violations: PolicyViolation[]): Decided => {
-      ledger.append({ type: "DENIED", sessionId, intentId, authorizationId, data: { violations, resourceKey: key } }, t);
+      ledger.append({ type: "DENIED", sessionId, intentId, authorizationId, data: { violations, resourceKey: key, ...who } }, t);
       return { decision: { status: "DENIED", ...base, violations } };
     };
 
@@ -184,7 +287,7 @@ export function createControlService(deps: ControlServiceDeps): ControlService {
       const chosen = d.chosen!;
       // 010 FR-005: one pending escalation per purchase. A repeat returns it and records the repeat.
       const pending =
-        dedupePending && findPendingEscalation(ledger.entries(), sessionId, key, String(chosen.payTo), chosen.amount, t);
+        dedupePending && findPendingEscalation(ledger.entries(), sessionId, key, String(chosen.payTo), chosen.amount, t, owner);
       if (pending && pending.authorizationId !== undefined) {
         ledger.append(
           {
@@ -192,7 +295,7 @@ export function createControlService(deps: ControlServiceDeps): ControlService {
             sessionId,
             intentId,
             authorizationId: pending.authorizationId,
-            data: { escalationId: pending.authorizationId, resourceKey: key, payTo: chosen.payTo, amount: chosen.amount, violations: d.violations },
+            data: { escalationId: pending.authorizationId, resourceKey: key, payTo: chosen.payTo, amount: chosen.amount, violations: d.violations, ...who },
           },
           t,
         );
@@ -210,7 +313,7 @@ export function createControlService(deps: ControlServiceDeps): ControlService {
           sessionId,
           intentId,
           authorizationId,
-          data: { violations: d.violations, resourceKey: key, payTo: chosen.payTo, amount: chosen.amount, ...(approvalRequest && { approvalRequest }) },
+          data: { violations: d.violations, resourceKey: key, payTo: chosen.payTo, amount: chosen.amount, ...(approvalRequest && { approvalRequest }), ...who },
         },
         t,
       );
@@ -236,7 +339,16 @@ export function createControlService(deps: ControlServiceDeps): ControlService {
     if (deps.signerLatencyMs && deps.signerLatencyMs > 0) await sleep(deps.signerLatencyMs);
     let signed;
     try {
-      signed = await signer.sign(intent.paymentRequired, chosen);
+      // 013 FR-017: a user's payment is signed with that user's own account, and only if the keyring still derives
+      // the address the ledger recorded for it.
+      let with_: PaymentSignerLike = signer;
+      if (u && !users!.sharedSigner) {
+        const wallet = u.state.wallet;
+        if (!wallet) throw new Error("the user has no crypto account");
+        with_ = users!.keyring.signerFor(wallet.walletIndex, m.hardCapPerPaymentAtomic);
+        if (with_.address.toLowerCase() !== wallet.address.toLowerCase()) throw new Error("the user's account does not match the ledger");
+      }
+      signed = await with_.sign(intent.paymentRequired, chosen);
     } catch (err) {
       const detail = (err instanceof Error ? err.message : String(err)).slice(0, SIGNER_DETAIL_MAX);
       return deny([{ rule: "signer_rejected", detail }]);
@@ -247,7 +359,7 @@ export function createControlService(deps: ControlServiceDeps): ControlService {
       approvalData !== undefined &&
       approvalData.payTo.toLowerCase() === String(chosen.payTo).toLowerCase() &&
       approvalData.amount === chosen.amount &&
-      BigInt(chosen.amount) > BigInt(mandate.autoApproveMaxAtomic);
+      BigInt(chosen.amount) > BigInt(m.autoApproveMaxAtomic);
 
     // Step 6: outcome entry with the full SPEC L2-4 field set.
     ledger.append(
@@ -264,12 +376,24 @@ export function createControlService(deps: ControlServiceDeps): ControlService {
           payer: signed.payer,
           validBefore: signed.validBefore,
           resourceUrl: intent.resourceUrl,
-          mandateId: mandate.mandateId,
+          mandateId: m.mandateId,
           approvalRef: usedApproval ? approvalData!.approvalId : null,
+          ...who,
         },
       },
       t,
     );
+    // What is left after this payment. For a user: the smallest of the policy's session and daily budgets and the
+    // user daily ceiling.
+    const remaining = u
+      ? maxZero(
+          minOf(
+            BigInt(m.sessionBudgetAtomic) - ledger.committedAtomic({ sessionId, ...mine }, t),
+            BigInt(m.dailyBudgetAtomic) - ledger.committedAtomic({ sinceMs: t - DAY_MS, ...mine }, t),
+            BigInt(users!.platform.limits.userDailyCeilingAtomic) - ledger.committedAtomic({ userId: u.userId, sinceMs: t - DAY_MS }, t),
+          ),
+        )
+      : remainingFor(sessionId, t);
     return {
       decision: {
         status: "AUTHORIZED",
@@ -278,7 +402,7 @@ export function createControlService(deps: ControlServiceDeps): ControlService {
         paymentHeaders: signed.headers,
         payer: signed.payer,
         validBefore: signed.validBefore,
-        remainingSessionBudgetAtomic: remainingFor(sessionId, t).toString(),
+        remainingSessionBudgetAtomic: remaining.toString(),
       },
     };
   }
@@ -320,7 +444,31 @@ export function createControlService(deps: ControlServiceDeps): ControlService {
   app.get("/v1/budget/:sessionId", requireRole("agent-control", tok(deps.tokens?.control)), (req, res) => {
     const sessionId = String(req.params.sessionId);
     const t = now();
-    const committed = ledger.committedAtomic({ sessionId }, t);
+    // 013: `?userId=` asks for the user view (contracts/control-api.md). Off, the query is ignored.
+    const queried = req.query.userId;
+    if (users && queried !== undefined) {
+      if (typeof queried !== "string" || !USER_ID_RE.test(queried)) {
+        res.status(400).json({ error: "invalid userId" });
+        return;
+      }
+      const state = userState(ledger.entries(), queried);
+      const usable = userGate(state) === undefined;
+      const ceiling = usable ? BigInt(users.platform.limits.userDailyCeilingAtomic) : 0n;
+      const spent = usable ? ledger.committedAtomic({ userId: queried, sinceMs: t - DAY_MS }, t) : 0n;
+      const userStatus: BudgetStatus = {
+        sessionId,
+        asset: deps.asset.address,
+        decimals: deps.asset.decimals,
+        sessionCapAtomic: ceiling.toString(),
+        spentOrReservedAtomic: spent.toString(),
+        remainingAtomic: maxZero(ceiling - spent).toString(),
+        perPaymentCapAtomic: usable ? highestAutoApprove(state, users.platform, t) : "0",
+        scope: "user_daily",
+      };
+      res.json(userStatus);
+      return;
+    }
+    const committed = ledger.committedAtomic({ sessionId, ...platformOwner }, t);
     const status: BudgetStatus = {
       sessionId,
       asset: deps.asset.address,
@@ -356,9 +504,67 @@ export function createControlService(deps: ControlServiceDeps): ControlService {
     ...(deps.tokens?.operator !== undefined && { tokens: { operator: deps.tokens.operator } }),
   });
 
+  // 013: mounted only when user accounts are on; off, each of these routes answers 404.
+  if (users) {
+    mountUserRoutes(app, {
+      ledger,
+      serialize,
+      now,
+      users,
+      net: userNet,
+      ...(deps.tokens?.portal !== undefined && { tokens: { portal: deps.tokens.portal } }),
+    });
+  }
+
   if (deps.apiDocs) mountApiDocs(app);
 
   return { app, serialize, sweep: () => serialize(() => sweep(ledger, now())), ...(backchannel && { backchannel }) };
+}
+
+// ---------------------------------------------------------------------------
+// 013 user accounts: configuration and startup checks (CFG-2, L2-8)
+// ---------------------------------------------------------------------------
+
+type Env = Record<string, string | undefined>;
+const USER_ACCOUNT_VARS = ["PORTAL_TOKEN", USER_WALLET_ENV, "PLATFORM_FILE", "PLATFORM_SELLERS"] as const;
+
+export type UserAccountsConfig =
+  | { enabled: false; ignored: string[] }
+  | { enabled: true; platform: PlatformConfig; keyring: WalletKeyringLike; portalToken: string };
+
+/**
+ * Reads the user-account settings. Off unless `USER_ACCOUNTS=1`: the other variables are then ignored and only their
+ * names are reported. On, everything is checked here, before the ledger lock: the portal token (its own, never
+ * another role's), the wallet mnemonic and the platform config. An error names the setting, never a value.
+ */
+export function userAccountsFromEnv(env: Env, net: Pick<NetworkProfile, "caip2" | "asset">): UserAccountsConfig {
+  if (env.USER_ACCOUNTS !== "1") {
+    return { enabled: false, ignored: USER_ACCOUNT_VARS.filter((k) => env[k] !== undefined && env[k] !== "") };
+  }
+  const portalToken = tokenFor("portal-control", env);
+  for (const role of ["agent-control", "verifier-control", "operator"] as const) {
+    if (tokenFor(role, env) === portalToken) {
+      throw new ConfigError(`PORTAL_TOKEN must differ from ${ROLE_TOKEN_VAR[role]} (INV-13)`);
+    }
+  }
+  return { enabled: true, platform: loadPlatform(env), keyring: keyringFromEnv(env, net), portalToken };
+}
+
+/** Fails closed when the keyring no longer derives a recorded wallet address (a changed or mistyped mnemonic). */
+export function checkWalletAddresses(ledger: AuditLedger, keyring: WalletKeyringLike): void {
+  for (const w of recordedWallets(ledger.entries())) {
+    if (keyring.addressOf(w.walletIndex).toLowerCase() !== w.address.toLowerCase()) {
+      throw new Error(`the user wallet mnemonic does not match the ledger (wallet ${w.walletIndex}); refusing to start`);
+    }
+  }
+}
+
+/** Appends PLATFORM_CONFIG when the config in force differs from the last one recorded. Returns true if it did. */
+export function recordPlatformConfig(ledger: AuditLedger, platform: PlatformConfig, atMs: number = Date.now()): boolean {
+  const digest = platformDigest(platform);
+  if (lastPlatformDigest(ledger.entries()) === digest) return false;
+  ledger.append({ type: "PLATFORM_CONFIG", data: { platformId: platform.platformId, digest, limits: platform.limits, sellers: platform.sellers } }, atMs);
+  return true;
 }
 
 /** `.local/ledger-<network>.jsonl`, from the network name only (no profile resolution). */
@@ -379,6 +585,8 @@ export async function main(): Promise<void> {
   loadEnv("l2-control");
   // 012: the CIBA_* settings are checked before the lock, so a misconfigured revision never takes it (L2-6).
   const ciba = cibaConfigFromEnv(process.env);
+  // 013: the same for the user-account settings (token, mnemonic, platform config). No network call.
+  const accounts = userAccountsFromEnv(process.env, networkProfile());
   // L2-6: one writer. Wait in standby while another L2 holds the ledger, then read it only once ours.
   const lock = await acquireLedgerLock(ledgerPathFor());
   // The ledger loads and verifies first, so an integrity failure is reported before anything else.
@@ -400,6 +608,15 @@ export async function main(): Promise<void> {
   } else if (ciba.ignored.length > 0) {
     console.log(`l2-control: backchannel approval is off; ignoring ${ciba.ignored.join(", ")}`);
   }
+  // 013 (L2-8): before serving, every recorded wallet must still derive from the mnemonic, and the platform config
+  // in force is recorded when it changed. Both happen under the lock, on the loaded ledger.
+  if (accounts.enabled) {
+    checkWalletAddresses(ledger, accounts.keyring);
+    recordPlatformConfig(ledger, accounts.platform);
+    console.log(`l2-control: user accounts on (platform ${accounts.platform.platformId}, ${accounts.platform.sellers.length} sellers)`);
+  } else if (accounts.ignored.length > 0) {
+    console.log(`l2-control: user accounts are off; ignoring ${accounts.ignored.join(", ")}`);
+  }
   const { app, sweep: sweepNow, backchannel } = createControlService({
     mandate,
     signer,
@@ -407,6 +624,11 @@ export async function main(): Promise<void> {
     asset: { address: net.asset, decimals: net.decimals },
     apiDocs,
     ...(backchannelDeps && { backchannel: backchannelDeps }),
+    ...(accounts.enabled && {
+      users: { platform: accounts.platform, keyring: accounts.keyring },
+      net,
+      tokens: { portal: accounts.portalToken },
+    }),
   });
   // FR-012: resume every open approval request from the ledger, without sending a new one.
   backchannel?.resume();

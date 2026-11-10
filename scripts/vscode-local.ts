@@ -6,16 +6,18 @@
 // bootloader) and VSCODE_INSPECTOR_OPTIONS (where to attach), so breakpoints bind in the child.
 //
 //   vscode-local.ts chain                  start the local chain, or reuse the one already running (task "local: chain")
-//   vscode-local.ts stack                  make the whole local stack answer (task "local: stack"): each process that
+//   vscode-local.ts stack [--users]        make the whole local stack answer (task "local: stack"): each process that
 //                                          answers is reused, one starting elsewhere is waited for, a missing one is
-//                                          started here, without the debugger, and kept running
+//                                          started here, without the debugger, and kept running. --users (task
+//                                          "local: stack: users", 013) starts L2 with user accounts on and the local
+//                                          dev mnemonic, and refuses an L2 that runs without them
 //   vscode-local.ts run <role> [args...]   run one process as a child; the debugger attaches to it
 //
-// Roles: facilitator, seller, l2, l3, agent (L1 CLI), hosted (L1 hosted agent), approve, reject, escalations,
-// ledger-verify (the operator's commands).
+// Roles: facilitator, seller, l2, l3, agent (L1 CLI), hosted (L1 hosted agent), portal (the L2 web portal, 013),
+// approve, reject, escalations, ledger-verify (the operator's commands).
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { rmSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { LOCAL_STACK, ProcessGroup, ROOT, childEnv, envFileFor, localStack, portInUse, sleep, type DemoProcess, type EnvFile, type StackRole } from "./demo-lib.js";
@@ -32,6 +34,8 @@ export const RUN_ROLES = {
   l3: { role: "l3", tag: "l3", entry: "src/layer3-settlement/service.ts", args: [], envFile: "env/l3-verifier.env" },
   agent: { role: "agent", tag: "agent", entry: "src/main.ts", args: [], envFile: "env/l1-agent.env" },
   hosted: { role: "hosted", tag: "hosted", entry: "src/hosted-main.ts", args: [], envFile: "env/l1-hosted.env" },
+  // 013: not a stack service. It gets no key at all, and it needs L2 with user accounts on ("local: stack: users").
+  portal: { role: "portal", tag: "portal", entry: "src/portal-main.ts", args: [], envFile: "env/portal.env" },
   approve: operator("scripts/approve.ts"),
   reject: operator("scripts/reject.ts"),
   escalations: operator("scripts/escalations.ts"),
@@ -44,9 +48,12 @@ export const PASSTHROUGH = ["API_DOCS"] as const;
 /** How VS Code's debugger (js-debug's bootloader) finds a child process; NODE_OPTIONS comes through childEnv's NODE_*. */
 export const DEBUGGER_ENV = ["VSCODE_INSPECTOR_OPTIONS", "NODE_INSPECTOR_IPC"] as const;
 
-/** The child's environment: childEnv in local mode, NETWORK=local whatever the env file says, PASSTHROUGH and DEBUGGER_ENV. */
-export function localRunEnv(role: RunRole, file: EnvFile | null, parent: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  const env = childEnv(RUN_ROLES[role], file, { network: "local", sessionId: `sess_${randomBytes(4).toString("hex")}` });
+/**
+ * The child's environment: childEnv in local mode, NETWORK=local whatever the env file says, PASSTHROUGH and DEBUGGER_ENV.
+ * `users` (013) turns user accounts on, which only changes L2's environment.
+ */
+export function localRunEnv(role: RunRole, file: EnvFile | null, parent: NodeJS.ProcessEnv = process.env, opts: { users?: boolean } = {}): NodeJS.ProcessEnv {
+  const env = childEnv(RUN_ROLES[role], file, { network: "local", sessionId: `sess_${randomBytes(4).toString("hex")}`, ...(opts.users && { users: true }) });
   env.NETWORK = "local";
   for (const key of [...PASSTHROUGH, ...DEBUGGER_ENV]) if (parent[key] !== undefined) env[key] = parent[key];
   return env;
@@ -64,6 +71,10 @@ export function runWarnings(role: RunRole, file: EnvFile | null, args: readonly 
     if (v("MODEL_PROVIDER") !== "anthropic") out.push(`locally the hosted agent needs MODEL_PROVIDER=anthropic (Foundry signs in as the Container App's managed identity)`);
     else if (!v("ANTHROPIC_API_KEY")) out.push(`${file?.path ?? "env/l1-hosted.env"} has no ANTHROPIC_API_KEY: the hosted agent will refuse to start`);
     if (!v("AUTH_JWKS_FILE")) out.push(`${file?.path ?? "env/l1-hosted.env"} has no AUTH_JWKS_FILE: locally the hosted agent uses the dev issuer (.local/dev-issuer/jwks.json)`);
+  }
+  if (role === "portal") {
+    if (!v("AUTH_JWKS_FILE")) out.push(`${file?.path ?? "env/portal.env"} has no AUTH_JWKS_FILE: locally the portal uses the dev issuer (.local/dev-issuer/jwks.json)`);
+    if (!existsSync(resolve(ROOT, v("PORTAL_WEB_ROOT") ?? "dist/portal-web", "index.html"))) out.push("the web app is not built: run `npm run build:web`, or the portal serves only its API");
   }
   return out;
 }
@@ -88,8 +99,8 @@ async function run(role: string | undefined, args: string[]): Promise<number> {
     }
   }
   for (const w of runWarnings(r, file, args)) console.error(`vscode-local: ${w}`);
-  // The hosted agent verifies dev-issuer tokens locally; `npm run dev-token` signs them with the same issuer.
-  const jwks = r === "hosted" ? file?.values.AUTH_JWKS_FILE : undefined;
+  // The hosted agent and the portal verify dev-issuer tokens locally; `npm run dev-token` signs them with the same issuer.
+  const jwks = r === "hosted" || r === "portal" ? file?.values.AUTH_JWKS_FILE : undefined;
   if (jwks) await loadOrCreateDevIssuer(dirname(resolve(ROOT, jwks)), { NETWORK: "local" });
 
   const child = spawn(process.execPath, ["--import", "tsx", p.entry, ...args], { cwd: ROOT, env: localRunEnv(r, file), stdio: "inherit" });
@@ -131,7 +142,13 @@ export const stackAction = (answers: boolean, portTaken: boolean): StackAction =
 
 const READY_MS = 60_000;
 
-async function stack(): Promise<number> {
+/**
+ * Whether the L2 that answers has user accounts on (013): its portal routes exist only then. Without a token a
+ * mounted route answers 401 and a missing one 404, so no credential is needed to tell.
+ */
+export const userAccountsOn = (status: number): boolean => status !== 404;
+
+async function stack(users: boolean): Promise<number> {
   const local = localStack();
   const group = new ProcessGroup(Object.values(local.ports));
   let stopping = false;
@@ -151,7 +168,7 @@ async function stack(): Promise<number> {
       const action = stackAction(await local.ready[role](), await portInUse(local.ports[role]));
       if (action === "start") {
         if (role === "chain") rmSync(local.deploymentPath, { force: true }); // readiness must see this chain's deployment
-        const env = role === "chain" ? childEnv(p, null, { network: "local", sessionId: "sess_stack" }) : localRunEnv(role as RunRole, local.files.get(role) ?? null, {});
+        const env = role === "chain" ? childEnv(p, null, { network: "local", sessionId: "sess_stack" }) : localRunEnv(role as RunRole, local.files.get(role) ?? null, {}, { users });
         console.log(`local stack: starting ${role} (not debugged)`);
         group.start(p, env);
         await group.waitReady(role, local.ready[role]);
@@ -170,6 +187,18 @@ async function stack(): Promise<number> {
     await group.shutdown();
     return 1;
   }
+  if (users) {
+    // An L2 that was already running may have been started without user accounts; the portal can do nothing with it.
+    const status = await fetch(`http://127.0.0.1:${local.ports.l2}/v1/platform`).then(
+      (r) => r.status,
+      () => 0,
+    );
+    if (!userAccountsOn(status)) {
+      console.log(`local stack: error: the L2 on port ${local.ports.l2} runs without user accounts; stop it (task "local: stop stack", or the compound "Local stack") and run this task again`);
+      await group.shutdown();
+      return 1;
+    }
+  }
   if (group.running.length === 0) {
     console.log("local stack: already running (reused)");
     return 0;
@@ -184,9 +213,9 @@ async function stack(): Promise<number> {
 const isEntry = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (isEntry) {
   const [command, role, ...rest] = process.argv.slice(2);
-  const job = command === "chain" ? chain() : command === "stack" ? stack() : command === "run" ? run(role, rest) : null;
+  const job = command === "chain" ? chain() : command === "stack" ? stack(role === "--users") : command === "run" ? run(role, rest) : null;
   if (job === null) {
-    console.error("vscode-local: chain | stack | run <role> [args...]");
+    console.error("vscode-local: chain | stack [--users] | run <role> [args...]");
     process.exit(2);
   }
   job.then(

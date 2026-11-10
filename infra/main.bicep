@@ -2,9 +2,10 @@
 // the resource group that pre-deploy.bicep creates. The platform (network, logs, identities, registry, vaults,
 // storage, Foundry and its model, the two Container Apps environments), and each unit's apps, each from its own
 // image: L1 (the agent and the regression job), L2 (the control service), L3 (the verifier), the operator (the
-// operator job) and the sellers. One deployment deploys one of them, chosen by `unit`: the platform by
-// .github/workflows/deploy-infra.yml, each unit by its own pipeline (deploy-l1.yml, deploy-l2.yml, deploy-l3.yml,
-// deploy-operator.yml, deploy-seller.yml), all through the shared deploy.yml. What a deployment leaves out stays as it
+// operator job), the portal (013: the web portal) and the sellers. One deployment deploys one of them, chosen by
+// `unit`: the platform by .github/workflows/deploy-infra.yml, each unit by its own pipeline (deploy-l1.yml,
+// deploy-l2.yml, deploy-l3.yml, deploy-operator.yml, deploy-portal.yml, deploy-seller.yml), all through the shared
+// deploy.yml. What a deployment leaves out stays as it
 // is (incremental mode). Every name comes from the parameter file's `names` ({type}-{app}-{location}-{environment},
 // the registry's and storage's without hyphens; T-IAC-01 rule 15): no template names a resource itself. T-IAC-01
 // (test/infra.test.ts) asserts the identity, secret and exposure rules. No secret value appears here: vaults are
@@ -26,7 +27,7 @@ param deployClientId string
 #disable-next-line no-unused-params
 param payerAddress string
 @description('What this deployment deploys: the platform (deploy-infra.yml), or one unit\'s apps (deploy-<unit>.yml). Everything else stays as it is.')
-@allowed(['platform', 'l1', 'l2', 'l3', 'operator', 'seller'])
+@allowed(['platform', 'l1', 'l2', 'l3', 'operator', 'portal', 'seller'])
 param unit string
 @description('Image tag of the unit\'s image: the Git commit SHA (FR-023), or last-good on a rollback. The platform has no image.')
 param imageTag string
@@ -52,6 +53,11 @@ param agentStableRevision string = ''
 // user-defined type: a type would switch the compiled template to languageVersion 2.0 (symbolic names).
 @description('012: L2\'s backchannel approval. The credential is the l2 vault\'s ciba-client-credential, seeded by hand in every environment (the placeholder off while enabled is false).')
 param ciba object
+// 013 user accounts (SPEC L2-8; specs/013 contracts/config-and-secrets.md "Azure"): non-secret values only,
+// { enabled, portalClientId, sellerName, cardVault: 'off' | 'stripe', cardVaultPublishableKey }. A plain object, not a
+// user-defined type, as for ciba.
+@description('013: user accounts and the portal. The secrets are the l2 vault\'s portal-token and user-wallet-mnemonic and the portal vault\'s portal-token and card-vault-key, seeded by hand in every environment (the placeholder off while enabled is false).')
+param userAccounts object
 @description('Who uses Claude, declared to Anthropic with the model deployment, which accepts Anthropic\'s Azure Marketplace terms: the legal entity\'s name.')
 param claudeOrganizationName string
 @description('The organization\'s two-letter country code.')
@@ -73,6 +79,14 @@ var cibaChecked = contains(['key', 'secret'], ciba.credential) && (!ciba.enabled
   ? ciba.enabled
   : fail('main: ciba.credential must be key or secret, and ciba.enabled needs an https:// issuer, a clientId, an audience and an approver (specs/012 contracts/config-and-secrets.md)')
 
+// 013: an enabled userAccounts must name the portal web app's client ID (a GUID), and so must any deployment of the
+// portal itself, enabled or not: the portal doesn't start without it. A stripe card vault needs a test-mode
+// publishable key (T-IAC-01 rule 21).
+#disable-next-line no-unused-vars
+var userAccountsChecked = contains(['off', 'stripe'], userAccounts.cardVault) && ((!userAccounts.enabled && unit != 'portal') || length(userAccounts.portalClientId) == 36) && (userAccounts.cardVault != 'stripe' || startsWith(userAccounts.cardVaultPublishableKey, 'pk_test_'))
+  ? userAccounts.enabled
+  : fail('main: userAccounts.cardVault must be off or stripe, userAccounts.enabled and the portal unit each need a 36-character portalClientId, and cardVault stripe needs a cardVaultPublishableKey that starts with pk_test_ (specs/013 contracts/config-and-secrets.md)')
+
 // The identity and vault matrix (contracts/cloud-topology.md "Role assignments"): one identity and one
 // vault per runtime unit, and each identity reads only its own vault. The key names the unit's identity
 // (names.identities.<key>) and vault (names.vaults.<key>); the subnet names the vault's only subnet
@@ -82,6 +96,7 @@ var units = [
   { key: 'l2', subnet: 'x402' }
   { key: 'l3', subnet: 'x402' }
   { key: 'op', subnet: 'x402' }
+  { key: 'portal', subnet: 'x402' }
   { key: 'seller', subnet: 'seller' }
 ]
 @description('nginx-unprivileged 1.29-alpine, pinned by index digest on 2026-10-22: the L2 and L3 proxy sidecars.')
@@ -162,6 +177,7 @@ module l1 'modules/l1-apps.bicep' = if (unit == 'l1') {
     authAudience: authAudience
     modelDeployment: modelDeployment
     agentStableRevision: agentStableRevision
+    userAccounts: userAccounts
   }
   dependsOn: [ids, registry, vaults, envs, foundry]
 }
@@ -177,6 +193,7 @@ module l2 'modules/l2-apps.bicep' = if (unit == 'l2') {
     acrServer: acrServer
     sellerPayTo: sellerPayTo
     ciba: ciba
+    userAccounts: userAccounts
   }
   dependsOn: [ids, registry, vaults, envs]
 }
@@ -205,6 +222,22 @@ module l3 'modules/l3-apps.bicep' = if (unit == 'l3') {
   dependsOn: [ids, registry, vaults, envs]
 }
 
+// 013: the portal, the second public app. It calls L2 only, with its own token, and mounts its own share.
+module portal 'modules/portal-apps.bicep' = if (unit == 'portal') {
+  name: 'portal-apps'
+  params: {
+    location: location
+    names: names
+    profilesStorageName: 'profiles'
+    image: '${acrServer}/x402-portal:${imageTag}'
+    acrServer: acrServer
+    authTenantId: tenantId
+    authAudience: authAudience
+    userAccounts: userAccounts
+  }
+  dependsOn: [ids, registry, vaults, envs]
+}
+
 module sellers 'modules/sellers.bicep' = if (unit == 'seller') {
   name: 'sellers'
   params: {
@@ -222,5 +255,6 @@ output registry string = acrServer
 output logWorkspaceCustomerId string = platform ? logs!.outputs.customerId : ''
 output vaults array = [for (u, i) in (platform ? units : []): { key: u.key, uri: vaults[i]!.outputs.uri }]
 output agentFqdn string = unit == 'l1' ? l1!.outputs.agentFqdn : ''
+output portalFqdn string = unit == 'portal' ? portal!.outputs.portalFqdn : ''
 output sellerFqdn string = unit == 'seller' ? sellers!.outputs.fqdn : ''
 output sellerAliasFqdn string = unit == 'seller' ? sellers!.outputs.aliasFqdn : ''

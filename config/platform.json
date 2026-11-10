@@ -1,0 +1,11 @@
+{
+  "platformId": "platform-poc-001",
+  "limits": {
+    "hardCapPerPaymentAtomic": "100000",
+    "sessionBudgetAtomic": "100000",
+    "userDailyCeilingAtomic": "500000",
+    "maxAuthorizationsPerMinute": 10,
+    "maxPolicyDays": 365
+  },
+  "sellers": [{ "host": "127.0.0.1:4021", "name": "Local demo seller", "payees": [] }]
+}

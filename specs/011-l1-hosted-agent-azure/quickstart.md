@@ -134,36 +134,50 @@ for Entra ID.
    resources and their role assignments can't be previewed. Copy the three `param` lines it prints (the
    deploy app's client ID, `authAudience` and `operatorsGroupId`) into `main.dev.bicepparam`. Run
    against another subscription or tenant than the file names, it fails validation and creates nothing.
+   Since 013 it also creates the portal web app `app-portal-eastus2-dev` (a public client, no secret) and
+   the API app's `Portal.Access` scope, and prints a fourth line: put its `portalClientId` inside
+   `userAccounts` in `main.dev.bicepparam`, also while `userAccounts.enabled` is false.
 1. **GitHub environment.** Run `infra/github-setup.sh` (`--dry-run` first). It first checks that GitHub
    signs this repository's jobs with the subject the federated credential trusts (the owner's and
    repository's IDs, `githubOwnerId` and `githubRepositoryId`), then creates the `dev`
    environment the pipelines run in, and sets no secret: they read every value from
    `main.dev.bicepparam`.
 2. **Create the platform.** Run `deploy-infra` with `environment=dev`, `first-deployment: true` and
-   `seed-ip` set to your public IP. It creates the network, identities, registry, the five vaults (open
-   to your IP), storage, Foundry with the `claude-sonnet-5-5` deployment, and both environments. A
+   `seed-ip` set to your public IP. It creates the network, identities, registry, the six vaults (open
+   to your IP), storage (the `ledger` and `profiles` shares), Foundry with the `claude-sonnet-5-5` deployment, and both environments. A
    unit's pipeline refuses `seed-ip` at its first step and deploys nothing.
 3. **Seed the vaults.** Put the secrets in, following [cloud-topology](contracts/cloud-topology.md),
    with `az keyvault secret set` from a trusted shell. This is data, not provisioning: the secrets
    never appear in a template, a parameter file or GitHub. Since 012, the l2 vault also holds
    `ciba-client-credential`: the placeholder `off` while backchannel approval is off (`ciba.enabled: false`),
    or L2's Auth0 client key once it is on ([012 quickstart §6](../012-ciba-escalation-approval/quickstart.md#6-azure)).
+   Since 013, the l2 vault also holds `portal-token` and `user-wallet-mnemonic`, and the portal vault
+   `portal-token` and `card-vault-key`: the placeholder `off` in all four while user accounts are off
+   ([013 quickstart §6](../013-l2-portal-onboarding/quickstart.md#6-azure)).
 4. **Close the vaults.** Run `deploy-infra` again with `first-deployment: true` and no `seed-ip`. Only
    the platform's runs change the vault firewalls, so this is the run that removes your IP.
 5. **Deploy the units, one run after another** (the pipelines share one concurrency group, and GitHub
    cancels a second pending run), each with `first-deployment: true`: `deploy-seller`, `deploy-l3`,
-   `deploy-operator`, then `deploy-l2`. Each builds its own image, deploys its own apps and waits for
-   them (L2's wait runs the operator job, hence the operator first), but skips the checks through units
-   not deployed yet and promotes nothing.
+   `deploy-operator`, `deploy-l2`, then (013) `deploy-portal`. Each builds its own image, deploys its own
+   apps and waits for them (L2's wait runs the operator job, hence the operator first), but skips the
+   checks through units not deployed yet and promotes nothing. The portal's run also checks the portal
+   itself (the pipeline's step 8b).
 6. **Deploy L1.** Run `deploy-l1`, which has no first deployment. It builds the agent's image, deploys
    the agent and the regression job, and passes every gate of the
-   [deploy-pipeline](contracts/deploy-pipeline.md): the regression, the chain check, the smoke check
-   and the log scan, through every unit. The agent's traffic ends on its new revision, and
+   [deploy-pipeline](contracts/deploy-pipeline.md): the regression, the chain check, the smoke check,
+   the portal smoke and the log scan, through every unit. The agent's traffic ends on its new revision, and
    `x402-l1-agent` is tagged `last-good`.
-7. **Verify the other units.** Run `deploy-seller`, `deploy-l3`, `deploy-operator` and `deploy-l2`
-   once more without `first-deployment`. Each image is tagged `last-good` once its run passes the
+7. **Verify the other units.** Run `deploy-seller`, `deploy-l3`, `deploy-operator`, `deploy-l2` and
+   `deploy-portal` once more without `first-deployment`. Each image is tagged `last-good` once its run passes the
    gates; until then, a failed run of that unit has nothing to roll back to and stays red for a human.
-8. **Time it.** Record the minutes from step 0 to the green run of step 6 (SC-008: under 60), and later
+8. **The portal's redirect URI (013).** Set `portalOrigin` in `pre-deploy.dev.bicepparam` to
+   `https://<the portal's FQDN>` (the `portalFqdn` output of the `deploy-portal` run's deployment) and
+   deploy `pre-deploy.bicep` again, as in step 0. Until then nobody can sign in to the deployed portal.
+   Turning user accounts on, and adding the portal to an environment deployed before 013, are in
+   [013 quickstart §6](../013-l2-portal-onboarding/quickstart.md#6-azure); on such an environment
+   `deploy-infra`, `deploy-l2` and `deploy-portal` run with `first-deployment` until the portal exists
+   ([deploy-pipeline](contracts/deploy-pipeline.md), "First deployment").
+9. **Time it.** Record the minutes from step 0 to the green run of step 6 (SC-008: under 60), and later
    the minutes per redeploy of one unit (under 15).
 
 Then check the platform facts the research could not confirm:

@@ -13,6 +13,7 @@ param names = {
   resourceGroup: 'rg-x402-${location}-${environment}'
   apiApp: 'app-l1-${location}-${environment}'
   deployApp: 'app-deploy-${location}-${environment}'
+  portalApp: 'app-portal-${location}-${environment}'
   operators: 'grp-op-${location}-${environment}'
   stateStorage: 'sttfstate${location}${environment}'
 }
@@ -26,6 +27,11 @@ param githubRepositoryId = '1422461966'
 param githubEnvironment = environment
 // provision-auth0.yml's job runs in its own GitHub environment, which holds the Auth0 Management API credential.
 param githubAuth0Environment = 'auth0-${environment}'
+
+// 013: the portal's public origin, https://<names.apps.portal>.<the x402 environment's default domain> (main.bicep's
+// portalFqdn output), without a trailing slash: its /redirect.html becomes the web app's second redirect URI. Empty
+// until the portal is deployed; then set it and deploy this file again (specs/013 quickstart §6 step 4).
+param portalOrigin = ''
 
 // People: who may run the agent (Agent.Run), and who may start the operator job (the operators' group).
 param agentUsers = ['me@fabriciorojas.com']

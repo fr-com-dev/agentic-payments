@@ -10,14 +10,16 @@ import type express from "express";
 import type { FacilitatorClient } from "@x402/core/server";
 import { createPublicClient, http, type Address } from "viem";
 import { mnemonicToAccount } from "viem/accounts";
-import { ACCOUNT_INDEX, LOCAL_MNEMONIC, localChain, localDevKeys, startLocalChain, type LocalChain } from "../../scripts/local-chain-lib.js";
+import { ACCOUNT_INDEX, LOCAL_MNEMONIC, localChain, localDevKeys, mintLocalUsdc, startLocalChain, type LocalChain } from "../../scripts/local-chain-lib.js";
 import { createSellerApp } from "../../src/counterparty/seller.js";
 import { createFacilitatorApp } from "../../src/counterparty/facilitator.js";
 import { CHAIN_PORT, networkProfile, type NetworkProfile } from "../../src/shared/config.js";
 import { AuditLedger, type LedgerEntry } from "../../src/layer2-control/ledger.js";
 import { buildMandate, type SpendingMandate } from "../../src/layer2-control/mandate.js";
-import { PaymentSigner } from "../../src/layer2-control/signer.js";
-import { createControlService } from "../../src/layer2-control/service.js";
+import { buildPlatform, type PlatformConfig } from "../../src/layer2-control/platform.js";
+import { PaymentSigner, WalletKeyring } from "../../src/layer2-control/signer.js";
+import { createControlService, recordPlatformConfig } from "../../src/layer2-control/service.js";
+import type { UserAccountsDeps } from "../../src/layer2-control/users.js";
 import type { BackchannelDeps } from "../../src/layer2-control/backchannel.js";
 import { ChainSettlementVerifier, type ReadOnlyChainClient } from "../../src/layer3-settlement/verifier.js";
 import { createSettlementService, HttpReconciler } from "../../src/layer3-settlement/service.js";
@@ -40,11 +42,26 @@ export interface HarnessOptions {
   controlNow?: () => number;
   /** 012: L2's backchannel approval (the test builds the stand-in Auth0 and the deps). Default: off, as before. */
   controlBackchannel?: BackchannelDeps;
+  /**
+   * 013: user accounts on L2, with a keyring from a test mnemonic and a platform whose seller list is this harness's
+   * seller. `limits` and the must-fail switches are optional. Default: off, as before.
+   */
+  users?: { limits?: Partial<PlatformConfig["limits"]>; switches?: Partial<UserAccountsDeps> };
 }
+
+/** 013: a fixed, valid 24-word phrase for the harness's user wallets. Local MockUSDC only. */
+export const HARNESS_USER_MNEMONIC =
+  "legal winner thank year wave sausage worth useful legal winner thank year wave sausage worth useful legal winner thank year wave sausage worth title";
 
 export interface Harness {
   urls: { seller: string; control: string; settlement: string; facilitator: string };
-  tokens: { control: string; verifier: string; settlement: string; operator: string };
+  tokens: { control: string; verifier: string; settlement: string; operator: string; portal: string };
+  /** 013: any L2 user-account route, with the portal's token. Only useful with `users`. */
+  portal<T = Record<string, unknown>>(method: string, path: string, body?: unknown): Promise<{ status: number; body: T }>;
+  /** 013: mints local MockUSDC to an address (a user's account). */
+  fund(address: `0x${string}`, amountAtomic: bigint): Promise<bigint>;
+  /** 013: the user wallets' keyring, when `users` is on. */
+  keyring?: WalletKeyring;
   addresses: { payer: `0x${string}`; payTo: `0x${string}`; asset: `0x${string}` };
   balanceOf(addr: `0x${string}`): Promise<bigint>;
   /** Fresh temp file per harness. */
@@ -58,7 +75,7 @@ export interface Harness {
   close(): Promise<void>;
 }
 
-const TOKENS = { control: "h-control", verifier: "h-verifier", settlement: "h-settlement", operator: "h-operator" };
+const TOKENS = { control: "h-control", verifier: "h-verifier", settlement: "h-settlement", operator: "h-operator", portal: "h-portal" };
 
 export async function startHarness(opts: HarnessOptions = {}): Promise<Harness> {
   const dir = mkdtempSync(join(tmpdir(), "x402-harness-"));
@@ -120,12 +137,30 @@ export async function startHarness(opts: HarnessOptions = {}): Promise<Harness> 
     const mandate = buildMandate(json, net, { ALLOWED_HOSTS: new URL(seller).host, ALLOWED_PAYEES: payTo });
     const ledger = new AuditLedger(ledgerPath);
     const signer = new PaymentSigner(localDevKeys({ NETWORK: "local" }).payer, net, mandate.hardCapPerPaymentAtomic);
+    // 013: user accounts. The seller list is this harness's seller, with its real payTo as the only payee.
+    const keyring = opts.users ? new WalletKeyring(HARNESS_USER_MNEMONIC, net) : undefined;
+    const platform = opts.users
+      ? buildPlatform({
+          platformId: "platform-harness",
+          limits: {
+            hardCapPerPaymentAtomic: mandate.hardCapPerPaymentAtomic,
+            sessionBudgetAtomic: mandate.sessionBudgetAtomic,
+            userDailyCeilingAtomic: mandate.dailyBudgetAtomic,
+            maxAuthorizationsPerMinute: mandate.maxAuthorizationsPerMinute,
+            maxPolicyDays: 365,
+            ...opts.users.limits,
+          },
+          sellers: [{ host: new URL(seller).host, name: "Harness seller", payees: [payTo] }],
+        })
+      : undefined;
+    if (platform) recordPlatformConfig(ledger, platform);
     const control = createControlService({
       mandate,
       signer,
       ledger,
       asset: { address: net.asset, decimals: net.decimals },
-      tokens: { control: TOKENS.control, settlement: TOKENS.settlement, operator: TOKENS.operator },
+      tokens: { control: TOKENS.control, settlement: TOKENS.settlement, operator: TOKENS.operator, portal: TOKENS.portal },
+      ...(platform && keyring && { users: { platform, keyring, ...opts.users?.switches }, net }),
       ...(opts.signerLatencyMs !== undefined && { signerLatencyMs: opts.signerLatencyMs }),
       ...(opts.controlNow !== undefined && { now: opts.controlNow }),
       ...(opts.controlBackchannel !== undefined && { backchannel: opts.controlBackchannel }),
@@ -158,6 +193,16 @@ export async function startHarness(opts: HarnessOptions = {}): Promise<Harness> 
       tokens: { ...TOKENS },
       addresses: { payer, payTo, asset: net.asset },
       balanceOf,
+      portal: async (method, path, body) => {
+        const res = await fetch(`${controlUrl}${path}`, {
+          method,
+          headers: { authorization: `Bearer ${TOKENS.portal}`, ...(body !== undefined && { "content-type": "application/json" }) },
+          ...(body !== undefined && { body: JSON.stringify(body) }),
+        });
+        return { status: res.status, body: (await res.json()) as never };
+      },
+      fund: (address, amountAtomic) => mintLocalUsdc(chain!.rpcUrl, net.asset, address, amountAtomic),
+      ...(keyring && { keyring }),
       ledgerPath,
       ledgerEntries: () =>
         (existsSync(ledgerPath) ? readFileSync(ledgerPath, "utf8") : "")

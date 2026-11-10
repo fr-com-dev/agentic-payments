@@ -14,6 +14,7 @@ It runs on every request except `GET /healthz` and `GET /readyz`, before the bod
 | `exp`, `nbf` | 60 s clock tolerance | 401 |
 | `oid` | present | 401 |
 | `roles` | contains `Agent.Run` | 403 |
+| `scp`, `azp` (v1.10, 013 SEC-20) | for any token that is not `idtyp: app`: `scp` contains `user_impersonation`, and `azp` is not `PORTAL_CLIENT_ID` when that variable is set. A token issued for the portal is refused here, as the portal refuses this service's | 403 |
 
 - 401 and 403 bodies are `{ "error": "unauthorized" }` and `{ "error": "forbidden" }`. They never
   say which check failed.

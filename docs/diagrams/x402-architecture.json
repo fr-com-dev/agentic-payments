@@ -55,6 +55,18 @@
           "ganache"
         ],
         "note": "Offline baseline: local facilitator and ganache replace CDP and Base Sepolia."
+      },
+      {
+        "id": "user-accounts",
+        "label": "User accounts",
+        "focus": [
+          "portal",
+          "l2",
+          "ledger",
+          "agent",
+          "chain"
+        ],
+        "note": "Optional (USER_ACCOUNTS=1): a person sets up a profile, a wallet and expense policies in the portal; L2 records them in the ledger and signs each person's payments with that person's account."
       }
     ]
   },
@@ -257,6 +269,31 @@
           "path": "scripts/local-chain.ts"
         }
       ]
+    },
+    {
+      "id": "portal",
+      "type": "frontend",
+      "label": "Portal :4025",
+      "sublabel": "profile · wallet · policies · no keys",
+      "pos": [
+        40,
+        200
+      ],
+      "size": [
+        180,
+        64
+      ],
+      "sources": [
+        {
+          "path": "src/portal-main.ts"
+        },
+        {
+          "path": "src/portal/routes.ts"
+        },
+        {
+          "path": "web/portal/src/app.tsx"
+        }
+      ]
     }
   ],
   "boundaries": [
@@ -373,6 +410,24 @@
       "to": "ganache",
       "label": "transfer",
       "variant": "dashed"
+    },
+    {
+      "id": "portal-l2",
+      "from": "portal",
+      "to": "l2",
+      "label": "user-account routes",
+      "variant": "security",
+      "fromSide": "bottom",
+      "toSide": "left"
+    },
+    {
+      "id": "portal-balance",
+      "from": "portal",
+      "to": "chain",
+      "label": "balance (read-only)",
+      "variant": "dashed",
+      "fromSide": "top",
+      "toSide": "top"
     }
   ],
   "cards": [
@@ -382,7 +437,8 @@
       "items": [
         "L1 holds no keys; L2 is the only signer",
         "Budgets come from the hash-chained ledger",
-        "L3 is read-only and verifies every settlement"
+        "L3 is read-only and verifies every settlement",
+        "The portal holds no key and decides nothing"
       ]
     },
     {

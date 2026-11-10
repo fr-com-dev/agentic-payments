@@ -3,6 +3,7 @@
 // T-E2E-01 is owned by 008 (T024, sole writer). T-E2E-02 by 004, T-E2E-03 by 003/005,
 // T-E2E-04 by 002, T-E2E-05 by 003/007.
 import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import express from "express";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -11,7 +12,8 @@ import {
   decodePaymentResponseHeader,
   encodePaymentResponseHeader,
 } from "@x402/core/http";
-import { startHarness, RegressionBaseline, type Harness } from "./helpers/harness.js";
+import { HARNESS_USER_MNEMONIC, startHarness, RegressionBaseline, type Harness } from "./helpers/harness.js";
+import { userIdFor } from "../src/shared/user-id.js";
 import { mockModel, startHostedApp, text, toolCall } from "./helpers/hosted.js";
 import { HttpAuthorizationGate, HttpSettlementVerifier } from "../src/layer1-intent/ports-http.js";
 import { PaidResourceOrchestrator, type PaidFetchResult } from "../src/layer1-intent/orchestrator.js";
@@ -772,4 +774,158 @@ describe("012 backchannel approval end to end", () => {
     expect(trail).toEqual(["APPROVAL_REQUESTED", "HUMAN_REJECTION", "INTENT", "DENIED"]);
     expect(leaks(r)).toEqual([]);
   }, 60_000);
+});
+
+// ---------------------------------------------------------------------------
+// 013 user accounts end to end (specs/013 quickstart §2, §3): two people, two accounts, one chain.
+// ---------------------------------------------------------------------------
+
+describe("013 user accounts end to end", () => {
+  let h: Harness;
+  beforeAll(async () => {
+    h = await startHarness({ users: {} });
+  });
+  afterAll(async () => {
+    await h?.close();
+  });
+
+  const ALICE = userIdFor("dev", "alice");
+  const BOB = userIdFor("dev", "bob");
+  const sellerHost = () => new URL(h.urls.seller).host;
+  const values = (over: Record<string, unknown> = {}) => ({
+    sellers: [sellerHost()],
+    autoApproveMaxAtomic: "20000",
+    hardCapPerPaymentAtomic: "100000",
+    sessionBudgetAtomic: "100000",
+    dailyBudgetAtomic: "500000",
+    maxAuthorizationsPerMinute: 10,
+    expiresAt: new Date(Date.now() + 30 * 86_400_000).toISOString(),
+    paymentMethod: "crypto_account",
+    ...over,
+  });
+  const fresh = () => ({ identityConfirmedAtMs: Date.now() });
+
+  /** Profile registered, crypto account created and funded, one policy. Through the real portal routes. */
+  async function onboard(userId: string, fundAtomic: bigint, over: Record<string, unknown> = {}) {
+    expect((await h.portal("PUT", `/v1/users/${userId}/registration`, { acknowledgedTestFunds: true })).status).toBe(200);
+    const wallet = await h.portal<{ wallet: { address: `0x${string}` } }>("PUT", `/v1/users/${userId}/wallet`);
+    expect(wallet.status).toBe(200);
+    const address = wallet.body.wallet.address;
+    expect(await h.fund(address, fundAtomic)).toBe(fundAtomic);
+    const policy = await h.portal<{ policyId: string }>("POST", `/v1/users/${userId}/policies`, { ...values(over), ...fresh() });
+    expect(policy.status).toBe(201);
+    return { address, policyId: policy.body.policyId };
+  }
+
+  /** L1 for one person's run: the orchestrator names the user, as the hosted agent service does. */
+  function l1For(sessionId: string, userId: string) {
+    return new PaidResourceOrchestrator({
+      gate: new HttpAuthorizationGate(h.urls.control, h.tokens.control),
+      settlement: new HttpSettlementVerifier(h.urls.settlement, h.tokens.verifier),
+      sessionId,
+      userId,
+    });
+  }
+
+  it("T-E2E-12 two users: each payment is signed by, and settles from, its own user's account; the platform payer is untouched", async () => {
+    const alice = await onboard(ALICE, 1_000_000n);
+    const bob = await onboard(BOB, 2_000_000n);
+    expect(alice.address).not.toBe(bob.address);
+    const platform0 = await h.balanceOf(h.addresses.payer);
+    const payee0 = await h.balanceOf(h.addresses.payTo);
+
+    const a = await l1For("sess_alice", ALICE).fetchPaid(`${h.urls.seller}/api/weather?city=Lima`, "weather for alice");
+    const b = await l1For("sess_bob", BOB).fetchPaid(`${h.urls.seller}/api/market-brief`, "brief for bob");
+    for (const r of [a, b]) {
+      expect(r.outcome, JSON.stringify(r.violations ?? r.error)).toBe("PAID");
+      expect(r.payment?.settlement?.status).toBe("CONFIRMED");
+    }
+    // The chain: each transfer left its own user's account. L3 verified the payer from the Transfer log (INV-10).
+    expect(a.payment!.settlement!.verified.payer.toLowerCase()).toBe(alice.address.toLowerCase());
+    expect(b.payment!.settlement!.verified.payer.toLowerCase()).toBe(bob.address.toLowerCase());
+    expect(await h.balanceOf(alice.address)).toBe(1_000_000n - 1_000n);
+    expect(await h.balanceOf(bob.address)).toBe(2_000_000n - 5_000n);
+    expect(await h.balanceOf(h.addresses.payer)).toBe(platform0);
+    expect((await h.balanceOf(h.addresses.payTo)) - payee0).toBe(6_000n);
+
+    // The ledger: each decision names its user, policy, version and account (FR-045).
+    const authorized = h.ledgerEntries().filter((e) => e.type === "AUTHORIZED");
+    expect(authorized.map((e) => [e.data.userId, e.data.policyId, e.data.policyVersion, String(e.data.payer).toLowerCase()])).toEqual([
+      [ALICE, alice.policyId, 1, alice.address.toLowerCase()],
+      [BOB, bob.policyId, 1, bob.address.toLowerCase()],
+    ]);
+    expect(confirmedSettlements(h)).toHaveLength(2);
+    expect((await ledgerVerify(h)).ok).toBe(true);
+
+    // A run with no user is the platform account, exactly as before (FR-002).
+    const plain = await l1(h, "sess_platform").orchestrator.fetchPaid(`${h.urls.seller}/api/weather?city=Lima`, "platform run");
+    expect(plain.outcome).toBe("PAID");
+    expect(plain.payment!.settlement!.verified.payer.toLowerCase()).toBe(h.addresses.payer.toLowerCase());
+    expect(platform0 - (await h.balanceOf(h.addresses.payer))).toBe(1_000n);
+    expect(await h.balanceOf(alice.address)).toBe(999_000n);
+
+    // A person who never onboarded is denied, and nothing moves (FR-012).
+    const nobody = await l1For("sess_nobody", userIdFor("dev", "nobody")).fetchPaid(`${h.urls.seller}/api/weather?city=Lima`, "no setup");
+    expect(nobody.outcome).toBe("DENIED");
+    expect(rulesOf(nobody)).toEqual(["user_not_onboarded"]);
+
+    // Known-value scan: the mnemonic and every role token are absent from the ledger file.
+    const ledgerText = readFileSync(h.ledgerPath, "utf8");
+    for (const secret of [...HARNESS_USER_MNEMONIC.split(" ").filter((w) => w.length > 5), ...Object.values(h.tokens)]) {
+      expect(ledgerText.includes(secret), secret).toBe(false);
+    }
+    expect(/0x[0-9a-fA-F]{64}"/.test(ledgerText.replace(/"(transaction|hash|prevHash|digest)":"[^"]+"/g, ""))).toBe(false);
+  });
+
+  it("T-E2E-12 a user's account that can't cover the payment: signed, refused by the facilitator, nothing spent", async () => {
+    const carol = userIdFor("dev", "carol");
+    const { address } = await onboard(carol, 500n);
+    const r = await l1For("sess_carol", carol).fetchPaid(`${h.urls.seller}/api/weather?city=Lima`, "underfunded");
+    expect(r.outcome).toBe("PAYMENT_FAILED");
+    expect(await h.balanceOf(address)).toBe(500n);
+  });
+
+  it("T-E2E-13 disable and enable: an escalation approved after the disable is denied; after enable the policy is paused; after resume it pays once", async () => {
+    const dave = userIdFor("dev", "dave");
+    const { address, policyId } = await onboard(dave, 1_000_000n);
+    const orchestrator = l1For("sess_dave", dave);
+    const premium = `${h.urls.seller}/api/premium-report`;
+
+    // A payment authorized before the disable settles as usual.
+    const before = await orchestrator.fetchPaid(`${h.urls.seller}/api/weather?city=Lima`, "before");
+    expect(before.payment?.settlement?.status).toBe("CONFIRMED");
+
+    const escalated = await orchestrator.fetchPaid(premium, "premium report");
+    expect(escalated.outcome).toBe("ESCALATED");
+    expect((await h.portal("POST", `/v1/users/${dave}/disable`)).status).toBe(200);
+    const approve = await fetch(`${h.urls.control}/v1/approvals/${escalated.authorizationId}`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${h.tokens.operator}` },
+      body: "{}",
+    });
+    expect(approve.status).toBe(200);
+    const denied = await orchestrator.fetchPaid(premium, "premium report, approved while disabled");
+    expect(denied.outcome).toBe("DENIED");
+    expect(rulesOf(denied)).toEqual(["user_disabled"]);
+    expect(await h.balanceOf(address)).toBe(999_000n);
+
+    // Enable: every policy comes back paused, so enabling alone never restarts spending.
+    const enabled = await h.portal<{ enabled: boolean; policies: Array<{ state: string }> }>("POST", `/v1/users/${dave}/enable`, fresh());
+    expect([enabled.body.enabled, enabled.body.policies.map((p) => p.state)]).toEqual([true, ["paused"]]);
+    const paused = await orchestrator.fetchPaid(premium, "premium report, policy paused");
+    expect(rulesOf(paused)).toEqual(["host_not_allowed"]);
+
+    // Resume: the approval recorded earlier is still open, and pays exactly once.
+    expect((await h.portal("POST", `/v1/users/${dave}/policies/${policyId}/resume`, fresh())).status).toBe(200);
+    const paid = await orchestrator.fetchPaid(premium, "premium report, resumed");
+    expect(paid.outcome).toBe("PAID");
+    expect(paid.payment?.settlement?.status).toBe("CONFIRMED");
+    expect(await h.balanceOf(address)).toBe(999_000n - 50_000n);
+    // The approval is spent, and this run's budget is nearly used (1000 + 50000 of 100000): another 50000 is over it.
+    const again = await orchestrator.fetchPaid(premium, "again");
+    expect([again.outcome, rulesOf(again)]).toEqual(["DENIED", ["session_budget_exceeded"]]);
+    // A new run of the same person has its own budget, and needs its own approval.
+    expect((await l1For("sess_dave_2", dave).fetchPaid(premium, "new run")).outcome).toBe("ESCALATED");
+    expect((await ledgerVerify(h)).ok).toBe(true);
+  });
 });

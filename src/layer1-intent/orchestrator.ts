@@ -46,6 +46,11 @@ export interface OrchestratorDeps {
    * scripted root (src/main.ts --scripted) sets it; the agents' tools cannot. It only removes an approval path.
    */
   operatorApprovalOnly?: boolean;
+  /**
+   * 013 FR-033: the user every intent of this orchestrator is for. Only the hosted agent's composition
+   * (src/layer1-intent/hosted/server.ts) sets it, from the verified requester; the agents' tools cannot.
+   */
+  userId?: string;
 }
 
 /** Non-JSON bodies are returned as text truncated to this many characters (L1-1 step 2). */
@@ -105,6 +110,7 @@ export class PaidResourceOrchestrator {
       purpose,
       createdAt: new Date().toISOString(),
       ...(this.deps.operatorApprovalOnly === true && { operatorApprovalOnly: true }),
+      ...(this.deps.userId !== undefined && { userId: this.deps.userId }),
     };
     let decision;
     try {

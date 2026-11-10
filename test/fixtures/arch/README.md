@@ -15,3 +15,10 @@ finds nothing in it and A8 finds both the CDP variable and the `@coinbase/cdp-sd
 `a9-violation.ts` (012) is checked with `checkCibaConfinement(path, source)`, for the same reason: A9 confines
 L2's Auth0 client credential (`CIBA_CLIENT_KEY`, `CIBA_CLIENT_SECRET`) to `src/layer2-control/ciba-client.ts`
 and `env/l2-control.env.example`. The test asserts that `checkFile` and A8 find nothing in it.
+
+`a10-violation.ts`, `a11-violation.ts` and `a12-violation.ts` (013) are checked with `checkCardVaultConfinement`,
+`checkMnemonicConfinement` and `checkPortalIsolation`. A10 confines the card vault credential (`CARD_VAULT_KEY`) and
+the vault's API host to `src/portal/card-vault.ts` and `env/portal.env.example`. A11 confines the user wallets'
+mnemonic (`USER_WALLET_MNEMONIC`) to the signer, the portal's refusal, the local development value and L2's template.
+A12 keeps the portal's token out of the agent, the verifier and the counterparty, and every other role's secret out
+of `src/portal/`. Each test asserts that no other rule catches its fixture.
