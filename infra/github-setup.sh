@@ -9,8 +9,8 @@
 # (otherwise azure/login fails with AADSTS700213). The deploy workflows read no GitHub secret or variable: their
 # sign-in and target come from infra/main.<environment>.bicepparam. So a secret found in the repository or the deploy
 # environment is reported, never used: no workflow reads it, and a credential there should be deleted. The only
-# secrets a workflow reads are the Auth0 environment's (the Auth0 Management API credential), which this script never
-# sets or reads: an administrator sets them by hand (auth0/README.md).
+# secrets and variables a workflow reads are the Auth0 environment's (the Auth0 Management API credential and
+# Terraform's variables), which this script never sets or reads: an administrator sets them by hand (auth0/README.md).
 #
 # usage: infra/github-setup.sh [--environment dev] [--dry-run]
 # needs: gh, signed in with admin rights on the repository (creating an environment needs them); az with Bicep
@@ -75,8 +75,9 @@ fi
 gh api --method PUT "repos/$REPO/environments/$GH_ENV" --silent
 echo "environment $GH_ENV: ready in $REPO"
 gh api --method PUT "repos/$REPO/environments/$GH_AUTH0_ENV" --silent
-echo "environment $GH_AUTH0_ENV: ready in $REPO. Give it required reviewers, and set its secrets by hand:" \
-  "gh secret set AUTH0_CLIENT_ID --repo $REPO --env $GH_AUTH0_ENV, and AUTH0_CLIENT_SECRET the same way (auth0/README.md)."
+echo "environment $GH_AUTH0_ENV: ready in $REPO. Give it required reviewers, and set its secrets and variables by hand:" \
+  "gh secret set AUTH0_CLIENT_ID --repo $REPO --env $GH_AUTH0_ENV, AUTH0_CLIENT_SECRET the same way," \
+  "and gh variable set AUTH0_TENANT_DOMAIN and the other Terraform variables (auth0/README.md)."
 
 # No workflow reads a secret of the repository or of the deploy environment, so one there is unused, or a credential
 # that shouldn't be in GitHub. The Auth0 environment's secrets are not listed: provision-auth0.yml reads them.

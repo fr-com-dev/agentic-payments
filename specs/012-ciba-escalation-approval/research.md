@@ -437,7 +437,8 @@ are marked **(live check)**.
   **Revised 2026-11-10** (SPEC v1.9, at the owner's request): a pipeline applies it, `provision-auth0.yml`, by hand
   only, from its own GitHub environment `auth0-<env>`, which holds the Management API credential as secrets. The
   state is a blob in Azure that only the deploy app reads, over OIDC (T-IAC-01 rule 20). Auth0 offers no sign-in
-  without a credential for the Management API, so GitHub now holds these secrets and no other.
+  without a credential for the Management API, so GitHub now holds these secrets and no other. Terraform's variables are variables of the same GitHub environment,
+  exported as `TF_VAR_*` in the plan step: no tfvars file exists.
   - **The API** (`auth0_resource_server`): RS256, `token_dialect = "rfc9068_profile"`, a 300 s token lifetime, no
     offline access, `consent_policy = "null"`, one `authorization_details` type, and an access policy: users through
     a client grant only, clients `deny_all`.

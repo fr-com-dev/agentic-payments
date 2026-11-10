@@ -8,15 +8,17 @@
 # - The state is a blob in the storage account infra/pre-deploy.bicep makes (names.stateStorage). Terraform signs in
 #   to Azure as the deploy app with OIDC, for that container only, and asks GitHub for a fresh token itself on each
 #   command. No Azure credential exists, and the state holds no secret.
-# - The values come from files in the repository: the Azure sign-in and names from the Bicep parameter files, as in
-#   deploy.yml, and the tenant's from auth0/<environment>.tfvars.
+# - The Azure sign-in and names come from the Bicep parameter files, as in deploy.yml. The tenant's values (its
+#   domain, the API identifier, the approver, the public half of L2's key) are variables of the same GitHub
+#   environment, AUTH0_*: the plan step turns them into Terraform's TF_VAR_* variables. No tfvars file exists, in the
+#   repository or on the runner.
 name: provision-auth0
 
 on:
   workflow_dispatch:
     inputs:
       environment:
-        description: Target environment (auth0/<environment>.tfvars, infra/pre-deploy.<environment>.bicepparam)
+        description: Target environment (the GitHub environment auth0-<environment>, infra/pre-deploy.<environment>.bicepparam)
         required: true
         default: dev
         type: choice
@@ -60,14 +62,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # Before anything is downloaded: the tenant's variables must be in the repository. Then the pinned Bicep CLI
+      # The pinned Bicep CLI
       # compiles the parameter files (the sign-in, target and the state's storage account, never GitHub secrets), and
       # the pinned Terraform CLI is checked against its published SHA-256.
-      - name: "0 the tenant's variables, the Bicep and Terraform CLIs, then the sign-in and the state's storage"
+      - name: "0 the Bicep and Terraform CLIs, then the sign-in and the state's storage"
         id: target
         run: |
-          if [[ ! "$ENVIRONMENT" =~ ^[a-z0-9]+$ || ! -s "auth0/$ENVIRONMENT.tfvars" ]]; then
-            echo "::error::no auth0/$ENVIRONMENT.tfvars: copy auth0/dev.tfvars.example, fill it in and commit it (auth0/README.md). Nothing was planned."
+          if [[ ! "$ENVIRONMENT" =~ ^[a-z0-9]+$ ]]; then
+            echo "::error::environment $ENVIRONMENT is not an environment name. Nothing was planned."
             exit 1
           fi
           mkdir -p "$RUNNER_TEMP/bicep" "$RUNNER_TEMP/terraform"
@@ -113,21 +115,43 @@ jobs:
             -backend-config="key=auth0.$ENVIRONMENT.tfstate"
           terraform -chdir=auth0 validate -no-color
 
-      # L2's client secret reaches Terraform only when the environment holds one (credential = "secret"): it is an
-      # ephemeral, write-only value, in neither the plan file nor the state.
-      - name: "3 plan"
+      # Terraform's variables are built here, from the GitHub environment's variables: each one that is set becomes
+      # TF_VAR_<name>, and one left unset keeps the default of auth0/variables.tf. The first three have no default.
+      # The saved plan carries them to the apply step. L2's client secret reaches Terraform only when the environment
+      # holds one (credential = "secret"): it is an ephemeral, write-only value, in neither the plan file nor the state.
+      - name: "3 plan, with the variables of the GitHub environment"
         id: plan
         env:
           AUTH0_CLIENT_ID: ${{ secrets.AUTH0_CLIENT_ID }}
           AUTH0_CLIENT_SECRET: ${{ secrets.AUTH0_CLIENT_SECRET }}
           L2_CLIENT_SECRET: ${{ secrets.AUTH0_L2_CLIENT_SECRET }}
+          VAR_tenant_domain: ${{ vars.AUTH0_TENANT_DOMAIN }}
+          VAR_api_identifier: ${{ vars.AUTH0_API_IDENTIFIER }}
+          VAR_approver_user_id: ${{ vars.AUTH0_APPROVER_USER_ID }}
+          VAR_credential: ${{ vars.AUTH0_CREDENTIAL }}
+          VAR_client_public_key_pem: ${{ vars.AUTH0_CLIENT_PUBLIC_KEY }}
+          VAR_client_secret_version: ${{ vars.AUTH0_CLIENT_SECRET_VERSION }}
+          VAR_manage_guardian: ${{ vars.AUTH0_MANAGE_GUARDIAN }}
+          VAR_guardian_policy: ${{ vars.AUTH0_GUARDIAN_POLICY }}
         run: |
           if [[ -z "$AUTH0_CLIENT_ID" || -z "$AUTH0_CLIENT_SECRET" ]]; then
-            echo "::error::the GitHub environment auth0-$ENVIRONMENT has no AUTH0_CLIENT_ID or AUTH0_CLIENT_SECRET (auth0/README.md). Nothing was planned."
+            echo "::error::the GitHub environment auth0-$ENVIRONMENT has no secret AUTH0_CLIENT_ID or AUTH0_CLIENT_SECRET (auth0/README.md). Nothing was planned."
             exit 1
           fi
+          for name in tenant_domain api_identifier approver_user_id; do
+            source="VAR_$name"
+            if [[ -z "${!source}" ]]; then
+              echo "::error::the GitHub environment auth0-$ENVIRONMENT has no variable AUTH0_${name^^} (auth0/README.md). Nothing was planned."
+              exit 1
+            fi
+          done
+          export TF_VAR_environment="$ENVIRONMENT"
+          for name in tenant_domain api_identifier approver_user_id credential client_public_key_pem client_secret_version manage_guardian guardian_policy; do
+            source="VAR_$name"
+            if [[ -n "${!source}" ]]; then export "TF_VAR_$name=${!source}"; fi
+          done
           if [[ -n "$L2_CLIENT_SECRET" ]]; then export TF_VAR_client_secret="$L2_CLIENT_SECRET"; fi
-          terraform -chdir=auth0 plan -no-color -lock-timeout=120s -var-file="$ENVIRONMENT.tfvars" -out="$RUNNER_TEMP/auth0.tfplan"
+          terraform -chdir=auth0 plan -no-color -lock-timeout=120s -out="$RUNNER_TEMP/auth0.tfplan"
           {
             echo "### Plan for the Auth0 tenant ($ENVIRONMENT)"
             echo '```'

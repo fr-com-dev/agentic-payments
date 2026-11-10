@@ -64,19 +64,47 @@ Terraform for what L2's backchannel approval (SPEC L2-7, `specs/012`) needs from
    gh secret set AUTH0_CLIENT_SECRET --env auth0-dev
    ```
 
-3. **L2's key pair.** Make it outside the repository, then copy only the public half in:
+3. **L2's key pair.** Make it outside the repository. Neither half is committed:
 
    ```bash
    openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out ~/x402-secrets/ciba-client-key.pem
    ```
 
    ```bash
-   openssl pkey -in ~/x402-secrets/ciba-client-key.pem -pubout -out auth0/ciba-client-key.dev.pub.pem
+   openssl pkey -in ~/x402-secrets/ciba-client-key.pem -pubout -out ~/x402-secrets/ciba-client-key.pub.pem
    ```
 
-4. **Variables.** Copy `dev.tfvars.example` to `dev.tfvars` and fill in the tenant domain, the API identifier and
-   the approver's user ID. Commit `dev.tfvars` and the public key: neither is a secret, and T-IAC-02 refuses a
-   credential in them.
+4. **Variables.** There is no tfvars file. Terraform's variables are variables of the GitHub environment, which the
+   plan step exports as `TF_VAR_*`. None is a secret. Set the first four:
+
+   ```bash
+   gh variable set AUTH0_TENANT_DOMAIN --env auth0-dev --body "x402-dev.us.auth0.com"
+   ```
+
+   ```bash
+   gh variable set AUTH0_API_IDENTIFIER --env auth0-dev --body "https://x402-payments/dev"
+   ```
+
+   ```bash
+   gh variable set AUTH0_APPROVER_USER_ID --env auth0-dev --body "auth0|000000000000000000000000"
+   ```
+
+   ```bash
+   gh variable set AUTH0_CLIENT_PUBLIC_KEY --env auth0-dev < ~/x402-secrets/ciba-client-key.pub.pem
+   ```
+
+   | GitHub variable | Terraform variable | Needed |
+   |---|---|---|
+   | `AUTH0_TENANT_DOMAIN` | `tenant_domain` | always |
+   | `AUTH0_API_IDENTIFIER` | `api_identifier` | always |
+   | `AUTH0_APPROVER_USER_ID` | `approver_user_id` | always |
+   | `AUTH0_CLIENT_PUBLIC_KEY` | `client_public_key_pem` | with `credential = "key"` (the default) |
+   | `AUTH0_CREDENTIAL` | `credential` | only to choose `secret` |
+   | `AUTH0_CLIENT_SECRET_VERSION` | `client_secret_version` | only to rotate the secret |
+   | `AUTH0_MANAGE_GUARDIAN` | `manage_guardian` | only to set `false` |
+   | `AUTH0_GUARDIAN_POLICY` | `guardian_policy` | only to change `never` |
+
+   A variable left unset keeps the default in `variables.tf`. `environment` is the run's `environment` input.
 
 ## Run it
 
@@ -106,7 +134,7 @@ With `credential = "secret"`:
   the state or the plan file);
 - seed the same value into the vault.
 
-To rotate it, bump `client_secret_version`.
+To rotate it, bump the variable `AUTH0_CLIENT_SECRET_VERSION`.
 
 ## Notes
 

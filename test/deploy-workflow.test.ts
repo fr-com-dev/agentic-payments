@@ -3,7 +3,7 @@
 // deploy-l1/l2/l3/operator/seller.yml for one unit each), on deploy.yml, the steps they all call with their unit, and
 // on the infra scripts. Checked:
 // - one pipeline per unit, and nothing else in the folder but the Auth0 tenant's pipeline (provision-auth0.yml, which
-//   T-IAC-02 checks; the only workflow that reads GitHub secrets, and only its own three): each runs by hand or on its own tag, holds the one
+//   T-IAC-02 checks; the only workflow that reads GitHub secrets and variables, and only its own): each runs by hand or on its own tag, holds the one
 //   concurrency group, and only calls deploy.yml with its unit; each image of scripts/image-closure.ts is built by
 //   exactly one pipeline;
 // - OIDC only, with the sign-in, target and resource names compiled from infra/main.<environment>.bicepparam by the
@@ -76,6 +76,8 @@ const PIPELINES: Record<string, { unit: Unit; inputs: string[] }> = {
 const AUTH0 = "provision-auth0.yml";
 /** The only GitHub secrets a workflow reads: the Auth0 pipeline's, from its own GitHub environment. */
 const AUTH0_SECRETS = ["AUTH0_CLIENT_ID", "AUTH0_CLIENT_SECRET", "AUTH0_L2_CLIENT_SECRET"];
+/** The only GitHub variables a workflow reads: the Auth0 pipeline's Terraform variables, from the same environment. */
+const AUTH0_VARIABLES = /^AUTH0_(TENANT_DOMAIN|API_IDENTIFIER|APPROVER_USER_ID|CREDENTIAL|CLIENT_PUBLIC_KEY|CLIENT_SECRET_VERSION|MANAGE_GUARDIAN|GUARDIAN_POLICY)$/;
 const FILES = [SHARED, AUTH0, ...Object.keys(PIPELINES)].sort();
 /** The image each unit's run builds, promotes and rolls back; the platform has none. */
 const UNIT_IMAGES: Record<Exclude<Unit, "platform">, ImageName> = { l1: "l1-agent", l2: "l2-control", l3: "l3-verifier", operator: "operator", seller: "seller" };
@@ -320,12 +322,13 @@ export function unitGuardProblems(w: Workflow): string[] {
 
 /**
  * No GitHub secret or variable: every value comes from the parameter files. The one exception is the Auth0 pipeline,
- * which reads the Auth0 Management API credential from its own GitHub environment (T-IAC-02 checks where it goes).
+ * which reads the Auth0 Management API credential and Terraform's variables from its own GitHub environment (T-IAC-02
+ * checks where they go).
  */
 export function secretProblems(file: string, text: string): string[] {
   const out: string[] = [];
   for (const m of text.matchAll(/\$\{\{\s*(secrets|vars)\.([A-Za-z0-9_]+)/g)) {
-    if (file === AUTH0 && m[1] === "secrets" && AUTH0_SECRETS.includes(m[2]!)) continue;
+    if (file === AUTH0 && (m[1] === "secrets" ? AUTH0_SECRETS.includes(m[2]!) : AUTH0_VARIABLES.test(m[2]!))) continue;
     out.push(`${file} reads ${m[1]}.${m[2]}: values come from infra/main.<environment>.bicepparam`);
   }
   return out;
@@ -504,7 +507,8 @@ describe("T-E2E-AZ deployment workflow gates", () => {
     // The Auth0 pipeline's secrets are its own: no deploy pipeline may read them, and it may read no other.
     const auth0 = text.replace('-u "$DEPLOY_CLIENT_ID"', '-u "${{ secrets.AUTH0_CLIENT_SECRET }}"');
     expect(secretProblems(SHARED, auth0)).toEqual([`${SHARED} reads secrets.AUTH0_CLIENT_SECRET: values come from infra/main.<environment>.bicepparam`]);
-    expect(secretProblems(AUTH0, "${{ secrets.AUTH0_CLIENT_ID }} ${{ secrets.AZURE_CLIENT_SECRET }} ${{ vars.AUTH0_CLIENT_ID }}")).toEqual([
+    expect(secretProblems(SHARED, text.replace('-u "$DEPLOY_CLIENT_ID"', '-u "${{ vars.AUTH0_TENANT_DOMAIN }}"'))).toEqual([`${SHARED} reads vars.AUTH0_TENANT_DOMAIN: values come from infra/main.<environment>.bicepparam`]);
+    expect(secretProblems(AUTH0, "${{ secrets.AUTH0_CLIENT_ID }} ${{ vars.AUTH0_TENANT_DOMAIN }} ${{ secrets.AZURE_CLIENT_SECRET }} ${{ vars.AUTH0_CLIENT_ID }}")).toEqual([
       `${AUTH0} reads secrets.AZURE_CLIENT_SECRET: values come from infra/main.<environment>.bicepparam`,
       `${AUTH0} reads vars.AUTH0_CLIENT_ID: values come from infra/main.<environment>.bicepparam`,
     ]);

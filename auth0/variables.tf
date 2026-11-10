@@ -1,6 +1,7 @@
-# Every value comes from <environment>.tfvars, committed (dev.tfvars.example is the template; none is a secret),
-# except the ephemeral client secret: with credential = "secret" only, the pipeline passes it as TF_VAR_client_secret
-# from its GitHub environment. No variable holds a private key.
+# No tfvars file exists: the pipeline (provision-auth0.yml) sets every value as TF_VAR_<name>, from the variables of
+# its GitHub environment (AUTH0_TENANT_DOMAIN and the like; auth0/README.md). None of those is a secret. The one
+# secret, the ephemeral client secret, comes from the environment's secret AUTH0_L2_CLIENT_SECRET, with
+# credential = "secret" only. No variable holds a private key.
 
 variable "environment" {
   description = "The deployment environment these objects serve, as in infra/main.<environment>.bicepparam (dev)."
@@ -48,13 +49,13 @@ variable "credential" {
   }
 }
 
-variable "client_public_key_file" {
-  description = "Path, relative to auth0/, to the PUBLIC half (SPKI PEM, RSA 2048-4096) of L2's client key, when credential = key. Commit the public half next to the tfvars; the private half goes only into the l2 vault, never into the repository."
+variable "client_public_key_pem" {
+  description = "The PUBLIC half (SPKI PEM, RSA 2048-4096) of L2's client key, as text, when credential = key. The private half goes only into the l2 vault, never here."
   type        = string
   default     = ""
   validation {
-    condition     = var.client_public_key_file == "" || endswith(var.client_public_key_file, ".pem")
-    error_message = "client_public_key_file must be a .pem file."
+    condition     = var.client_public_key_pem == "" || (startswith(trimspace(var.client_public_key_pem), "-----BEGIN PUBLIC KEY-----") && !strcontains(var.client_public_key_pem, "PRIVATE KEY"))
+    error_message = "client_public_key_pem must be a PEM public key (-----BEGIN PUBLIC KEY-----), never a private key."
   }
 }
 

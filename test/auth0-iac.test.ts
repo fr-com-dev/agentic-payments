@@ -3,7 +3,8 @@
 // (DETAILS_TYPE) and the Bicep parameter file (the ciba keys). Each check has a must-fail mutant. With Terraform on
 // PATH, `terraform fmt -check` runs too; `terraform validate` runs once `terraform init` has been run by hand.
 // Its pipeline, .github/workflows/provision-auth0.yml, is checked here too (pipelineProblems): by hand only, in its
-// own GitHub environment, the only workflow that reads secrets and only in its plan and apply steps, the pinned
+// own GitHub environment, the only workflow that reads secrets (only in its plan and apply steps) and variables
+// (Terraform's, only in its plan step: no tfvars file exists), the pinned
 // Terraform and the locked provider, the state in Azure with OIDC and no key, and an apply of exactly the plan shown.
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
@@ -16,6 +17,17 @@ const DIR = "auth0";
 const WORKFLOW = ".github/workflows/provision-auth0.yml";
 /** The only GitHub secrets any workflow reads: the Management API credential and, with credential = "secret", L2's. */
 const SECRETS = ["AUTH0_CLIENT_ID", "AUTH0_CLIENT_SECRET", "AUTH0_L2_CLIENT_SECRET"];
+/** The GitHub environment variable behind each Terraform variable the pipeline sets; none is a secret. */
+const VARIABLES: Record<string, string> = {
+  tenant_domain: "AUTH0_TENANT_DOMAIN",
+  api_identifier: "AUTH0_API_IDENTIFIER",
+  approver_user_id: "AUTH0_APPROVER_USER_ID",
+  credential: "AUTH0_CREDENTIAL",
+  client_public_key_pem: "AUTH0_CLIENT_PUBLIC_KEY",
+  client_secret_version: "AUTH0_CLIENT_SECRET_VERSION",
+  manage_guardian: "AUTH0_MANAGE_GUARDIAN",
+  guardian_policy: "AUTH0_GUARDIAN_POLICY",
+};
 
 interface Sources {
   /** auth0/*.tf by file name. */
@@ -111,7 +123,7 @@ export function auth0Problems(s: Sources): string[] {
 
   // The credential: the public key, RS256, or a write-only secret.
   const cred = block(tf, /resource\s+"auth0_client_credentials"\s+"l2"\s*\{/) ?? "";
-  if (!/credential_type\s*=\s*"public_key"/.test(cred) || !/pem\s*=\s*file\(var\.client_public_key_file\)/.test(cred)) p.push("the private_key_jwt credential must be the public key read from client_public_key_file");
+  if (!/credential_type\s*=\s*"public_key"/.test(cred) || !/pem\s*=\s*var\.client_public_key_pem\b/.test(cred)) p.push("the private_key_jwt credential must be the public key read from client_public_key_file");
   const algs = [...cred.matchAll(/algorithm\s*=\s*"([^"]+)"/g)].map((m) => m[1]);
   if (algs.length === 0 || algs.some((a) => a !== "RS256")) p.push("the credential's algorithm must be RS256 (what L2 signs; Auth0 never takes ES256)");
   if (/\bclient_secret\s*=/.test(cred)) p.push("the client secret must be write-only (client_secret_wo), never stored in state");
@@ -128,9 +140,7 @@ export function auth0Problems(s: Sources): string[] {
   for (const [f, text] of Object.entries(s.all)) {
     if (/-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(text)) p.push(`${f} holds a private key`);
     if (/eyJ[\w-]+\.eyJ[\w-]+\.[\w-]+/.test(text)) p.push(`${f} holds a JWT`);
-    if (f.endsWith(".tfstate") || f.endsWith(".tfplan")) p.push(`${f} must not be committed`);
-    // An environment's tfvars are committed for the pipeline, so they hold no credential.
-    if (f.endsWith(".tfvars") && /^\s*(client_secret|\w*(password|token|private_key)\w*)\s*=/m.test(code(text))) p.push(`${f} holds a credential: it is committed, and secrets come from the pipeline's GitHub environment only`);
+    if (f.endsWith(".tfvars") || f.endsWith(".tfstate") || f.endsWith(".tfplan")) p.push(`${f} must not be committed`);
   }
 
   // The output L2's parameter file takes: exactly the keys main.bicep reads.
@@ -144,8 +154,14 @@ export function auth0Problems(s: Sources): string[] {
   if (!has(backend, /use_azuread_auth\s*=\s*true/)) p.push('the state must be in Azure with an Entra sign-in (backend "azurerm", use_azuread_auth = true)');
   if (has(backend, /access_key|sas_token|client_secret|storage_account_name|container_name|\bkey\s*=/)) p.push("the backend block must hold no key and no name: the pipeline passes the account, container and key from the parameter file");
 
-  // Local state and plans never reach git or an image.
-  for (const pattern of ["auth0/.terraform/", "auth0/*.tfstate", "auth0/*.tfstate.*", "auth0/*.tfplan"]) {
+  // Every variable the pipeline sets exists, and the three without a default are the ones it requires.
+  const declared = [...tf.matchAll(/variable\s+"(\w+)"\s*\{/g)].map((m) => m[1]!);
+  for (const name of Object.keys(VARIABLES)) if (!declared.includes(name)) p.push(`the pipeline sets var.${name}, which auth0/ doesn't declare`);
+  const noDefault = declared.filter((name) => !/^\s*default\s*=/m.test(block(tf, new RegExp(`variable\\s+"${name}"\\s*\\{`)) ?? "")).sort();
+  if (JSON.stringify(noDefault) !== JSON.stringify(["api_identifier", "approver_user_id", "environment", "tenant_domain"])) p.push(`only environment, tenant_domain, api_identifier and approver_user_id may have no default (the pipeline requires them), got ${noDefault.join(", ")}`);
+
+  // Local state, plans and tfvars never reach git or an image.
+  for (const pattern of ["auth0/.terraform/", "auth0/*.tfstate", "auth0/*.tfstate.*", "auth0/*.tfplan", "auth0/*.tfvars"]) {
     if (!s.gitignore.split("\n").includes(pattern)) p.push(`.gitignore must have ${pattern}`);
   }
   if (!s.dockerignore.split("\n").includes("auth0")) p.push(".dockerignore must exclude auth0");
@@ -179,7 +195,17 @@ export function pipelineProblems(s: Sources): string[] {
 
   // Secrets: the three of the Auth0 environment, only as the plan and apply steps' environment.
   const read = [...s.workflow.matchAll(/\$\{\{\s*(secrets|vars)\.([A-Za-z0-9_]+)/g)].map((m) => `${m[1]}.${m[2]}`);
-  for (const name of read) if (!SECRETS.map((x) => `secrets.${x}`).includes(name)) p.push(`the pipeline reads ${name}: only ${SECRETS.join(", ")} may be read`);
+  const readable = [...SECRETS.map((x) => `secrets.${x}`), ...Object.values(VARIABLES).map((x) => `vars.${x}`)];
+  for (const name of read) if (!readable.includes(name)) p.push(`the pipeline reads ${name}: only its three secrets and its Terraform variables may be read`);
+  // Terraform's variables: each one from its GitHub environment variable, in the plan step only, never a tfvars file.
+  const planEnv = step("plan")?.env ?? {};
+  const wired = Object.entries(VARIABLES).every(([name, source]) => planEnv[`VAR_${name}`] === `\${{ vars.${source} }}`);
+  const exported = /for name in ([a-z_ ]+); do\n\s+source="VAR_\$name"\n\s+if \[\[ -n "\$\{!source\}" \]\]; then export "TF_VAR_\$name=\$\{!source\}"; fi/.exec(run("plan"))?.[1];
+  const required = /for name in ([a-z_ ]+); do\n\s+source="VAR_\$name"\n\s+if \[\[ -z "\$\{!source\}" \]\]; then\n[^\n]+\n\s+exit 1/.exec(run("plan"))?.[1];
+  if (!wired || exported !== Object.keys(VARIABLES).join(" ") || required !== "tenant_domain api_identifier approver_user_id" || !run("plan").includes('export TF_VAR_environment="$ENVIRONMENT"')) {
+    p.push("Terraform's variables must come from the GitHub environment's variables, as TF_VAR_* in the plan step: all eight wired, the three without a default required");
+  }
+  if (elsewhereVars(w, steps).includes("vars.") || /tfvars|-var-file|-var[ =]/.test(scripts)) p.push("the variables must reach only the plan step, and no tfvars file or -var argument may be used");
   const elsewhere = JSON.stringify({ ...w, jobs: { job: { ...job, steps: steps.map((x) => (x.id === "plan" || x.id === "apply" ? { ...x, env: undefined } : x)) } } });
   if (elsewhere.includes("secrets.")) p.push("the secrets must reach only the plan and apply steps, as their environment: never the job, another step or a script");
   if (/\$\{\{\s*inputs\./.test(scripts)) p.push("an input is never pasted into a script");
@@ -207,8 +233,8 @@ export function pipelineProblems(s: Sources): string[] {
   const order = ["target", "tests", "init", "plan", "apply"].map((id) => steps.findIndex((x) => x.id === id));
   if (order.some((i, n) => i < 0 || (n > 0 && i <= order[n - 1]!))) p.push("the steps must be, in order: the tools and values, the offline checks, init, plan, apply");
   if (!run("tests").includes("vitest run test/auth0-iac.test.ts")) p.push("the offline checks (T-IAC-02) must run before init");
-  if (!run("plan").includes('-var-file="$ENVIRONMENT.tfvars"') || !run("plan").includes('-out="$RUNNER_TEMP/auth0.tfplan"') || !run("plan").includes("GITHUB_STEP_SUMMARY")) {
-    p.push("the plan must come from auth0/<environment>.tfvars, be saved, and be shown in the run's summary");
+  if (!run("plan").includes('-out="$RUNNER_TEMP/auth0.tfplan"') || !run("plan").includes("GITHUB_STEP_SUMMARY")) {
+    p.push("the plan must be saved, and be shown in the run's summary");
   }
   const applies = scripts.split("\n").filter((l) => /\bterraform\b.*\b(apply|destroy|import|state|taint|untaint)\b/.test(l));
   if (
@@ -216,11 +242,16 @@ export function pipelineProblems(s: Sources): string[] {
     applies.length !== 1 ||
     !/^\s*terraform -chdir=auth0 apply -no-color -lock-timeout=120s "\$RUNNER_TEMP\/auth0\.tfplan"$/.test(applies[0]!) ||
     !run("apply").includes(applies[0]!) ||
-    /-auto-approve|-var-file|-target|-replace/.test(scripts.replace('-var-file="$ENVIRONMENT.tfvars" -out=', ""))
+    /-auto-approve|-target|-replace/.test(scripts)
   ) {
     p.push("the only change to the tenant must be the apply step, when the apply input is checked, applying exactly the saved plan");
   }
   return p;
+}
+
+/** The workflow without the plan step's environment, as text: where no variable may appear. */
+function elsewhereVars(w: Pipeline, steps: Step[]): string {
+  return JSON.stringify({ ...w, jobs: { job: { steps: steps.map((x) => (x.id === "plan" ? { ...x, env: undefined } : x)) } } });
 }
 
 /** The ciba object in a parameter file, parsed from its text (keys and literal values). */
@@ -273,9 +304,8 @@ describe("T-IAC-02 Auth0 tenant as code (auth0/)", () => {
     const s = load();
     const withKey = { ...s, all: { ...s.all, "key.pem": "-----BEGIN PRIVATE KEY-----\nMIIB\n-----END PRIVATE KEY-----\n", "terraform.tfstate": "{}" } };
     expect(auth0Problems(withKey)).toEqual(expect.arrayContaining(["key.pem holds a private key", "terraform.tfstate must not be committed"]));
-    const withSecret = { ...s, all: { ...s.all, "dev.tfvars": 'environment = "dev"\nclient_secret = "0123456789abcdef"\n' } };
-    expect(auth0Problems(withSecret)).toContain("dev.tfvars holds a credential: it is committed, and secrets come from the pipeline's GitHub environment only");
-    expect(auth0Problems({ ...s, all: { ...s.all, "dev.tfvars": s.all["dev.tfvars.example"]! } })).toEqual([]);
+    expect(auth0Problems({ ...s, all: { ...s.all, "dev.tfvars": 'environment = "dev"\n' } })).toContain("dev.tfvars must not be committed");
+    expect(auth0Problems({ ...s, gitignore: s.gitignore.replace("auth0/*.tfvars\n", "") })).toContain(".gitignore must have auth0/*.tfvars");
     const ignores = { ...s, gitignore: s.gitignore.replace("auth0/*.tfstate\n", ""), dockerignore: s.dockerignore.replace("auth0\n", "") };
     expect(auth0Problems(ignores)).toEqual(expect.arrayContaining([".gitignore must have auth0/*.tfstate", ".dockerignore must exclude auth0"]));
   });
@@ -285,14 +315,21 @@ describe("T-IAC-02 Auth0 tenant as code (auth0/)", () => {
   });
 
   const SECRET_SCOPE = "the secrets must reach only the plan and apply steps, as their environment: never the job, another step or a script";
+  const VARS_SCOPE = "the variables must reach only the plan step, and no tfvars file or -var argument may be used";
+  const VARS_WIRED = "Terraform's variables must come from the GitHub environment's variables, as TF_VAR_* in the plan step: all eight wired, the three without a default required";
   const ONLY_APPLY = "the only change to the tenant must be the apply step, when the apply input is checked, applying exactly the saved plan";
   it.each<[string, string | RegExp, string, string]>([
     ["a run on every push", "on:\n  workflow_dispatch:", "on:\n  push:\n    branches: [main]\n  workflow_dispatch:", "the pipeline must run by hand only (workflow_dispatch): never on a push, a pull request or a schedule"],
     ["write permission on the repository", "  contents: read", "  contents: write", "the pipeline's permissions must be id-token: write and contents: read only"],
     ["the deploy environment", "    environment: auth0-${{ inputs.environment }}", "    environment: ${{ inputs.environment }}", "the pipeline's one job must run in the GitHub environment auth0-<environment>, which holds the Auth0 credential, never the deploy environment"],
     ["cancelled runs", "  cancel-in-progress: false", "  cancel-in-progress: true", "the pipeline must hold the concurrency group provision-auth0 without cancelling: one run at a time for the tenant"],
-    ["another secret", "          L2_CLIENT_SECRET: ${{ secrets.AUTH0_L2_CLIENT_SECRET }}\n        run: |\n          if [[ -z", "          L2_CLIENT_SECRET: ${{ secrets.PAYER_PRIVATE_KEY }}\n        run: |\n          if [[ -z", "the pipeline reads secrets.PAYER_PRIVATE_KEY: only AUTH0_CLIENT_ID, AUTH0_CLIENT_SECRET, AUTH0_L2_CLIENT_SECRET may be read"],
-    ["a GitHub variable", "  TF_INPUT: \"0\"", "  TF_INPUT: \"0\"\n  TENANT: ${{ vars.AUTH0_DOMAIN }}", "the pipeline reads vars.AUTH0_DOMAIN: only AUTH0_CLIENT_ID, AUTH0_CLIENT_SECRET, AUTH0_L2_CLIENT_SECRET may be read"],
+    ["another secret", "          L2_CLIENT_SECRET: ${{ secrets.AUTH0_L2_CLIENT_SECRET }}\n          VAR_tenant_domain", "          L2_CLIENT_SECRET: ${{ secrets.PAYER_PRIVATE_KEY }}\n          VAR_tenant_domain", "the pipeline reads secrets.PAYER_PRIVATE_KEY: only its three secrets and its Terraform variables may be read"],
+    ["a GitHub variable", "  TF_INPUT: \"0\"", "  TF_INPUT: \"0\"\n  TENANT: ${{ vars.AUTH0_DOMAIN }}", "the pipeline reads vars.AUTH0_DOMAIN: only its three secrets and its Terraform variables may be read"],
+    ["a variable in every step", "  TF_INPUT: \"0\"", "  TF_INPUT: \"0\"\n  TENANT: ${{ vars.AUTH0_TENANT_DOMAIN }}", VARS_SCOPE],
+    ["a tfvars file", '-out="$RUNNER_TEMP/auth0.tfplan"\n          {\n            echo "### Plan', '-var-file="$ENVIRONMENT.tfvars" -out="$RUNNER_TEMP/auth0.tfplan"\n          {\n            echo "### Plan', VARS_SCOPE],
+    ["a variable that is never set", "          VAR_guardian_policy: ${{ vars.AUTH0_GUARDIAN_POLICY }}\n", "", VARS_WIRED],
+    ["a variable taken from another one", "VAR_approver_user_id: ${{ vars.AUTH0_APPROVER_USER_ID }}", "VAR_approver_user_id: ${{ vars.AUTH0_TENANT_DOMAIN }}", VARS_WIRED],
+    ["an approver that may be missing", "for name in tenant_domain api_identifier approver_user_id; do", "for name in tenant_domain api_identifier; do", VARS_WIRED],
     ["the credential in every step", "  TF_INPUT: \"0\"", "  TF_INPUT: \"0\"\n  AUTH0_CLIENT_SECRET: ${{ secrets.AUTH0_CLIENT_SECRET }}", SECRET_SCOPE],
     ["the credential in the tests step", "        id: tests\n", "        id: tests\n        env:\n          AUTH0_CLIENT_SECRET: ${{ secrets.AUTH0_CLIENT_SECRET }}\n", SECRET_SCOPE],
     ["an input pasted into a script", 'if [[ ! "$ENVIRONMENT" =~', 'if [[ ! "${{ inputs.environment }}" =~', "an input is never pasted into a script"],
@@ -304,9 +341,9 @@ describe("T-IAC-02 Auth0 tenant as code (auth0/)", () => {
     ["one state for every environment", 'key=auth0.$ENVIRONMENT.tfstate"', 'key=auth0.tfstate"', "the state must be the blob auth0.<environment>.tfstate in the container and account of infra/pre-deploy.<environment>.bicepparam (names.stateStorage)"],
     ["no offline checks", "npx vitest run test/auth0-iac.test.ts", "true", "the offline checks (T-IAC-02) must run before init"],
     ["an apply on every run", "        if: ${{ inputs.apply }}\n", "", ONLY_APPLY],
-    ["an apply of a new plan", 'apply -no-color -lock-timeout=120s "$RUNNER_TEMP/auth0.tfplan"', 'apply -no-color -lock-timeout=120s -auto-approve -var-file="$ENVIRONMENT.tfvars"', ONLY_APPLY],
+    ["an apply of a new plan", 'apply -no-color -lock-timeout=120s "$RUNNER_TEMP/auth0.tfplan"', "apply -no-color -lock-timeout=120s -auto-approve", ONLY_APPLY],
     ["a destroy", "          terraform -chdir=auth0 validate -no-color", "          terraform -chdir=auth0 destroy -auto-approve", ONLY_APPLY],
-    ["a plan that isn't shown", '          } >> "$GITHUB_STEP_SUMMARY"\n\n      # Exactly', "          } > /dev/null\n\n      # Exactly", "the plan must come from auth0/<environment>.tfvars, be saved, and be shown in the run's summary"],
+    ["a plan that isn't shown", '          } >> "$GITHUB_STEP_SUMMARY"\n\n      # Exactly', "          } > /dev/null\n\n      # Exactly", "the plan must be saved, and be shown in the run's summary"],
   ])("must fail (pipeline): %s is reported", (_label, from, to, message) => {
     const s = load();
     expect(typeof from === "string" ? s.workflow.includes(from) : from.test(s.workflow), "the workflow contains the mutation anchor").toBe(true);

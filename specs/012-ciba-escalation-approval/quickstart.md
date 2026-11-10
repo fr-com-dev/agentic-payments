@@ -51,9 +51,10 @@ Enterprise-only, otherwise set `credential = "secret"` (research R3).
      then `infra/github-setup.sh`, which creates the GitHub environment `auth0-dev`. Give that environment required
      reviewers, and set the Management API application's credential as its secrets `AUTH0_CLIENT_ID` and
      `AUTH0_CLIENT_SECRET`.
-2. **L2's key pair**. Use `openssl genpkey`, then `openssl pkey -pubout`, as in the README. Commit only the public
-   half, as `auth0/ciba-client-key.dev.pub.pem`.
-3. **Variables**: copy `auth0/dev.tfvars.example` to `auth0/dev.tfvars`, fill it in and commit it. It holds no secret.
+2. **L2's key pair**, outside the repository. Use `openssl genpkey`, then `openssl pkey -pubout`, as in the README.
+3. **Variables**: set them as variables of the GitHub environment `auth0-dev` (`AUTH0_TENANT_DOMAIN`,
+   `AUTH0_API_IDENTIFIER`, `AUTH0_APPROVER_USER_ID`, and `AUTH0_CLIENT_PUBLIC_KEY` from the public key file), as in
+   the README. No tfvars file exists.
 4. **Plan, then apply**: run the pipeline once to see the plan, then again with `apply`.
 
    ```bash
