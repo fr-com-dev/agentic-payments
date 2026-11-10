@@ -67,7 +67,7 @@ Order of checks: auth (401/403) → limits (429) → body (400) → session (400
 |---|---|
 | 400 | goal missing, empty or over 4,000 characters; unknown body field; malformed `sessionRef`; a raw `sess_…` ID |
 | 401 | missing, malformed, invalid, expired, wrong-audience, wrong-issuer or wrong-tenant token |
-| 403 | valid token without `Agent.Run` |
+| 403 | valid token without `Agent.Run`; v1.9: a person's token without the `user_impersonation` scope, or obtained by the portal's web app (013 SEC-20) |
 | 404 | well-formed `sessionRef` that doesn't verify for this requester (`unknown session`) |
 | 413 | body over 16 KB |
 | 429 | more than 2 concurrent runs, or 20 starts in the last hour, for this requester; `Retry-After` header set |
@@ -133,3 +133,13 @@ They never include headers, tokens, the `sessionRef` MAC, the goal, `purpose`, o
 - **Log redaction**: every log line is JSON with only the whitelisted keys. A bearer token planted
   in a tool error and in the request header never appears in captured stdout or stderr, and the
   `demo:base-sepolia` secret-scan patterns find nothing.
+
+## v1.9 (013): the user a run pays for
+
+- For a requester of kind `user`, every `PaymentIntent` of the run carries `userId = userIdFor(tid, oid)`
+  (`src/shared/user-id.ts`), and `check_budget` asks L2 for that user's view. For kind `service` (an `idtyp: app`
+  token), no user: with user accounts on, L2 decides those runs against the platform account, as before.
+- The value is fixed when the run starts, from the verified token. The request body still takes only `goal` and
+  `sessionRef`; the two tools' input schemas are unchanged, and no model text or tool input can change the user
+  (T-AGT-06).
+- Details: `specs/013-l2-portal-onboarding/contracts/portal-api.md` "Hosted agent delta".

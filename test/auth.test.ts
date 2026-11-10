@@ -104,6 +104,21 @@ describe("role separation must-fail proof backing T-E2E-05 (007 T033)", () => {
       "POST /v1/reconcile": "verifier-control",
       "POST /v1/approvals/:authorizationId": "operator",
       "GET /v1/ledger/verify": "operator",
+      // 013: the user-account routes, all for the portal's role and none shared with another role.
+      "GET /v1/platform": "portal-control",
+      "GET /v1/users/:userId": "portal-control",
+      "PUT /v1/users/:userId/registration": "portal-control",
+      "PUT /v1/users/:userId/wallet": "portal-control",
+      "POST /v1/users/:userId/policies": "portal-control",
+      "GET /v1/users/:userId/policies/:policyId": "portal-control",
+      "PUT /v1/users/:userId/policies/:policyId": "portal-control",
+      "POST /v1/users/:userId/policies/:policyId/pause": "portal-control",
+      "POST /v1/users/:userId/policies/:policyId/resume": "portal-control",
+      "POST /v1/users/:userId/policies/:policyId/remove": "portal-control",
+      "POST /v1/users/:userId/disable": "portal-control",
+      "POST /v1/users/:userId/enable": "portal-control",
+      "PUT /v1/users/:userId/cards/:cardId": "portal-control",
+      "DELETE /v1/users/:userId/cards/:cardId": "portal-control",
     });
   });
 });

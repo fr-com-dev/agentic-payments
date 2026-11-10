@@ -6,8 +6,8 @@
 #    assignments, so they go before the app does;
 # 3. the resource group: the apps, jobs, environments, vaults, registry, storage, Foundry, identities, network and
 #    logs, with the role assignments inside it;
-# 4. the app registrations, the API app (app-l1-…, with its Agent.Run assignments) and the deploy app (app-deploy-…,
-#    with its federated credential), and the operators' group (grp-op-…).
+# 4. the app registrations, the API app (app-l1-…, with its Agent.Run assignments), the deploy app (app-deploy-…,
+#    with its federated credential) and the portal web app (app-portal-…), and the operators' group (grp-op-…).
 # The tenant, subscription, names and GitHub repository come from infra/pre-deploy.<environment>.bicepparam, which
 # Bicep compiles; the resource group must also be the one infra/main.<environment>.bicepparam deploys to.
 #
@@ -64,6 +64,7 @@ LOCATION=$(value location)
 RG=$(value names.resourceGroup)
 APP_L1=$(value names.apiApp)
 APP_DEPLOY=$(value names.deployApp)
+APP_PORTAL=$(value names.portalApp)
 GRP_OP=$(value names.operators)
 REPO=$(value githubRepository)
 GH_ENV=$(value githubEnvironment)
@@ -79,7 +80,7 @@ GH_SECRETS=$(gh secret list --repo "$REPO" --json name --jq '.[].name' | paste -
 
 # App registrations, as appId<TAB>object id<TAB>name, and the group, as id<TAB>name. Found by standard names only.
 APPS=()
-for name in "$APP_L1" "$APP_DEPLOY"; do
+for name in "$APP_L1" "$APP_DEPLOY" "$APP_PORTAL"; do
   FOUND=$(az ad app list --filter "displayName eq '$name'" --query "[].[appId,id,displayName]" -o tsv)
   while IFS= read -r a; do [[ -n "$a" ]] && APPS+=("$a"); done <<< "$FOUND"
 done
@@ -125,7 +126,7 @@ SOFT_APPS=()
 FOUND=$(az rest --method GET --uri "$GRAPH/directory/deletedItems/microsoft.graph.application?\$select=id,appId,displayName&\$top=999" \
   --query "value[].[id,appId,displayName]" -o tsv)
 while IFS="$TAB" read -r id _ name; do
-  if [[ -n "$id" && ( "$name" == "$APP_L1" || "$name" == "$APP_DEPLOY" ) ]]; then SOFT_APPS+=("$id$TAB$name"); fi
+  if [[ -n "$id" && ( "$name" == "$APP_L1" || "$name" == "$APP_DEPLOY" || "$name" == "$APP_PORTAL" ) ]]; then SOFT_APPS+=("$id$TAB$name"); fi
 done <<< "$FOUND"
 
 # ---- The plan --------------------------------------------------------------------------------------------------

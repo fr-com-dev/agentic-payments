@@ -18,6 +18,8 @@ interface View {
   expiresAt: string;
   referenceCode?: string;
   approvalRequest?: string;
+  /** 013: whose payment it is, when the escalation is a user's (an identifier, never a name). */
+  userId?: string;
 }
 
 interface Event {
@@ -43,6 +45,7 @@ interface Event {
   error?: string;
   cause?: string;
   check?: string;
+  userId?: string;
 }
 
 /** `key=value` for each present field, in order. */
@@ -54,13 +57,13 @@ const fields = (o: object, keys: readonly string[]) =>
 
 export function formatPending(v: View): string {
   const head = `PENDING ${v.authorizationId} session=${v.sessionId} resource=${v.resourceKey} payTo=${v.payTo} amount=${v.amount} expiresAt=${v.expiresAt}`;
-  return [head, ...fields(v, ["referenceCode", "approvalRequest"])].join(" ");
+  return [head, ...fields(v, ["referenceCode", "approvalRequest", "userId"])].join(" ");
 }
 
 export function formatEvent(e: Event): string {
   const extra: string[] = [];
   if (e.kind === "escalated" || e.kind === "expired") extra.push(`expiresAt=${e.expiresAt}`);
-  if (e.kind === "escalated") extra.push(...fields(e, ["referenceCode", "approvalRequest"]));
+  if (e.kind === "escalated") extra.push(...fields(e, ["referenceCode", "approvalRequest", "userId"]));
   if (e.kind === "approved") extra.push(`approvalId=${e.approvalId}`, `approver=${e.approver}`, `approvalExpiresAt=${e.approvalExpiresAt}`);
   if (e.kind === "denied") {
     extra.push(`rejectionId=${e.rejectionId}`);

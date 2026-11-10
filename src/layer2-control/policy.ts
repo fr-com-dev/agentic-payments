@@ -15,6 +15,20 @@ export interface PolicyContext {
   humanApprovedFor?: { payTo: string; amount: string; approvalId: string };
   /** 010: present when an operator rejected this (session, resourceKey). Drives R15. */
   humanRejected?: { rejectionId: string };
+  /**
+   * 013 (L2-8): present when the payment is for a user. `gate` drives R16 and R17; the daily figures drive the user
+   * daily ceiling under R12. All of it is derived from the ledger and the platform config by the caller. Absent for
+   * the platform account, whose evaluation is unchanged.
+   */
+  user?: PolicyUserContext;
+}
+
+export interface PolicyUserContext {
+  gate?: "not_onboarded" | "disabled";
+  /** The user's committed spend over the last 24 hours, across all their policies. */
+  dailyCommittedAtomic: bigint;
+  /** The user daily ceiling (FR-032). */
+  dailyCeilingAtomic?: string;
 }
 
 export type EvalStatus = "AUTHORIZED" | "DENIED" | "ESCALATE";
@@ -28,7 +42,9 @@ function hostOf(url: string): string | null {
   }
 }
 
-/** Evaluates one offered requirement against the mandate (rules R1–R15, in SPEC table order). */
+/**
+ * Evaluates one offered requirement against the mandate (rules in SPEC table order: R16 and R17 first, then R1–R15).
+ */
 export function evaluateRequirement(
   req: PaymentRequirements,
   m: SpendingMandate,
@@ -36,6 +52,15 @@ export function evaluateRequirement(
 ): { status: EvalStatus; violations: PolicyViolation[] } {
   const v: PolicyViolation[] = [];
   const deny = (rule: string, detail: string) => v.push({ rule, detail });
+
+  // R16, R17 (013): the user can't pay at all. Return immediately: no policy applies, so no later rule means
+  // anything, and the detail says nothing about the user's setup (FR-012, FR-038, SEC-12).
+  if (ctx.user?.gate === "not_onboarded") {
+    return { status: "DENIED", violations: [{ rule: "user_not_onboarded", detail: "the user's setup is incomplete" }] };
+  }
+  if (ctx.user?.gate === "disabled") {
+    return { status: "DENIED", violations: [{ rule: "user_disabled", detail: "the user's account can't pay" }] };
+  }
 
   // R1
   if (ctx.nowMs > Date.parse(m.expiresAt)) deny("mandate_expired", `mandate expired at ${m.expiresAt}`);
@@ -83,6 +108,12 @@ export function evaluateRequirement(
   const dailyCap = BigInt(m.dailyBudgetAtomic);
   if (ctx.dailyCommittedAtomic + amount > dailyCap) {
     deny("daily_budget_exceeded", `${ctx.dailyCommittedAtomic} + ${amount} > ${dailyCap}`);
+  } else if (ctx.user?.dailyCeilingAtomic !== undefined) {
+    // R12, user daily ceiling (013 FR-032): across all of the user's policies. One violation at most.
+    const ceiling = BigInt(ctx.user.dailyCeilingAtomic);
+    if (ctx.user.dailyCommittedAtomic + amount > ceiling) {
+      deny("daily_budget_exceeded", `${ctx.user.dailyCommittedAtomic} + ${amount} > ${ceiling}`);
+    }
   }
   // R13
   if (ctx.authorizationsLastMinute >= m.maxAuthorizationsPerMinute) {

@@ -174,11 +174,28 @@ export function formatAtomic(amountAtomic: string, decimals: number): string {
   return frac.length > 0 ? `${whole}.${frac}` : whole.toString();
 }
 
+export type ParseUsdcError = { error: "not_a_number" | "too_many_decimals" | "negative" };
+
+/**
+ * 013 FR-025: parses a decimal amount typed by a person into an atomic-unit string, with BigInt math only. A value
+ * with more than `decimals` fraction digits is refused, never rounded.
+ */
+export function parseUsdc(text: string, decimals: number): string | ParseUsdcError {
+  if (!Number.isInteger(decimals) || decimals < 0) throw new ConfigError(`bad decimals: ${decimals}`);
+  const t = text.trim();
+  if (/^-\d+(\.\d+)?$/.test(t)) return { error: "negative" };
+  const m = /^(\d+)(?:\.(\d+))?$/.exec(t);
+  if (!m) return { error: "not_a_number" };
+  const frac = m[2] ?? "";
+  if (frac.length > decimals) return { error: "too_many_decimals" };
+  return (BigInt(m[1]!) * 10n ** BigInt(decimals) + BigInt(frac.padEnd(decimals, "0") || "0")).toString();
+}
+
 // ---------------------------------------------------------------------------
 // CFG-2 environment loading (007)
 // ---------------------------------------------------------------------------
 
-export type EnvRole = "l1-agent" | "l1-hosted" | "l2-control" | "l3-verifier" | "seller" | "facilitator" | "operator";
+export type EnvRole = "l1-agent" | "l1-hosted" | "l2-control" | "l3-verifier" | "seller" | "facilitator" | "operator" | "portal";
 
 /**
  * Loads exactly one env file: `ENV_FILE`, or `env/<role>.env` by default (SPEC §3.1, CFG-2).
@@ -213,7 +230,9 @@ export const FACILITATOR_BIND_HOST = "127.0.0.1";
 /** The local chain port is fixed. */
 export const CHAIN_PORT = 8545;
 
-export const DEFAULT_PORTS = { control: 4020, seller: 4021, facilitator: 4022, settlement: 4023 } as const;
+export const DEFAULT_PORTS = { control: 4020, seller: 4021, facilitator: 4022, settlement: 4023, portal: 4025 } as const;
+/** 013: the portal binds loopback unless told otherwise (in Azure, `PORTAL_BIND_HOST=0.0.0.0` behind the ingress). */
+export const PORTAL_BIND_HOST_DEFAULT = "127.0.0.1";
 
 function portFrom(env: Env, name: string, fallback: number): number {
   const raw = env[name];
@@ -229,6 +248,7 @@ export const facilitatorPort = (env: Env = process.env) =>
   portFrom(env, "FACILITATOR_PORT", DEFAULT_PORTS.facilitator);
 export const settlementPort = (env: Env = process.env) =>
   portFrom(env, "SETTLEMENT_PORT", DEFAULT_PORTS.settlement);
+export const portalPort = (env: Env = process.env) => portFrom(env, "PORTAL_PORT", DEFAULT_PORTS.portal);
 
 /** `API_DOCS=1` serves Swagger UI on L2 (L2-5) and, since v1.6, on the hosted agent (L1-6) and the seller (CP-1). Off when unset, empty or `0`; any other value is a startup error. */
 export function apiDocsEnabled(env: Env = process.env): boolean {
@@ -251,13 +271,15 @@ export function serviceUrls(env: Env = process.env) {
 // INV-13 role tokens (007)
 // ---------------------------------------------------------------------------
 
-export type Role = "agent-control" | "agent-verifier" | "verifier-control" | "operator";
+export type Role = "agent-control" | "agent-verifier" | "verifier-control" | "operator" | "portal-control";
 
 export const ROLE_TOKEN_VAR: Record<Role, string> = {
   "agent-control": "CONTROL_TOKEN",
   "agent-verifier": "VERIFIER_TOKEN",
   "verifier-control": "SETTLEMENT_TOKEN",
   operator: "OPERATOR_TOKEN",
+  // 013: the portal's role (INV-13). It reaches only the user-account routes.
+  "portal-control": "PORTAL_TOKEN",
 };
 
 export const DEV_TOKENS: Record<string, string> = {
@@ -265,6 +287,7 @@ export const DEV_TOKENS: Record<string, string> = {
   VERIFIER_TOKEN: "dev-verifier-token",
   SETTLEMENT_TOKEN: "dev-settlement-token",
   OPERATOR_TOKEN: "dev-operator-token",
+  PORTAL_TOKEN: "dev-portal-token",
 };
 
 /**

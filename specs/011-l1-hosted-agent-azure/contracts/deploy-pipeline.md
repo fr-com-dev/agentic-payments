@@ -12,6 +12,7 @@ and first one workflow, `deploy-azure.yml`). Each pipeline deploys one unit of `
 | `deploy-l3.yml` | `deploy-l3-*` | `l3` | `x402-l3-verifier` | `docker/l3-verifier.Dockerfile` | `ca-l3-eastus2-dev` |
 | `deploy-operator.yml` | `deploy-operator-*` | `operator` | `x402-operator` | `docker/operator.Dockerfile` | `caj-l2-eastus2-dev` |
 | `deploy-l2.yml` | `deploy-l2-*` | `l2` | `x402-l2-control` | `docker/l2-control.Dockerfile` | `ca-l2-eastus2-dev` |
+| `deploy-portal.yml` (013) | `deploy-portal-*` | `portal` | `x402-portal` | `docker/portal.Dockerfile` | `ca-portal-eastus2-dev` |
 | `deploy-l1.yml` | `deploy-l1-*` | `l1` | `x402-l1-agent` | `docker/l1-agent.Dockerfile` | `ca-l1-eastus2-dev`, `caj-l1-eastus2-dev` |
 
 The rows are in first-deployment order (quickstart §4).
@@ -36,7 +37,7 @@ The rows are in first-deployment order (quickstart §4).
   `first-deployment` for every pipeline but L1's, and `seed-ip` and `recover-vaults` for the
   platform's) or on its own tag, `deploy-<unit>-*` (`deploy-infra-*` for the platform). Nothing deploys
   on a merge.
-- **One at a time.** All six pipelines hold the concurrency group `deploy-azure`, without cancelling,
+- **One at a time.** All seven pipelines hold the concurrency group `deploy-azure`, without cancelling,
   so two deployments never overlap in an environment: every run's checks go through all the units, and
   a unit mid-rollout would fail another's. GitHub keeps one pending run per group and cancels it when a
   third is queued, so start the pipelines one after another.
@@ -50,7 +51,7 @@ The rows are in first-deployment order (quickstart §4).
   `repo:<owner>@<githubOwnerId>/<name>@<githubRepositoryId>:environment:<githubEnvironment>` (revised
   2026-11-04: the repository signs its jobs with its owner's and its own IDs, and a subject without
   them fails with AADSTS700213). A called workflow's job gets the same subject as any other job in the
-  environment, so the six pipelines need no other credential. `infra/github-setup.sh` refuses to set
+  environment, so the seven pipelines need no other credential. `infra/github-setup.sh` refuses to set
   anything up when the two differ. `main.bicep` fails validation anywhere but the parameter file's
   tenant, subscription and resource group. No credential is stored in GitHub: the payer key, the CDP
   key and the service tokens live only in the Key Vaults, seeded by hand.
@@ -80,17 +81,18 @@ The rows are in first-deployment order (quickstart §4).
 
 | # | Step | Runs | Pass condition |
 |---|---|---|---|
-| 0 | Right after the checkout. First it maps the unit to its image and Dockerfile (the table above) and refuses, before it downloads or deploys anything: an unknown unit; `seed-ip` or `recover-vaults` on a unit (they are the platform's); `recover-vaults` without `first-deployment` (it follows `infra/cleanup.sh`, so the units are gone); a first deployment of L1 (L1 runs last, through every check). The inputs come in as `INPUT_*`, never pasted into the script. Then Bicep CLI 0.47.16, first on `PATH` and in `BICEP_PATH`; it compiles `infra/main.<environment>.bicepparam`, and the step reads `tenantId`, `subscriptionId` and `deployClientId` (for `SIGN_IN`), `authAudience`, `payerAddress` and the names the steps use (`RG`, `CR_X402`, `LOG_X402`, `CA_L1`, `CA_L3`, `CA_SELLER`, `CA_SELLER_ALIAS`, `CAJ_L1`, `CAJ_L2`) | always | no refused inputs; every value read |
+| 0 | Right after the checkout. First it maps the unit to its image and Dockerfile (the table above) and refuses, before it downloads or deploys anything: an unknown unit; `seed-ip` or `recover-vaults` on a unit (they are the platform's); `recover-vaults` without `first-deployment` (it follows `infra/cleanup.sh`, so the units are gone); a first deployment of L1 (L1 runs last, through every check). The inputs come in as `INPUT_*`, never pasted into the script. Then Bicep CLI 0.47.16, first on `PATH` and in `BICEP_PATH`; it compiles `infra/main.<environment>.bicepparam`, and the step reads `tenantId`, `subscriptionId` and `deployClientId` (for `SIGN_IN`), `authAudience`, `payerAddress` and the names the steps use (`RG`, `CR_X402`, `LOG_X402`, `CA_L1`, `CA_L3`, `CA_PORTAL`, `CA_SELLER`, `CA_SELLER_ALIAS`, `CAJ_L1`, `CAJ_L2`) | always | no refused inputs; every value read |
 | 1 | `npm install`, `npm run typecheck`, `npm test`, with T-IAC-01 (`BICEP_PATH` is set) | always | green, nothing skipped |
 | — | Every step below that calls Azure (2, 3–4, 6–10, rollback) first signs in (`SIGN_IN`): a fresh GitHub OIDC token, the client ID, tenant and subscription from step 0 | | signed in |
 | 2 | `docker build` and `docker push` of the unit's image, `x402-<image>:<sha>` (research R14). A build fails when its closure reaches another unit's file or a module doesn't load | units | pushed |
-| 2b | Image secret check: `docker history --no-trunc` and `docker run … env` hold no `PRIVATE_KEY`, `_SECRET` or `_TOKEN` assignment (SC-005) | units | no match |
+| 2b | Image secret check: `docker history --no-trunc` and `docker run … env` hold no `PRIVATE_KEY`, `_SECRET`, `_TOKEN` or (013) `_MNEMONIC` or `CARD_VAULT_KEY` assignment (SC-005) | units | no match |
 | 3 | `az deployment group what-if`, then `create` of `main.bicep` with `UNIT` (and, on the platform, `SEED_IP` and `RECOVER_VAULTS` from the inputs), `imageTag=<sha>`. On L1, the agent's current 100% revision is passed as `agentStableRevision`, so the new revision starts at 0% with the label `candidate` | always | succeeded |
-| 4 | Wait. After the platform or L2: start `caj-l2-eastus2-dev` (its own command, `ledger-verify`) every 15 s until it exits 0 (L2's lock handover, research R12). After L1 or L3: its latest revision `Provisioned`. Always: both sellers answer `GET /api/catalog` (they scale from zero) | units; the platform unless first deployment | within 5 min, sellers within 3 min |
+| 4 | Wait. After the platform or L2: start `caj-l2-eastus2-dev` (its own command, `ledger-verify`) every 15 s until it exits 0 (L2's lock handover, research R12). After L1, L3 or the portal (013): its latest revision `Provisioned`. Always: both sellers answer `GET /api/catalog` (they scale from zero) | units; the platform unless first deployment | within 5 min, sellers within 3 min |
 | 5 | From the runner: `npm run payer-balance -- <payerAddress>`, a read-only `balanceOf` on Base Sepolia USDC. The address is public and no key is involved | unless first deployment | balance ≥ 50000 atomic (0.05 test USDC), otherwise fail with "fund the payer" |
 | 6 | `run_job` starts `caj-l1-eastus2-dev` (its own command, `node dist/src/main.js --scripted --check-baseline`) and waits for the execution | unless first deployment | execution status `Succeeded` (exit 0). `--check-baseline` exits 2 unless the outcomes are `FREE, PAID, PAID, ESCALATED, DENIED, DENIED` with 2 CONFIRMED |
 | 7 | `run_job` starts `caj-l2-eastus2-dev` → `ledger-verify` (on the operator's run, its new image) | unless first deployment | exit 0 (`ok: true`) |
 | 8 | Hosted smoke: a token for the deploy app (`Agent.Run`, from `pre-deploy.bicep`) for the API app's client ID (`authAudience`, the audience the agent accepts), `POST /v1/runs` with the default goal to the agent; on L1, to the new revision's `candidate` label URL (or the agent, on its first deployment), timed | unless first deployment | 200, `status: completed`, steps include `/api/weather` and `/api/market-brief` with `outcome: PAID`, settlement `CONFIRMED`; duration ≤ 120 s, written to the job summary (SC-009) |
+| 8b | Portal smoke (013), with no token, because the pipeline's identity is an application and the portal refuses those by design: `GET /healthz` on `ca-portal-eastus2-dev` (retried while it scales from zero), `GET /api/config`, `GET /api/me` | unless first deployment of a unit that precedes the portal; the portal's own first deployment runs it | `/healthz` 200 within 3 min; `/api/config` 200 with `auth.mode` `entra` (a deployed portal never trusts the dev issuer); `/api/me` 401 |
 | 9 | Secret scan: `az monitor log-analytics query` over the container logs since step 3, piped to `npm run scan-logs` (credential-shape patterns from `scripts/secret-scan-lib.ts`: JWTs, `Bearer` values, PEM blocks, `PAYMENT-SIGNATURE`/`x-api-key` values, `*_PRIVATE_KEY=`/`*_SECRET=`/`*_TOKEN=` assignments) | unless first deployment | no match. Exact-value completeness is proven offline by T-AGT-05 (research R13) |
 | 10 | Promote. On L1, `main.bicep` again without a stable revision, so the agent's latest revision gets 100% of the traffic; then `az acr import` tags the unit's image `last-good` | units, unless first deployment | done |
 
@@ -101,6 +103,17 @@ the run deploys the unit and waits for it (steps 0–4), but skips the checks th
 `first-deployment` passes the checks. The run's summary says it is unverified. The platform's first
 runs skip the wait too. L1, deployed last, has no first deployment: its first run passes every check
 through every unit.
+
+013: the order ends L2, **portal**, L1 last, and then `pre-deploy.bicep` again with `portalOrigin` set,
+which registers the deployed portal's redirect URI
+([specs/013 quickstart §6](../../013-l2-portal-onboarding/quickstart.md#6-azure)). Before the portal's first
+run, `kv-portal-eastus2-dev` holds `portal-token` and `card-vault-key` (the placeholder `off`), the l2 vault
+holds `portal-token` and `user-wallet-mnemonic`, and `userAccounts.portalClientId` is set, also while
+`userAccounts.enabled` is false: the portal doesn't start without it. The portal's first deployment runs
+step 8b, the only check that needs no other unit. Step 8b fails every run without `first-deployment`
+until the portal exists, so an environment deployed before 013 adds the portal as a first deployment
+too: `deploy-infra` (the portal's identity, vault and share), `deploy-l2` and `deploy-portal`, each with
+`first-deployment`, then `deploy-l1`, then `deploy-l2` and `deploy-portal` once more without it.
 
 **The platform** (`deploy-infra.yml`). It has no image, so steps 2, 2b and 10 are skipped and it has
 no rollback. Once the units exist, the run checks them through the new platform (steps 4–9). `seed-ip`
@@ -130,6 +143,9 @@ included, instead of creating them. A unit's run refuses both at step 0 and depl
 - **The chain.** It still verifies, including after L2's lock handover.
 - **The agent's path.** The hosted agent's HTTP, auth, model and tools path works with a service
   identity.
+- **The portal** (013). It is up, verifies Entra tokens and refuses a request without one. Nothing here
+  signs a person in: sign-in, onboarding and a payment from a user's own account are checked by hand
+  ([specs/013 quickstart §6](../../013-l2-portal-onboarding/quickstart.md#6-azure)).
 - **No leaks.** No secret reached the logs.
 
 ## Cost guard

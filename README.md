@@ -8,8 +8,9 @@ A Claude agent buys HTTP resources with x402 (protocol v2, scheme `exact`, EIP-3
 | L2 Control | `src/layer2-control/` | Pure policy engine, sole signer, hash-chained ledger, human approvals | 4020 (loopback) |
 | L3 Settlement | `src/layer3-settlement/` | Read-only on-chain verification, reconciles into L2 | 4023 (loopback) |
 | Counterparty | `src/counterparty/`, `scripts/facilitator.ts` | Seller API and local facilitator | 4021, 4022 |
+| Portal (optional) | `src/portal/`, `src/portal-main.ts`, `web/portal/` | Web portal for user accounts: profile, wallet and expense policies. No keys, decides nothing. | 4025 |
 
-`SPEC.md` (v1.3) is normative. Feature specs, plans and task lists live under `specs/` (spec-kit). Agent guidance is in `CLAUDE.md`.
+`SPEC.md` (v1.9) is normative. Feature specs, plans and task lists live under `specs/` (spec-kit). Agent guidance is in `CLAUDE.md`.
 
 ## Diagrams
 
@@ -40,6 +41,8 @@ The seller monetizes with freemium discovery plus pay-per-use tiers: each endpoi
 ```bash
 API_DOCS=1 npm run seller
 ```
+
+The portal's API (`/api/me`, the profile, the wallet, cards, policies and the account) is in [`docs/portal.openapi.yaml`](docs/portal.openapi.yaml), kept in sync by `test/openapi-portal.test.ts`. With `API_DOCS=1` the portal serves it in Swagger UI at http://127.0.0.1:4025/docs; paste a token from `npm run -s dev-token -- --subject alice --portal`.
 
 ## Quick start
 
@@ -79,6 +82,7 @@ Start any L1 or operator configuration. Its task `local: stack` makes the local 
 | L1 agent: scripted plan | the deterministic L1-4 plan: FREE, PAID, PAID, ESCALATED, DENIED, DENIED |
 | L1 agent: Claude, your goal | the Claude agent with a goal you type (needs `ANTHROPIC_API_KEY` in `env/l1-agent.env`) |
 | L1 hosted agent | the hosted service on `:4024` with Swagger UI (needs `ANTHROPIC_API_KEY` in `env/l1-hosted.env`; get a token with task `local: dev token`) |
+| Portal | the web portal on `:4025` with Swagger UI. Its task `local: stack: users` starts the stack with user accounts on in L2 (stop `local: stack` first if it runs). Build the web app with task `build: web`, and sign in with a token from task `local: portal token` |
 | Operator: watch escalations, approve, reject, ledger-verify | the operator's commands; approve and reject ask for the `authorizationId` |
 
 Tasks `local: stop stack` and `local: stop chain` stop what `local: stack` and `local: chain` started; otherwise they keep running for the next session. To debug a service that `local: stack` started, stop that task first: the runner refuses to start a second process on a taken port. **Vitest: current file** debugs the open test file; stop the local stack and chain first, because the e2e suites use the same ports.
@@ -110,6 +114,26 @@ With backchannel approval on (`CIBA_APPROVAL=1` in L2's env file, SPEC L2-7), L2
 - **Automated checks never ask the approver**: the scripted regression is operator-only, there are at most 10 requests per hour, and repeats of a pending purchase reuse its escalation.
 
 The Auth0 tenant is Terraform in [`auth0/`](auth0/README.md), applied by a tenant administrator. Its outputs are the env values and the `ciba` object for Azure. The steps and a live check are in [specs/012 quickstart](specs/012-ciba-escalation-approval/quickstart.md). It is off by default, and the local demo never uses it.
+
+## User accounts and the portal (optional)
+
+With user accounts on (`USER_ACCOUNTS=1` in L2's env file, SPEC L2-8), each person who may start agent runs sets up their own spending in a web portal:
+
+- **Profile.** A name and a contact email, kept by the portal only. L2 knows a person as an opaque `userId`.
+- **Wallet.** One crypto account per person on the test network. L2 derives it from one mnemonic and is the only process that can sign with it; nobody ever sees a key, and nothing in the portal moves funds out. Cards can be registered at a card vault (Stripe, test mode) for later; an agent can't pay with a card.
+- **Expense policies.** Where the agent may pay (sellers from the operator's list), how much (without asking, per payment, per run, per day) and how (payments per minute, an end date). The operator's platform limits (`config/platform.json`) bound every policy, and one daily ceiling bounds each person across all their policies.
+
+A run started by a person through the hosted agent pays from that person's account under that person's policy. A person who has not finished setting up, or disabled their account, is denied; they never fall back to the platform account. A system identity, the scripted agent and `demo:local` use the platform account, as before. Raising a limit, adding a seller, resuming a policy or enabling an account asks the person to sign in again if their last sign-in is older than 15 minutes.
+
+Locally, in three terminals:
+
+```bash
+npm run stack:local -- --users     # the stack, with user accounts on in L2
+npm run -s dev-token -- --subject alice --portal   # a sign-in token to paste into the portal (the first call creates the local dev issuer)
+npm run build:web && npm run portal   # the portal on http://127.0.0.1:4025
+```
+
+Then follow the three steps on screen. `npm run fund-user -- <address> 1` mints 1 test USDC to the new account. To pay as that person, start `npm run agent:hosted` and send a run with an agent token (`npm run -s dev-token -- --subject alice`, without `--portal`): the two services refuse each other's tokens. The full walk-through, the isolation checks, cards and Azure are in [specs/013 quickstart](specs/013-l2-portal-onboarding/quickstart.md). It is off by default, and the local demo never uses it.
 
 ## Base Sepolia
 
@@ -237,9 +261,10 @@ To run the agent's container image instead, see [quickstart §3](specs/011-l1-ho
 | `deploy-l2.yml` | `deploy-l2-*` | `x402-l2-control`: the control service |
 | `deploy-l3.yml` | `deploy-l3-*` | `x402-l3-verifier`: the verifier |
 | `deploy-operator.yml` | `deploy-operator-*` | `x402-operator`: the operator job |
+| `deploy-portal.yml` | `deploy-portal-*` | `x402-portal`: the web portal for user accounts (optional; [specs/013 quickstart §6](specs/013-l2-portal-onboarding/quickstart.md)) |
 | `deploy-seller.yml` | `deploy-seller-*` | `x402-seller`: the seller and its alias |
 
-All six call the same steps, `.github/workflows/deploy.yml`, with their unit. A run signs in with OIDC as the deploy app, again in each step that calls Azure (GitHub's token is valid for 5 minutes), and reads its target from `infra/main.<env>.bicepparam`, not from GitHub secrets. It builds the unit's image, then previews and deploys `infra/main.bicep` with `UNIT` set, which deploys only that unit and leaves the others as they are. It records the image as `last-good` only after these all pass:
+All seven call the same steps, `.github/workflows/deploy.yml`, with their unit. A run signs in with OIDC as the deploy app, again in each step that calls Azure (GitHub's token is valid for 5 minutes), and reads its target from `infra/main.<env>.bicepparam`, not from GitHub secrets. It builds the unit's image, then previews and deploys `infra/main.bicep` with `UNIT` set, which deploys only that unit and leaves the others as they are. It records the image as `last-good` only after these all pass:
 - the infrastructure rules (T-IAC-01);
 - a secret check on the image;
 - the L1-4 baseline in the cloud (`--check-baseline`), through every unit;
@@ -285,7 +310,11 @@ A milestone must pass its exit check before the next one starts.
 | File | Covers |
 |---|---|
 | `test/vscode-local.test.ts` | T-DEV-01..03: every VS Code configuration runs locally through the runner and resolves its role, tasks and inputs; each process gets its own env file and local key, NETWORK=local, and nothing else from VS Code but the debugger's attach hook; `local: stack` reuses, waits for or starts each stack process |
-| `test/architecture.test.ts` | INV-1..4 and rules A1–A7 (static import and identifier scan), env templates |
+| `test/architecture.test.ts` | INV-1..4 and rules A1–A12 (static import and identifier scan), env templates |
+| `test/users.test.ts`, `test/user-id.test.ts` | T-USR-01..12: user accounts in L2: the portal routes, role isolation, ownership, step-up, the keyring, policy validation, the effective mandate, decisions per user and isolation between users, with their must-fail proofs |
+| `test/portal.test.ts`, `test/card-vault.test.ts` | T-PRT-01..09 and T-CARD-01..06: the portal's access rules, profile, wallet, policies, headers and log; cards against a stand-in vault |
+| `test/openapi-portal.test.ts` | T-API-12..14: `docs/portal.openapi.yaml` matches the portal's routes, auth, statuses and response shapes; T-API-15: its Swagger UI routes |
+| `web/portal/test/` | T-WEB-01..08: the web app in jsdom with a fake API: routing, forms, exact money, the policy summary, step-up, version conflicts, cards, text never rendered as HTML, an accessibility pass |
 | `test/auth.test.ts` | per-role bearer guard `requireRole` (INV-13), token resolution, `loadEnv` |
 | `test/policy.test.ts` | mandate, T-POL-01..15, signer, authorize/budget API, approvals, rejections and escalation reads in-process, operator CLIs |
 | `test/ledger.test.ts` | T-LED-01..03, committed spend, reconcile, approvals lookup |
@@ -327,6 +356,9 @@ and `test/architecture.test.ts` (T-ARCH-TRACE) checks that every test it names e
 | Audit tampering | Hash chain checked at startup | T-LED-01 |
 | Agent self-approves | Operator token; single-use approvals | T-E2E-02, T-POL-13 |
 | Stale signature settles late | Spend counts until `validBefore` | T-LED-02 |
+| One person reaches another's data or budget | The user comes only from the verified token; own account, budgets and approvals per user | T-PRT-02, T-USR-03, T-USR-11 |
+| A stolen portal sign-in loosens a policy | A fresh sign-in for every loosening change; platform limits | T-USR-05, T-USR-10 |
+| The wallet mnemonic or card data leaks | Mnemonic in L2's signer only; cards go browser to vault | T-ARCH-A11, T-USR-08, T-CARD-06 |
 
 Accepted residual risks (v1), and the extension that retires each:
 
@@ -341,6 +373,7 @@ Accepted residual risks (v1), and the extension that retires each:
 ## Known gotchas
 
 - Use `npm install`, not `npm ci`: ganache's lockfile has a darwin-only `fsevents` entry.
+- Never replace `USER_WALLET_MNEMONIC` once users have wallets: L2 refuses to start when recorded addresses no longer match. `npm run wallet-mnemonic` prints a new one for a new environment.
 - ganache prints a `uws`/"Falling back to a NodeJS implementation" notice. It is harmless and filtered.
 - On a Linux sandbox without IPv6, binding `::` fails. The seller binds `0.0.0.0`, and tests use `localhost` only as the non-allowlisted alias.
 - Local signing finishes within microtasks, so races are invisible without `signerLatencyMs`. Keep it in T-E2E-04.

@@ -17,7 +17,9 @@ import { API_DOCS_FILE, servedApiDocument } from "../src/layer2-control/api-docs
 import { AuditLedger } from "../src/layer2-control/ledger.js";
 import { buildMandate } from "../src/layer2-control/mandate.js";
 import { createControlService } from "../src/layer2-control/service.js";
-import type { PaymentSignerLike } from "../src/layer2-control/signer.js";
+import { WalletKeyring, type PaymentSignerLike } from "../src/layer2-control/signer.js";
+import { userIdFor } from "../src/shared/user-id.js";
+import { OTHER_HOST, policyValues, SELLER_HOST, TEST_MNEMONIC, testPlatform, UNLISTED_HOST } from "./helpers/users.js";
 import {
   conformance,
   documentedRoutes,
@@ -37,13 +39,16 @@ const ASSET = "0xAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAa";
 const PAY_TO = "0xcccccccccccccccccccccccccccccccccccccccc";
 const PAYER = "0x00000000000000000000000000000000000000f1";
 const NOW = Date.parse("2026-10-21T12:00:00.000Z");
-const TOKENS = { control: "t-control", settlement: "t-settlement", operator: "t-operator" };
+const TOKENS = { control: "t-control", settlement: "t-settlement", operator: "t-operator", portal: "t-portal" };
 /** Security scheme name in the document → the token the service expects for it. */
 const SCHEME_TOKENS: Record<string, string> = {
   controlToken: TOKENS.control,
   settlementToken: TOKENS.settlement,
   operatorToken: TOKENS.operator,
+  portalToken: TOKENS.portal,
 };
+/** The v1.9 user-account operations (tag `portal`), mounted only with user accounts on. */
+const isUserRoute = (op: { tags?: string[] }) => op.tags?.includes("portal") === true;
 const loadDoc = () => loadDocFile(DOC_FILE);
 
 const fakeSigner: PaymentSignerLike = {
@@ -65,8 +70,9 @@ afterEach(async () => {
 /**
  * T-API-01..03 describe the full surface, so API docs are on by default here. `startService({})` leaves
  * `apiDocs` unset, which is what main() passes without API_DOCS, so it tests the service's own default.
+ * User accounts (v1.9) are on unless `users: false`, which is main() without USER_ACCOUNTS=1.
  */
-async function startService(opts: { apiDocs?: boolean } = { apiDocs: true }) {
+async function startService(opts: { apiDocs?: boolean; users?: boolean } = { apiDocs: true }) {
   let t = NOW;
   const mandate = buildMandate(
     {
@@ -92,6 +98,10 @@ async function startService(opts: { apiDocs?: boolean } = { apiDocs: true }) {
     tokens: TOKENS,
     now: () => t,
     ...(opts.apiDocs !== undefined && { apiDocs: opts.apiDocs }),
+    ...(opts.users !== false && {
+      users: { platform: testPlatform(), keyring: new WalletKeyring(TEST_MNEMONIC, { caip2: CAIP2, asset: ASSET }) },
+      net: { caip2: CAIP2, asset: ASSET, decimals: 6 },
+    }),
   });
   const server = await new Promise<Server>((r) => {
     const s = svc.app.listen(0, "127.0.0.1", () => r(s));
@@ -103,6 +113,7 @@ async function startService(opts: { apiDocs?: boolean } = { apiDocs: true }) {
     advance: (ms: number) => {
       t += ms;
     },
+    now: () => t,
   };
 }
 
@@ -153,6 +164,16 @@ describe("T-API-01 every L2 route is documented, and every documented route is m
     expect(routeDiff(documentedRoutes(doc, (op) => !isDocsRoute(op)), mountedRoutes(app))).toEqual({ undocumented: [], unmounted: [] });
   });
 
+  it("T-API-01 without USER_ACCOUNTS, the user-account operations are not mounted and everything else is", async () => {
+    const { app, base } = await startService({ apiDocs: true, users: false });
+    const doc = loadDoc();
+    expect(routeDiff(documentedRoutes(doc, (op) => !isUserRoute(op)), mountedRoutes(app))).toEqual({ undocumented: [], unmounted: [] });
+    expect(documentedRoutes(doc, isUserRoute)).toHaveLength(14);
+    for (const [method, path, op] of operations(doc)) {
+      if (isUserRoute(op)) expect((await send(base, method, path.replace(/\{\w+\}/g, "x"), TOKENS.portal)).status, `${method} ${path}`).toBe(404);
+    }
+  });
+
   it("T-API-01 must-fail: a route missing from the document, or documented but not mounted, is reported", async () => {
     const { app } = await startService();
     const doc = loadDoc();
@@ -166,7 +187,7 @@ describe("T-API-01 every L2 route is documented, and every documented route is m
 });
 
 describe("T-API-02 each operation's security scheme is the only token its guard accepts", () => {
-  it("T-API-02 no token and the other two tokens get 401; the documented token passes the guard", async () => {
+  it("T-API-02 no token and the other three tokens get 401; the documented token passes the guard", async () => {
     const { base } = await startService();
     expect(await authMismatches(loadDoc(), base)).toEqual([]);
   });
@@ -182,7 +203,7 @@ describe("T-API-02 each operation's security scheme is the only token its guard 
 describe("T-API-03 live responses match the documented status and schema", () => {
   it("T-API-03 a scenario reaching every documented status (except 500) conforms to the document", async () => {
     const doc = loadDoc();
-    const { base, advance } = await startService();
+    const { base, advance, now } = await startService();
     const seen = new Set<string>();
     const errors: string[] = [];
     const call = async (method: string, path: string, opts: { token?: string; params?: Record<string, string>; query?: string; body?: unknown } = {}) => {
@@ -213,6 +234,81 @@ describe("T-API-03 live responses match the documented status and schema", () =>
     expect(e1.status).toBe("ESCALATE");
     expect((await authorize(intent("sess_a", "/api/dataset-export", "200000"))).status).toBe("DENIED");
     await call("POST", "/v1/authorize", { ...C, body: { sessionId: "sess_a" } });
+
+    // v1.9 user accounts: the agent's calls for a user, then every portal operation and each of its statuses
+    const P = { token: TOKENS.portal };
+    const [U, B, CAROL, DAVE] = ["alice", "bob", "carol", "dave"].map((n) => userIdFor("dev", n)) as [string, string, string, string];
+    const fresh = () => ({ identityConfirmedAtMs: now() });
+    const values = (over: Record<string, unknown> = {}) => policyValues(over as never, now());
+    const user = (userId: string) => ({ ...P, params: { userId } });
+    const policy = (userId: string, policyId: string) => ({ ...P, params: { userId, policyId } });
+    await call("GET", "/v1/platform", P);
+    await call("GET", "/v1/users/{userId}", user(U));
+    await call("GET", "/v1/users/{userId}", P);
+    await call("PUT", "/v1/users/{userId}/registration", { ...user(U), body: {} });
+    await call("PUT", "/v1/users/{userId}/registration", { ...user(U), body: { acknowledgedTestFunds: true } });
+    await call("PUT", "/v1/users/{userId}/wallet", user(B));
+    await call("PUT", "/v1/users/{userId}/wallet", P);
+    expect((await call("PUT", "/v1/users/{userId}/wallet", user(U))).wallet).toBeDefined();
+    await call("POST", "/v1/users/{userId}/policies", { ...user(B), body: { ...values(), ...fresh() } });
+    await call("POST", "/v1/users/{userId}/policies", { ...user(U), body: { ...values() } });
+    await call("POST", "/v1/users/{userId}/policies", { ...user(U), body: { ...values(), name: "typed text is refused" } });
+    await call("POST", "/v1/users/{userId}/policies", { ...user(U), body: { ...values({ sellers: [UNLISTED_HOST], dailyBudgetAtomic: "999999999" }), ...fresh() } });
+    const p1 = String((await call("POST", "/v1/users/{userId}/policies", { ...user(U), body: { ...values(), ...fresh() } })).policyId);
+    await call("GET", "/v1/users/{userId}/policies/{policyId}", policy(U, p1));
+    await call("GET", "/v1/users/{userId}/policies/{policyId}", policy(U, "pol_unknown"));
+    await call("GET", "/v1/users/{userId}/policies/{policyId}", P);
+    const change = (policyId: string, body: unknown) => call("PUT", "/v1/users/{userId}/policies/{policyId}", { ...policy(U, policyId), body });
+    await change(p1, { expectedVersion: 1 });
+    await change("pol_unknown", { ...values({ dailyBudgetAtomic: "300000" }), expectedVersion: 1 });
+    await change(p1, { ...values({ sellers: [SELLER_HOST, OTHER_HOST] }), expectedVersion: 1 });
+    await change(p1, { ...values({ sellers: [SELLER_HOST, UNLISTED_HOST] }), expectedVersion: 1, ...fresh() });
+    expect((await change(p1, { ...values({ dailyBudgetAtomic: "300000" }), expectedVersion: 1 })).version).toBe(2);
+    expect((await change(p1, { ...values({ dailyBudgetAtomic: "200000" }), expectedVersion: 1 })).error).toBe("version_conflict");
+    const act = (action: string, policyId: string, body?: unknown, userId = U) =>
+      call("POST", `/v1/users/{userId}/policies/{policyId}/${action}`, { ...policy(userId, policyId), body });
+    await act("pause", p1);
+    await act("pause", p1, { unexpected: true });
+    await act("pause", "pol_unknown");
+    await act("resume", p1);
+    await act("resume", p1, fresh());
+    await act("resume", p1, { unexpected: true });
+    await act("resume", "pol_unknown", fresh());
+    await act("remove", p1, { unexpected: true });
+    await act("remove", "pol_unknown");
+    // a paused policy whose seller is now in another active policy can't be resumed
+    await act("pause", p1);
+    const p2 = String((await call("POST", "/v1/users/{userId}/policies", { ...user(U), body: { ...values(), ...fresh() } })).policyId);
+    expect((await act("resume", p1, fresh())).error).toBe("invalid_policy");
+    // the agent, for this user: a payment under the policy and the user view of the budget
+    const mine = await authorize({ ...intent("sess_user", "/api/weather", "1000"), userId: U });
+    expect(mine.status).toBe("AUTHORIZED");
+    expect((await call("GET", "/v1/budget/{sessionId}", { ...C, params: { sessionId: "sess_user" }, query: `?userId=${U}` })).scope).toBe("user_daily");
+    await call("GET", "/v1/budget/{sessionId}", { ...C, params: { sessionId: "sess_user" }, query: "?userId=alice" });
+    // cards: identifiers only
+    const card = "card_00000000-0000-4000-8000-000000000001";
+    const cardCall = (method: string, userId: string, cardId: string) => call(method, "/v1/users/{userId}/cards/{cardId}", { ...P, params: { userId, cardId } });
+    await cardCall("PUT", U, card);
+    await cardCall("PUT", U, "pm_not_a_card_id");
+    await cardCall("PUT", CAROL, card);
+    await cardCall("DELETE", U, "pm_not_a_card_id");
+    // the account: while disabled every wallet, policy and card-add write conflicts
+    await call("POST", "/v1/users/{userId}/disable", P);
+    await call("POST", "/v1/users/{userId}/disable", user(CAROL));
+    await call("POST", "/v1/users/{userId}/disable", user(U));
+    await act("pause", p2);
+    await act("resume", p1, fresh());
+    await act("remove", p2);
+    expect((await change(p2, { ...values({ dailyBudgetAtomic: "100000" }), expectedVersion: 1 })).error).toBe("account_disabled");
+    await call("PUT", "/v1/users/{userId}/registration", { ...user(DAVE), body: { acknowledgedTestFunds: true } });
+    await call("POST", "/v1/users/{userId}/disable", user(DAVE));
+    await call("PUT", "/v1/users/{userId}/wallet", user(DAVE));
+    await cardCall("DELETE", U, card);
+    await call("POST", "/v1/users/{userId}/enable", { ...user(U), body: {} });
+    await call("POST", "/v1/users/{userId}/enable", { ...user(U), body: { unexpected: true } });
+    await call("POST", "/v1/users/{userId}/enable", { ...user(CAROL), body: fresh() });
+    expect((await call("POST", "/v1/users/{userId}/enable", { ...user(U), body: fresh() })).enabled).toBe(true);
+    await act("remove", p2);
 
     // operator: approve twice, then a reject conflicts with the approval
     await call("GET", "/v1/escalations", O);

@@ -11,6 +11,7 @@ import {
   createWalletClient,
   defineChain,
   http,
+  parseAbi,
   toHex,
   type Abi,
   type Address,
@@ -186,4 +187,20 @@ export async function deployMockUsdc(rpcUrl: string, abi: Abi, bytecode: Hex): P
   const mintReceipt = await publicClient.waitForTransactionReceipt({ hash: mintHash });
   if (mintReceipt.status !== "success") throw new Error("MockUSDC mint failed");
   return asset;
+}
+
+const MINT_ABI = parseAbi(["function mint(address to, uint256 amount)", "function balanceOf(address) view returns (uint256)"]);
+
+/**
+ * 013: mints local MockUSDC from #0 to any address (a user's account, for `npm run fund-user` and the two-user
+ * tests) and returns the address's new balance. Local chain only: MockUSDC's mint has no real counterpart.
+ */
+export async function mintLocalUsdc(rpcUrl: string, asset: Address, to: Address, amountAtomic: bigint): Promise<bigint> {
+  const chain = localChain(rpcUrl);
+  const publicClient = createPublicClient({ chain, transport: http(rpcUrl) });
+  const deployer = createWalletClient({ account: devAccount(ACCOUNT_INDEX.deployer), chain, transport: http(rpcUrl) });
+  const hash = await deployer.writeContract({ address: asset, abi: MINT_ABI, functionName: "mint", args: [to, amountAtomic] });
+  const receipt = await publicClient.waitForTransactionReceipt({ hash });
+  if (receipt.status !== "success") throw new Error("MockUSDC mint failed");
+  return publicClient.readContract({ address: asset, abi: MINT_ABI, functionName: "balanceOf", args: [to] });
 }

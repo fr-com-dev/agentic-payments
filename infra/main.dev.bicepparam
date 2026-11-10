@@ -30,6 +30,7 @@ param names = {
     l2: 'id-l2-${location}-${environment}'
     l3: 'id-l3-${location}-${environment}'
     op: 'id-op-${location}-${environment}'
+    portal: 'id-portal-${location}-${environment}'
     seller: 'id-seller-${location}-${environment}'
   }
   vaults: {
@@ -37,12 +38,14 @@ param names = {
     l2: 'kv-l2-${location}-${environment}'
     l3: 'kv-l3-${location}-${environment}'
     op: 'kv-op-${location}-${environment}'
+    portal: 'kv-portal-${location}-${environment}'
     seller: 'kv-seller-${location}-${environment}'
   }
   apps: {
     l1: 'ca-l1-${location}-${environment}'
     l2: 'ca-l2-${location}-${environment}'
     l3: 'ca-l3-${location}-${environment}'
+    portal: 'ca-portal-${location}-${environment}'
     seller: 'ca-seller-${location}-${environment}'
     sellerAlias: 'ca-seller-alias-${location}-${environment}'
   }
@@ -71,6 +74,19 @@ param ciba = {
   approver: ''
   credential: 'key'
   clientKeyId: ''
+}
+
+// 013 user accounts (SPEC L2-8; specs/013 contracts/config-and-secrets.md "Azure"): off in dev until the portal is
+// deployed and its secrets are seeded (specs/013 quickstart §6). portalClientId is pre-deploy.bicep's fourth
+// mainParameters line: paste it before the portal's first deployment, also while enabled is false (the portal
+// doesn't start without it). The l2 vault holds portal-token and user-wallet-mnemonic, and the portal vault
+// portal-token and card-vault-key, either way: the placeholder off now, the real values once enabled.
+param userAccounts = {
+  enabled: false
+  portalClientId: ''
+  sellerName: 'x402 demo seller'
+  cardVault: 'off'
+  cardVaultPublishableKey: ''
 }
 
 // Declared to Anthropic with the Claude deployment, which accepts its Azure Marketplace terms (owner's consent,

@@ -1,7 +1,8 @@
 // `tsx scripts/image-closure.ts <image> <outDir>`, after `npm run build`: what one container image ships
-// (specs/011 research R14). Each layer has its own image, the operator job has its own, and the seller has the
-// root Dockerfile's, so a process carries only its own code: the L1 image holds no signer, the L2 and L3 images
-// hold no agent framework, and the operator's holds only the operator scripts. Each image is built, promoted and
+// (specs/011 research R14). Each layer has its own image, the operator job has its own, the portal (013) has its
+// own, and the seller has the root Dockerfile's, so a process carries only its own code: the L1 image holds no
+// signer, the L2 and L3 images hold no agent framework, the operator's holds only the operator scripts, and the
+// portal's holds no layer at all. Each image is built, promoted and
 // rolled back by its own pipeline (.github/workflows/deploy-<unit>.yml).
 //
 // esbuild walks the import graph of the image's entry points in the TypeScript sources: static imports and
@@ -19,7 +20,7 @@ import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { build } from "esbuild";
 
-export type ImageName = "l1-agent" | "l2-control" | "l3-verifier" | "operator" | "seller";
+export type ImageName = "l1-agent" | "l2-control" | "l3-verifier" | "operator" | "portal" | "seller";
 
 export interface ImageSpec {
   /** Dockerfile that builds the image, from the repository root. */
@@ -59,6 +60,14 @@ export const IMAGES: Record<ImageName, ImageSpec> = {
     dockerfile: "docker/operator.Dockerfile",
     entries: OPERATOR_SCRIPTS,
     allowed: ["src/shared/", ...OPERATOR_SCRIPTS],
+  },
+  // 013: the portal, which serves the web app and calls L2's portal routes over HTTP: no layer's code, no signer.
+  // The web app itself is not in this graph: Vite bundles it into dist/portal-web (docker/portal.Dockerfile).
+  portal: {
+    dockerfile: "docker/portal.Dockerfile",
+    entries: ["src/portal-main.ts"],
+    allowed: ["src/portal/", "src/shared/", "src/portal-main.ts"],
+    extraPackages: ["swagger-ui-dist"], // src/shared/api-docs.ts, with API_DOCS=1
   },
   // The demo seller, the counterparty, not a layer.
   seller: {

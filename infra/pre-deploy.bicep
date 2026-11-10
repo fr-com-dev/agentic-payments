@@ -4,7 +4,11 @@
 // - the resource group main.bicep deploys into;
 // - the API app registration app-l1-<location>-<environment> and its service principal: the identifier URI
 //   api://app-l1-…, v2.0 access tokens, the Agent.Run app role (assignment required) and the delegated scope
-//   user_impersonation, with the Azure CLI pre-authorized so a person assigned Agent.Run can get a token;
+//   user_impersonation, with the Azure CLI pre-authorized so a person assigned Agent.Run can get a token; and (013)
+//   the delegated scope Portal.Access, with the portal web app pre-authorized for it only, and the optional
+//   access-token claims auth_time and idtyp;
+// - (013) the portal web app registration app-portal-<location>-<environment>: a public single-page client
+//   (authorization code with PKCE), with no secret, no role and no permissions of its own;
 // - the deploy app registration app-deploy-<location>-<environment>, its service principal and a federated
 //   credential for the repository's GitHub environment: GitHub Actions sign in with OIDC, and no secret exists;
 // - Agent.Run for the deploy app (the pipeline's smoke run) and for agentUsers;
@@ -23,7 +27,7 @@ param tenantId string
 @description('The subscription the resource group goes in.')
 param subscriptionId string
 param location string
-@description('The names, {type}-{app}-{location}-{environment}: resourceGroup (the one main.bicep deploys into), apiApp, deployApp and operators.')
+@description('The names, {type}-{app}-{location}-{environment}: resourceGroup (the one main.bicep deploys into), apiApp, deployApp, portalApp and operators.')
 param names object
 @description('owner/name of the GitHub repository whose deploy job signs in as the deploy app.')
 param githubRepository string
@@ -37,6 +41,8 @@ param githubEnvironment string
 param agentUsers array
 @description('People who may start the operator job, by user principal name: the operators\' group members.')
 param operators array
+@description('013: the portal\'s public origin, https://<its app>.<the environment\'s default domain>, without a trailing slash. Empty until the portal is deployed: the web app then has its local redirect URI only.')
+param portalOrigin string
 
 // Validation fails, naming both, when this runs anywhere other than the parameter file says.
 var target = tenant().tenantId == tenantId && subscription().subscriptionId == subscriptionId
@@ -46,6 +52,7 @@ var target = tenant().tenantId == tenantId && subscription().subscriptionId == s
 // Stable IDs, so a redeployment updates the same role and scope instead of adding new ones.
 var agentRunRoleId = '5b2c3a7e-6f1d-4c55-9f0e-0a1b2c3d4e51'
 var userImpersonationId = '5b2c3a7e-6f1d-4c55-9f0e-0a1b2c3d4e52'
+var portalAccessId = '5b2c3a7e-6f1d-4c55-9f0e-0a1b2c3d4e53'
 // The Azure CLI's well-known public client ID.
 var azureCliAppId = '04b07795-8ddb-461a-bbee-02f9e1bf7b46'
 
@@ -73,12 +80,30 @@ resource apiApp 'Microsoft.Graph/applications@v1.0' = {
         adminConsentDisplayName: 'Run the x402 agent as the signed-in user'
         adminConsentDescription: 'Lets a client run the x402 purchasing agent as the signed-in user. The user still needs the Agent.Run role.'
       }
+      {
+        id: portalAccessId
+        value: 'Portal.Access'
+        type: 'Admin'
+        isEnabled: true
+        adminConsentDisplayName: 'Use the x402 portal as the signed-in user'
+        adminConsentDescription: 'Lets the portal web app read and change the signed-in user\'s own profile, account and expense policy. The user still needs the Agent.Run role.'
+      }
     ]
     // The Azure CLI may request user_impersonation without a consent prompt, so `az account get-access-token
     // --scope api://app-l1-…/user_impersonation` works for a person assigned Agent.Run. Pre-authorization needs no
-    // service principal for the Azure CLI in the tenant (a consent grant would).
+    // service principal for the Azure CLI in the tenant (a consent grant would). 013: the portal web app may request
+    // Portal.Access only, so its tokens never carry user_impersonation, the scope the agent service requires.
     preAuthorizedApplications: [
       { appId: azureCliAppId, delegatedPermissionIds: [userImpersonationId] }
+      { appId: portalApp.appId, delegatedPermissionIds: [portalAccessId] }
+    ]
+  }
+  // 013: auth_time dates the person's last interactive sign-in (a loosening policy change needs a fresh one), and
+  // idtyp tells a user token from an app-only one; include_user_token puts it in user tokens too.
+  optionalClaims: {
+    accessToken: [
+      { name: 'auth_time' }
+      { name: 'idtyp', additionalProperties: ['include_user_token'] }
     ]
   }
   appRoles: [
@@ -97,6 +122,19 @@ resource apiApp 'Microsoft.Graph/applications@v1.0' = {
 resource apiSp 'Microsoft.Graph/servicePrincipals@v1.0' = {
   appId: apiApp.appId
   appRoleAssignmentRequired: true
+}
+
+// ---- The portal web app (013): what people sign in to the portal with -------------------------------------------
+// A public single-page client: authorization code with PKCE, no secret, no certificate, no role and no permission
+// of its own (the API app pre-authorizes it for Portal.Access). Its redirect URIs are the local portal's and, once
+// the portal is deployed and portalOrigin is set, the deployed one's.
+resource portalApp 'Microsoft.Graph/applications@v1.0' = {
+  uniqueName: names.portalApp
+  displayName: names.portalApp
+  signInAudience: 'AzureADMyOrg'
+  spa: {
+    redirectUris: concat(['http://localhost:4025/redirect.html'], empty(portalOrigin) ? [] : ['${portalOrigin}/redirect.html'])
+  }
 }
 
 // ---- The deploy app: what GitHub Actions sign in as ------------------------------------------------------------
@@ -169,9 +207,10 @@ module deployAccess 'modules/deploy-access.bicep' = {
 }
 
 output resourceGroup string = rg.name
-@description('The IDs main.<environment>.bicepparam needs, as its lines.')
+@description('The IDs main.<environment>.bicepparam needs, as its lines; the fourth is the one value to set inside its userAccounts object.')
 output mainParameters string = join([
   'param deployClientId = \'${deployApp.appId}\''
   'param authAudience = \'${apiApp.appId}\''
   'param operatorsGroupId = \'${operatorsGroup.id}\''
+  'param userAccounts = { ..., portalClientId: \'${portalApp.appId}\', ... }'
 ], '\n')

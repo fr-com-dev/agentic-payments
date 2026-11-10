@@ -1,7 +1,7 @@
 # Contract: the portal API (browser → portal)
 
 The portal process serves the web app's static files and this JSON API under `/api`. It is the only new public
-entry point. Normative for SPEC L2-8 and `docs/portal.openapi.yaml`; T-API-11..14 fail until they match the service.
+entry point. Normative for SPEC L2-8 and `docs/portal.openapi.yaml`; T-API-12..15 fail until they match the service.
 `API_DOCS=1` adds Swagger UI at `/docs`, as on the other services, and is never set in Azure.
 
 ## Access (FR-003, FR-005; SEC-19, SEC-20)
@@ -17,11 +17,11 @@ surface.
 | `aud` | the API app's client ID (`AUTH_AUDIENCE`), the same as the agent service | 401 |
 | `tid`, `oid` | the configured tenant; a non-empty `oid` | 401 |
 | `exp`, `nbf` | 60 s tolerance | 401 |
-| `auth_time` | present, an integer, not in the future beyond 60 s | 401 |
 | `idtyp` | exactly `user` (a system identity is refused, FR-003) | 403 |
 | `scp` | contains `Portal.Access` | 403 |
 | `azp` | equals `PORTAL_CLIENT_ID`, the portal web app's client | 403 |
 | `roles` | contains `Agent.Run`: the one permission (clarified 2026-11-10) | 403 |
+| `auth_time` | present, an integer, not in the future beyond 60 s. Checked last: a token that is valid but not the portal's is 403 whether or not it carries the claim | 401 |
 
 - A token issued for the agent service has `scp: user_impersonation` and another `azp`, so the portal refuses it
   with 403 (FR-005). The agent service in turn refuses a portal token ([hosted-agent delta](#hosted-agent-delta-l1-6)).
@@ -130,7 +130,7 @@ Normative for `specs/011` contracts/hosted-agent-api.md and `docs/l1-hosted.open
 
 | ID | Covers |
 |---|---|
-| T-API-11..14 | `docs/portal.openapi.yaml` matches routes, statuses, schemas and the security scheme; Swagger UI only with `API_DOCS=1` |
+| T-API-12..15 | `docs/portal.openapi.yaml` matches routes, statuses, schemas and the security scheme; Swagger UI only with `API_DOCS=1` |
 | T-PRT-01 | access: each row of the access table; each refusal makes 0 calls to L2 and the vault and writes nothing. **Must fail**: with `bypassAuth`, an agent-service token reads a profile |
 | T-PRT-02 | no route accepts a user identifier; user A's token with user B's `policyId` or `cardId` is 404. **Must fail** with L2's `skipOwnershipCheck` |
 | T-PRT-03 | profile: validation, the acknowledgement, edits don't touch L2 after the first save |

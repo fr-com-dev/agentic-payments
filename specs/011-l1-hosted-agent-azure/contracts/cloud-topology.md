@@ -7,6 +7,10 @@ environment (`rg-x402-<location>-<env>`). The region is `eastus2`, where Foundry
 Standard deployments. The rules below are what T-IAC-01 asserts on the compiled ARM JSON and the
 parameter files.
 
+013 adds the portal, a sixth unit ([specs/013 config-and-secrets](../../013-l2-portal-onboarding/contracts/config-and-secrets.md#azure),
+research R16): its app, identity, vault, file share, image and pipeline, a third app registration, and the
+`userAccounts` parameter. Its rows below are marked 013.
+
 ## Naming
 
 Every resource and app registration is `{type}-{app}-{location}-{env}`. Every name is written in the
@@ -17,8 +21,9 @@ contract are dev's (`eastus2`).
 - `{type}`: `rg`, `vnet`, `snet`, `log`, `cr` (registry), `st` (storage), `ais` (Foundry), `cae` (Container
   Apps environment), `id` (identity), `kv`, `ca` (container app), `caj` (container app job), `app` (Entra
   app registration).
-- `{app}`: `l1`, `l2`, `l3`; `op`, the operator's identity and vault; `seller` and `seller-alias`; `x402` for
-  what the layers share; `deploy` for the deploy app registration. A layer's job takes the layer's segment:
+- `{app}`: `l1`, `l2`, `l3`; `op`, the operator's identity and vault; `portal` (013), the portal's app, identity,
+  vault and app registration; `seller` and `seller-alias`; `x402` for what the layers share; `deploy` for the
+  deploy app registration. A layer's job takes the layer's segment:
   `caj-l1-…` is the regression job, `caj-l2-…` the operator job.
 - The registry and the storage account allow only letters and digits: `crx402eastus2dev`, `stx402eastus2dev`.
 - Vault, registry, storage and Foundry names are global across Azure, and carry no random suffix, so one
@@ -35,11 +40,12 @@ contract are dev's (`eastus2`).
 | Container Apps environment (counterparty) | `cae-seller-eastus2-dev` | external, on `snet-seller-eastus2-dev`; holds only the sellers. A separate environment, so it can't reach the internal apps |
 | Container registry | `crx402eastus2dev` | admin user disabled; pulls through managed identity (AcrPull) |
 | Log Analytics | `log-x402-eastus2-dev` | 30-day retention |
-| Storage (NFS premium) | `stx402eastus2dev`, share `ledger` | NFSv4.1, reachable from `vnet-x402-eastus2-dev` only, mounted in `cae-x402-eastus2-dev` as storage `ledger` |
-| Key Vaults (RBAC mode) | `kv-l1-eastus2-dev`, `kv-l2-…`, `kv-l3-…`, `kv-op-…`, `kv-seller-…` | firewall default Deny, with a VNet rule for the owning unit's subnet (`snet-x402-eastus2-dev`, or `snet-seller-eastus2-dev` for `-seller`). Seeding opens them to an operator's IP through `seedIp` (a run of `deploy-infra.yml`); the next platform run closes them. Purge protection on; `recoverVaults` recovers them from soft-delete |
-| User-assigned identities | `id-l1-eastus2-dev`, `id-l2-eastus2-dev`, `id-l3-eastus2-dev`, `id-op-eastus2-dev`, `id-seller-eastus2-dev` | one per runtime unit |
+| Storage (NFS premium) | `stx402eastus2dev`, shares `ledger` and (013) `profiles` | NFSv4.1, reachable from `vnet-x402-eastus2-dev` only, each mounted in `cae-x402-eastus2-dev` as the storage of the same name. `ledger` is L2's only, `profiles` the portal's only |
+| Key Vaults (RBAC mode) | `kv-l1-eastus2-dev`, `kv-l2-…`, `kv-l3-…`, `kv-op-…`, `kv-portal-…` (013), `kv-seller-…` | firewall default Deny, with a VNet rule for the owning unit's subnet (`snet-x402-eastus2-dev`, or `snet-seller-eastus2-dev` for `-seller`). Seeding opens them to an operator's IP through `seedIp` (a run of `deploy-infra.yml`); the next platform run closes them. Purge protection on; `recoverVaults` recovers them from soft-delete |
+| User-assigned identities | `id-l1-eastus2-dev`, `id-l2-eastus2-dev`, `id-l3-eastus2-dev`, `id-op-eastus2-dev`, `id-portal-eastus2-dev` (013), `id-seller-eastus2-dev` | one per runtime unit |
 | Foundry resource + deployment | `ais-x402-eastus2-dev`, deployment `claude-sonnet-5-5` (version 2, Global Standard, capacity 10) | `MODEL_PROVIDER=foundry` only; API keys disabled. The deployment declares `modelProviderData` (organization, country, industry, from `main.<env>.bicepparam`), which accepts Anthropic's Azure Marketplace terms |
-| Entra app registration (API) | `app-l1-eastus2-dev` | identifier URI `api://app-l1-eastus2-dev`, v2.0 tokens; app role `Agent.Run` (User, Application), assignment required; delegated scope `user_impersonation` (admin consent), the Azure CLI pre-authorized |
+| Entra app registration (API) | `app-l1-eastus2-dev` | identifier URI `api://app-l1-eastus2-dev`, v2.0 tokens; app role `Agent.Run` (User, Application), assignment required; delegated scope `user_impersonation` (admin consent), the Azure CLI pre-authorized. 013: a second delegated scope `Portal.Access` (admin consent), the portal web app pre-authorized for it only; optional access-token claims `auth_time`, and `idtyp` with `include_user_token` |
+| Entra app registration (portal web app, 013) | `app-portal-eastus2-dev` | a public single-page client (authorization code with PKCE): no secret, no certificate, no role, no API permission. `spa.redirectUris`: `http://localhost:4025/redirect.html`, plus `<portalOrigin>/redirect.html` once `portalOrigin` is set in `pre-deploy.<env>.bicepparam` |
 | Entra app registration (deploy) | `app-deploy-eastus2-dev` | no secret, no API permission; one federated credential for GitHub's immutable subject `repo:<owner>@<githubOwnerId>/<name>@<githubRepositoryId>:environment:<githubEnvironment>` (GitHub OIDC; the IDs are in `pre-deploy.<env>.bicepparam`) |
 | Entra security group | `grp-op-eastus2-dev` | the operators (`operators` in `pre-deploy.<env>.bicepparam`, added, never removed by a redeployment) |
 
@@ -52,6 +58,7 @@ contract are dev's (`eastus2`).
 | `ca-l3-eastus2-dev` | main | `l3`: `node dist/src/layer3-settlement/service.js`; `proxy` | internal, target 8080, `allowInsecure: true` | min 1, max 1; single revision | `id-l3-eastus2-dev` (None) | TCP 8080 |
 | `caj-l1-eastus2-dev` | main | `regression`: `node dist/src/main.js --scripted --check-baseline` | — | manual, parallelism 1, timeout 900 s | `id-l1-eastus2-dev` (None) | — |
 | `caj-l2-eastus2-dev` | main | `operator`: `node dist/scripts/ledger-verify.js`, what the pipelines run; an operator's start overrides command and args (`dist/scripts/approve.js`, `reject.js`, `escalations.js`) | — | manual, timeout 3,600 s | `id-op-eastus2-dev` (None) | — |
+| `ca-portal-eastus2-dev` (013) | main | `portal`: `node dist/src/portal-main.js` (the API and the web app's static files, one origin) | external, target 4025, HTTPS only | min 0, max 1; single revision mode | `id-portal-eastus2-dev` (None) | HTTP `/healthz` (liveness), `/readyz` (readiness) |
 | `ca-seller-eastus2-dev` | cp | `seller`: `node dist/src/counterparty/seller.js` | external, target 4021 | min 0, max 1 | `id-seller-eastus2-dev` (None) | HTTP `/api/catalog` |
 | `ca-seller-alias-eastus2-dev` | cp | same image and env as `ca-seller-eastus2-dev` | external | min 0, max 1 | `id-seller-eastus2-dev` (None) | same |
 
@@ -59,8 +66,8 @@ contract are dev's (`eastus2`).
 
 | Template | Scope | Deploys | Deployed by |
 |---|---|---|---|
-| `infra/pre-deploy.bicep` | subscription | the resource group; the API and deploy app registrations and their service principals; the deploy app's federated credential; `Agent.Run` for the deploy app and `agentUsers`; the operators' group; the deploy app's roles (`modules/deploy-access.bicep`) | an administrator, by hand (quickstart §4 step 0) |
-| `infra/main.bicep` | resource group | one unit per deployment (`unit`): the platform (network, logs, identities, registry, vaults, storage, Foundry and its model, both environments), or one unit's apps (`modules/l1-apps.bicep`, `l2-apps.bicep`, `l3-apps.bicep`, `operator-apps.bicep`, `sellers.bicep`) | the unit's pipeline, `.github/workflows/deploy-<unit>.yml` (`deploy-infra.yml` for the platform), through the shared `deploy.yml` ([deploy-pipeline](deploy-pipeline.md)) |
+| `infra/pre-deploy.bicep` | subscription | the resource group; the API and deploy app registrations and their service principals; the portal web app's registration (013); the deploy app's federated credential; `Agent.Run` for the deploy app and `agentUsers`; the operators' group; the deploy app's roles (`modules/deploy-access.bicep`) | an administrator, by hand (quickstart §4 step 0) |
+| `infra/main.bicep` | resource group | one unit per deployment (`unit`): the platform (network, logs, identities, registry, vaults, storage, Foundry and its model, both environments), or one unit's apps (`modules/l1-apps.bicep`, `l2-apps.bicep`, `l3-apps.bicep`, `operator-apps.bicep`, `portal-apps.bicep`, `sellers.bicep`) | the unit's pipeline, `.github/workflows/deploy-<unit>.yml` (`deploy-infra.yml` for the platform), through the shared `deploy.yml` ([deploy-pipeline](deploy-pipeline.md)) |
 
 - Every value is in `infra/<template>.<env>.bicepparam`, the target (tenant, subscription, location) and
   every name (`names`, the resource group's included). Only `unit`, `imageTag`, `seedIp`, `recoverVaults` and
@@ -81,6 +88,8 @@ Each unit runs from its own image, tagged with the commit SHA its pipeline built
 - `x402-l2-control`: `ca-l2-eastus2-dev`;
 - `x402-l3-verifier`: `ca-l3-eastus2-dev`;
 - `x402-operator`: `caj-l2-eastus2-dev` (the operator scripts and `src/shared` only: no L2 code);
+- `x402-portal` (013): `ca-portal-eastus2-dev` (`src/portal`, `src/shared` and the built web app only: no layer's
+  code, no signer);
 - `x402-seller`: `ca-seller-eastus2-dev` and `ca-seller-alias-eastus2-dev`.
 
 The `proxy` sidecars run the pinned nginx image.
@@ -96,11 +105,12 @@ computed in Bicep.
 
 | Unit / container | Env |
 |---|---|
-| `ca-l1-eastus2-dev/agent` | `NETWORK=base-sepolia`, `SELLER_URL=https://ca-seller-eastus2-dev.<cp-domain>`, `CONTROL_URL=http://ca-l2-eastus2-dev.internal.<main-domain>`, `SETTLEMENT_URL=http://ca-l3-eastus2-dev.internal.<main-domain>`, `MODEL_PROVIDER=foundry`, `ANTHROPIC_MODEL=claude-sonnet-5-5`, `FOUNDRY_BASE_URL=https://ais-x402-eastus2-dev.services.ai.azure.com/anthropic/v1`, `AZURE_CLIENT_ID=<id-l1-eastus2-dev clientId>`, `AUTH_TENANT_ID`, `AUTH_AUDIENCE=<the API app's client ID>`, `AGENT_BIND_HOST=0.0.0.0`, `AGENT_PORT=4024`, `MASTRA_TELEMETRY_DISABLED=1` |
-| `ca-l2-eastus2-dev/l2` | `NETWORK=base-sepolia`, `ALLOWED_PAYEES=<seller payTo>`, `ALLOWED_HOSTS=ca-seller-eastus2-dev.<cp-domain>` (no port: the policy compares `URL.host`, and an https URL on 443 has none; never the alias FQDN); 012: `CIBA_APPROVAL` (`1` or `0`), `CIBA_ISSUER`, `CIBA_CLIENT_ID`, `CIBA_AUDIENCE`, `CIBA_APPROVER`, `CIBA_CLIENT_KEY_ID`, all from the `ciba` parameter (empty while it is off) |
+| `ca-l1-eastus2-dev/agent` | `NETWORK=base-sepolia`, `SELLER_URL=https://ca-seller-eastus2-dev.<cp-domain>`, `CONTROL_URL=http://ca-l2-eastus2-dev.internal.<main-domain>`, `SETTLEMENT_URL=http://ca-l3-eastus2-dev.internal.<main-domain>`, `MODEL_PROVIDER=foundry`, `ANTHROPIC_MODEL=claude-sonnet-5-5`, `FOUNDRY_BASE_URL=https://ais-x402-eastus2-dev.services.ai.azure.com/anthropic/v1`, `AZURE_CLIENT_ID=<id-l1-eastus2-dev clientId>`, `AUTH_TENANT_ID`, `AUTH_AUDIENCE=<the API app's client ID>`, `AGENT_BIND_HOST=0.0.0.0`, `AGENT_PORT=4024`, `MASTRA_TELEMETRY_DISABLED=1`; 013: `PORTAL_CLIENT_ID` from `userAccounts.portalClientId` (the `azp` the agent refuses) |
+| `ca-l2-eastus2-dev/l2` | `NETWORK=base-sepolia`, `ALLOWED_PAYEES=<seller payTo>`, `ALLOWED_HOSTS=ca-seller-eastus2-dev.<cp-domain>` (no port: the policy compares `URL.host`, and an https URL on 443 has none; never the alias FQDN); 012: `CIBA_APPROVAL` (`1` or `0`), `CIBA_ISSUER`, `CIBA_CLIENT_ID`, `CIBA_AUDIENCE`, `CIBA_APPROVER`, `CIBA_CLIENT_KEY_ID`, all from the `ciba` parameter (empty while it is off); 013: `USER_ACCOUNTS` (`1` or `0`, from `userAccounts.enabled`) and `PLATFORM_SELLERS`, a JSON array of one seller: the `ALLOWED_HOSTS` host, `userAccounts.sellerName` and the seller's payTo |
 | `ca-l3-eastus2-dev/l3` | `NETWORK=base-sepolia`, `CONTROL_URL=http://ca-l2-eastus2-dev.internal.<main-domain>`, optional `BASE_SEPOLIA_RPC_URL` |
 | `caj-l1-eastus2-dev/regression` | `NETWORK=base-sepolia`, `SELLER_URL=https://ca-seller-eastus2-dev.<cp-domain>`, `SELLER_ALIAS_URL=https://ca-seller-alias-eastus2-dev.<cp-domain>`, `CONTROL_URL` and `SETTLEMENT_URL` as for the agent |
 | `caj-l2-eastus2-dev/operator` | `CONTROL_URL=http://ca-l2-eastus2-dev.internal.<main-domain>` |
+| `ca-portal-eastus2-dev/portal` (013) | `NETWORK=base-sepolia`, `PORTAL_BIND_HOST=0.0.0.0`, `CONTROL_URL=http://ca-l2-eastus2-dev.internal.<main-domain>`, `AUTH_TENANT_ID`, `AUTH_AUDIENCE=<the API app's client ID>`, `PORTAL_CLIENT_ID=<the web app's client ID>`, `PROFILE_DIR=/app/.local/portal/profiles` (on the `profiles` share, mounted at `/app/.local/portal`), `CARD_VAULT` (`stripe`, or empty: cards off), `CARD_VAULT_PUBLISHABLE_KEY`; the last three from `userAccounts`. Never `API_DOCS` |
 | `ca-seller-eastus2-dev/seller`, `ca-seller-alias-eastus2-dev/seller` | `NETWORK=base-sepolia`, `SELLER_PAY_TO=<seller payTo>`, `FACILITATOR=cdp`, `SELLER_PORT=4021` |
 | `*/proxy` | none |
 
@@ -109,16 +119,19 @@ computed in Bicep.
 | Unit / container | Env from secrets | Vault |
 |---|---|---|
 | `ca-l1-eastus2-dev/agent` | `CONTROL_TOKEN`, `VERIFIER_TOKEN`, `SESSION_REF_SECRET`, (`ANTHROPIC_API_KEY`) | `kv-l1-eastus2-dev` |
-| `ca-l2-eastus2-dev/l2` | `PAYER_PRIVATE_KEY`, `CONTROL_TOKEN`, `SETTLEMENT_TOKEN`, `OPERATOR_TOKEN`; 012: `CIBA_CLIENT_KEY` or `CIBA_CLIENT_SECRET` (by `ciba.credential`) from `ciba-client-credential`, always referenced, so every environment seeds it: the placeholder `off` while backchannel approval is off | `kv-l2-eastus2-dev` |
+| `ca-l2-eastus2-dev/l2` | `PAYER_PRIVATE_KEY`, `CONTROL_TOKEN`, `SETTLEMENT_TOKEN`, `OPERATOR_TOKEN`; 012: `CIBA_CLIENT_KEY` or `CIBA_CLIENT_SECRET` (by `ciba.credential`) from `ciba-client-credential`, always referenced, so every environment seeds it: the placeholder `off` while backchannel approval is off; 013: `PORTAL_TOKEN` from `portal-token` and `USER_WALLET_MNEMONIC` from `user-wallet-mnemonic`, always referenced too: `off` while `userAccounts.enabled` is false | `kv-l2-eastus2-dev` |
 | `ca-l2-eastus2-dev/proxy` | **none** | — |
 | `ca-l3-eastus2-dev/l3` | `VERIFIER_TOKEN`, `SETTLEMENT_TOKEN` | `kv-l3-eastus2-dev` |
 | `ca-l3-eastus2-dev/proxy` | **none** | — |
 | `caj-l1-eastus2-dev/regression` | `CONTROL_TOKEN`, `VERIFIER_TOKEN` | `kv-l1-eastus2-dev` |
 | `caj-l2-eastus2-dev/operator` | `OPERATOR_TOKEN` | `kv-op-eastus2-dev` |
+| `ca-portal-eastus2-dev/portal` (013) | `PORTAL_TOKEN` from `portal-token` (the same value as L2's copy), `CARD_VAULT_KEY` from `card-vault-key`; both always referenced, so every environment seeds both: `off` while user accounts, or cards, are off | `kv-portal-eastus2-dev` |
 | `ca-seller-eastus2-dev/seller`, `ca-seller-alias-eastus2-dev/seller` | `CDP_API_KEY_ID`, `CDP_API_KEY_SECRET` | `kv-seller-eastus2-dev` |
 
 A shared bearer token (e.g. `CONTROL_TOKEN`) has one copy in each holder's vault. Rotation updates
-both copies, then restarts both units.
+both copies, then restarts both units. The user wallet mnemonic is the exception: it is never rotated in
+place, because L2 refuses to start when recorded wallet addresses no longer match
+([specs/013 config-and-secrets](../../013-l2-portal-onboarding/contracts/config-and-secrets.md#secrets-seeded-by-hand)).
 
 ## Role assignments (the only ones allowed)
 
@@ -129,6 +142,7 @@ both copies, then restarts both units.
 | `id-l2-eastus2-dev` | Key Vault Secrets User | `kv-l2-eastus2-dev` |
 | `id-l3-eastus2-dev` | Key Vault Secrets User | `kv-l3-eastus2-dev` |
 | `id-op-eastus2-dev` | Key Vault Secrets User | `kv-op-eastus2-dev` |
+| `id-portal-eastus2-dev` (013) | Key Vault Secrets User | `kv-portal-eastus2-dev` |
 | `id-seller-eastus2-dev` | Key Vault Secrets User | `kv-seller-eastus2-dev` |
 | each identity | AcrPull | `crx402eastus2dev` |
 | `grp-op-eastus2-dev` (operators' group) | Container Apps Jobs Operator | `caj-l2-eastus2-dev` only |
@@ -149,16 +163,20 @@ both copies, then restarts both units.
 
 1. Role assignments are exactly the table above. In particular, `id-l1-eastus2-dev` has nothing on
    `kv-l2-eastus2-dev` or `kv-l3-eastus2-dev`.
-2. `PAYER_PRIVATE_KEY` appears only in `ca-l2-eastus2-dev`'s `l2` container env, and only as a
-   `secretRef` to `kv-l2-eastus2-dev`.
-3. `ca-l2-eastus2-dev` and `ca-l3-eastus2-dev` have `external: false`. `ca-l1-eastus2-dev`, `ca-seller-eastus2-dev` and
-   `ca-seller-alias-eastus2-dev` are the only external ingresses.
-4. `ca-l2-eastus2-dev` has `maxReplicas: 1` and the `ledger` NFS volume at `/app/.local`.
+2. `PAYER_PRIVATE_KEY` and (013) `USER_WALLET_MNEMONIC` appear only in `ca-l2-eastus2-dev`'s `l2` container
+   env, and only as a `secretRef` to `kv-l2-eastus2-dev`. No other app reads `kv-l2-eastus2-dev`.
+3. `ca-l2-eastus2-dev` and `ca-l3-eastus2-dev` have `external: false`. `ca-l1-eastus2-dev`, `ca-portal-eastus2-dev`
+   (013), `ca-seller-eastus2-dev` and `ca-seller-alias-eastus2-dev` are the only external ingresses.
+4. `ca-l2-eastus2-dev` has `maxReplicas: 1` and the `ledger` NFS volume at `/app/.local`. 013: the environment's
+   storages are exactly `ledger` and `profiles`, each on its own NFS share; `ledger` is mounted by
+   `ca-l2-eastus2-dev` only and `profiles` by `ca-portal-eastus2-dev` only, at `/app/.local/portal`; the portal
+   runs one replica at most in single revision mode.
 5. Every `proxy` container has no `env` and no `secretRef`.
 6. Identity lifecycles are `Main` for `ca-l1-eastus2-dev` and `None` everywhere else.
 7. The sellers are in `cae-seller-eastus2-dev`. Nothing in `cae-seller-eastus2-dev` references `kv-l1-eastus2-dev`, `kv-l2-…`, `kv-l3-…` or `kv-op-…`.
 8. No secret value, private key or token appears literally anywhere in the template or parameter
-   files (the secret-scan patterns).
+   files (the secret-scan patterns). An env named like a private key, a secret, a token, or (013) a
+   mnemonic or the card vault key is never a literal.
 9. `ca-l2-eastus2-dev`'s `ALLOWED_HOSTS` equals the `ca-seller-eastus2-dev` FQDN, never the `ca-seller-alias-eastus2-dev`
    FQDN, and `ALLOWED_PAYEES` is non-empty. `caj-l1-eastus2-dev`'s `SELLER_ALIAS_URL` points at
    `ca-seller-alias-eastus2-dev`.
@@ -174,7 +192,8 @@ both copies, then restarts both units.
     `main.bicep`'s digest-pinned nginx.
 13. Each unit's apps module looks up only its own identities and vaults (L1: `id-l1-eastus2-dev` and
     `kv-l1-…`; L2: `id-l2-eastus2-dev` and `kv-l2-…`; L3: `id-l3-eastus2-dev` and `kv-l3-…`; the
-    operator: `id-op-eastus2-dev` and `kv-op-…`; the seller: `id-seller-eastus2-dev` and `kv-seller-…`),
+    operator: `id-op-eastus2-dev` and `kv-op-…`; the portal (013): `id-portal-eastus2-dev` and `kv-portal-…`;
+    the seller: `id-seller-eastus2-dev` and `kv-seller-…`),
     and depends on the platform's identities, registry, vaults and environments.
 14. The model is keyless. The Foundry account has `disableLocalAuth: true`, and no container has an
     `ANTHROPIC_API_KEY` env or an Anthropic secret. The agent runs with `MODEL_PROVIDER=foundry`,
@@ -186,9 +205,14 @@ both copies, then restarts both units.
     Vault). Each resource's name comes from `names`, each of `names` is deployed, every module gets
     `names` whole, and no template builds a string from the location or writes a name out.
 16. The Entra objects and the deploy app's roles (`pre-deploy.bicep`). The API app takes v2.0 tokens for
-    `api://app-l1-<location>-<env>`, has only the `Agent.Run` role and only the admin-consent
-    `user_impersonation` scope, with only the Azure CLI pre-authorized; its service principal requires
-    assignment. No app has a password or key credential, and both are single-tenant. The deploy app
+    `api://app-l1-<location>-<env>`, has only the `Agent.Run` role and exactly two admin-consent scopes,
+    `user_impersonation` and (013) `Portal.Access`, each with one pre-authorized client: the Azure CLI for
+    `user_impersonation`, the portal web app for `Portal.Access`. Its access tokens carry the optional claims
+    `auth_time`, and `idtyp` with `include_user_token`, and no other. Its service principal requires
+    assignment. No app has a password or key credential, and all three are single-tenant. The portal web
+    app (013) has no role, no API, no permissions of its own, and only `http://localhost:4025/redirect.html`
+    and `portalOrigin`'s `/redirect.html` as single-page-app redirect URIs; `mainParameters` gives its client
+    ID. The deploy app
     has no API or permissions, and exactly one federated credential, for GitHub's immutable subject
     `repo:<owner>@<githubOwnerId>/<name>@<githubRepositoryId>:environment:<githubEnvironment>` (both IDs numeric). `Agent.Run` goes to the deploy app and
     `agentUsers` only. The operators' group is a security group of `operators`. The deploy app has
@@ -201,23 +225,40 @@ both copies, then restarts both units.
 18. Each module of `main.bicep` is deployed by exactly one unit's runs: the platform's modules (network,
     logs, identities, registry, vaults, storage, Foundry, environments) only when `unit` is `platform`,
     each unit's apps module only when `unit` is that unit. `unit` is required and is one of `platform`,
-    `l1`, `l2`, `l3`, `operator` and `seller`.
+    `l1`, `l2`, `l3`, `operator`, `portal` (013) and `seller`.
 19. (012, SPEC L2-7) L2's Auth0 client credential reaches only `ca-l2-eastus2-dev/l2`, as a reference to the l2
     vault's `ciba-client-credential`, named `CIBA_CLIENT_KEY` or `CIBA_CLIENT_SECRET` by `ciba.credential`. Every
     other `CIBA_*` value comes from the `ciba` parameter, which `main.bicep` passes to `l2-apps` whole, and
     `main.bicep` refuses (`fail()`) a `ciba` with another credential kind, or one that is enabled without an `https://`
     issuer, a client ID, an audience and an approver. No other app, job or container gets a `CIBA_*` variable or the
     secret.
+20. (013, SPEC L2-8) User accounts. `ca-l2-eastus2-dev/l2` always references the l2 vault's `portal-token` and
+    `user-wallet-mnemonic`, as `PORTAL_TOKEN` and `USER_WALLET_MNEMONIC`. Its `USER_ACCOUNTS` comes from
+    `userAccounts.enabled`, and its `PLATFORM_SELLERS` is one seller: the `ALLOWED_HOSTS` host (never the alias),
+    `userAccounts.sellerName` and `sellerPayTo`. The portal reads only `kv-portal-eastus2-dev`, always both
+    `portal-token` and `card-vault-key`, and holds no other secret. It gets no `PAYER_PRIVATE_KEY`, no
+    `USER_WALLET_MNEMONIC` and no token but `PORTAL_TOKEN`, which only it and L2 hold; only it holds the card vault
+    key. Its `AUTH_AUDIENCE`, `AUTH_TENANT_ID`, `PORTAL_CLIENT_ID`, `CARD_VAULT` and `CARD_VAULT_PUBLISHABLE_KEY`
+    come from parameters, its `CONTROL_URL` is L2's internal address, and it calls L2 only. The agent's
+    `PORTAL_CLIENT_ID` comes from `userAccounts` too. No container gets `API_DOCS`. `main.bicep` passes
+    `userAccounts` whole to `l1-apps`, `l2-apps` and `portal-apps`, and refuses (`fail()`) one whose `cardVault` is
+    not `off` or `stripe`, that is enabled without a 36-character `portalClientId`, or whose `cardVault` is `stripe`
+    without a `pk_test_` publishable key.
 
 **Must fail**: mutated copies of the templates and parameter files, each must trip its check:
 - an extra role assignment of `id-l1-eastus2-dev` on `kv-l2-eastus2-dev` (rule 1);
-- a `PAYER_PRIVATE_KEY` env on `ca-l1-eastus2-dev` (rule 2);
-- `external: true` on `ca-l2-eastus2-dev` (rule 3);
+- a `PAYER_PRIVATE_KEY` env on `ca-l1-eastus2-dev`; 013: the mnemonic on the portal, or as a literal on L2,
+  and the portal reading the l2 vault (rule 2);
+- `external: true` on `ca-l2-eastus2-dev`, and (013, with the portal public) on `ca-l3-eastus2-dev` (rule 3);
+- 013: the portal mounting `ledger`, L2 mounting `profiles`, a third environment storage, a portal with two
+  replicas, and profiles mounted elsewhere (rule 4);
+- 013: the card vault key as a literal (rule 8);
 - `ALLOWED_HOSTS` pointing at `ca-seller-alias-eastus2-dev` (rule 9);
 - a vault firewall that allows by default (rule 10);
 - an `api://app-l1-eastus2-dev` default for `authAudience` (rule 11);
 - L2's apps on the L1 image, `caj-l2-eastus2-dev` with an own command other than `ledger-verify` or one
-  the operator image doesn't contain, and the operator job back on L2's image (rule 12);
+  the operator image doesn't contain, and the operator job back on L2's image; 013: the portal on L2's
+  image, or running an entry point its image doesn't contain (rule 12);
 - L1's apps reading the l2 vault, L2's apps reading the operator's vault, and L1's apps deployed
   without waiting for the vaults (rule 13);
 - a Foundry account that accepts API keys, and an Anthropic key on the agent (rule 14);
@@ -225,10 +266,18 @@ both copies, then restarts both units.
   calling L2 under a name the template writes out, a module that doesn't get `names` whole, and a
   location whose vault names exceed 24 characters (rule 15);
 - a federated credential trusting a branch, an unconditioned Role Based Access Control Administrator or
-  one that may grant Owner, and an API app on v1.0 tokens (rule 16);
+  one that may grant Owner, and an API app on v1.0 tokens; 013: the web app pre-authorized for
+  `user_impersonation` too, a third pre-authorized client, `Portal.Access` open to user consent, an API app
+  without `idtyp` or without `include_user_token`, and a web app with a secret, a role, permissions of its
+  own, a redirect URI that isn't its own page, or `web` redirect URIs (rule 16);
 - `main.bicep` without its target check, a configuration value or the environment's name read from the
   environment, and the two parameter files naming different subscriptions (rule 17);
-- L1's apps deployed by the platform's runs too, Foundry deployed by every run, and a seventh value of
+- L1's apps deployed by the platform's runs too, Foundry deployed by every run, and an eighth value of
   `unit` (rule 18);
 - the CIBA credential on the agent, as a literal secret, or under one fixed name; a `CIBA_ISSUER` written in the
-  template; and `main.bicep` without its `ciba` check (rule 19).
+  template; and `main.bicep` without its `ciba` check (rule 19);
+- 013: L2 without `PORTAL_TOKEN`, with `portal-token` as a literal, or with a literal `USER_ACCOUNTS`;
+  `PLATFORM_SELLERS` naming the alias, a second seller or no payee; a portal with `CONTROL_TOKEN`,
+  `PAYER_PRIVATE_KEY`, `API_DOCS` or a `SETTLEMENT_URL`; `PORTAL_TOKEN` on L3; a client ID written in a
+  template; the agent without `PORTAL_CLIENT_ID`; a portal secret behind a flag; `userAccounts` passed in
+  part; and `main.bicep` without its `userAccounts` check (rule 20).

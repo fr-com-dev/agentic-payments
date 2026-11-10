@@ -1,5 +1,19 @@
 <!--
 Sync Impact Report
+- Version change: 1.3.0 → 1.4.0 (MINOR, 2026-11-10, feature 013-l2-portal-onboarding)
+- Modified principles: I. Separation of Payment Authority (one sentence: people edit their expense policies in
+  the portal; the agent never does); V. Least-Privilege Credentials (adds the portal role credential, the wallet
+  mnemonic and the card vault credential, and names the portal as the second public process, holding no payment
+  key). No principle is redefined or removed.
+- Modified sections: Technology & Scope Constraints (multi-tenancy leaves the out-of-scope list: user accounts
+  are in scope, organizations and card payments are not; the stack adds, for the portal's web app only and at
+  build time, React, Vite and `@azure/msal-browser`, and a card vault, Stripe in test mode, reached over HTTPS
+  from the portal only; residual risks for v1.9)
+- Templates reviewed: plan-template.md, spec-template.md, tasks-template.md (no change)
+- Source: SPEC.md v1.9 (Changes in 1.9, §1.3, §3.3, §4.1 A10–A12, L2-8, §11 SEC-19..SEC-24)
+- Deferred TODOs: none. Vite's React plugin, named in the plan, was not needed: Vite compiles the JSX itself.
+
+Previous report (1.3.0)
 - Version change: 1.2.0 → 1.3.0 (MINOR, 2026-11-07, feature 012-ciba-escalation-approval)
 - Modified principles: V. Least-Privilege Credentials (adds the approval-service client credential: L2 only,
   one module by rule A9, authentication only, never payment authority). No principle is redefined or removed.
@@ -71,7 +85,9 @@ Settlement (L3). The isolation holds at the module, process and credential level
 - The agent (L1) MUST NOT reference the payer key and MUST refuse to start if the payer
   key is visible in its environment. (INV-3)
 - The settlement verifier (L3) MUST be read-only: no signing and no on-chain writes. (INV-4)
-- The agent MUST NEVER be given a tool that signs, approves, rejects or edits policy.
+- The agent MUST NEVER be given a tool that signs, approves, rejects or edits policy. People edit
+  their own expense policies in the portal; the agent never does, and it has no tool, input, route
+  or credential for a profile, a wallet or a policy.
 
 Rationale: a prompt-injected or compromised agent can ask for a payment, but it cannot make
 one happen.
@@ -105,8 +121,8 @@ Rationale: authorization must be reproducible, auditable and race-free.
 
 ### V. Least-Privilege Credentials
 
-- Every caller role (agent→control, agent→verifier, verifier→control, operator→control) MUST
-  use its own credential. One credential MUST NEVER authorize two roles. (INV-13)
+- Every caller role (agent→control, agent→verifier, verifier→control, operator→control,
+  portal→control) MUST use its own credential. One credential MUST NEVER authorize two roles. (INV-13)
 - Secrets are scoped per process. A shared environment file containing the payer key is
   forbidden.
 - A third-party API credential (for example, the seller's CDP facilitator key) is held by
@@ -119,6 +135,16 @@ Rationale: authorization must be reproducible, auditable and race-free.
   only and confined to one module by an architecture rule (A9). It authenticates L2 to the approval service; it
   never signs a payment, and it never approves one by itself: an approval counts only when the approver's
   signed answer verifies.
+- The portal role credential opens only the control layer's user-account routes. It MUST NOT authorize,
+  approve, reject or reconcile, and no other role credential opens those routes. The portal is the second
+  public process beside the hosted agent service; it holds no payment key and MUST refuse to start if it
+  can see one. A person's portal token is verified by the portal only and is never accepted by the agent
+  service, nor the agent's by the portal.
+- The wallet mnemonic, from which every user's account is derived, is payment key material: it is held by
+  L2 only and read by the signer component only. (INV-2)
+- The card vault credential is held by the portal only and confined to one module by an architecture rule
+  (A10). It can save, list and remove cards; it MUST NOT be able to charge one. Card numbers and security
+  codes never reach any process of this system.
 - Internal control and verifier services listen only on the loopback interface. In the Azure
   profile they keep that bind and are reached only through a proxy sidecar in the same app, on an
   internal-only ingress inside one private environment. The sidecar holds no secrets and no
@@ -153,13 +179,18 @@ Rationale: authorization must be reproducible, auditable and race-free.
   uses jose, to verify the approver's token and sign its client assertion; the approval service is an Auth0
   tenant reached over HTTPS by OpenID CIBA in poll mode, from L2 only, with no inbound route. The tenant is
   Terraform (`auth0/`, provider `auth0/auth0`), applied by a tenant administrator by hand; Terraform manages
-  nothing in Azure, which stays Bicep only.
+  nothing in Azure, which stays Bicep only. Added in 1.4.0, for the portal's web app only and at build time:
+  React, Vite and `@azure/msal-browser`, bundled into static files and never a runtime dependency. The card
+  vault is Stripe in test mode, reached over HTTPS from the portal only, through its REST API with a pinned
+  version and no SDK.
 - Networks in scope: `local` (dev chain with a mock EIP-3009 USDC) and `base-sepolia`
   (testnet USDC). Mainnet is out of scope. The Azure profile (Container Apps, Key Vault, Microsoft
   Foundry) is in scope on testnet only.
 - Out of scope for v1: refunds and disputes, the `upto` and `batch-settlement` schemes,
-  Solana, AP2, ACP, Visa TAP, Mastercard Agent Pay, multi-tenancy, a persistent DB beyond
-  JSONL, and mTLS. Each extension (EXT-1..EXT-9) is delivered one per change and MUST
+  Solana, AP2, ACP, Visa TAP, Mastercard Agent Pay, a persistent DB beyond JSONL, and mTLS.
+  Since 1.4.0 user accounts are in scope (many users, each with their own account and expense
+  policies); organizations of users, paying with a card, moving funds out of a user's account
+  and deleting a user stay out. Each extension (EXT-1..EXT-9) is delivered one per change and MUST
   preserve every invariant.
 - Cross-layer types live only in the shared contract module. Changing them is a contract
   change: update every producer, consumer and test together.
@@ -175,6 +206,11 @@ Rationale: authorization must be reproducible, auditable and race-free.
   Added in 1.3.0:
   - the approval service is trusted to authenticate the approver;
   - the approver's phone is a new place where approvals happen.
+  Added in 1.4.0:
+  - the hosted agent service is trusted to name the user each payment is for;
+  - a stolen portal sign-in can loosen a policy up to the platform limits, after a fresh sign-in;
+  - one mnemonic covers every user's test funds and cannot be rotated in place;
+  - the card vault sees card details.
 
 ## Development Workflow & Quality Gates
 
@@ -203,4 +239,4 @@ New policy rules get a snake_case rule ID, a row in the SPEC rule table and a po
   design and again before implementation. Every review verifies the quality gates above.
 - Runtime guidance for agents lives in `CLAUDE.md`.
 
-**Version**: 1.3.0 | **Ratified**: 2026-10-16 | **Last Amended**: 2026-11-07
+**Version**: 1.4.0 | **Ratified**: 2026-10-16 | **Last Amended**: 2026-11-10

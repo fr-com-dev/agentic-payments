@@ -9,6 +9,7 @@ import express, { type Express, type NextFunction, type Request, type Response }
 import type { JWTVerifyGetKey } from "jose";
 import type { MastraModelConfig } from "@mastra/core/llm";
 import type { AuthorizationGatePort, SettlementVerifierPort } from "../../shared/contracts.js";
+import { userIdFor } from "../../shared/user-id.js";
 import { runGoal } from "./agent.js";
 import { mountHostedApiDocs } from "./api-docs.js";
 import type { HostedConfig } from "./config.js";
@@ -37,6 +38,8 @@ export interface HostedDeps {
   now?: () => number;
   /** Test hook: accept any well-formed session reference (T-AGT-04 must-fail). Never set by the entry point. */
   skipSessionMac?: boolean;
+  /** Test hook: accept a person's token without this service's scope (T-AGT-07 must-fail). Never set by the entry point. */
+  skipScopeCheck?: boolean;
   /** Where run-log lines go (default: stdout, one JSON line each). */
   log?: (line: string) => void;
 }
@@ -85,6 +88,8 @@ export function createHostedApp(deps: HostedDeps): HostedApp {
         audience: deps.config.auth.audience,
         issuer: deps.config.auth.issuer,
         keys: deps.keys,
+        ...(deps.config.auth.portalClientId !== undefined && { portalClientId: deps.config.auth.portalClientId }),
+        ...(deps.skipScopeCheck && { skipScopeCheck: true }),
       }),
     );
   }
@@ -132,10 +137,15 @@ export function createHostedApp(deps: HostedDeps): HostedApp {
     res.on("close", () => {
       if (!res.writableEnded) controller.abort("client_disconnected");
     });
+    // 013 FR-033: the user every payment of this run is for. Fixed here, from the verified requester, before the
+    // model sees anything: a person's own identifier, and none for a system identity (FR-002). Neither the goal
+    // text nor a tool input can change it.
+    const userId = !deps.bypassAuth && requester.kind === "user" ? userIdFor(requester.tenantId, requester.objectId) : undefined;
     try {
       const outcome = await runGoal({
         goal: parsed.goal,
         sessionId,
+        ...(userId !== undefined && { userId }),
         signal: controller.signal,
         model: deps.model,
         gate: deps.gate,

@@ -1,0 +1,392 @@
+/* The portal's one stylesheet (specs/013 NFR-009): readable from 360 px to desktop, text contrast of at least 4.5:1,
+   a visible focus ring everywhere, and no meaning carried by color alone. Served as a file: the Content-Security-
+   Policy allows no inline style. */
+:root {
+  --ink: #1a1f2b;
+  --muted: #4a5365;
+  --paper: #ffffff;
+  --wash: #f3f5f9;
+  --line: #c3c9d6;
+  --accent: #0b4f9e;
+  --accent-ink: #ffffff;
+  --error: #a1171c;
+  --error-wash: #fdecec;
+  --warning: #6b4700;
+  --warning-wash: #fff4d6;
+  --info-wash: #e7f0fb;
+  --ok: #17603a;
+  --focus: #b35c00;
+}
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+html {
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 100%;
+  line-height: 1.5;
+  color: var(--ink);
+  background: var(--wash);
+}
+body {
+  margin: 0;
+}
+#root {
+  max-width: 46rem;
+  margin: 0 auto;
+  padding: 0 1rem 3rem;
+}
+main {
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  padding: 1rem 1.25rem 1.5rem;
+  overflow-wrap: anywhere;
+}
+h1 {
+  font-size: 1.6rem;
+  line-height: 1.25;
+  margin: 0.25rem 0 0.75rem;
+}
+h2 {
+  font-size: 1.15rem;
+  margin: 1.5rem 0 0.5rem;
+}
+h1:focus {
+  outline: none;
+}
+p {
+  margin: 0.5rem 0;
+}
+a {
+  color: var(--accent);
+}
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.9em;
+  background: var(--wash);
+  padding: 0.1em 0.3em;
+  border-radius: 0.25rem;
+}
+:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.skip-link {
+  position: absolute;
+  left: -999rem;
+}
+.skip-link:focus {
+  left: 1rem;
+  top: 0.5rem;
+  background: var(--paper);
+  padding: 0.5rem;
+}
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.site-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1.25rem;
+  padding: 0.75rem 0;
+}
+.site-name {
+  font-weight: 700;
+}
+.site-header nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1rem;
+}
+
+button,
+a.button {
+  display: inline-block;
+  font: inherit;
+  min-height: 2.75rem;
+  padding: 0.5rem 1rem;
+  border: 2px solid var(--accent);
+  border-radius: 0.375rem;
+  background: var(--accent);
+  color: var(--accent-ink);
+  text-decoration: none;
+  cursor: pointer;
+}
+button.secondary,
+a.button.secondary {
+  background: var(--paper);
+  color: var(--accent);
+}
+button.link {
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  text-decoration: underline;
+}
+button:disabled {
+  border-color: var(--line);
+  background: var(--wash);
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
+.field {
+  margin: 1rem 0;
+}
+label,
+.label {
+  display: inline-block;
+  font-weight: 600;
+  margin-bottom: 0.25rem;
+}
+.check label {
+  font-weight: 400;
+}
+.field-control {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+input[type="text"],
+input[type="email"],
+input[type="date"],
+textarea {
+  font: inherit;
+  width: 100%;
+  max-width: 24rem;
+  min-height: 2.75rem;
+  padding: 0.5rem 0.625rem;
+  border: 1px solid var(--muted);
+  border-radius: 0.375rem;
+  background: var(--paper);
+  color: var(--ink);
+}
+textarea {
+  max-width: 100%;
+}
+input[type="checkbox"],
+input[type="radio"] {
+  width: 1.15rem;
+  height: 1.15rem;
+  vertical-align: middle;
+}
+.field-invalid input {
+  border: 2px solid var(--error);
+}
+.field-help,
+.muted {
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+.field-error {
+  color: var(--error);
+  font-weight: 600;
+}
+.field-error::before {
+  content: "Error: ";
+}
+fieldset {
+  margin: 1.25rem 0;
+  padding: 0.5rem 1rem 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  min-width: 0;
+}
+legend {
+  font-weight: 700;
+  font-size: 1.1rem;
+  padding: 0 0.375rem;
+}
+.check {
+  margin: 0.5rem 0;
+}
+
+.banner,
+.error-summary,
+.conflict,
+.summary,
+.add-card {
+  margin: 1rem 0;
+  padding: 0.75rem 1rem;
+  border-radius: 0.5rem;
+  border: 1px solid var(--line);
+}
+.banner-info,
+.summary {
+  background: var(--info-wash);
+}
+.banner-warning,
+.conflict {
+  background: var(--warning-wash);
+  border-color: var(--warning);
+}
+.banner-error,
+.error-summary {
+  background: var(--error-wash);
+  border-color: var(--error);
+}
+.error-summary h2,
+.conflict h2,
+.summary h2 {
+  margin-top: 0;
+}
+.error-summary a {
+  color: var(--error);
+  font-weight: 600;
+}
+.flag {
+  color: var(--warning);
+  font-weight: 600;
+}
+.saved {
+  color: var(--ok);
+  font-weight: 600;
+}
+
+.status {
+  display: inline-block;
+  padding: 0.05rem 0.5rem;
+  border: 1px solid currentColor;
+  border-radius: 1rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+.status-active {
+  color: var(--ok);
+}
+.status-paused,
+.status-expired {
+  color: var(--warning);
+}
+.status-removed,
+.status-disabled {
+  color: var(--error);
+}
+
+.steps,
+.policies,
+.cards,
+.history {
+  list-style: none;
+  padding: 0;
+  margin: 1rem 0;
+}
+.steps li,
+.policies li,
+.cards li,
+.history li {
+  padding: 0.75rem 0;
+  border-top: 1px solid var(--line);
+}
+.step-state {
+  display: inline-block;
+  min-width: 3.25rem;
+  font-weight: 700;
+}
+.step-done .step-state {
+  color: var(--ok);
+}
+.step-later {
+  color: var(--muted);
+}
+.policy h2,
+.history h2 {
+  margin-top: 0;
+}
+.figures {
+  display: grid;
+  grid-template-columns: minmax(8rem, 14rem) 1fr;
+  gap: 0.375rem 1rem;
+  margin: 1rem 0;
+}
+.figures dt {
+  font-weight: 600;
+}
+.figures dd {
+  margin: 0;
+}
+.card-fields {
+  min-height: 3rem;
+  margin: 0.75rem 0;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.75rem 0;
+}
+th,
+td {
+  text-align: left;
+  padding: 0.375rem 0.5rem;
+  border-top: 1px solid var(--line);
+  vertical-align: top;
+}
+
+.dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  background: rgb(26 31 43 / 60%);
+}
+.dialog {
+  width: 100%;
+  max-width: 28rem;
+  max-height: 100%;
+  overflow: auto;
+  padding: 1rem 1.25rem 1.25rem;
+  border-radius: 0.5rem;
+  background: var(--paper);
+}
+.dialog h2 {
+  margin-top: 0;
+}
+
+/* Narrow screens: figures and tables become stacked rows, and nothing scrolls sideways. */
+@media (max-width: 34rem) {
+  main {
+    padding: 0.75rem 0.875rem 1.25rem;
+  }
+  .figures {
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+  .figures dd {
+    margin-bottom: 0.625rem;
+  }
+  table.stacked thead {
+    position: absolute;
+    left: -999rem;
+  }
+  table.stacked,
+  table.stacked tbody,
+  table.stacked tr,
+  table.stacked th,
+  table.stacked td {
+    display: block;
+    width: 100%;
+  }
+  table.stacked td::before {
+    content: attr(data-label) ": ";
+    font-weight: 600;
+  }
+  input[type="text"],
+  input[type="email"],
+  input[type="date"] {
+    max-width: 100%;
+  }
+}

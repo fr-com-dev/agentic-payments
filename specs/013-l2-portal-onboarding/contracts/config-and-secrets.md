@@ -114,8 +114,9 @@ param userAccounts = {
 }
 ```
 
-`main.bicep` fails validation when `enabled` is true without a 36-character `portalClientId`, or when `cardVault` is
-`stripe` without a publishable key that starts with `pk_test_`.
+`main.bicep` fails validation when `enabled` is true, or the unit is `portal`, without a 36-character
+`portalClientId` (the portal doesn't start without it), when `cardVault` is neither `off` nor `stripe`, or when it
+is `stripe` without a publishable key that starts with `pk_test_`.
 
 `pre-deploy.<env>.bicepparam` gains `portalOrigin` (`''` until the platform exists; then
 `https://<ca-portal>.<environment default domain>`).

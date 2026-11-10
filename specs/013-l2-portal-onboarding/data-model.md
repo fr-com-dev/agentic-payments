@@ -31,7 +31,7 @@ L2's state is derived from the ledger only (INV-7, INV-9); it keeps no other fil
 
 | Identifier | Format | Made by | Notes |
 |---|---|---|---|
-| `userId` | `usr_` + 32 lowercase hex | `userIdFor(tid, oid)` in `src/shared/user-id.ts` | First 16 bytes of SHA-256 over `x402-user-v1\|<tid>\|<oid>`. Pure, so the hosted agent and the portal compute the same value without sharing a secret. Reveals neither name nor email (FR-046). |
+| `userId` | `usr_` + 32 lowercase hex | `userIdFor(tid, oid)` in `src/shared/user-id.ts` | First 16 bytes of SHA-256 over `x402-user-v1\|<tid>\|<oid>`. Pure, so the hosted agent and the portal compute the same value without sharing a secret. An empty `tid` or `oid`, or one containing `\|`, is refused. Reveals neither name nor email (FR-046). |
 | `policyId` | `pol_<uuid>` | L2, on create | Unique across all users. |
 | `policyVersion` | integer, 1, 2, 3… | L2 | One per recorded value change. State changes (pause, resume, remove) keep the version. |
 | `mandateId` (existing field) | `<policyId>@<version>` for a user payment; the platform mandate's ID otherwise | L2 | Written on `AUTHORIZED` as today. |

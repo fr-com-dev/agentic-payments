@@ -32,6 +32,14 @@ const KILL_GRACE_MS = 3_000;
 
 export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * 013: the user wallets' mnemonic of a local stack started with `--users`. // local development only
+ * The published all-zero BIP-39 test phrase: its accounts hold local MockUSDC only and differ from the chain's
+ * (LOCAL_MNEMONIC). It is handed to the L2 child alone and is never valid on a real network.
+ */
+export const DEV_USER_WALLET_MNEMONIC =
+  "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art";
+
 // ---------------------------------------------------------------------------
 // Env files. Parsed here only to learn ports, tokens and empty keys; children load their own file
 // through loadEnv(). Only src/shared/config.ts may use dotenv (architecture test), so this is a
@@ -66,9 +74,14 @@ export function envFileFor(p: DemoProcess, opts: { allowExample?: boolean } = {}
 /**
  * T015: children inherit only PATH, HOME and NODE_* plus their own ENV_FILE. On NETWORK=local, missing
  * keys come from the CP-5 mnemonic: #2 only to l2, #1 only to the facilitator. The seller's payTo and
- * L2's payee allowlist default to #3 when empty. Off local nothing is derived.
+ * L2's payee allowlist default to #3 when empty. Off local nothing is derived. 013: `users` turns user accounts on in
+ * the L2 child, on local only; demo:local never sets it.
  */
-export function childEnv(p: DemoProcess, file: EnvFile | null, opts: { network: string; sessionId: string }): NodeJS.ProcessEnv {
+export function childEnv(
+  p: DemoProcess,
+  file: EnvFile | null,
+  opts: { network: string; sessionId: string; users?: boolean },
+): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "" };
   for (const [k, v] of Object.entries(process.env)) if (k.startsWith("NODE_") && v !== undefined) env[k] = v;
   if (file) env.ENV_FILE = file.path;
@@ -78,6 +91,11 @@ export function childEnv(p: DemoProcess, file: EnvFile | null, opts: { network: 
   if (p.role === "l2" && local) {
     if (!value("PAYER_PRIVATE_KEY")) env.PAYER_PRIVATE_KEY = localDevKeys({ NETWORK }).payer;
     if (!value("ALLOWED_PAYEES")) env.ALLOWED_PAYEES = localAddress("sellerPayTo");
+    // 013 (`--users`): user accounts on, with the development mnemonic unless L2's own file sets one.
+    if (opts.users) {
+      env.USER_ACCOUNTS = "1";
+      if (!value("USER_WALLET_MNEMONIC")) env.USER_WALLET_MNEMONIC = DEV_USER_WALLET_MNEMONIC;
+    }
   }
   if (p.role === "facilitator" && local && !value("FACILITATOR_PRIVATE_KEY")) {
     env.FACILITATOR_PRIVATE_KEY = localDevKeys({ NETWORK }).facilitator;

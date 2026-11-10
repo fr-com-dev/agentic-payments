@@ -4,10 +4,15 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { exportJWK, generateKeyPair, importJWK, SignJWT, type JWK } from "jose";
-import { DEV_ISSUER, DEV_TENANT } from "../src/layer1-intent/hosted/config.js";
+import { DEV_ISSUER, DEV_TENANT } from "../src/shared/entra-token.js";
 
 export const DEV_AUDIENCE = "api://x402-l1-agent";
 export const DEV_ROLE = "Agent.Run";
+/** 013: the delegated scope of the agent service, and of the portal. */
+export const DEV_AGENT_SCOPE = "user_impersonation";
+export const DEV_PORTAL_SCOPE = "Portal.Access";
+/** 013: the portal web app's client ID with the dev issuer (`PORTAL_CLIENT_ID` in env/portal.env.example). */
+export const DEV_PORTAL_CLIENT = "x402-portal-dev";
 const ALG = "ES256";
 const KID = "x402-dev-1";
 
@@ -57,15 +62,32 @@ export interface DevTokenOptions {
   nbf?: number;
   /** Omit the `oid` claim (tests only). */
   omitOid?: boolean;
+  /**
+   * 013: the delegated scopes (`scp`, space-separated). Default `user_impersonation` for a user token and none for an
+   * `app` token; `null` omits the claim (tests only).
+   */
+  scp?: string | null;
+  /** 013: the client the token was issued to (`azp`). */
+  azp?: string;
+  /** 013: when the person last signed in interactively, epoch seconds (`auth_time`). */
+  authTime?: number;
 }
 
-/** Signs an Entra-shaped v2.0 access token: `oid` = subject, `tid` = tenant, `roles`, optional `idtyp`. */
+/**
+ * Signs an Entra-shaped v2.0 access token: `oid` = subject, `tid` = tenant, `roles`, `idtyp` (`user` unless `app`),
+ * and for a user token `scp` (013: the API app emits `idtyp` for user tokens too, and the services check `scp`).
+ */
 export async function signDevToken(issuer: Pick<DevIssuer, "privateKey">, o: DevTokenOptions): Promise<string> {
+  const idtyp = o.idtyp ?? "user";
+  const scp = o.scp === undefined ? (idtyp === "app" ? null : DEV_AGENT_SCOPE) : o.scp;
   const claims: Record<string, unknown> = {
     tid: o.tenant ?? DEV_TENANT,
     roles: o.roles ?? [DEV_ROLE],
     ...(o.omitOid ? {} : { oid: o.subject }),
-    ...(o.idtyp !== undefined && { idtyp: o.idtyp }),
+    idtyp,
+    ...(scp !== null && { scp }),
+    ...(o.azp !== undefined && { azp: o.azp }),
+    ...(o.authTime !== undefined && { auth_time: o.authTime }),
   };
   const jwt = new SignJWT(claims)
     .setProtectedHeader({ alg: ALG, kid: KID, typ: "JWT" })

@@ -2,7 +2,8 @@
 // and a fake `gh` (test/fixtures/fake-gh.mjs), with the target and names from infra/pre-deploy.<environment>.bicepparam,
 // compiled by the real Bicep CLI (needs BICEP_PATH). A
 // confirmed run must delete the GitHub environment, the deploy app's role assignments (none left orphaned), the
-// resource group, both app registrations and the operators' group, and nothing else: another resource group, app,
+// resource group, the three app registrations (the API app, the deploy app and 013's portal web app) and the
+// operators' group, and nothing else: another resource group, app,
 // group, role assignment or a GitHub secret stays. With --purge it purges the Foundry account and the app
 // registrations; the vaults stay soft-deleted (purge protection) and are reported. --dry-run, a refusal or an
 // unconfirmed run changes nothing, and so does a pre-deploy file whose resource group main's file doesn't deploy to.
@@ -21,6 +22,7 @@ const SUB = "33333333-3333-4333-8333-333333333333";
 const TENANT = "22222222-2222-4222-8222-222222222222";
 const DEPLOY = "11111111-1111-4111-8111-111111111111";
 const API = "44444444-4444-4444-8444-444444444444";
+const PORTAL = "55555555-5555-4555-8555-555555555555";
 const OTHER_APP = "77777777-7777-4777-8777-777777777777";
 const PARAMS = readFileSync("infra/pre-deploy.dev.bicepparam", "utf8")
   .replace(/^param tenantId = '.*'$/m, `param tenantId = '${TENANT}'`)
@@ -58,6 +60,7 @@ function deployed(): State {
     apps: [
       { appId: DEPLOY, id: "obj-deploy", displayName: P.deployApp },
       { appId: API, id: "obj-api", displayName: P.apiApp },
+      { appId: PORTAL, id: "obj-portal", displayName: P.portalApp },
       { appId: OTHER_APP, id: "obj-other", displayName: "someone-elses-app" },
     ],
     sps: [
@@ -134,7 +137,7 @@ function tenant(state: State, opts: { mutate?: [string, string]; params?: string
   };
 }
 
-const OURS = new Set([DEPLOY, API]);
+const OURS = new Set([DEPLOY, API, PORTAL]);
 /** Calls that change something. */
 const changes = (r: Run) => [
   ...r.az.filter((a) => a.includes("delete") || a.includes("purge") || a.includes("DELETE")),
@@ -158,7 +161,7 @@ function problems(r: Run, purge: boolean): string[] {
   if (!r.state.roleAssignments.some((ra) => ra.principalId === "sp-other")) p.push("a role assignment that isn't ours was deleted");
   const softApps = r.state.deletedApps.filter((a) => OURS.has(a.appId)).length;
   if (purge && (softApps > 0 || r.state.deletedAccounts.length > 0)) p.push("--purge left soft-deleted app registrations or Foundry accounts");
-  if (!purge && (softApps !== 2 || r.state.deletedAccounts.length !== 1)) p.push("without --purge, the app registrations and the Foundry account must stay soft-deleted");
+  if (!purge && (softApps !== OURS.size || r.state.deletedAccounts.length !== 1)) p.push("without --purge, the app registrations and the Foundry account must stay soft-deleted");
   for (const v of Object.values(M.vaults)) if (!r.out.includes(`soft-deleted: the vault ${v}`)) p.push(`the soft-deleted vault ${v} was not reported`);
   if (r.az.some((a) => a[0] === "keyvault" && a[1] === "purge")) p.push("tried to purge a vault with purge protection");
   return p;
@@ -166,7 +169,7 @@ function problems(r: Run, purge: boolean): string[] {
 
 // Each run spawns node once per `az` and `gh` call, and the Bicep CLI twice, so a test takes seconds.
 describe.skipIf(!BICEP_PATH)("T-E2E-AZ clean-up (infra/cleanup.sh against a fake tenant and gh)", { timeout: 60_000 }, () => {
-  it("T-E2E-AZ cleanup.sh deletes the GitHub environment, the deploy app's role assignments, the resource group, both app registrations and the operators' group, and nothing else", () => {
+  it("T-E2E-AZ cleanup.sh deletes the GitHub environment, the deploy app's role assignments, the resource group, the three app registrations and the operators' group, and nothing else", () => {
     const r = tenant(deployed())(["--yes"]);
     expect(problems(r, false)).toEqual([]);
     expect(r.out).toContain("kept: the GitHub secrets LEFTOVER_SECRET");
@@ -186,6 +189,7 @@ describe.skipIf(!BICEP_PATH)("T-E2E-AZ clean-up (infra/cleanup.sh against a fake
       `resource group ${P.resourceGroup}: 40 resources, with the vaults ${M.vaults.l1}`,
       `app registration ${P.deployApp} (${DEPLOY})`,
       `app registration ${P.apiApp} (${API})`,
+      `app registration ${P.portalApp} (${PORTAL})`,
       `group ${P.operators} (grp-ours), for good`,
       "dry run: nothing was deleted",
     ]) {
@@ -237,6 +241,11 @@ describe.skipIf(!BICEP_PATH)("T-E2E-AZ clean-up (infra/cleanup.sh against a fake
   it("T-E2E-AZ must-fail: without deleting the deploy app's role assignments first, one is left orphaned, and it is reported", () => {
     const r = tenant(deployed(), { mutate: ['az role assignment delete --ids "${IDS[@]}" --subscription "$SUB"', ":"] })(["--yes"]);
     expect(problems(r, false)).toContain("the role assignment ra-sub is left orphaned (its principal was deleted)");
+  });
+
+  it("T-E2E-AZ must-fail: a clean-up that doesn't know the portal web app leaves its registration, and it is reported", () => {
+    const r = tenant(deployed(), { mutate: ['for name in "$APP_L1" "$APP_DEPLOY" "$APP_PORTAL"; do', 'for name in "$APP_L1" "$APP_DEPLOY"; do'] })(["--yes"]);
+    expect(problems(r, false)).toContain(`the app registration ${P.portalApp} still exists`);
   });
 
   it("T-E2E-AZ must-fail: without the dry-run guard, --dry-run deletes, and it is reported", () => {

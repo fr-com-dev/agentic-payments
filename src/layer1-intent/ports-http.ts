@@ -52,8 +52,10 @@ export class HttpAuthorizationGate implements AuthorizationGatePort {
     return call(this.fetchImpl, "POST", `${this.base}/v1/authorize`, this.controlToken, intent);
   }
 
-  budget(sessionId: string): Promise<BudgetStatus> {
-    return call(this.fetchImpl, "GET", `${this.base}/v1/budget/${encodeURIComponent(sessionId)}`, this.controlToken);
+  /** 013: with `userId`, L2 answers with the user view of the budget (`scope: "user_daily"`). */
+  budget(sessionId: string, userId?: string): Promise<BudgetStatus> {
+    const query = userId === undefined ? "" : `?userId=${encodeURIComponent(userId)}`;
+    return call(this.fetchImpl, "GET", `${this.base}/v1/budget/${encodeURIComponent(sessionId)}${query}`, this.controlToken);
   }
 }
 

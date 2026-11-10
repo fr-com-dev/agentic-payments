@@ -34,11 +34,13 @@ Three terminals.
 # 1: the stack with user accounts on (new flag)
 npm run stack:local -- --users
 
-# 2: the portal (new)
-npm run portal             # http://127.0.0.1:4025
-
-# 3: a portal sign-in for "alice" from the local dev issuer (new flag)
+# 2: a portal sign-in for "alice" from the local dev issuer (new flag). The first call also creates the issuer
+#    (.local/dev-issuer), which the portal needs at startup
 npm run -s dev-token -- --subject alice --portal
+
+# 3: the portal (new); build the web app once, and again after changing web/portal
+npm run build:web
+npm run portal             # http://127.0.0.1:4025
 ```
 
 In the browser at `http://127.0.0.1:4025`, paste the token (dev mode replaces the Entra sign-in), then:
@@ -83,6 +85,9 @@ Changes and stopping:
 | 12 | Lower a limit with the old token | saves without asking | FR-007 |
 | 13 | Account → Disable; run again | DENIED `user_disabled`; everything still listed, marked disabled | US7 scenarios 1–3 |
 | 14 | Account → Enable | policies come back paused | US7 scenario 4 |
+
+A restart of the local chain starts from an empty chain while the ledger keeps every user and wallet: fund the
+accounts again (`npm run fund-user`), or a payment is signed, refused by the facilitator and settles nothing.
 
 ## 3. Isolation checks (two users)
 
@@ -153,9 +158,13 @@ Follows `specs/011` quickstart §4, with the additions of
    printf 'off' | az keyvault secret set --vault-name <kv-l2> -n user-wallet-mnemonic --file /dev/stdin -o none
    ```
 
-3. **Deploy with the feature off**: `deploy-infra` (adds the identity, vault and share), seed `kv-portal` with
-   `portal-token` and `card-vault-key` as `off`, then `deploy-l2`, `deploy-portal`, `deploy-l1`, one after another.
-   Expect every existing check green and the regression unchanged.
+3. **Deploy with the feature off**, one run after another. Until the portal exists the pipeline's `portal-smoke`
+   step can't pass, so the runs before it use `first-deployment`, which skips the checks: `deploy-infra` with
+   `first-deployment` (adds the identity, vault and share), seed `kv-portal` with `portal-token` and
+   `card-vault-key` as `off`, `deploy-l2` with `first-deployment`, `deploy-portal` with `first-deployment` (its own
+   run does the portal smoke). Then `deploy-l1`, and `deploy-l2` and `deploy-portal` once more without the flag, so
+   each unit passes every check and records its `last-good`. Expect every existing check green and the regression
+   unchanged. `main.bicep` refuses to deploy the portal without `portalClientId` from step 1.
 4. **Register the redirect**: set `portalOrigin` in `infra/pre-deploy.<env>.bicepparam` to the `portalFqdn` output
    and apply `pre-deploy.bicep` again.
 5. **Turn it on**: seed the real `portal-token` (the same value in both vaults), the mnemonic and, for cards, the
@@ -178,3 +187,51 @@ and turning it back on restores every user, wallet and policy from the ledger.
 
 Real funds, mainnet, charging a card, moving funds out of an account, and per-user approval: all out of scope
 (spec, Assumptions).
+
+## Validation log
+
+**2026-11-10, §2 and §3 on the local network** (tasks T113). Run against `npm run stack:local -- --users` and
+`npm run portal` from this branch, with the web app built by `npm run build:web` and driven in a browser. Two
+departures from the text above, both forced by the machine it ran on:
+
+- Port 4020 was held by another checkout's L2, so L2 ran on 4120 (`CONTROL_PORT`, through temporary env files that
+  were removed afterwards).
+- No model key was available, so `npm run agent:hosted` was not started. Each "run" below is one paid fetch through
+  the same orchestrator and ports the hosted agent uses (`PaidResourceOrchestrator` with `userId` set as the service
+  sets it), against the real L2, L3, seller, facilitator and chain. The agent service's own handling of tokens and
+  of the user is covered by T-AGT-06 and T-AGT-07 only.
+
+| Row | Result | Note |
+|---|---|---|
+| §2 step 1 | pass | three steps, none done; the name prefilled from the sign-in |
+| §2 step 2 | pass | Save stays disabled until the test-funds box is ticked |
+| §2 step 3 | pass | profile done, wallet step next; still so after a new sign-in |
+| §2 step 4 | pass | one address; a second create call returns it and the ledger has one `WALLET_CREATED` |
+| §2 step 5 | pass | balance 1.00 USDC with its read time |
+| §2 step 6 | pass | the summary reads as in portal-ui.md; home shows the active policy |
+| §2 step 7 | pass | `0.0000001` refused on its field, "never rounded" |
+| §2 step 8 | pass | per payment 0.20 refused by L2: "the most allowed is 0.10 USDC", in a summary that takes focus |
+| The run's payment | pass | PAID and CONFIRMED on-chain; `payer` is alice's address |
+| The ledger line | pass | `userId`, `policyId`, `policyVersion: 1`, `mandateId: pol_…@1` |
+| The premium item | pass | ESCALATED; `npm run escalations` shows `userId=usr_…` |
+| The same run as bob (never onboarded) | pass | DENIED `user_not_onboarded` |
+| The same run with no user | pass | PAID and CONFIRMED from the platform payer, `mandateId: mandate-poc-001` |
+| Token separation | partly | the agent's token at the portal: 403. The portal's token at the agent service was not tried (see above) |
+| `npm run ledger-verify` | pass | exit 0 after every part |
+| §2 step 9 | pass | daily budget lowered below the spend: DENIED `daily_budget_exceeded` |
+| §2 step 10 | pass | paused: DENIED `host_not_allowed` |
+| §2 step 11 | pass | with a sign-in 1000 s old (`--auth-age 1000`, not a 16-minute wait), raising a limit asks to confirm; after a fresh token the same change is saved |
+| §2 step 12 | pass | lowering a limit with the old sign-in saves without asking |
+| §2 step 13 | pass | disabled: the banner, DENIED `user_disabled`, everything still listed |
+| §2 step 14 | pass | enabled: the policy comes back paused; its history shows all six events |
+| §3 two payers | pass | alice's and bob's accounts differ; bob's payment is signed by and settles from bob's |
+| §3 budgets | pass | alice at her daily budget is DENIED; bob's next payment is PAID |
+| §3 cross-user read | pass | alice's token on bob's policy: 404 for a read and for a pause; bob's own: 200 |
+
+Also seen: the portal's pages load under its Content-Security-Policy with no violation in the console; no ledger
+line holds a name, an email or a policy name; the layout has no horizontal scroll at 360 px. One defect was found and
+fixed: the portal, started before the first `dev-token` call, stopped with a bare file error; it now says how to
+create the local dev issuer, and the order in §2 was corrected.
+
+§4 (a Stripe sandbox), §5 (the Entra tenant) and §6 (Azure) were **not** run: they need outside accounts (T114).
+

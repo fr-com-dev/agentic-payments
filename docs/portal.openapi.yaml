@@ -1,0 +1,1391 @@
+# Portal HTTP API (SPEC.md §8.2 L2-8; specs/013 contracts/portal-api.md) as OpenAPI 3.1.
+# SPEC.md and the contract stay normative. test/openapi-portal.test.ts (T-API-12..15) fails when this file and the
+# running portal disagree on routes, the bearer scheme or response shapes, so change both together.
+openapi: 3.1.0
+info:
+  title: Portal API
+  version: "1.9"
+  summary: Onboarding, profile, wallet and expense policies of the x402 three-layer agent payments PoC.
+  description: |
+    The portal is where a person sets up what their agent may spend. It serves a web app and this API from one
+    origin, and it holds no payment key: deciding and signing stay in L2.
+
+    - **One person per request.** Every `/api` operation except `/api/config` needs the person's own Entra ID access
+      token for the portal (scope `Portal.Access`, issued to the portal's web app, with the app role `Agent.Run`).
+      The user is derived from the token and nothing else: no operation takes a user identifier.
+    - **A token for the agent service is refused** (403), and so is a system identity.
+    - **Amounts** go in as USDC text with at most 6 decimals (never rounded) and come back as decimal strings of
+      atomic units (`"20000"` is 0.02 USDC).
+    - **Loosening** a policy, resuming one or enabling the account needs a sign-in at most 15 minutes old; otherwise
+      403 `step_up_required`.
+    - **Cards** are saved at a card vault in test mode and never charged. The card number and security code never
+      reach this API.
+    - **API docs.** With `API_DOCS=1`, the portal also serves this document and Swagger UI at `/docs`. Those
+      routes take no token and are not mounted by default. When served, `servers` points at that portal.
+servers:
+  - url: http://127.0.0.1:4025
+    description: Default local bind
+tags:
+  - name: health
+    description: Liveness and readiness. No token.
+  - name: session
+    description: Public configuration for the web app, and the signed-in person.
+  - name: wallet
+    description: The crypto account and registered cards.
+  - name: policies
+    description: Expense policies.
+  - name: account
+    description: Disabling and enabling the account.
+  - name: docs
+    description: Swagger UI and this document. Mounted only when `API_DOCS=1`; no token.
+
+paths:
+  /healthz:
+    get:
+      tags: [health]
+      operationId: healthz
+      summary: "Liveness"
+      security: []
+      responses:
+        "200":
+          description: "Alive."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+
+  /readyz:
+    get:
+      tags: [health]
+      operationId: readyz
+      summary: "Readiness"
+      security: []
+      responses:
+        "200":
+          description: "Ready."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+        "503":
+          description: "Still starting."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+
+  /api/config:
+    get:
+      tags: [session]
+      operationId: getConfig
+      summary: "Public values the web app needs before anyone signs in"
+      description: |
+        The sign-in mode and identifiers, the network, and whether cards are available. Nothing here is a secret.
+      security: []
+      responses:
+        "200":
+          description: "The configuration."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Config"
+
+  /api/me:
+    get:
+      tags: [session]
+      operationId: getMe
+      summary: "The signed-in person: onboarding steps, account state and profile"
+      security:
+        - personToken: []
+      responses:
+        "200":
+          description: "The person."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Me"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "502":
+          $ref: "#/components/responses/ControlUnavailable"
+
+  /api/profile:
+    put:
+      tags: [session]
+      operationId: putProfile
+      summary: "Create or change the profile"
+      description: |
+        The first save needs `acknowledgedTestFunds: true` and registers the user. Later saves change the name and
+        email only; they never touch the wallet, the policies or the ledger. Allowed while the account is disabled.
+      security:
+        - personToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProfileInput"
+      responses:
+        "200":
+          description: "The person, with the saved profile."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Me"
+        "400":
+          description: "Malformed body: not an object, an unknown field, or unparsable JSON."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "413":
+          description: "Body over 16 KB."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: "A field is invalid, or the first save lacks the acknowledgement."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InvalidProfile"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "502":
+          $ref: "#/components/responses/ControlUnavailable"
+
+  /api/platform:
+    get:
+      tags: [policies]
+      operationId: getPlatform
+      summary: "The limits and the sellers a policy may use"
+      description: |
+        The operator's ceilings and seller list, as a person needs them: sellers by name and host. Payee addresses
+        are not returned.
+      security:
+        - personToken: []
+      responses:
+        "200":
+          description: "Limits and sellers."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Platform"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "502":
+          $ref: "#/components/responses/ControlUnavailable"
+
+  /api/wallet:
+    get:
+      tags: [wallet]
+      operationId: getWallet
+      summary: "The wallet: the crypto account and registered cards"
+      description: |
+        The balance is read from the network (at most 20 s cached) and comes with its read time; if the read fails,
+        the last value is returned with `balanceStale: true`. Committed and spent figures come from L2's ledger.
+      security:
+        - personToken: []
+      responses:
+        "200":
+          description: "The wallet."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Wallet"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: "`profile_required`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "502":
+          $ref: "#/components/responses/ControlUnavailable"
+
+  /api/wallet/account:
+    put:
+      tags: [wallet]
+      operationId: createAccount
+      summary: "Create the crypto account, once"
+      description: |
+        A second call returns the same account. The key is created and held by L2's signer and is never shown.
+      security:
+        - personToken: []
+      responses:
+        "200":
+          description: "The wallet, with the account."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Wallet"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: "`profile_required` or `account_disabled`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "502":
+          $ref: "#/components/responses/ControlUnavailable"
+
+  /api/cards/setup:
+    post:
+      tags: [wallet]
+      operationId: startCardSetup
+      summary: "Start saving a card at the card vault"
+      description: |
+        Returns a client secret for the vault's own fields in the browser. The card number and security code go
+        from those fields to the vault; this API never receives them.
+      security:
+        - personToken: []
+      responses:
+        "200":
+          description: "The client secret, once."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CardSetup"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: "`profile_required`, `account_disabled` or `card_limit` (5 cards)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "502":
+          $ref: "#/components/responses/ControlUnavailable"
+        "503":
+          description: "`cards_unavailable` (cards are off) or `card_vault_unavailable`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/cards:
+    post:
+      tags: [wallet]
+      operationId: confirmCard
+      summary: "Finish saving a card"
+      description: |
+        Checks the vault's result, refuses a duplicate or an expired card, and records the card's identifier.
+      security:
+        - personToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CardConfirm"
+      responses:
+        "201":
+          description: "The registered card."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Card"
+        "400":
+          description: "Malformed body."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: "No such setup for this person."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: "`card_not_confirmed`, `card_already_registered`, `card_limit` or `account_disabled`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CardRefused"
+        "422":
+          description: "`card_expired` or `not_a_card`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "502":
+          $ref: "#/components/responses/ControlUnavailable"
+        "503":
+          description: "`cards_unavailable` or `card_vault_unavailable`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/cards/{cardId}:
+    delete:
+      tags: [wallet]
+      operationId: removeCard
+      summary: "Remove a registered card"
+      description: |
+        Removes the card at the vault, then records the removal. Allowed while the account is disabled.
+      security:
+        - personToken: []
+      parameters:
+        - $ref: "#/components/parameters/CardId"
+      responses:
+        "200":
+          description: "The remaining cards."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CardList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: "No such card for this person."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "502":
+          $ref: "#/components/responses/ControlUnavailable"
+        "503":
+          description: "`cards_unavailable` or `card_vault_unavailable`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/policies:
+    get:
+      tags: [policies]
+      operationId: listPolicies
+      summary: "Every policy of the person, newest first"
+      security:
+        - personToken: []
+      responses:
+        "200":
+          description: "The policies."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PolicyList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "502":
+          $ref: "#/components/responses/ControlUnavailable"
+
+    post:
+      tags: [policies]
+      operationId: createPolicy
+      summary: "Create an expense policy"
+      description: |
+        Where (sellers from the operator's list), how much (four USDC amounts) and how (payments per minute, an end
+        date, the payment method). Creating always needs a sign-in at most 15 minutes old.
+      security:
+        - personToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PolicyInput"
+      responses:
+        "201":
+          description: "The new policy."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Policy"
+        "400":
+          description: "Malformed body."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: "`forbidden` (the token is not allowed here), or `step_up_required` (the change loosens and the sign-in is older than 15 minutes)."
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/Error"
+                  - $ref: "#/components/schemas/StepUpRequired"
+        "409":
+          description: "`profile_required`, `wallet_required` or `account_disabled`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: "One or more values are invalid. Every issue is listed."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InvalidPolicy"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "502":
+          $ref: "#/components/responses/ControlUnavailable"
+
+  /api/policies/{policyId}:
+    get:
+      tags: [policies]
+      operationId: getPolicy
+      summary: "One policy with its history"
+      security:
+        - personToken: []
+      parameters:
+        - $ref: "#/components/parameters/PolicyId"
+      responses:
+        "200":
+          description: "The policy."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Policy"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: "No such policy for this person."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "502":
+          $ref: "#/components/responses/ControlUnavailable"
+
+    put:
+      tags: [policies]
+      operationId: changePolicy
+      summary: "Change a policy"
+      description: |
+        Every change of values makes a new version. The same values with another name only renames. A change that
+        raises a limit, adds a seller or moves the end date later needs a sign-in at most 15 minutes old.
+      security:
+        - personToken: []
+      parameters:
+        - $ref: "#/components/parameters/PolicyId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PolicyChange"
+      responses:
+        "200":
+          description: "The policy after the change."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Policy"
+        "400":
+          description: "Malformed body, or no `expectedVersion`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: "`forbidden` (the token is not allowed here), or `step_up_required` (the change loosens and the sign-in is older than 15 minutes)."
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/Error"
+                  - $ref: "#/components/schemas/StepUpRequired"
+        "404":
+          description: "No such policy for this person."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: "`policy_removed`, `account_disabled`, or `version_conflict` with the current policy."
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/Error"
+                  - $ref: "#/components/schemas/VersionConflict"
+        "422":
+          description: "One or more values are invalid."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InvalidPolicy"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "502":
+          $ref: "#/components/responses/ControlUnavailable"
+
+  /api/policies/{policyId}/pause:
+    post:
+      tags: [policies]
+      operationId: pausePolicy
+      summary: "Pause a policy"
+      security:
+        - personToken: []
+      parameters:
+        - $ref: "#/components/parameters/PolicyId"
+      responses:
+        "200":
+          description: "The policy, paused."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Policy"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: "No such policy for this person."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: "`policy_removed` or `account_disabled`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "502":
+          $ref: "#/components/responses/ControlUnavailable"
+
+  /api/policies/{policyId}/resume:
+    post:
+      tags: [policies]
+      operationId: resumePolicy
+      summary: "Resume a paused policy"
+      security:
+        - personToken: []
+      parameters:
+        - $ref: "#/components/parameters/PolicyId"
+      responses:
+        "200":
+          description: "The policy, active."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Policy"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: "`forbidden` (the token is not allowed here), or `step_up_required` (the change loosens and the sign-in is older than 15 minutes)."
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/Error"
+                  - $ref: "#/components/schemas/StepUpRequired"
+        "404":
+          description: "No such policy for this person."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: "`policy_removed` or `account_disabled`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: "The policy can't be active now (a seller conflict, a seller no longer listed, an end date in the past)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InvalidPolicy"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "502":
+          $ref: "#/components/responses/ControlUnavailable"
+
+  /api/policies/{policyId}/remove:
+    post:
+      tags: [policies]
+      operationId: removePolicy
+      summary: "Remove a policy"
+      security:
+        - personToken: []
+      parameters:
+        - $ref: "#/components/parameters/PolicyId"
+      responses:
+        "200":
+          description: "The policy, removed. It stays in the history."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Policy"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: "No such policy for this person."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: "`account_disabled`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "502":
+          $ref: "#/components/responses/ControlUnavailable"
+
+  /api/account/disable:
+    post:
+      tags: [account]
+      operationId: disableAccount
+      summary: "Disable the account"
+      description: |
+        From the next decision on, the agent can pay nothing for this person. Nothing is deleted.
+      security:
+        - personToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DisableRequest"
+      responses:
+        "200":
+          description: "The person, disabled."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Me"
+        "400":
+          description: "`confirm` is not `true`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: "`profile_required`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "502":
+          $ref: "#/components/responses/ControlUnavailable"
+
+  /api/account/enable:
+    post:
+      tags: [account]
+      operationId: enableAccount
+      summary: "Enable a disabled account"
+      description: |
+        Needs a sign-in at most 15 minutes old. Every policy that was active comes back paused.
+      security:
+        - personToken: []
+      responses:
+        "200":
+          description: "The person, enabled."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Me"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: "`forbidden` (the token is not allowed here), or `step_up_required` (the change loosens and the sign-in is older than 15 minutes)."
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/Error"
+                  - $ref: "#/components/schemas/StepUpRequired"
+        "409":
+          description: "`profile_required`."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "502":
+          $ref: "#/components/responses/ControlUnavailable"
+
+  /docs:
+    get:
+      tags: [docs]
+      operationId: getDocs
+      summary: "Swagger UI page"
+      security: []
+      responses:
+        "200":
+          description: "The page."
+          content:
+            text/html:
+              schema:
+                type: string
+
+  /docs/{asset}:
+    get:
+      tags: [docs]
+      operationId: getDocsAsset
+      summary: "Swagger UI asset"
+      security: []
+      parameters:
+        - name: asset
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [swagger-ui.css, swagger-ui-bundle.js, swagger-initializer.js]
+      responses:
+        "200":
+          description: "The file."
+          content:
+            text/css:
+              schema:
+                type: string
+            text/javascript:
+              schema:
+                type: string
+        "404":
+          description: "Any other name."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /openapi.yaml:
+    get:
+      tags: [docs]
+      operationId: getOpenApi
+      summary: "This document"
+      security: []
+      responses:
+        "200":
+          description: "The document."
+          content:
+            application/yaml:
+              schema:
+                type: string
+
+components:
+  securitySchemes:
+    personToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >-
+        The person's Entra ID v2.0 access token for the portal: `aud` the API app, `scp` containing `Portal.Access`,
+        `azp` the portal's web app, `idtyp: user`, `roles` containing `Agent.Run`, and an `auth_time`.
+
+  parameters:
+    PolicyId:
+      name: policyId
+      in: path
+      required: true
+      description: A policy of the signed-in person. Anyone else's answers 404, like an unknown one.
+      schema:
+        type: string
+    CardId:
+      name: cardId
+      in: path
+      required: true
+      description: A registered card of the signed-in person.
+      schema:
+        type: string
+
+  responses:
+    Unauthorized:
+      description: Missing, malformed, invalid or expired token, or one without a sign-in time. Nothing is written.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Forbidden:
+      description: >-
+        A valid token that is not allowed here: a system identity, a token issued for the agent service or to another
+        client, or a person without `Agent.Run`. Nothing is written.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    TooManyRequests:
+      description: More than 120 requests in a minute for this person.
+      headers:
+        Retry-After:
+          schema:
+            type: string
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    ControlUnavailable:
+      description: The control service (L2) can't be reached. Nothing was granted.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+  schemas:
+    Error:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: string
+
+    AtomicAmount:
+      type: string
+      pattern: "^[0-9]+$"
+      description: Decimal string of atomic units (USDC has 6 decimals).
+
+    IsoTime:
+      type: string
+      format: date-time
+
+    Health:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok, ready, starting]
+
+    Config:
+      type: object
+      additionalProperties: false
+      required: [auth, network, cards]
+      properties:
+        auth:
+          type: object
+          additionalProperties: false
+          required: [mode, tenantId, clientId, scope]
+          properties:
+            mode:
+              type: string
+              enum: [entra, dev]
+            tenantId:
+              type: string
+            clientId:
+              type: string
+            scope:
+              type: string
+        network:
+          type: string
+        cards:
+          type: object
+          additionalProperties: false
+          required: [available]
+          properties:
+            available:
+              type: boolean
+            publishableKey:
+              type: string
+              description: The card vault's publishable test key. Public.
+
+    Onboarding:
+      type: object
+      additionalProperties: false
+      required: [profile, wallet, policy]
+      properties:
+        profile:
+          type: boolean
+        wallet:
+          type: boolean
+        policy:
+          type: boolean
+
+    Me:
+      type: object
+      additionalProperties: false
+      required: [userId, enabled, onboarding]
+      properties:
+        userId:
+          type: string
+          pattern: "^usr_[0-9a-f]{32}$"
+        enabled:
+          type: boolean
+        onboarding:
+          $ref: "#/components/schemas/Onboarding"
+        profile:
+          type: object
+          additionalProperties: false
+          required: [displayName, contactEmail]
+          properties:
+            displayName:
+              type: string
+            contactEmail:
+              type: string
+
+    ProfileInput:
+      type: object
+      additionalProperties: false
+      required: [displayName, contactEmail]
+      properties:
+        displayName:
+          type: string
+          minLength: 1
+          maxLength: 80
+        contactEmail:
+          type: string
+          maxLength: 254
+        acknowledgedTestFunds:
+          type: boolean
+          description: Required as `true` on the first save - the wallet holds test funds only.
+
+    FieldIssue:
+      type: object
+      additionalProperties: false
+      required: [field, code]
+      properties:
+        field:
+          type: string
+        code:
+          type: string
+
+    InvalidProfile:
+      type: object
+      additionalProperties: false
+      required: [error, issues]
+      properties:
+        error:
+          const: invalid_profile
+        issues:
+          type: array
+          items:
+            $ref: "#/components/schemas/FieldIssue"
+
+    Platform:
+      type: object
+      additionalProperties: false
+      required: [limits, sellers, network, asset, decimals]
+      properties:
+        limits:
+          type: object
+          additionalProperties: false
+          required: [hardCapPerPaymentAtomic, sessionBudgetAtomic, userDailyCeilingAtomic, maxAuthorizationsPerMinute, maxPolicyDays]
+          properties:
+            hardCapPerPaymentAtomic:
+              $ref: "#/components/schemas/AtomicAmount"
+            sessionBudgetAtomic:
+              $ref: "#/components/schemas/AtomicAmount"
+            userDailyCeilingAtomic:
+              $ref: "#/components/schemas/AtomicAmount"
+            maxAuthorizationsPerMinute:
+              type: integer
+            maxPolicyDays:
+              type: integer
+        sellers:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [host, name]
+            properties:
+              host:
+                type: string
+              name:
+                type: string
+        network:
+          type: string
+        asset:
+          type: string
+        decimals:
+          type: integer
+
+    Account:
+      type: object
+      additionalProperties: false
+      required:
+        - address
+        - network
+        - asset
+        - decimals
+        - balanceStale
+        - committedAtomic
+        - spent24hAtomic
+        - dailyCeilingAtomic
+        - dailyRemainingAtomic
+        - lowBalance
+      properties:
+        address:
+          type: string
+        network:
+          type: string
+        asset:
+          type: string
+        decimals:
+          type: integer
+        balanceAtomic:
+          $ref: "#/components/schemas/AtomicAmount"
+          description: Absent when the balance was never read and can't be read now.
+        balanceReadAt:
+          $ref: "#/components/schemas/IsoTime"
+        balanceStale:
+          type: boolean
+        committedAtomic:
+          $ref: "#/components/schemas/AtomicAmount"
+        spent24hAtomic:
+          $ref: "#/components/schemas/AtomicAmount"
+        dailyCeilingAtomic:
+          $ref: "#/components/schemas/AtomicAmount"
+        dailyRemainingAtomic:
+          $ref: "#/components/schemas/AtomicAmount"
+        lowBalance:
+          type: boolean
+
+    Card:
+      type: object
+      additionalProperties: false
+      required: [cardId, brand, last4, expMonth, expYear, addedAt, expired]
+      properties:
+        cardId:
+          type: string
+          pattern: "^card_[0-9a-f-]{36}$"
+        brand:
+          type: string
+        last4:
+          type: string
+        expMonth:
+          type: integer
+        expYear:
+          type: integer
+        nickname:
+          type: string
+          maxLength: 40
+        addedAt:
+          $ref: "#/components/schemas/IsoTime"
+        expired:
+          type: boolean
+
+    CardList:
+      type: object
+      additionalProperties: false
+      required: [cards]
+      properties:
+        cards:
+          type: array
+          items:
+            $ref: "#/components/schemas/Card"
+
+    Wallet:
+      type: object
+      additionalProperties: false
+      required: [cards, cardsAvailable, disabled]
+      properties:
+        account:
+          $ref: "#/components/schemas/Account"
+        cards:
+          type: array
+          items:
+            $ref: "#/components/schemas/Card"
+        cardsAvailable:
+          type: boolean
+        disabled:
+          type: boolean
+
+    CardSetup:
+      type: object
+      additionalProperties: false
+      required: [clientSecret]
+      properties:
+        clientSecret:
+          type: string
+          description: For the card vault's fields in the browser. Returned once; never stored or logged.
+
+    CardConfirm:
+      type: object
+      additionalProperties: false
+      required: [setupIntentId]
+      properties:
+        setupIntentId:
+          type: string
+        nickname:
+          type: string
+          maxLength: 40
+
+    CardRefused:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: string
+        vaultCode:
+          type: string
+          description: A code from a fixed list (or `other`) when the vault refused the card. Never the vault's text.
+
+    PolicyInput:
+      type: object
+      additionalProperties: false
+      required: [name, sellers, autoApproveUsdc, perPaymentUsdc, perRunUsdc, perDayUsdc, paymentsPerMinute, endsOn, paymentMethod]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 60
+        sellers:
+          type: array
+          items:
+            type: string
+        autoApproveUsdc:
+          type: string
+          description: USDC text, at most 6 decimals. `0` means every payment needs a person.
+        perPaymentUsdc:
+          type: string
+        perRunUsdc:
+          type: string
+        perDayUsdc:
+          type: string
+        paymentsPerMinute:
+          type: number
+        endsOn:
+          type: string
+          pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+          description: The policy ends at the end of this day, UTC.
+        paymentMethod:
+          type: string
+
+    PolicyChange:
+      type: object
+      additionalProperties: false
+      required: [name, sellers, autoApproveUsdc, perPaymentUsdc, perRunUsdc, perDayUsdc, paymentsPerMinute, endsOn, paymentMethod, expectedVersion]
+      properties:
+        name:
+          type: string
+        sellers:
+          type: array
+          items:
+            type: string
+        autoApproveUsdc:
+          type: string
+        perPaymentUsdc:
+          type: string
+        perRunUsdc:
+          type: string
+        perDayUsdc:
+          type: string
+        paymentsPerMinute:
+          type: number
+        endsOn:
+          type: string
+        paymentMethod:
+          type: string
+        expectedVersion:
+          type: integer
+
+    PolicyValues:
+      type: object
+      additionalProperties: false
+      required:
+        - sellers
+        - autoApproveMaxAtomic
+        - hardCapPerPaymentAtomic
+        - sessionBudgetAtomic
+        - dailyBudgetAtomic
+        - maxAuthorizationsPerMinute
+        - expiresAt
+        - paymentMethod
+      properties:
+        sellers:
+          type: array
+          items:
+            type: string
+        autoApproveMaxAtomic:
+          $ref: "#/components/schemas/AtomicAmount"
+        hardCapPerPaymentAtomic:
+          $ref: "#/components/schemas/AtomicAmount"
+        sessionBudgetAtomic:
+          $ref: "#/components/schemas/AtomicAmount"
+        dailyBudgetAtomic:
+          $ref: "#/components/schemas/AtomicAmount"
+        maxAuthorizationsPerMinute:
+          type: integer
+        expiresAt:
+          $ref: "#/components/schemas/IsoTime"
+        paymentMethod:
+          type: string
+          enum: [crypto_account]
+
+    PolicyVersion:
+      type: object
+      additionalProperties: false
+      required: [seq, ts, kind, version]
+      properties:
+        seq:
+          type: integer
+        ts:
+          $ref: "#/components/schemas/IsoTime"
+        kind:
+          type: string
+          enum: [created, changed, paused, resumed, removed]
+        version:
+          type: integer
+        values:
+          $ref: "#/components/schemas/PolicyValues"
+        cause:
+          type: string
+          enum: [user, account_enabled]
+
+    Policy:
+      type: object
+      additionalProperties: false
+      required: [policyId, name, version, values, state, displayState, expired, limitedByPlatform, unlistedSellers, updatedAt]
+      properties:
+        policyId:
+          type: string
+        name:
+          type: string
+        version:
+          type: integer
+        values:
+          $ref: "#/components/schemas/PolicyValues"
+        state:
+          type: string
+          enum: [active, paused, removed]
+        displayState:
+          type: string
+          enum: [active, paused, removed, expired, disabled]
+        expired:
+          type: boolean
+        limitedByPlatform:
+          type: array
+          items:
+            type: string
+        unlistedSellers:
+          type: array
+          items:
+            type: string
+        updatedAt:
+          $ref: "#/components/schemas/IsoTime"
+        history:
+          type: array
+          items:
+            $ref: "#/components/schemas/PolicyVersion"
+
+    PolicyList:
+      type: object
+      additionalProperties: false
+      required: [policies]
+      properties:
+        policies:
+          type: array
+          items:
+            $ref: "#/components/schemas/Policy"
+
+    PolicyIssue:
+      type: object
+      additionalProperties: false
+      required: [field, code]
+      properties:
+        field:
+          type: string
+        code:
+          type: string
+        host:
+          type: string
+        policyId:
+          type: string
+        limitAtomic:
+          $ref: "#/components/schemas/AtomicAmount"
+        limit:
+          type: integer
+
+    InvalidPolicy:
+      type: object
+      additionalProperties: false
+      required: [error, issues]
+      properties:
+        error:
+          const: invalid_policy
+        issues:
+          type: array
+          items:
+            $ref: "#/components/schemas/PolicyIssue"
+
+    StepUpRequired:
+      type: object
+      additionalProperties: false
+      required: [error, maxAgeSec]
+      properties:
+        error:
+          const: step_up_required
+        maxAgeSec:
+          type: integer
+
+    VersionConflict:
+      type: object
+      additionalProperties: false
+      required: [error, current]
+      properties:
+        error:
+          const: version_conflict
+        current:
+          $ref: "#/components/schemas/Policy"
+
+    DisableRequest:
+      type: object
+      additionalProperties: false
+      required: [confirm]
+      properties:
+        confirm:
+          const: true

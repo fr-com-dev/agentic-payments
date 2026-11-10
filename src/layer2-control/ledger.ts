@@ -24,7 +24,20 @@ export type EntryType =
   | "APPROVAL_REQUESTED"
   | "APPROVAL_REQUEST_FAILED"
   | "APPROVAL_REQUEST_LAPSED"
-  | "APPROVAL_VERIFICATION_FAILED";
+  | "APPROVAL_VERIFICATION_FAILED"
+  // 013 user accounts (L2-8)
+  | "PLATFORM_CONFIG"
+  | "USER_REGISTERED"
+  | "WALLET_CREATED"
+  | "CARD_ADDED"
+  | "CARD_REMOVED"
+  | "POLICY_CREATED"
+  | "POLICY_CHANGED"
+  | "POLICY_PAUSED"
+  | "POLICY_RESUMED"
+  | "POLICY_REMOVED"
+  | "USER_DISABLED"
+  | "USER_ENABLED";
 
 export interface LedgerEntry {
   seq: number;
@@ -55,6 +68,26 @@ export interface ChainCheck {
 export type StoredSettlement = SettlementReport & { anomaly: boolean };
 
 export type ReconcileResult = { found: false } | { found: true; ok: true; anomaly: boolean };
+
+/**
+ * 013: whose entries a figure counts. `userId: "usr_…"` is that user; `null` is the platform account (entries with
+ * no `data.userId`); omitted is every entry, as before user accounts existed. `policyId` narrows a user's entries to
+ * one policy.
+ */
+export interface OwnerFilter {
+  userId?: string | null;
+  policyId?: string;
+}
+
+/** True when the entry belongs to the filter's owner. */
+export function ownedBy(e: LedgerEntry, f: OwnerFilter): boolean {
+  if (f.userId !== undefined) {
+    const owner = typeof e.data.userId === "string" ? e.data.userId : null;
+    if (owner !== f.userId) return false;
+  }
+  if (f.policyId !== undefined && e.data.policyId !== f.policyId) return false;
+  return true;
+}
 
 export const GENESIS_PREV_HASH = "0".repeat(64);
 const RECONCILED_FIELDS = ["asset", "payer", "payTo", "amount"] as const;
@@ -197,7 +230,7 @@ export class AuditLedger {
    * effective report is NOT_SETTLED and whose signature can no longer settle (nowMs > validBefore×1000).
    * MISMATCH and PENDING keep counting.
    */
-  committedAtomic(filter: { sessionId?: string; sinceMs?: number }, nowMs: number): bigint {
+  committedAtomic(filter: { sessionId?: string; sinceMs?: number } & OwnerFilter, nowMs: number): bigint {
     const effective = new Map<string, string>();
     for (const e of this.items) {
       if (e.type === "SETTLEMENT" && e.authorizationId !== undefined && e.data.anomaly !== true) {
@@ -209,6 +242,7 @@ export class AuditLedger {
       if (e.type !== "AUTHORIZED") continue;
       if (filter.sessionId !== undefined && e.sessionId !== filter.sessionId) continue;
       if (filter.sinceMs !== undefined && Date.parse(e.ts) < filter.sinceMs) continue;
+      if (!ownedBy(e, filter)) continue;
       const status = e.authorizationId === undefined ? undefined : effective.get(e.authorizationId);
       const validBeforeMs = BigInt(e.data.validBefore as number) * 1000n;
       if (status === "NOT_SETTLED" && BigInt(nowMs) > validBeforeMs) continue;
@@ -217,20 +251,27 @@ export class AuditLedger {
     return total;
   }
 
-  /** Velocity: AUTHORIZED entries with `ts ≥ sinceMs`. */
-  authorizedSince(sinceMs: number): number {
+  /** Velocity: AUTHORIZED entries with `ts ≥ sinceMs` (013: of the filter's owner, when one is given). */
+  authorizedSince(sinceMs: number, filter: OwnerFilter = {}): number {
     let n = 0;
     for (const e of this.items) {
-      if (e.type === "AUTHORIZED" && Date.parse(e.ts) >= sinceMs) n++;
+      if (e.type === "AUTHORIZED" && Date.parse(e.ts) >= sinceMs && ownedBy(e, filter)) n++;
     }
     return n;
+  }
+
+  /** 013: the owner of an escalation, read from its ESCALATED entry (`null`: the platform account). */
+  private escalationOwner(escalationId: unknown): string | null {
+    const esc = this.items.find((e) => e.type === "ESCALATED" && e.authorizationId === escalationId);
+    return typeof esc?.data.userId === "string" ? esc.data.userId : null;
   }
 
   /**
    * L2-4.2: the most recent open HUMAN_APPROVAL for (session, resourceKey). Open means
    * `nowMs ≤ expiresAtMs` and no AUTHORIZED entry has `approvalRef === approvalId` (single use).
+   * 013: with `userId` given (`null` for the platform account), only an approval of that owner's escalation counts.
    */
-  findOpenApproval(sessionId: string, key: string, nowMs: number): LedgerEntry | undefined {
+  findOpenApproval(sessionId: string, key: string, nowMs: number, userId?: string | null): LedgerEntry | undefined {
     const consumed = new Set<string>();
     for (const e of this.items) {
       if (e.type === "AUTHORIZED" && typeof e.data.approvalRef === "string") consumed.add(e.data.approvalRef);
@@ -240,6 +281,7 @@ export class AuditLedger {
       if (e.type !== "HUMAN_APPROVAL" || e.sessionId !== sessionId || e.data.resourceKey !== key) continue;
       if (nowMs > (e.data.expiresAtMs as number)) continue;
       if (consumed.has(e.data.approvalId as string)) continue;
+      if (userId !== undefined && this.escalationOwner(e.data.escalationId) !== userId) continue;
       return e;
     }
     return undefined;

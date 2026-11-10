@@ -228,7 +228,7 @@ test/
 ├── users.test.ts                # NEW      T-USR-01..12
 ├── portal.test.ts               # NEW      T-PRT-01..09
 ├── card-vault.test.ts           # NEW      T-CARD-01..06
-├── openapi-portal.test.ts       # NEW      T-API-11..14
+├── openapi-portal.test.ts       # NEW      T-API-12..15
 ├── helpers/card-vault-stub.ts, helpers/portal.ts   # NEW
 ├── fixtures/arch/a10-, a11-, a12-violation.ts      # NEW
 └── policy, ledger, architecture, agent, hosted-*, e2e.local, openapi*, images, infra,
@@ -357,7 +357,7 @@ Each safety mechanism has a test that fails without it. The switches are test-on
 
 ## Tests defined here
 
-The contracts define T-USR-01..08, T-PRT-01..09, T-WEB-01..08, T-CARD-01..06, T-AGT-06..07, T-API-11..14 and
+The contracts define T-USR-01..08, T-PRT-01..09, T-WEB-01..08, T-CARD-01..06, T-AGT-06..07, T-API-12..15 and
 T-ARCH-A10..A12. The rest:
 
 | ID | File | Covers |

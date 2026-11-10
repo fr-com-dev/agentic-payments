@@ -512,3 +512,130 @@ describe("012 append listener", () => {
     expect(new AuditLedger(file).entries()).toHaveLength(3);
   });
 });
+
+describe("013 user accounts in the ledger (T-LED-06)", () => {
+  const ALICE = "usr_deeee4478bc01dab1b0afa3fbe31f010";
+  const BOB = "usr_a0a09e781dc90b1ce3917c4c3eba5d58";
+
+  function pay(l: AuditLedger, id: string, o: { userId?: string; policyId?: string; amount?: string; sessionId?: string; at?: number } = {}) {
+    return l.append(
+      {
+        type: "AUTHORIZED",
+        sessionId: o.sessionId ?? "sess_a",
+        authorizationId: id,
+        data: {
+          amount: o.amount ?? "1000",
+          asset: ASSET,
+          network: "eip155:31337",
+          payTo: PAY_TO,
+          payer: PAYER,
+          validBefore: Math.floor(T0 / 1000) + 120,
+          resourceUrl: "http://127.0.0.1:4021/api/weather",
+          mandateId: o.policyId ? `${o.policyId}@1` : "mandate-poc-001",
+          approvalRef: null,
+          ...(o.userId && { userId: o.userId }),
+          ...(o.policyId && { policyId: o.policyId, policyVersion: 1 }),
+        },
+      },
+      o.at ?? T0,
+    );
+  }
+
+  it("T-LED-06 each of the 12 new entry types appends, hashes and verifies after a reload", () => {
+    const l = new AuditLedger(file);
+    const values = { sellers: ["127.0.0.1:4021"], autoApproveMaxAtomic: "20000", hardCapPerPaymentAtomic: "100000", sessionBudgetAtomic: "100000", dailyBudgetAtomic: "500000", maxAuthorizationsPerMinute: 10, expiresAt: "2026-12-10T12:00:00.000Z", paymentMethod: "crypto_account" };
+    const entries: Array<[Parameters<AuditLedger["append"]>[0]["type"], Record<string, unknown>]> = [
+      ["PLATFORM_CONFIG", { platformId: "platform-poc-001", digest: "ab".repeat(32), limits: { hardCapPerPaymentAtomic: "100000", sessionBudgetAtomic: "100000", userDailyCeilingAtomic: "500000", maxAuthorizationsPerMinute: 10, maxPolicyDays: 365 }, sellers: [{ host: "127.0.0.1:4021", name: "Local demo seller", payees: [] }] }],
+      ["USER_REGISTERED", { userId: ALICE, acknowledgedTestFunds: true, termsVersion: "test-funds-v1" }],
+      ["WALLET_CREATED", { userId: ALICE, walletIndex: 0, address: PAYER, network: "eip155:31337" }],
+      ["CARD_ADDED", { userId: ALICE, cardId: "card_00000000-0000-4000-8000-000000000001" }],
+      ["CARD_REMOVED", { userId: ALICE, cardId: "card_00000000-0000-4000-8000-000000000001" }],
+      ["POLICY_CREATED", { userId: ALICE, policyId: "pol_1", version: 1, ...values, identityConfirmedAtMs: T0 }],
+      ["POLICY_CHANGED", { userId: ALICE, policyId: "pol_1", version: 2, ...values, loosened: false }],
+      ["POLICY_PAUSED", { userId: ALICE, policyId: "pol_1", version: 2, cause: "user" }],
+      ["POLICY_RESUMED", { userId: ALICE, policyId: "pol_1", version: 2, identityConfirmedAtMs: T0 }],
+      ["POLICY_REMOVED", { userId: ALICE, policyId: "pol_1", version: 2 }],
+      ["USER_DISABLED", { userId: ALICE }],
+      ["USER_ENABLED", { userId: ALICE, identityConfirmedAtMs: T0 }],
+    ];
+    for (const [type, data] of entries) l.append({ type, data }, T0);
+    expect(l.entries().map((e) => e.type)).toEqual(entries.map(([t]) => t));
+    expect(l.verifyChain()).toEqual({ entries: 12, ok: true });
+    const reloaded = new AuditLedger(file);
+    expect(reloaded.entries()).toHaveLength(12);
+    // None of these carries a session, an intent or an authorization.
+    for (const e of reloaded.entries()) expect([e.sessionId, e.intentId, e.authorizationId]).toEqual([undefined, undefined, undefined]);
+  });
+
+  it("T-LED-06 committedAtomic counts a user's entries, the platform account's (null), or all (omitted)", () => {
+    const l = new AuditLedger(file);
+    pay(l, "auth_p1", { amount: "100" });
+    pay(l, "auth_a1", { userId: ALICE, policyId: "pol_a", amount: "1000" });
+    pay(l, "auth_a2", { userId: ALICE, policyId: "pol_b", amount: "20000" });
+    pay(l, "auth_b1", { userId: BOB, policyId: "pol_c", amount: "300000" });
+    expect(l.committedAtomic({}, T0)).toBe(321_100n);
+    expect(l.committedAtomic({ userId: null }, T0)).toBe(100n);
+    expect(l.committedAtomic({ userId: ALICE }, T0)).toBe(21_000n);
+    expect(l.committedAtomic({ userId: ALICE, policyId: "pol_a" }, T0)).toBe(1_000n);
+    expect(l.committedAtomic({ userId: ALICE, policyId: "pol_c" }, T0)).toBe(0n);
+    expect(l.committedAtomic({ userId: BOB }, T0)).toBe(300_000n);
+    expect(l.committedAtomic({ userId: "usr_00000000000000000000000000000000" }, T0)).toBe(0n);
+    // The session and time filters still combine with the owner.
+    expect(l.committedAtomic({ sessionId: "sess_a", userId: ALICE }, T0)).toBe(21_000n);
+    expect(l.committedAtomic({ sessionId: "sess_other", userId: ALICE }, T0)).toBe(0n);
+    expect(l.committedAtomic({ sinceMs: T0 + 1, userId: ALICE }, T0 + 1)).toBe(0n);
+  });
+
+  it("T-LED-06 a user's entries never change the platform account's figures, and the reverse", () => {
+    const l = new AuditLedger(file);
+    pay(l, "auth_p1", { amount: "100" });
+    const platformBefore = l.committedAtomic({ userId: null }, T0);
+    pay(l, "auth_a1", { userId: ALICE, policyId: "pol_a", amount: "99999" });
+    expect(l.committedAtomic({ userId: null }, T0)).toBe(platformBefore);
+    const aliceBefore = l.committedAtomic({ userId: ALICE }, T0);
+    pay(l, "auth_p2", { amount: "5" });
+    expect(l.committedAtomic({ userId: ALICE }, T0)).toBe(aliceBefore);
+  });
+
+  it("T-LED-06 a released authorization stops counting for its owner only", () => {
+    const l = new AuditLedger(file);
+    pay(l, "auth_a1", { userId: ALICE, policyId: "pol_a", amount: "1000" });
+    pay(l, "auth_b1", { userId: BOB, policyId: "pol_c", amount: "3000" });
+    l.reconcile(report("auth_a1", { status: "NOT_SETTLED", transaction: undefined }), T0 + 1);
+    const after = T0 + 121_000;
+    expect(l.committedAtomic({ userId: ALICE }, after)).toBe(0n);
+    expect(l.committedAtomic({ userId: BOB }, after)).toBe(3_000n);
+  });
+
+  it("T-LED-06 authorizedSince takes the same owner filter", () => {
+    const l = new AuditLedger(file);
+    pay(l, "auth_p1", {});
+    pay(l, "auth_a1", { userId: ALICE, policyId: "pol_a" });
+    pay(l, "auth_a2", { userId: ALICE, policyId: "pol_b" });
+    pay(l, "auth_old", { userId: ALICE, policyId: "pol_a", at: T0 - 61_000 });
+    expect(l.authorizedSince(T0 - 60_000)).toBe(3);
+    expect(l.authorizedSince(T0 - 60_000, { userId: null })).toBe(1);
+    expect(l.authorizedSince(T0 - 60_000, { userId: ALICE })).toBe(2);
+    expect(l.authorizedSince(T0 - 60_000, { userId: ALICE, policyId: "pol_a" })).toBe(1);
+    expect(l.authorizedSince(T0 - 60_000, { userId: BOB })).toBe(0);
+  });
+
+  it("T-LED-06 findOpenApproval with an owner only finds an approval of that owner's escalation", () => {
+    const l = new AuditLedger(file);
+    const KEY = "http://127.0.0.1:4021/api/premium-report";
+    const escalate = (id: string, userId?: string) =>
+      l.append({ type: "ESCALATED", sessionId: "sess_a", intentId: `int_${id}`, authorizationId: id, data: { violations: [], resourceKey: KEY, payTo: PAY_TO, amount: "50000", ...(userId && { userId }) } }, T0);
+    const approve = (escalationId: string, approvalId: string) =>
+      l.append({ type: "HUMAN_APPROVAL", sessionId: "sess_a", authorizationId: escalationId, data: { approvalId, escalationId, resourceKey: KEY, payTo: PAY_TO, amount: "50000", approver: "operator", expiresAtMs: T0 + 600_000 } }, T0 + 1);
+    escalate("auth_alice", ALICE);
+    approve("auth_alice", "apr_alice");
+    expect(l.findOpenApproval("sess_a", KEY, T0 + 2)?.data.approvalId).toBe("apr_alice");
+    expect(l.findOpenApproval("sess_a", KEY, T0 + 2, ALICE)?.data.approvalId).toBe("apr_alice");
+    expect(l.findOpenApproval("sess_a", KEY, T0 + 2, BOB)).toBeUndefined();
+    expect(l.findOpenApproval("sess_a", KEY, T0 + 2, null)).toBeUndefined();
+    escalate("auth_platform");
+    approve("auth_platform", "apr_platform");
+    expect(l.findOpenApproval("sess_a", KEY, T0 + 2, null)?.data.approvalId).toBe("apr_platform");
+    expect(l.findOpenApproval("sess_a", KEY, T0 + 2, ALICE)?.data.approvalId).toBe("apr_alice");
+  });
+});

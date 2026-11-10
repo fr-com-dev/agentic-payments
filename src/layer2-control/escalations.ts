@@ -40,11 +40,22 @@ export function decisionEntry(entries: Entries, escalationId: string): LedgerEnt
   );
 }
 
-/** The most recent HUMAN_REJECTION for (session, resourceKey), whatever the amount or payee (R15 scope). */
-export function findRejection(entries: Entries, sessionId: string, resourceKey: string): LedgerEntry | undefined {
+/** 013: the owner of an escalation, from its ESCALATED entry (`null`: the platform account). */
+export function escalationOwner(entries: Entries, escalationId: unknown): string | null {
+  const esc = typeof escalationId === "string" ? findEscalation(entries, escalationId) : undefined;
+  return typeof esc?.data.userId === "string" ? esc.data.userId : null;
+}
+
+/**
+ * The most recent HUMAN_REJECTION for (session, resourceKey), whatever the amount or payee (R15 scope).
+ * 013: with `userId` given (`null` for the platform account), only a rejection of that owner's escalation counts.
+ */
+export function findRejection(entries: Entries, sessionId: string, resourceKey: string, userId?: string | null): LedgerEntry | undefined {
   for (let i = entries.length - 1; i >= 0; i--) {
     const e = entries[i]!;
-    if (e.type === "HUMAN_REJECTION" && e.sessionId === sessionId && e.data.resourceKey === resourceKey) return e;
+    if (e.type !== "HUMAN_REJECTION" || e.sessionId !== sessionId || e.data.resourceKey !== resourceKey) continue;
+    if (userId !== undefined && escalationOwner(entries, e.data.escalationId) !== userId) continue;
+    return e;
   }
   return undefined;
 }
@@ -60,10 +71,12 @@ export function findPendingEscalation(
   payTo: string,
   amount: string,
   nowMs: number,
+  userId?: string | null,
 ): LedgerEntry | undefined {
   for (let i = entries.length - 1; i >= 0; i--) {
     const e = entries[i]!;
     if (e.type !== "ESCALATED" || e.sessionId !== sessionId || e.data.resourceKey !== resourceKey) continue;
+    if (userId !== undefined && (typeof e.data.userId === "string" ? e.data.userId : null) !== userId) continue;
     if (String(e.data.payTo).toLowerCase() !== payTo.toLowerCase() || e.data.amount !== amount) continue;
     if (e.authorizationId !== undefined && escalationState(entries, e.authorizationId, nowMs) === "pending") return e;
   }
@@ -159,6 +172,8 @@ export interface EscalationView {
   referenceCode: string;
   /** 012: present when the escalation carries an approval-request mark (backchannel approval on). */
   approvalRequest?: ApprovalRequestState;
+  /** 013 (FR-045): whose payment it is, when the escalation is a user's. An identifier only, never a name. */
+  userId?: string;
 }
 
 export type EscalationEventKind =
@@ -204,6 +219,8 @@ export interface EscalationEvent {
   error?: string;
   cause?: string;
   check?: string;
+  /** 013 (FR-045): on `escalated` events of a user's payment. */
+  userId?: string;
 }
 
 const iso = (ms: number) => new Date(ms).toISOString();
@@ -234,6 +251,7 @@ export function pendingEscalations(entries: Entries, nowMs: number): EscalationV
       expiresAt: iso(expiresAtMsOf(e)),
       referenceCode: referenceCode(e.authorizationId!),
       ...(typeof e.data.approvalRequest === "string" && { approvalRequest: approvalRequestState(entries, e.authorizationId!)! }),
+      ...(typeof e.data.userId === "string" && { userId: e.data.userId }),
     }))
     .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
 }
@@ -272,6 +290,7 @@ export function escalationEvents(entries: Entries, after: number): EscalationEve
       ev.expiresAt = iso(expiresAtMsOf(e));
       ev.referenceCode = referenceCode(String(e.authorizationId));
       if (typeof d.approvalRequest === "string") ev.approvalRequest = d.approvalRequest;
+      if (typeof d.userId === "string") ev.userId = d.userId;
     }
     if (kind === "approved") {
       Object.assign(ev, { approvalId: String(d.approvalId), approver: String(d.approver), approvalExpiresAt: iso(d.expiresAtMs as number) });

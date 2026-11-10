@@ -10,7 +10,7 @@ import { describe, expect, it } from "vitest";
 // Scanner core (T004–T006)
 // ---------------------------------------------------------------------------
 
-export type Rule = "A1" | "A2" | "A3" | "A4" | "A5" | "A6" | "A7" | "A8" | "A9";
+export type Rule = "A1" | "A2" | "A3" | "A4" | "A5" | "A6" | "A7" | "A8" | "A9" | "A10" | "A11" | "A12";
 export interface ArchViolation {
   rule: Rule;
   file: string;
@@ -18,8 +18,9 @@ export interface ArchViolation {
   detail: string;
 }
 
-type Area = "shared" | "L1" | "L2" | "L3" | "CP" | "src-other" | "composition" | "outside";
-const LAYERS: Area[] = ["L1", "L2", "L3", "CP"];
+type Area = "shared" | "L1" | "L2" | "L3" | "CP" | "PORTAL" | "src-other" | "composition" | "outside";
+// 013: the portal (src/portal/) is an area of its own, isolated like a layer: it imports only shared and itself.
+const LAYERS: Area[] = ["L1", "L2", "L3", "CP", "PORTAL"];
 const SIGNER = "src/layer2-control/signer.ts";
 
 export function classify(path: string): Area {
@@ -28,6 +29,7 @@ export function classify(path: string): Area {
   if (path.startsWith("src/layer2-control/")) return "L2";
   if (path.startsWith("src/layer3-settlement/")) return "L3";
   if (path.startsWith("src/counterparty/")) return "CP";
+  if (path.startsWith("src/portal/")) return "PORTAL";
   if (path.startsWith("src/")) return "src-other";
   if (path.startsWith("scripts/") || path.startsWith("test/")) return "composition";
   return "outside";
@@ -197,8 +199,8 @@ export function checkFile(path: string, source: string): ArchViolation[] {
     for (const { spec, offset } of specs) if (spec === "viem/accounts") add("A3", offset, spec);
   }
 
-  // A4 (INV-4): L3 has no signing or write capability.
-  if (area === "L3") {
+  // A4 (INV-4): L3 has no signing or write capability. 013: neither has the portal, which only reads balances.
+  if (area === "L3" || area === "PORTAL") {
     for (const id of A4_IDENTIFIERS) {
       if (id === "privateKeyToAccount") continue; // already reported by A3 for every non-signer file
       for (const off of matches(codeOnly, new RegExp(`\\b${id}\\b`))) add("A4", off, id);
@@ -278,6 +280,60 @@ export function checkCibaConfinement(path: string, source: string): ArchViolatio
   if (!template && !path.startsWith("src/") && !path.startsWith("scripts/")) return [];
   const text = template ? source : lex(source).noComments;
   return matches(text, A9_NAME).map((off) => ({ rule: "A9" as const, file: path, line: lineAt(source, off), detail: text.slice(off).match(/^\w+/)![0] }));
+}
+
+// ---------------------------------------------------------------------------
+// A10 (013, SPEC v1.9 §4.1, SEC-22): the card vault credential is confined to one file, like A8 and A9. Same scope:
+// src/**, scripts/** and env templates (test/** is exempt). It also confines the vault's API host, so no other file
+// can call it. CARD_VAULT_KEY_… names and the publishable key are not the credential.
+// ---------------------------------------------------------------------------
+
+const A10_ALLOWED = new Set(["src/portal/card-vault.ts", "env/portal.env.example"]);
+const A10_NAME = /\bCARD_VAULT_KEY\b/;
+const A10_HOST = /api\.stripe\.com/;
+
+export function checkCardVaultConfinement(path: string, source: string): ArchViolation[] {
+  if (A10_ALLOWED.has(path)) return [];
+  const template = /^env\/[^/]+\.env\.example$/.test(path);
+  if (!template && !path.startsWith("src/") && !path.startsWith("scripts/")) return [];
+  const text = template ? source : lex(source).noComments;
+  const out: ArchViolation[] = matches(text, A10_NAME).map((off) => ({ rule: "A10" as const, file: path, line: lineAt(source, off), detail: "CARD_VAULT_KEY" }));
+  for (const off of matches(text, A10_HOST)) out.push({ rule: "A10", file: path, line: lineAt(source, off), detail: "api.stripe.com" });
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// A11 (013, SPEC v1.9 §4.1, INV-2): the user wallets' mnemonic is payment key material. Its name appears only where
+// it is read (the signer), where it is refused (the portal's entry point), where the local development value is set
+// (scripts/demo-lib.ts) and in L2's template. Same scope as A8.
+// ---------------------------------------------------------------------------
+
+const A11_ALLOWED = new Set(["src/layer2-control/signer.ts", "src/portal-main.ts", "scripts/demo-lib.ts", "env/l2-control.env.example"]);
+const A11_NAME = /\bUSER_WALLET_MNEMONIC\b/;
+
+export function checkMnemonicConfinement(path: string, source: string): ArchViolation[] {
+  if (A11_ALLOWED.has(path)) return [];
+  const template = /^env\/[^/]+\.env\.example$/.test(path);
+  if (!template && !path.startsWith("src/") && !path.startsWith("scripts/")) return [];
+  const text = template ? source : lex(source).noComments;
+  return matches(text, A11_NAME).map((off) => ({ rule: "A11" as const, file: path, line: lineAt(source, off), detail: "USER_WALLET_MNEMONIC" }));
+}
+
+// ---------------------------------------------------------------------------
+// A12 (013, SPEC v1.9 §4.1, INV-13, FR-006): role isolation around the portal. No agent, verifier or counterparty
+// code names the portal's token; no portal code names the payer key or another role's token. src/** only.
+// ---------------------------------------------------------------------------
+
+const A12_PORTAL_TOKEN = /\bPORTAL_TOKEN\b/;
+const A12_OTHERS = /\b(?:PAYER_PRIVATE_KEY|CONTROL_TOKEN|OPERATOR_TOKEN|SETTLEMENT_TOKEN|VERIFIER_TOKEN)\b/;
+
+export function checkPortalIsolation(path: string, source: string): ArchViolation[] {
+  const area = classify(path);
+  const text = lex(source).noComments;
+  const hits = (re: RegExp) => matches(text, re).map((off) => ({ rule: "A12" as const, file: path, line: lineAt(source, off), detail: text.slice(off).match(/^\w+/)![0] }));
+  if (area === "L1" || area === "L3" || area === "CP") return hits(A12_PORTAL_TOKEN);
+  if (area === "PORTAL") return hits(A12_OTHERS);
+  return [];
 }
 
 // ---------------------------------------------------------------------------
@@ -433,7 +489,7 @@ const TEMPLATES: Record<string, TemplateSpec> = {
   },
   "l1-hosted": {
     required: ["NETWORK", "SELLER_URL", "CONTROL_URL", "SETTLEMENT_URL", "CONTROL_TOKEN", "VERIFIER_TOKEN", "MODEL_PROVIDER", "AUTH_TENANT_ID", "AUTH_AUDIENCE", "SESSION_REF_SECRET"],
-    optional: ["ANTHROPIC_MODEL", "ANTHROPIC_API_KEY", "FOUNDRY_BASE_URL", "AZURE_CLIENT_ID", "AUTH_JWKS_FILE", "AGENT_PORT", "AGENT_BIND_HOST", "API_DOCS"],
+    optional: ["ANTHROPIC_MODEL", "ANTHROPIC_API_KEY", "FOUNDRY_BASE_URL", "AZURE_CLIENT_ID", "AUTH_JWKS_FILE", "AGENT_PORT", "AGENT_BIND_HOST", "API_DOCS", "PORTAL_CLIENT_ID"],
   },
   "l2-control": {
     required: ["NETWORK", "PAYER_PRIVATE_KEY", "ALLOWED_PAYEES", "ALLOWED_HOSTS", "CONTROL_TOKEN", "SETTLEMENT_TOKEN", "OPERATOR_TOKEN"],
@@ -449,6 +505,12 @@ const TEMPLATES: Record<string, TemplateSpec> = {
       "CIBA_CLIENT_KEY",
       "CIBA_CLIENT_SECRET",
       "CIBA_CLIENT_KEY_ID",
+      // 013 user accounts (CFG-2)
+      "USER_ACCOUNTS",
+      "PORTAL_TOKEN",
+      "USER_WALLET_MNEMONIC",
+      "PLATFORM_FILE",
+      "PLATFORM_SELLERS",
     ],
   },
   "l3-verifier": {
@@ -461,6 +523,23 @@ const TEMPLATES: Record<string, TemplateSpec> = {
   },
   facilitator: { required: ["NETWORK", "FACILITATOR_PRIVATE_KEY"], optional: ["FACILITATOR_PORT"] },
   operator: { required: ["CONTROL_URL", "OPERATOR_TOKEN"], optional: [] },
+  // 013: the portal. No payment key, and no other role's token.
+  portal: {
+    required: ["NETWORK", "CONTROL_URL", "PORTAL_TOKEN", "AUTH_TENANT_ID", "AUTH_AUDIENCE", "PORTAL_CLIENT_ID"],
+    optional: [
+      "AUTH_JWKS_FILE",
+      "PORTAL_SCOPE",
+      "PROFILE_DIR",
+      "PORTAL_WEB_ROOT",
+      "CARD_VAULT",
+      "CARD_VAULT_KEY",
+      "CARD_VAULT_PUBLISHABLE_KEY",
+      "BASE_SEPOLIA_RPC_URL",
+      "PORTAL_PORT",
+      "PORTAL_BIND_HOST",
+      "API_DOCS",
+    ],
+  },
 };
 
 interface TemplateEntry {
@@ -488,7 +567,7 @@ export function checkTemplate(name: string, entries: TemplateEntry[]): string[] 
     if (!entries.some((e) => e.key === k && !e.commented)) errors.push(`${name}: missing required key ${k}`);
   }
   for (const e of entries) {
-    if (/PRIVATE_KEY$|_SECRET$|_API_KEY$/.test(e.key) && e.value !== "") errors.push(`${name}: ${e.key} must be empty in a template`);
+    if (/PRIVATE_KEY$|_SECRET$|_API_KEY$|_MNEMONIC$|^CARD_VAULT_KEY$/.test(e.key) && e.value !== "") errors.push(`${name}: ${e.key} must be empty in a template`);
   }
   if (name === "facilitator" && !entries.some((e) => e.key === "NETWORK" && e.value === "local")) {
     errors.push("facilitator: NETWORK must be local");
@@ -497,7 +576,7 @@ export function checkTemplate(name: string, entries: TemplateEntry[]): string[] 
 }
 
 describe("T-ARCH-ENV per-process env templates (US4)", () => {
-  it("7 of 7 templates exist and match the CFG-2 matrix", () => {
+  it("8 of 8 templates exist and match the CFG-2 matrix", () => {
     const errors = Object.keys(TEMPLATES).flatMap((name) => {
       const file = `env/${name}.env.example`;
       if (!existsSync(file)) return [`${file} missing`];
@@ -568,6 +647,91 @@ describe("T-ARCH-ENV per-process env templates (US4)", () => {
     expect(checkCibaConfinement("test/x.test.ts", 'process.env.CIBA_CLIENT_KEY = "x";')).toEqual([]);
   });
 
+  // ---- 013: A10, A11, A12 and the portal as an area ---------------------------------------------------------
+
+  const templates = () =>
+    readdirSync("env")
+      .filter((f) => f.endsWith(".env.example"))
+      .map((f) => `env/${f}`);
+  const scoped = () => [...walk("src"), ...walk("scripts"), ...templates()];
+  const other13 = (path: string, source: string) => [
+    ...checkFile(path, source),
+    ...checkCdpConfinement(path, source),
+    ...checkCibaConfinement(path, source),
+  ];
+
+  it("T-ARCH-A10 fixture trips A10 for the key and for the vault's host, and no other rule catches it", () => {
+    const { path, source } = fixture(10);
+    expect(other13(path, source)).toEqual([]);
+    expect([...checkMnemonicConfinement(path, source), ...checkPortalIsolation(path, source)]).toEqual([]);
+    expect(checkCardVaultConfinement(path, source).map((v) => [v.rule, v.detail])).toEqual([
+      ["A10", "CARD_VAULT_KEY"],
+      ["A10", "api.stripe.com"],
+    ]);
+  });
+
+  it("T-ARCH-A10 repository is clean: the card vault key and host live only in card-vault.ts and the portal template", () => {
+    expect(scoped().flatMap((f) => checkCardVaultConfinement(f, readFileSync(f, "utf8"))).map(format)).toEqual([]);
+    // Not vacuous: the allowed files really hold both.
+    const vault = checkCardVaultConfinement("src/portal/server.ts", readFileSync("src/portal/card-vault.ts", "utf8")).map((v) => v.detail);
+    expect(new Set(vault)).toEqual(new Set(["CARD_VAULT_KEY", "api.stripe.com"]));
+    expect(checkCardVaultConfinement("env/l2-control.env.example", readFileSync("env/portal.env.example", "utf8")).length).toBeGreaterThan(0);
+  });
+
+  it("T-ARCH-A10 the publishable key and comments never trip it; any other template naming the key does", () => {
+    expect(checkCardVaultConfinement("src/portal/config.ts", "export const k = env.CARD_VAULT_PUBLISHABLE_KEY;\n")).toEqual([]);
+    expect(checkCardVaultConfinement("src/portal/x.ts", "// CARD_VAULT_KEY at api.stripe.com\nexport {};\n")).toEqual([]);
+    expect(checkCardVaultConfinement("env/l1-hosted.env.example", "# CARD_VAULT_KEY=\n").map((v) => v.rule)).toEqual(["A10"]);
+    expect(checkCardVaultConfinement("test/x.test.ts", 'process.env.CARD_VAULT_KEY = "x";')).toEqual([]);
+  });
+
+  it("T-ARCH-A11 fixture trips A11, and no other rule catches it", () => {
+    const { path, source } = fixture(11);
+    expect(other13(path, source)).toEqual([]);
+    expect([...checkCardVaultConfinement(path, source), ...checkPortalIsolation(path, source)]).toEqual([]);
+    expect(checkMnemonicConfinement(path, source).map((v) => [v.rule, v.detail])).toEqual([["A11", "USER_WALLET_MNEMONIC"]]);
+  });
+
+  it("T-ARCH-A11 repository is clean: the mnemonic's name lives only in the signer, the portal's refusal, the local dev value and L2's template", () => {
+    expect(scoped().flatMap((f) => checkMnemonicConfinement(f, readFileSync(f, "utf8"))).map(format)).toEqual([]);
+    for (const allowed of ["src/layer2-control/signer.ts", "src/portal-main.ts", "scripts/demo-lib.ts"]) {
+      expect(checkMnemonicConfinement("src/layer2-control/service.ts", readFileSync(allowed, "utf8")).length, allowed).toBeGreaterThan(0);
+    }
+    expect(checkMnemonicConfinement("env/portal.env.example", readFileSync("env/l2-control.env.example", "utf8")).length).toBeGreaterThan(0);
+  });
+
+  it("T-ARCH-A12 fixture trips A12, and no other rule catches it", () => {
+    const { path, source } = fixture(12);
+    expect(other13(path, source)).toEqual([]);
+    expect([...checkCardVaultConfinement(path, source), ...checkMnemonicConfinement(path, source)]).toEqual([]);
+    expect(checkPortalIsolation(path, source).map((v) => [v.rule, v.detail])).toEqual([["A12", "CONTROL_TOKEN"]]);
+  });
+
+  it("T-ARCH-A12 repository is clean: no layer names the portal's token, and the portal names no other role's secret", () => {
+    expect(walk("src").flatMap((f) => checkPortalIsolation(f, readFileSync(f, "utf8"))).map(format)).toEqual([]);
+    expect(checkPortalIsolation("src/layer1-intent/x.ts", 'export const t = process.env["PORTAL_TOKEN"];').map((v) => v.rule)).toEqual(["A12"]);
+    expect(checkPortalIsolation("src/layer3-settlement/x.ts", "tokenFor(PORTAL_TOKEN)").map((v) => v.rule)).toEqual(["A12"]);
+    for (const name of ["PAYER_PRIVATE_KEY", "CONTROL_TOKEN", "OPERATOR_TOKEN", "SETTLEMENT_TOKEN", "VERIFIER_TOKEN"]) {
+      expect(checkPortalIsolation("src/portal/x.ts", `export const v = env.${name};`).map((v) => v.detail), name).toEqual([name]);
+    }
+    // L2 verifies the portal's token, and shared config maps roles to variables: both may name it.
+    expect(checkPortalIsolation("src/layer2-control/x.ts", "PORTAL_TOKEN")).toEqual([]);
+    expect(checkPortalIsolation("src/shared/config.ts", readFileSync("src/shared/config.ts", "utf8"))).toEqual([]);
+    expect(walk("src/portal").length).toBeGreaterThan(8);
+  });
+
+  it("T-ARCH-A1 and A4 cover the portal: it imports only shared and itself, no layer imports it, and it can't sign", () => {
+    expect(checkFile("src/portal/x.ts", 'import { AuditLedger } from "../layer2-control/ledger.js";').map((v) => v.rule)).toEqual(["A1"]);
+    expect(checkFile("src/portal/x.ts", 'import { requesterAuth } from "../layer1-intent/hosted/requester-auth.js";').map((v) => v.rule)).toEqual(["A1"]);
+    expect(checkFile("src/layer2-control/x.ts", 'import { ProfileStore } from "../portal/profile-store.js";').map((v) => v.rule)).toEqual(["A1"]);
+    expect(checkFile("src/layer1-intent/x.ts", 'import "../portal/server.js";').map((v) => v.rule)).toEqual(["A1"]);
+    expect(checkFile("src/portal/x.ts", 'import { verifyEntraToken } from "../shared/entra-token.js";\nimport { x } from "./config.js";')).toEqual([]);
+    for (const id of ["createWalletClient", "signTypedData", "writeContract", "sendTransaction"]) {
+      expect(checkFile("src/portal/x.ts", `const y = ${id}({});`).map((v) => v.rule), id).toEqual(["A4"]);
+    }
+    expect(checkFile("src/portal/x.ts", 'import { mnemonicToAccount } from "viem/accounts";').map((v) => v.rule)).toEqual(["A3", "A3"]);
+  });
+
   it("no root .env exists, and only src/shared/config.ts uses dotenv", () => {
     expect(existsSync(".env")).toBe(false);
     const users = [...walk("src"), ...walk("scripts")].filter((f) =>
@@ -611,8 +775,9 @@ function missingIds(rows: { sec: string; ids: string[] }[], titles: string[]): s
 
 describe("T-ARCH-TRACE threat matrix → test titles (007 T051)", () => {
   // SEC-10 and SEC-11 were added by 009 (SPEC v1.2), SEC-12 by 010 (v1.3), SEC-13 by the API docs (v1.4),
-  // SEC-14..16 by 011 (v1.5, hosted agent service), SEC-17..18 by 012 (v1.8, backchannel approval).
-  const SEC_ROWS = Array.from({ length: 18 }, (_, i) => `SEC-${i + 1}`);
+  // SEC-14..16 by 011 (v1.5, hosted agent service), SEC-17..18 by 012 (v1.8, backchannel approval),
+  // SEC-19..24 by 013 (v1.9, user accounts and the portal).
+  const SEC_ROWS = Array.from({ length: 24 }, (_, i) => `SEC-${i + 1}`);
   it(`every ${SEC_ROWS[0]}..${SEC_ROWS.at(-1)} row names at least one test, and each named ID is a test title`, () => {
     const rows = matrixRows(readFileSync(THREAT_MATRIX, "utf8"));
     expect(rows.map((r) => r.sec)).toEqual(SEC_ROWS);

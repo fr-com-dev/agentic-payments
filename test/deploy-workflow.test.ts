@@ -1,7 +1,7 @@
 // T-E2E-AZ deployment workflow gates (SPEC.md §3.1 Azure profile, FR-023, FR-024; specs/011 contracts/
-// deploy-pipeline.md). Offline checks on the six pipelines in .github/workflows (deploy-infra.yml for the platform,
-// deploy-l1/l2/l3/operator/seller.yml for one unit each), on deploy.yml, the steps they all call with their unit, and
-// on the infra scripts. Checked:
+// deploy-pipeline.md). Offline checks on the seven pipelines in .github/workflows (deploy-infra.yml for the platform,
+// deploy-l1/l2/l3/operator/portal/seller.yml for one unit each), on deploy.yml, the steps they all call with their
+// unit, and on the infra scripts. Checked:
 // - one pipeline per unit, and nothing else in the folder: each runs by hand or on its own tag, holds the one
 //   concurrency group, and only calls deploy.yml with its unit; each image of scripts/image-closure.ts is built by
 //   exactly one pipeline;
@@ -12,9 +12,12 @@
 // - Azure provisioned by Bicep only: every az command is a Bicep deployment (each previewed with what-if), a read,
 //   a job start, an image copy or (in infra/cleanup.sh) a deletion, and infra/ holds two scripts only
 //   (github-setup.sh, cleanup.sh);
-// - the gate order: nothing is promoted before the regression, chain check, smoke run and log scan pass; a step is
-//   skipped only by a platform run (the image steps, the promotion, the rollback) or a first deployment (the
-//   checks through the other units); a failure inside a pipe fails its step;
+// - the gate order: nothing is promoted before the regression, chain check, smoke run, portal smoke (013) and log
+//   scan pass; a step is skipped only by a platform run (the image steps, the promotion, the rollback) or a first
+//   deployment (the checks through the other units; the portal smoke runs on the portal's own); a failure inside a
+//   pipe fails its step;
+// - 013: the image scan also refuses a mnemonic or the card vault key; the wait polls the portal's new revision; the
+//   portal smoke sends no token and expects health, Entra sign-in mode and a 401;
 // - step 0 first maps the unit to its image and refuses inputs that don't belong to it, before anything else (the
 //   guard itself is run, for every combination of unit and inputs);
 // - each job runs its own command: the deploy identity never starts the operator job with another;
@@ -57,7 +60,7 @@ const read = (file: string) => parse(readFileSync(`${DIR}/${file}`, "utf8")) as 
 const stepsOf = (w: Workflow) => Object.values(w.jobs)[0]?.steps ?? [];
 const withSteps = (w: Workflow, steps: Step[]): Workflow => ({ ...w, jobs: { deploy: { ...Object.values(w.jobs)[0], steps } } });
 
-type Unit = "platform" | "l1" | "l2" | "l3" | "operator" | "seller";
+type Unit = "platform" | "l1" | "l2" | "l3" | "operator" | "portal" | "seller";
 /**
  * The pipelines: the unit each deploys (main.bicep's `unit`) and the inputs it offers. Every unit but L1 has a first
  * deployment, for a new environment (L1 runs last, through every check); only the platform takes seed-ip and
@@ -69,11 +72,12 @@ const PIPELINES: Record<string, { unit: Unit; inputs: string[] }> = {
   "deploy-l2.yml": { unit: "l2", inputs: ["environment", "first-deployment"] },
   "deploy-l3.yml": { unit: "l3", inputs: ["environment", "first-deployment"] },
   "deploy-operator.yml": { unit: "operator", inputs: ["environment", "first-deployment"] },
+  "deploy-portal.yml": { unit: "portal", inputs: ["environment", "first-deployment"] },
   "deploy-seller.yml": { unit: "seller", inputs: ["environment", "first-deployment"] },
 };
 const FILES = [SHARED, ...Object.keys(PIPELINES)].sort();
 /** The image each unit's run builds, promotes and rolls back; the platform has none. */
-const UNIT_IMAGES: Record<Exclude<Unit, "platform">, ImageName> = { l1: "l1-agent", l2: "l2-control", l3: "l3-verifier", operator: "operator", seller: "seller" };
+const UNIT_IMAGES: Record<Exclude<Unit, "platform">, ImageName> = { l1: "l1-agent", l2: "l2-control", l3: "l3-verifier", operator: "operator", portal: "portal", seller: "seller" };
 /** What each pipeline passes to deploy.yml: its unit, its environment, and each input it offers. */
 const PASSED: Record<string, string> = {
   environment: "${{ inputs.environment || 'dev' }}",
@@ -85,7 +89,7 @@ const PASSED: Record<string, string> = {
 const SHARED_INPUTS = ["environment", "first-deployment", "recover-vaults", "seed-ip", "unit"];
 
 /** deploy.yml's steps, in order (contracts/deploy-pipeline.md), and when each runs; the rollback is the last. */
-const ORDER = ["target", "tests", "build", "image-scan", "deploy", "wait", "balance", "regression", "chain", "smoke", "log-scan", "promote"];
+const ORDER = ["target", "tests", "build", "image-scan", "deploy", "wait", "balance", "regression", "chain", "smoke", "portal-smoke", "log-scan", "promote"];
 const NOT_PLATFORM = "${{ inputs.unit != 'platform' }}";
 const CHECKS = "${{ !inputs.first-deployment }}";
 const STEP_IF: Record<string, string | undefined> = {
@@ -97,6 +101,8 @@ const STEP_IF: Record<string, string | undefined> = {
   regression: CHECKS,
   chain: CHECKS,
   smoke: CHECKS,
+  // 013: skipped on a first deployment of a unit that precedes the portal; the portal's own first deployment runs it.
+  "portal-smoke": "${{ !inputs.first-deployment || inputs.unit == 'portal' }}",
   "log-scan": CHECKS,
   promote: "${{ inputs.unit != 'platform' && !inputs.first-deployment }}",
   rollback: "failure() && inputs.unit != 'platform' && (steps.deploy.outcome == 'success' || steps.deploy.outcome == 'failure')",
@@ -122,7 +128,9 @@ const TARGET_SIGN_IN = [
   ["SUBSCRIPTION_ID", "subscriptionId"],
   ["DEPLOY_CLIENT_ID", "deployClientId"],
 ];
-const TARGET_NAMES = ["RG=", "LOG_X402=", "CR_X402=", "CA_L1=", "CA_L3=", "CA_SELLER=", "CA_SELLER_ALIAS=", "CAJ_L1=", "CAJ_L2="];
+const TARGET_NAMES = ["RG=", "LOG_X402=", "CR_X402=", "CA_L1=", "CA_L3=", "CA_PORTAL=", "CA_SELLER=", "CA_SELLER_ALIAS=", "CAJ_L1=", "CAJ_L2="];
+/** Step 2b's pattern: an assignment of a key, a secret, a token, or (013) a mnemonic or the card vault key, in the image. */
+const IMAGE_SCAN = "grep -E 'PRIVATE_KEY[=]|_SECRET[=]|_TOKEN[=]|_MNEMONIC[=]|CARD_VAULT_KEY[=]'";
 /** The inputs step 0's guard reads, as environment variables: an input is never pasted into a script. */
 const TARGET_INPUTS = JSON.stringify({
   INPUT_FIRST_DEPLOYMENT: "${{ inputs.first-deployment }}",
@@ -164,7 +172,7 @@ export function provisioningOutsideBicep(file: string, text: string, deletions =
     .map((c) => `${file} runs "${c.split(" ").slice(0, 4).join(" ")}": Azure is provisioned by Bicep only`);
 }
 
-/** The folder holds the six pipelines and deploy.yml, and the pipelines' units build every image exactly once. */
+/** The folder holds the seven pipelines and deploy.yml, and the pipelines' units build every image exactly once. */
 export function folderProblems(files: string[]): string[] {
   const out: string[] = [];
   if (JSON.stringify([...files].sort()) !== JSON.stringify(FILES)) out.push(`${DIR} must hold exactly ${FILES.join(", ")}: one pipeline per unit and the steps they share`);
@@ -247,8 +255,12 @@ export function workflowProblems(w: Workflow): string[] {
   const build = step("build")?.run ?? "";
   if (!build.includes('docker build -f "$DOCKERFILE" -t "$SERVER/x402-$IMAGE:$IMAGE_TAG" .') || !build.includes('docker push "$SERVER/x402-$IMAGE:$IMAGE_TAG"')) out.push("build must build and push the unit's image, x402-$IMAGE:$IMAGE_TAG, from its Dockerfile");
   if (w.env?.IMAGE_TAG !== "${{ github.sha }}") out.push("the images must be tagged with the commit");
+  if (!step("image-scan")?.run?.includes(IMAGE_SCAN)) out.push("the image scan must refuse an assignment of a private key, a secret, a token, a mnemonic or the card vault key");
   const wait = step("wait")?.run ?? "";
   if (!/if \[\[ "\$UNIT" == platform \|\| "\$UNIT" == l2 \]\]; then\n\s+ok=""\n\s+for _ in \$\(seq 1 20\); do\n\s+if run_job "\$CAJ_L2" 120/.test(wait)) out.push("wait must wait for L2's ledger lock handover (ledger-verify through the operator job) after a platform or an L2 deployment");
+  if (!wait.includes('if [[ "$UNIT" == l1 || "$UNIT" == l3 || "$UNIT" == portal ]]; then') || !/\bl1\) app="\$CA_L1" ;; l3\) app="\$CA_L3" ;; portal\) app="\$CA_PORTAL" ;;/.test(wait)) {
+    out.push("wait must wait for the new revision of L1, L3 or the portal after its own deployment");
+  }
   if (!wait.includes('for app in "$CA_SELLER" "$CA_SELLER_ALIAS"; do')) out.push("wait must wake both sellers before the checks");
   if (!step("regression")?.run?.includes('run_job "$CAJ_L1"')) out.push("the regression must run L1's regression job ($CAJ_L1)");
   if (!step("chain")?.run?.includes('run_job "$CAJ_L2"')) out.push("the chain check must run the operator job ($CAJ_L2), whose own command is ledger-verify");
@@ -259,6 +271,14 @@ export function workflowProblems(w: Workflow): string[] {
   if (!step("smoke")?.run?.includes('az account get-access-token --resource "${{ steps.target.outputs.authAudience }}"')) out.push("the smoke run's token must be for the API app's client ID (authAudience), the audience the agent accepts");
   // 012 (research R14): the hosted smoke run buys only auto-approved items; any escalation fails it.
   if (!step("smoke")?.run?.includes(`jq -e '[.steps[] | select(.result.outcome == "ESCALATED")] | length == 0'`)) out.push("the smoke run must fail when any step escalated (a deployment check never asks the approver)");
+  // 013: the portal smoke. The pipeline's identity is an application, which the portal refuses by design, so the
+  // check sends no token: the portal answers, verifies Entra tokens (not the dev issuer's), and refuses without one.
+  const portal = step("portal-smoke")?.run ?? "";
+  if (!portal.includes('az containerapp show -n "$CA_PORTAL" -g "$RG" --query properties.configuration.ingress.fqdn')) out.push("the portal smoke must go to the portal's own address ($CA_PORTAL)");
+  if (!portal.includes('curl -fsS -m 10 -o /dev/null "https://$PORTAL/healthz"')) out.push("the portal smoke must wait for /healthz to answer 200");
+  if (!portal.includes(`curl -fsS -m 30 "https://$PORTAL/api/config" | jq -e '.auth.mode == "entra"' > /dev/null`)) out.push('the portal smoke must get /api/config with "mode":"entra": a deployed portal never trusts the dev issuer');
+  if (!/code=\$\(curl -sS -m 30 -o \/dev\/null -w '%\{http_code\}' "https:\/\/\$PORTAL\/api\/me"\)\n\s*if \[ "\$code" != 401 \]; then [^\n]*exit 1; fi/.test(portal)) out.push("the portal smoke must get 401 from /api/me without a token");
+  if (/get-access-token|authorization|Bearer/i.test(portal)) out.push("the portal smoke must send no token: the portal refuses application identities");
   const promote = step("promote")?.run ?? "";
   if (!/if \[\[ "\$UNIT" == l1 \]\]; then\n\s+AGENT_STABLE_REVISION="" az deployment group create/.test(promote)) out.push("promote must give the agent's latest revision its traffic through main.bicep, on L1 only");
   if (!promote.includes('--source "${{ steps.build.outputs.acr }}/x402-$IMAGE:$IMAGE_TAG" --image "x402-$IMAGE:last-good"')) out.push("promote must record the unit's image as last-good");
@@ -387,7 +407,7 @@ describe("T-E2E-AZ deployment workflow gates", () => {
   const present = FILES.filter((f) => existsSync(`${DIR}/${f}`));
   const texts = Object.fromEntries(present.map((f) => [f, readFileSync(`${DIR}/${f}`, "utf8")]));
 
-  it("T-E2E-AZ one pipeline per unit: deploy-infra, -l1, -l2, -l3, -operator and -seller, each by hand or on its own tag, in one concurrency group, calling deploy.yml with its unit", () => {
+  it("T-E2E-AZ one pipeline per unit: deploy-infra, -l1, -l2, -l3, -operator, -portal and -seller, each by hand or on its own tag, in one concurrency group, calling deploy.yml with its unit", () => {
     expect(folderProblems(readdirSync(DIR))).toEqual([]);
     for (const file of Object.keys(PIPELINES).filter((f) => present.includes(f))) expect(pipelineProblems(file, read(file)), file).toEqual([]);
   });
@@ -416,6 +436,14 @@ describe("T-E2E-AZ deployment workflow gates", () => {
     expect(unitGuardProblems(withTarget((s) => ({ ...s, run: swapped })))).toContain(
       "with unit operator, first-deployment=false, seed-ip=(empty) and recover-vaults=false, the target step must build x402-operator from docker/operator.Dockerfile",
     );
+    const portalImage = run.replace("portal) image=portal dockerfile=docker/portal.Dockerfile", "portal) image=l2-control dockerfile=docker/l2-control.Dockerfile");
+    expect(portalImage).not.toBe(run);
+    expect(unitGuardProblems(withTarget((s) => ({ ...s, run: portalImage })))).toContain(
+      "with unit portal, first-deployment=true, seed-ip=(empty) and recover-vaults=false, the target step must build x402-portal from docker/portal.Dockerfile",
+    );
+    const noPortal = run.replace(/\n\s*portal\) image=portal dockerfile=docker\/portal\.Dockerfile ;;/, "");
+    expect(noPortal).not.toBe(run);
+    expect(unitGuardProblems(withTarget((s) => ({ ...s, run: noPortal })))).toContain("with unit portal, first-deployment=false, seed-ip=(empty) and recover-vaults=false, the target step must go on");
     const pasted = run.replace('-n "$INPUT_SEED_IP"', '-n "${{ inputs.seed-ip }}"');
     expect(unitGuardProblems(withTarget((s) => ({ ...s, env: undefined, run: pasted })))).toContain(
       "the target step must take first-deployment, seed-ip and recover-vaults as INPUT_* environment variables, never pasted into its script",
@@ -460,6 +488,14 @@ describe("T-E2E-AZ deployment workflow gates", () => {
       `${DIR} must hold exactly ${FILES.join(", ")}: one pipeline per unit and the steps they share`,
     ]);
     expect(folderProblems([...readdirSync(DIR), "deploy-all.yml"])).toHaveLength(1);
+    // 013: without the portal's pipeline, its image is built by none.
+    expect(folderProblems(readdirSync(DIR).filter((f) => f !== "deploy-portal.yml"))).toEqual([
+      `${DIR} must hold exactly ${FILES.join(", ")}: one pipeline per unit and the steps they share`,
+    ]);
+    const portal = read("deploy-portal.yml");
+    const portalJob = Object.values(portal.jobs)[0]!;
+    expect(pipelineProblems("deploy-portal.yml", { ...portal, jobs: { deploy: { ...portalJob, with: { ...portalJob.with, unit: "l2" } } } })).toEqual(["deploy-portal.yml must pass deploy.yml unit portal and its own inputs only"]);
+    expect(pipelineProblems("deploy-portal.yml", { ...portal, on: { ...portal.on, push: { tags: ["deploy-l2-*"] } } })).toEqual(["deploy-portal.yml must run by hand or on deploy-portal-* tags only"]);
   });
 
   it("T-E2E-AZ must-fail: deploy.yml with its own trigger or concurrency group (a deadlock with its callers) is reported", () => {
@@ -483,6 +519,40 @@ describe("T-E2E-AZ deployment workflow gates", () => {
     expect(workflowProblems(skip("promote", CHECKS))).toContain(`promote must run if ${STEP_IF.promote}`);
     expect(workflowProblems(skip("rollback", "failure() && (steps.deploy.outcome == 'success' || steps.deploy.outcome == 'failure')"))).toContain(`rollback must run if ${STEP_IF.rollback}`);
     expect(workflowProblems(skip("wait", NOT_PLATFORM))).toContain(`wait must run if ${STEP_IF.wait}`);
+  });
+
+  it("T-E2E-AZ 013 must-fail: a portal smoke skipped on the portal's own first deployment, run before the hosted smoke, sending a token, or without one of its three checks, is reported", () => {
+    const edit = (f: (run: string) => string) => withSteps(w, stepsOf(w).map((s) => (s.id === "portal-smoke" ? { ...s, run: f(s.run!) } : s)));
+    const skipped = withSteps(w, stepsOf(w).map((s) => (s.id === "portal-smoke" ? { ...s, if: CHECKS } : s)));
+    expect(workflowProblems(skipped)).toEqual([`portal-smoke must run if ${STEP_IF["portal-smoke"]}`]);
+    const steps = [...stepsOf(w)];
+    const smoke = steps.splice(steps.findIndex((s) => s.id === "portal-smoke"), 1)[0]!;
+    steps.splice(steps.findIndex((s) => s.id === "smoke"), 0, smoke);
+    expect(workflowProblems(withSteps(w, steps))).toEqual(["smoke must run before portal-smoke"]);
+    expect(workflowProblems(withSteps(w, stepsOf(w).filter((s) => s.id !== "portal-smoke")))).toContain("missing step portal-smoke");
+    expect(workflowProblems(edit((run) => run.replace('"https://$PORTAL/api/me")', '-H "authorization: Bearer $ACCESS" "https://$PORTAL/api/me")')))).toContain(
+      "the portal smoke must send no token: the portal refuses application identities",
+    );
+    expect(workflowProblems(edit((run) => run.replace(`| jq -e '.auth.mode == "entra"' > /dev/null`, "> /dev/null")))).toEqual([
+      'the portal smoke must get /api/config with "mode":"entra": a deployed portal never trusts the dev issuer',
+    ]);
+    expect(workflowProblems(edit((run) => run.replace('if [ "$code" != 401 ]', 'if [ "$code" = 500 ]')))).toEqual(["the portal smoke must get 401 from /api/me without a token"]);
+    expect(workflowProblems(edit((run) => run.replace('-n "$CA_PORTAL"', '-n "$CA_L1"')))).toEqual(["the portal smoke must go to the portal's own address ($CA_PORTAL)"]);
+  });
+
+  it("T-E2E-AZ 013 must-fail: an image scan that lets a mnemonic or the card vault key through, or a portal deployment that doesn't wait for its revision, is reported", () => {
+    const scan = (from: string) => withSteps(w, stepsOf(w).map((s) => (s.id === "image-scan" ? { ...s, run: s.run!.replace(from, "") } : s)));
+    for (const part of ["|_MNEMONIC[=]", "|CARD_VAULT_KEY[=]"]) {
+      expect(text.includes(part)).toBe(true);
+      expect(workflowProblems(scan(part))).toEqual(["the image scan must refuse an assignment of a private key, a secret, a token, a mnemonic or the card vault key"]);
+    }
+    // The pattern itself, as grep runs it: each assignment is caught, a plain mention isn't.
+    const pattern = /grep -E '([^']+)'/.exec(IMAGE_SCAN)![1]!;
+    const caught = (line: string) => spawnSync("grep", ["-E", pattern], { input: `${line}\n`, encoding: "utf8" }).status === 0;
+    for (const line of ["USER_WALLET_MNEMONIC=abandon abandon", "ENV CARD_VAULT_KEY=rk_test_x", "PAYER_PRIVATE_KEY=0x1", "PORTAL_TOKEN=x", "CIBA_CLIENT_SECRET=x"]) expect(caught(line), line).toBe(true);
+    for (const line of ["NODE_ENV=production", "CARD_VAULT_PUBLISHABLE_KEY=pk_test_x", "# USER_WALLET_MNEMONIC is seeded by hand"]) expect(caught(line), line).toBe(false);
+    const noWait = withSteps(w, stepsOf(w).map((s) => (s.id === "wait" ? { ...s, run: s.run!.replace('if [[ "$UNIT" == l1 || "$UNIT" == l3 || "$UNIT" == portal ]]', 'if [[ "$UNIT" == l1 || "$UNIT" == l3 ]]') } : s)));
+    expect(workflowProblems(noWait)).toEqual(["wait must wait for the new revision of L1, L3 or the portal after its own deployment"]);
   });
 
   it("T-E2E-AZ must-fail: a GitHub secret, or a sign-in that isn't OIDC from the parameter file, is reported", () => {
@@ -514,7 +584,7 @@ describe("T-E2E-AZ deployment workflow gates", () => {
     once.splice(once.findIndex((s) => s.id === "build"), 0, login);
     const problems = workflowProblems(withSteps(w, once));
     expect(problems).toContain("no azure/login: it signs in once, and GitHub's token is valid for 5 minutes; each step that calls Azure signs in itself (SIGN_IN)");
-    for (const id of ["build", "deploy", "wait", "regression", "chain", "smoke", "log-scan", "promote", "rollback"]) {
+    for (const id of ["build", "deploy", "wait", "regression", "chain", "smoke", "portal-smoke", "log-scan", "promote", "rollback"]) {
       expect(problems).toContain(`${id} calls Azure, so it must sign in first (eval "$SIGN_IN"): GitHub's token is valid for 5 minutes`);
     }
     const late = stepsOf(w).map((s) => (s.id === "smoke" ? { ...s, run: s.run!.replace('eval "$SIGN_IN"\n', "") + 'eval "$SIGN_IN"\n' } : s));

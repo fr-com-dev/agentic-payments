@@ -23,9 +23,9 @@ export interface MainNames {
   storage: string;
   foundry: string;
   environments: Record<"x402" | "seller", string>;
-  identities: Record<"l1" | "l2" | "l3" | "op" | "seller", string>;
-  vaults: Record<"l1" | "l2" | "l3" | "op" | "seller", string>;
-  apps: Record<"l1" | "l2" | "l3" | "seller" | "sellerAlias", string>;
+  identities: Record<"l1" | "l2" | "l3" | "op" | "portal" | "seller", string>;
+  vaults: Record<"l1" | "l2" | "l3" | "op" | "portal" | "seller", string>;
+  apps: Record<"l1" | "l2" | "l3" | "portal" | "seller" | "sellerAlias", string>;
   jobs: Record<"l1" | "l2", string>;
 }
 /** pre-deploy.bicep's names for an environment (pre-deploy.<environment>.bicepparam). */
@@ -33,6 +33,8 @@ export interface PreDeployNames {
   resourceGroup: string;
   apiApp: string;
   deployApp: string;
+  /** 013: the portal web app's registration (a public client). */
+  portalApp: string;
   operators: string;
 }
 

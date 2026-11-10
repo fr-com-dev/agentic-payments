@@ -247,7 +247,9 @@ components:
           schema:
             $ref: "#/components/schemas/Error"
     Forbidden:
-      description: A valid token without the app role `Agent.Run`.
+      description: >-
+        A valid token without the app role `Agent.Run`. Since v1.9, also a person's token that was not issued for
+        this service: its `scp` lacks `user_impersonation`, or its `azp` is the portal's web app (SEC-20).
       content:
         application/json:
           schema:
@@ -450,6 +452,12 @@ components:
           $ref: "#/components/schemas/AtomicAmount"
         perPaymentCapAtomic:
           $ref: "#/components/schemas/AtomicAmount"
+        scope:
+          type: string
+          enum: [session, user_daily]
+          description: >-
+            v1.9. Present as `user_daily` when the run is a person's and L2 has user accounts on: the figures are then
+            the user daily ceiling and the user's last 24 hours. Absent: the session.
 
     ToolError:
       type: object

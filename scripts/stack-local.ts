@@ -1,9 +1,11 @@
-// `npm run stack:local [-- --docker]` (specs/011 quickstart §3). Starts the five local stack processes of
+// `npm run stack:local [-- --docker] [-- --users]` (specs/011 quickstart §3; --users: specs/013 quickstart §2). Starts the five local stack processes of
 // demo:local (chain, facilitator, seller, L2, L3) without an agent and keeps them running until Ctrl-C, so the
 // hosted agent service (`npm run agent:hosted`, or its container image) has something to buy from. Children
 // get the same env as in demo:local: local dev keys only to L2 and the facilitator (demo-lib childEnv).
 // --docker also allows host.docker.internal:4021 in L2's mandate (R6): a container on Docker Desktop reaches
 // the seller at that host, and L2 denies a host its mandate doesn't list.
+// --users starts L2 with user accounts on (USER_ACCOUNTS=1 and the development wallet mnemonic), for the portal
+// (`npm run portal`). Without it L2 runs exactly as in demo:local.
 //
 // Exit codes: 0 stopped by Ctrl-C or SIGTERM, 1 port busy, readiness timeout or child crash.
 import { rmSync } from "node:fs";
@@ -11,6 +13,7 @@ import { LOCAL_STACK, ProcessGroup, childEnv, localStack, portInUse, sleep, type
 
 const DOCKER_SELLER_HOST = "host.docker.internal:4021";
 const DOCKER = process.argv.includes("--docker");
+const USERS = process.argv.includes("--users");
 
 const stack = localStack();
 const { files, ports: PORTS, network: NETWORK, deploymentPath } = stack;
@@ -19,7 +22,7 @@ const fileValue = (role: StackRole, key: string) => files.get(role)?.values[key]
 const group = new ProcessGroup(Object.values(PORTS));
 
 function envFor(p: DemoProcess): NodeJS.ProcessEnv {
-  const env = childEnv(p, files.get(p.role as StackRole) ?? null, { network: NETWORK, sessionId: "sess_stack" });
+  const env = childEnv(p, files.get(p.role as StackRole) ?? null, { network: NETWORK, sessionId: "sess_stack", users: USERS });
   if (DOCKER && p.role === "l2") {
     const hosts = fileValue("l2", "ALLOWED_HOSTS") ?? `127.0.0.1:${PORTS.seller}`;
     env.ALLOWED_HOSTS = `${hosts},${DOCKER_SELLER_HOST}`;
@@ -39,7 +42,9 @@ async function run(): Promise<number> {
     group.start(p, envFor(p));
     await group.waitReady(p.role, stack.ready[p.role]);
   }
-  console.log(`stack: ready (network ${NETWORK}${DOCKER ? `, L2 also allows ${DOCKER_SELLER_HOST}` : ""}). Ctrl-C stops it.`);
+  console.log(
+    `stack: ready (network ${NETWORK}${DOCKER ? `, L2 also allows ${DOCKER_SELLER_HOST}` : ""}${USERS ? ", user accounts on" : ""}). Ctrl-C stops it.`,
+  );
   while (!group.crash) await sleep(1_000);
   throw new Error(group.crash);
 }

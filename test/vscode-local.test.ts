@@ -5,7 +5,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 import { parseEnvFile, type EnvFile } from "../scripts/demo-lib.js";
-import { localRunEnv, PASSTHROUGH, RUN_ROLES, runWarnings, stackAction, type RunRole } from "../scripts/vscode-local.js";
+import { localRunEnv, PASSTHROUGH, RUN_ROLES, runWarnings, stackAction, userAccountsOn, type RunRole } from "../scripts/vscode-local.js";
 
 /** VS Code's JSON with comments: these files use whole-line `//` comments only. */
 const jsonc = (path: string) => JSON.parse(readFileSync(path, "utf8").replace(/^\s*\/\/.*$/gm, "")) as Record<string, unknown>;
@@ -25,6 +25,8 @@ type Input = { id: string };
 const RUNNER = "${workspaceFolder}/scripts/vscode-local.ts";
 /** The stack's services: the compound "Local stack" starts them, so they have no pre-launch task of their own. */
 const SERVICES = ["facilitator", "seller", "l2", "l3"];
+/** The task each other configuration runs first. The portal (013) needs the stack with user accounts on in L2. */
+const preLaunchFor = (role: string) => (role === "portal" ? "local: stack: users" : "local: stack");
 const VITEST = "${workspaceFolder}/node_modules/vitest/vitest.mjs";
 
 const launch = () => jsonc(".vscode/launch.json") as { configurations: LaunchConfig[]; compounds: Compound[]; inputs: Input[] };
@@ -49,7 +51,7 @@ function launchProblems(l = launch(), t = tasks()): string[] {
     }
     const role = c.program === RUNNER && (c.args?.[1] ?? "") in RUN_ROLES ? c.args![1] : undefined;
     if (role !== undefined && SERVICES.includes(role) && c.preLaunchTask !== undefined) out.push(`${c.name}: a stack service starts with the compound, not a pre-launch task`);
-    if (role !== undefined && !SERVICES.includes(role) && c.preLaunchTask !== "local: stack") out.push(`${c.name}: must run task "local: stack" first`);
+    if (role !== undefined && !SERVICES.includes(role) && c.preLaunchTask !== preLaunchFor(role)) out.push(`${c.name}: must run task "${preLaunchFor(role)}" first`);
     if (c.preLaunchTask !== undefined && !labels.has(c.preLaunchTask)) out.push(`${c.name}: no task "${c.preLaunchTask}"`);
   }
   for (const k of l.compounds) {
@@ -83,6 +85,8 @@ describe("T-DEV-01 every VS Code configuration runs locally, through the runner"
     l.configurations.find((c) => c.name === "Seller")!.env = { API_DOCS: "1", NETWORK: "base-sepolia" };
     l.configurations.find((c) => c.name === "L1 hosted agent")!.preLaunchTask = "nope";
     l.configurations.find((c) => c.name === "L2 control")!.preLaunchTask = "local: stack";
+    // The portal on the plain stack would find an L2 without user accounts.
+    l.configurations.find((c) => c.name === "Portal")!.preLaunchTask = "local: stack";
     l.compounds[0]!.configurations.push("L1 agent: scripted plan", "Operator: ledger-verify");
     expect(launchProblems(l, t)).toEqual([
       'Seller: sets NETWORK, which the runner drops',
@@ -90,6 +94,7 @@ describe("T-DEV-01 every VS Code configuration runs locally, through the runner"
       'L3 verifier: not "run <role>" with a known role',
       'L1 hosted agent: must run task "local: stack" first',
       'L1 hosted agent: no task "nope"',
+      'Portal: must run task "local: stack: users" first',
       "Raw L2: runs ${workspaceFolder}/src/layer2-control/service.ts, not the local runner",
       "compound Local stack: two members share a pre-launch task",
     ]);
@@ -115,6 +120,7 @@ describe("T-DEV-02 each process gets its own env file, its own local key and NET
       l3: ["local", []],
       agent: ["local", []],
       hosted: ["local", []],
+      portal: ["local", []],
       approve: ["local", []],
       reject: ["local", []],
       escalations: ["local", []],
@@ -137,6 +143,29 @@ describe("T-DEV-02 each process gets its own env file, its own local key and NET
     expect(runWarnings("l2", remote, [])).toEqual(["env/l2-control.env sets NETWORK=base-sepolia; VS Code runs it with NETWORK=local"]);
   });
 
+  it("T-DEV-02 user accounts (013): the mnemonic only to L2, only when asked for; the portal gets no key at all", () => {
+    const secrets = (env: NodeJS.ProcessEnv) => ["PAYER_PRIVATE_KEY", "USER_WALLET_MNEMONIC", "USER_ACCOUNTS", "FACILITATOR_PRIVATE_KEY"].filter((k) => env[k] !== undefined);
+    const l2 = localRunEnv("l2", template("env/l2-control.env.example"), {}, { users: true });
+    expect(secrets(l2)).toEqual(["PAYER_PRIVATE_KEY", "USER_WALLET_MNEMONIC", "USER_ACCOUNTS"]);
+    expect(l2.USER_ACCOUNTS).toBe("1");
+    expect(l2.USER_WALLET_MNEMONIC!.split(" ").length).toBe(24);
+    // Without the option L2 runs as before: the plain stack and demo:local never turn user accounts on.
+    expect(secrets(localRunEnv("l2", template("env/l2-control.env.example"), {}))).toEqual(["PAYER_PRIVATE_KEY"]);
+    for (const role of Object.keys(RUN_ROLES).filter((r) => r !== "l2") as RunRole[]) {
+      const env = localRunEnv(role, template(`${RUN_ROLES[role].envFile}.example`), { PAYER_PRIVATE_KEY: "0xdecoy", USER_WALLET_MNEMONIC: "decoy" }, { users: true });
+      expect(secrets(env).filter((k) => k !== "FACILITATOR_PRIVATE_KEY"), role).toEqual([]);
+    }
+    expect(RUN_ROLES.portal.entry).toBe("src/portal-main.ts");
+  });
+
+  it("T-DEV-02 the users stack refuses an L2 that runs without user accounts, told apart without a token", () => {
+    // A mounted portal route answers 401 to a caller with no token; with user accounts off the route does not exist.
+    expect([userAccountsOn(401), userAccountsOn(200), userAccountsOn(404)]).toEqual([true, true, false]);
+    const stackTask = (label: string) => tasks().tasks.find((t) => t.label === label)!.args!.slice(2);
+    expect(stackTask("local: stack")).toEqual(["scripts/vscode-local.ts", "stack"]);
+    expect(stackTask("local: stack: users")).toEqual(["scripts/vscode-local.ts", "stack", "--users"]);
+  });
+
   it("T-DEV-02 the debugger's attach hook reaches the child, so breakpoints bind there", () => {
     process.env.NODE_OPTIONS = "--require /vscode/js-debug/bootloader.js";
     const env = localRunEnv("seller", template("env/seller.env.example"), { VSCODE_INSPECTOR_OPTIONS: '{"inspectorIpc":"/tmp/x"}' });
@@ -147,6 +176,11 @@ describe("T-DEV-02 each process gets its own env file, its own local key and NET
     const hosted: EnvFile = { path: "env/l1-hosted.env", values: { MODEL_PROVIDER: "foundry", AUTH_JWKS_FILE: ".local/dev-issuer/jwks.json" } };
     expect(runWarnings("hosted", hosted, [])).toEqual([
       "locally the hosted agent needs MODEL_PROVIDER=anthropic (Foundry signs in as the Container App's managed identity)",
+    ]);
+    const portal: EnvFile = { path: "env/portal.env", values: { PORTAL_WEB_ROOT: ".local/no-such-web-root" } };
+    expect(runWarnings("portal", portal, [])).toEqual([
+      "env/portal.env has no AUTH_JWKS_FILE: locally the portal uses the dev issuer (.local/dev-issuer/jwks.json)",
+      "the web app is not built: run `npm run build:web`, or the portal serves only its API",
     ]);
     const agent: EnvFile = { path: "env/l1-agent.env", values: { ANTHROPIC_API_KEY: "" } };
     expect(runWarnings("agent", agent, ["--scripted"])).toEqual([]);
