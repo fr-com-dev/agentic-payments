@@ -41,6 +41,8 @@ interface Sources {
   workflow: string;
   /** infra/modules/state-storage.bicep: the state's container. */
   stateStorage: string;
+  /** infra/github-setup.sh: it creates the pipeline's variables, with placeholders. */
+  setup: string;
 }
 
 function load(): Sources {
@@ -54,6 +56,7 @@ function load(): Sources {
     bicepparam: readFileSync("infra/main.dev.bicepparam", "utf8"),
     workflow: readFileSync(WORKFLOW, "utf8"),
     stateStorage: readFileSync("infra/modules/state-storage.bicep", "utf8"),
+    setup: readFileSync("infra/github-setup.sh", "utf8"),
   };
 }
 
@@ -205,6 +208,13 @@ export function pipelineProblems(s: Sources): string[] {
   if (!wired || exported !== Object.keys(VARIABLES).join(" ") || required !== "tenant_domain api_identifier approver_user_id" || !run("plan").includes('export TF_VAR_environment="$ENVIRONMENT"')) {
     p.push("Terraform's variables must come from the GitHub environment's variables, as TF_VAR_* in the plan step: all eight wired, the three without a default required");
   }
+  // infra/github-setup.sh creates exactly these variables, and the plan refuses the placeholder it gives them.
+  const created = [...s.setup.matchAll(/^ {2}"(AUTH0_[A-Z_]+)=/gm)].map((m) => m[1]!).sort();
+  const placeholder = /^PLACEHOLDER="([A-Z_]+)"$/m.exec(s.setup)?.[1];
+  if (JSON.stringify(created) !== JSON.stringify(Object.values(VARIABLES).sort())) p.push("infra/github-setup.sh must create exactly the variables the pipeline reads");
+  if (!placeholder || !new RegExp(`for source in "\\$\\{!VAR_@\\}"; do\\n\\s+if \\[\\[ "\\$\\{!source\\}" == ${placeholder} \\]\\]; then\\n[^\\n]+\\n\\s+exit 1`).test(run("plan").split("terraform -chdir=auth0 plan")[0]!)) {
+    p.push("the plan step must refuse a variable that still holds infra/github-setup.sh's placeholder, before it plans");
+  }
   if (elsewhereVars(w, steps).includes("vars.") || /tfvars|-var-file|-var[ =]/.test(scripts)) p.push("the variables must reach only the plan step, and no tfvars file or -var argument may be used");
   const elsewhere = JSON.stringify({ ...w, jobs: { job: { ...job, steps: steps.map((x) => (x.id === "plan" || x.id === "apply" ? { ...x, env: undefined } : x)) } } });
   if (elsewhere.includes("secrets.")) p.push("the secrets must reach only the plan and apply steps, as their environment: never the job, another step or a script");
@@ -329,6 +339,7 @@ describe("T-IAC-02 Auth0 tenant as code (auth0/)", () => {
     ["a tfvars file", '-out="$RUNNER_TEMP/auth0.tfplan"\n          {\n            echo "### Plan', '-var-file="$ENVIRONMENT.tfvars" -out="$RUNNER_TEMP/auth0.tfplan"\n          {\n            echo "### Plan', VARS_SCOPE],
     ["a variable that is never set", "          VAR_guardian_policy: ${{ vars.AUTH0_GUARDIAN_POLICY }}\n", "", VARS_WIRED],
     ["a variable taken from another one", "VAR_approver_user_id: ${{ vars.AUTH0_APPROVER_USER_ID }}", "VAR_approver_user_id: ${{ vars.AUTH0_TENANT_DOMAIN }}", VARS_WIRED],
+    ["a plan with a placeholder", 'if [[ "${!source}" == REPLACE_ME ]]; then', 'if [[ "${!source}" == NEVER ]]; then', "the plan step must refuse a variable that still holds infra/github-setup.sh's placeholder, before it plans"],
     ["an approver that may be missing", "for name in tenant_domain api_identifier approver_user_id; do", "for name in tenant_domain api_identifier; do", VARS_WIRED],
     ["the credential in every step", "  TF_INPUT: \"0\"", "  TF_INPUT: \"0\"\n  AUTH0_CLIENT_SECRET: ${{ secrets.AUTH0_CLIENT_SECRET }}", SECRET_SCOPE],
     ["the credential in the tests step", "        id: tests\n", "        id: tests\n        env:\n          AUTH0_CLIENT_SECRET: ${{ secrets.AUTH0_CLIENT_SECRET }}\n", SECRET_SCOPE],

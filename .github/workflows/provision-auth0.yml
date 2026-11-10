@@ -145,6 +145,13 @@ jobs:
               exit 1
             fi
           done
+          # infra/github-setup.sh creates the variables without a default as this placeholder.
+          for source in "${!VAR_@}"; do
+            if [[ "${!source}" == REPLACE_ME ]]; then
+              echo "::error::a variable of the GitHub environment auth0-$ENVIRONMENT still holds the placeholder REPLACE_ME (Terraform's ${source#VAR_}): set its real value (auth0/README.md). Nothing was planned."
+              exit 1
+            fi
+          done
           export TF_VAR_environment="$ENVIRONMENT"
           for name in tenant_domain api_identifier approver_user_id credential client_public_key_pem client_secret_version manage_guardian guardian_policy; do
             source="VAR_$name"

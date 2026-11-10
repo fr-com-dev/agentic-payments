@@ -9,8 +9,11 @@
 # (otherwise azure/login fails with AADSTS700213). The deploy workflows read no GitHub secret or variable: their
 # sign-in and target come from infra/main.<environment>.bicepparam. So a secret found in the repository or the deploy
 # environment is reported, never used: no workflow reads it, and a credential there should be deleted. The only
-# secrets and variables a workflow reads are the Auth0 environment's (the Auth0 Management API credential and
-# Terraform's variables), which this script never sets or reads: an administrator sets them by hand (auth0/README.md).
+# secrets and variables a workflow reads are the Auth0 environment's. Its secrets (the Auth0 Management API
+# credential) are never set or read here: an administrator sets them by hand (auth0/README.md). Its variables
+# (Terraform's, none a secret) are created here when missing, never changed: the four without a default as the
+# placeholder REPLACE_ME, which provision-auth0.yml refuses to plan with, and the four optional ones as the default
+# of auth0/variables.tf. An administrator then replaces the placeholders by hand.
 #
 # usage: infra/github-setup.sh [--environment dev] [--dry-run]
 # needs: gh, signed in with admin rights on the repository (creating an environment needs them); az with Bicep
@@ -68,16 +71,45 @@ fi
 
 if $DRY_RUN; then
   echo "dry run: would create the environment $GH_ENV in $REPO"
-  echo "dry run: would create the environment $GH_AUTH0_ENV in $REPO"
+  echo "dry run: would create the environment $GH_AUTH0_ENV in $REPO, and its missing AUTH0_* variables"
   exit 0
 fi
 
 gh api --method PUT "repos/$REPO/environments/$GH_ENV" --silent
 echo "environment $GH_ENV: ready in $REPO"
 gh api --method PUT "repos/$REPO/environments/$GH_AUTH0_ENV" --silent
-echo "environment $GH_AUTH0_ENV: ready in $REPO. Give it required reviewers, and set its secrets and variables by hand:" \
-  "gh secret set AUTH0_CLIENT_ID --repo $REPO --env $GH_AUTH0_ENV, AUTH0_CLIENT_SECRET the same way," \
-  "and gh variable set AUTH0_TENANT_DOMAIN and the other Terraform variables (auth0/README.md)."
+echo "environment $GH_AUTH0_ENV: ready in $REPO. Give it required reviewers, and set its secrets by hand:" \
+  "gh secret set AUTH0_CLIENT_ID --repo $REPO --env $GH_AUTH0_ENV, and AUTH0_CLIENT_SECRET the same way (auth0/README.md)."
+
+# Terraform's variables for provision-auth0.yml, as variables of the Auth0 environment. Only the missing ones are
+# created: one that exists keeps its value, whatever it is.
+PLACEHOLDER="REPLACE_ME"
+AUTH0_VARIABLES=(
+  "AUTH0_TENANT_DOMAIN=$PLACEHOLDER"
+  "AUTH0_API_IDENTIFIER=$PLACEHOLDER"
+  "AUTH0_APPROVER_USER_ID=$PLACEHOLDER"
+  "AUTH0_CLIENT_PUBLIC_KEY=$PLACEHOLDER"
+  "AUTH0_CREDENTIAL=key"
+  "AUTH0_CLIENT_SECRET_VERSION=1"
+  "AUTH0_MANAGE_GUARDIAN=true"
+  "AUTH0_GUARDIAN_POLICY=never"
+)
+HELD=$(gh variable list --repo "$REPO" --env "$GH_AUTH0_ENV" --json name --jq '.[].name')
+TO_REPLACE=()
+for entry in "${AUTH0_VARIABLES[@]}"; do
+  name="${entry%%=*}" value="${entry#*=}"
+  if grep -qxF "$name" <<< "$HELD"; then
+    echo "variable $name: already in $GH_AUTH0_ENV, kept"
+    continue
+  fi
+  gh variable set "$name" --repo "$REPO" --env "$GH_AUTH0_ENV" --body "$value"
+  echo "variable $name: created in $GH_AUTH0_ENV as $value"
+  if [[ "$value" == "$PLACEHOLDER" ]]; then TO_REPLACE+=("$name"); fi
+done
+if [[ ${#TO_REPLACE[@]} -gt 0 ]]; then
+  echo "replace the placeholders before the first run (gh variable set <name> --repo $REPO --env $GH_AUTH0_ENV): ${TO_REPLACE[*]}." \
+    "provision-auth0.yml plans nothing while one is $PLACEHOLDER (auth0/README.md)."
+fi
 
 # No workflow reads a secret of the repository or of the deploy environment, so one there is unused, or a credential
 # that shouldn't be in GitHub. The Auth0 environment's secrets are not listed: provision-auth0.yml reads them.

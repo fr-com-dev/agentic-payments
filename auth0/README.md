@@ -75,7 +75,9 @@ Terraform for what L2's backchannel approval (SPEC L2-7, `specs/012`) needs from
    ```
 
 4. **Variables.** There is no tfvars file. Terraform's variables are variables of the GitHub environment, which the
-   plan step exports as `TF_VAR_*`. None is a secret. Set the first four:
+   plan step exports as `TF_VAR_*`. None is a secret. `infra/github-setup.sh` (step 1) already created all eight:
+   the first four as the placeholder `REPLACE_ME`, the others as their defaults. Replace the four placeholders; the
+   pipeline plans nothing while one is left:
 
    ```bash
    gh variable set AUTH0_TENANT_DOMAIN --env auth0-dev --body "x402-dev.us.auth0.com"
@@ -104,7 +106,8 @@ Terraform for what L2's backchannel approval (SPEC L2-7, `specs/012`) needs from
    | `AUTH0_MANAGE_GUARDIAN` | `manage_guardian` | only to set `false` |
    | `AUTH0_GUARDIAN_POLICY` | `guardian_policy` | only to change `never` |
 
-   A variable left unset keeps the default in `variables.tf`. `environment` is the run's `environment` input.
+   Running `infra/github-setup.sh` again never changes a variable that exists. A variable you delete keeps the
+   default in `variables.tf`. `environment` is the run's `environment` input.
 
 ## Run it
 
