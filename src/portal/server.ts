@@ -11,6 +11,7 @@ import { mountPortalApiDocs } from "./api-docs.js";
 import type { BalanceCache } from "./balance.js";
 import { CARD_VAULT_CSP, type CardVault } from "./card-vault.js";
 import { Cards } from "./cards.js";
+import { addressLimit, trustProxies } from "../shared/address-limit.js";
 import type { PortalConfig } from "./config.js";
 import type { ControlPort } from "./control-client.js";
 import { createPortalLog } from "./log.js";
@@ -34,6 +35,9 @@ export interface PortalDeps {
   log?: (line: string) => void;
   /** Test hook (T-PRT-01 must-fail): see portalAccess. Never set by the entry point. */
   bypassAuth?: boolean;
+  /** Test hooks (T-PRT-01): another limit per address, or none at all (the must-fail). Never set by the entry point. */
+  maxRequestsPerAddress?: number;
+  skipAddressLimit?: boolean;
 }
 
 export interface PortalApp {
@@ -64,6 +68,7 @@ export function createPortalApp(deps: PortalDeps): PortalApp {
   const log = createPortalLog(deps.log);
   const app = express();
   app.disable("x-powered-by");
+  trustProxies(app, deps.config.trustedProxyHops);
   let ready = false;
   const personOf = (res: Response) => res.locals.person as Person | undefined;
 
@@ -139,7 +144,9 @@ export function createPortalApp(deps: PortalDeps): PortalApp {
   };
 
   const cards = deps.vault ? new Cards({ vault: deps.vault, profiles: deps.profiles, control: deps.control, now }) : undefined;
-  // Access and the limit come before every /api route below (the routes carry their full paths).
+  // Per address first, before any token is verified: a caller without a valid token is bounded too (SEC-19).
+  // Then access and the per-person limit, before every /api route below (the routes carry their full paths).
+  if (!deps.skipAddressLimit) app.use("/api", addressLimit({ ...(deps.maxRequestsPerAddress !== undefined && { max: deps.maxRequestsPerAddress }) }));
   app.use("/api", access, limit);
   mountPortalRoutes(app, { control: deps.control, profiles: deps.profiles, balance: deps.balance, ...(cards && { cards }), now });
   app.use("/api", (_req, res) => {

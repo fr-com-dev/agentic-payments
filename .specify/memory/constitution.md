@@ -180,7 +180,9 @@ Rationale: authorization must be reproducible, auditable and race-free.
   tenant reached over HTTPS by OpenID CIBA in poll mode, from L2 only, with no inbound route. The tenant is
   Terraform (`auth0/`, provider `auth0/auth0`), applied by a tenant administrator by hand; Terraform manages
   nothing in Azure, which stays Bicep only. Added in 1.4.0, for the portal's web app only and at build time:
-  React, Vite and `@azure/msal-browser`, bundled into static files and never a runtime dependency. The card
+  React, Vite and `@azure/msal-browser`, bundled into static files and never a runtime dependency. The two public
+  services (the hosted agent and the portal) use express-rate-limit 8.7.1 to bound requests per client address
+  before a token is verified. The card
   vault is Stripe in test mode, reached over HTTPS from the portal only, through its REST API with a pinned
   version and no SDK.
 - Networks in scope: `local` (dev chain with a mock EIP-3009 USDC) and `base-sepolia`

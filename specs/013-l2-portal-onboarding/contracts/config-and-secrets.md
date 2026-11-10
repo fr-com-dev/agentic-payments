@@ -34,6 +34,7 @@ value.
 | `CARD_VAULT_PUBLISHABLE_KEY` | with `CARD_VAULT=stripe` | `pk_test_…`; public |
 | `BASE_SEPOLIA_RPC_URL` | no | as for L3 |
 | `PORTAL_PORT`, `PORTAL_BIND_HOST` | no | defaults 4025 and 127.0.0.1 |
+| `TRUSTED_PROXY_HOPS` | no | a whole number 0–3, default 0: how many reverse proxies stand in front, for the per-address request limit. 1 in Azure (the ingress). Also read by the hosted agent (`env/l1-hosted.env`) |
 | `API_DOCS` | no | `1` mounts `/docs`; never set in Azure |
 
 `src/portal-main.ts` loads this file and then **exits 1 if `PAYER_PRIVATE_KEY` or `USER_WALLET_MNEMONIC` is
@@ -144,7 +145,7 @@ is `stripe` without a publishable key that starts with `pk_test_`.
 | Probes | `/healthz`, `/readyz` |
 | Secrets | `portal-token`, `card-vault-key`, both from `kv-portal`, always referenced |
 
-Env: `NETWORK=base-sepolia`, `PORTAL_BIND_HOST=0.0.0.0`, `CONTROL_URL` (L2's internal address),
+Env: `NETWORK=base-sepolia`, `PORTAL_BIND_HOST=0.0.0.0`, `TRUSTED_PROXY_HOPS=1`, `CONTROL_URL` (L2's internal address),
 `AUTH_TENANT_ID`, `AUTH_AUDIENCE`, `PORTAL_CLIENT_ID`, `PROFILE_DIR=/app/.local/portal/profiles`,
 `CARD_VAULT` (set only when `stripe`), `CARD_VAULT_PUBLISHABLE_KEY`, and by `secretRef`: `PORTAL_TOKEN`,
 `CARD_VAULT_KEY`. Never `API_DOCS`.

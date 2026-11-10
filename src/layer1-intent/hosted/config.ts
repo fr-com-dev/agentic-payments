@@ -1,5 +1,6 @@
 // L1-6 hosted agent service configuration (SPEC.md §9 CFG-2 `l1-hosted.env`; specs/011 contracts/model-access.md).
 // Errors name the variable and never echo its value: several of them are secrets.
+import { trustedProxyHops } from "../../shared/address-limit.js";
 import { apiDocsEnabled, ConfigError, serviceUrls, tokenFor } from "../../shared/config.js";
 import { DEV_ISSUER, DEV_TENANT, entraIssuer, GUID_RE } from "../../shared/entra-token.js";
 
@@ -41,6 +42,8 @@ export interface HostedConfig {
   sessionRefSecret: Buffer;
   port: number;
   bindHost: string;
+  /** Reverse proxies in front of the service (TRUSTED_PROXY_HOPS): 0 locally, 1 behind the Azure ingress. */
+  trustedProxyHops?: number;
   /** v1.6: `API_DOCS=1` mounts the token-free Swagger UI routes (SEC-13). Off by default. */
   apiDocs: boolean;
 }
@@ -128,6 +131,7 @@ export function loadHostedConfig(env: Env = process.env): HostedConfig {
     sessionRefSecret,
     port: agentPort(env),
     bindHost: present(env.AGENT_BIND_HOST) ? env.AGENT_BIND_HOST : DEFAULT_AGENT_BIND_HOST,
+    trustedProxyHops: trustedProxyHops(env),
     apiDocs: apiDocsEnabled(env),
   };
 }

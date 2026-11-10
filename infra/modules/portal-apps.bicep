@@ -63,6 +63,9 @@ resource portal 'Microsoft.App/containerApps@2025-01-01' = {
           env: [
             { name: 'NETWORK', value: 'base-sepolia' }
             { name: 'PORTAL_BIND_HOST', value: '0.0.0.0' }
+            // One proxy, the environment's ingress, is in front: the per-address request limit reads the client's
+            // address from X-Forwarded-For (T-IAC-01 rule 3).
+            { name: 'TRUSTED_PROXY_HOPS', value: '1' }
             { name: 'CONTROL_URL', value: controlUrl }
             { name: 'AUTH_TENANT_ID', value: authTenantId }
             { name: 'AUTH_AUDIENCE', value: authAudience }

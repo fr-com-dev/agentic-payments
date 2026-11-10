@@ -203,6 +203,44 @@ describe("T-PRT-01 access (FR-003, FR-005, SEC-19, SEC-20)", () => {
     expect((await p.call("GET", "/api/me", { token: await p.agentToken("alice") })).status).toBe(200);
   });
 
+  it("T-PRT-01 a caller without a valid token is limited per address, before any token is verified", async () => {
+    const p = await start({ maxRequestsPerAddress: 3 });
+    const noToken = () => fetch(`${p.base}/api/me`);
+    for (let i = 0; i < 3; i++) expect((await noToken()).status).toBe(401);
+    const over = await noToken();
+    expect(over.status).toBe(429);
+    expect(await over.json()).toEqual({ error: "too many requests" });
+    expect(Number(over.headers.get("retry-after"))).toBeGreaterThan(0);
+    // A forged token is refused by the limit, not examined; and a real one from the same address waits too.
+    expect((await fetch(`${p.base}/api/me`, { headers: { authorization: "Bearer not-a-jwt" } })).status).toBe(429);
+    expect((await p.call("GET", "/api/me", { token: await p.token("alice") })).status).toBe(429);
+    // What needs no token is not counted: health, and the public settings.
+    expect((await fetch(`${p.base}/healthz`)).status).toBe(200);
+    expect((await fetch(`${p.base}/api/config`)).status).toBe(200);
+    expect(p.l2.entries("USER_REGISTERED")).toEqual([]);
+  });
+
+  it("T-PRT-01 must-fail: with the test-only skipAddressLimit hook, token-less requests are never limited", async () => {
+    const p = await start({ maxRequestsPerAddress: 3, skipAddressLimit: true });
+    for (let i = 0; i < 12; i++) expect((await fetch(`${p.base}/api/me`)).status).toBe(401);
+  });
+
+  it("T-PRT-01 behind a trusted proxy each client address has its own count; without one the header is ignored", async () => {
+    const from = (base: string, address: string) => fetch(`${base}/api/me`, { headers: { "x-forwarded-for": address } }).then((r) => r.status);
+    const proxied = await start({ maxRequestsPerAddress: 2, env: { TRUSTED_PROXY_HOPS: "1" } });
+    expect([await from(proxied.base, "203.0.113.7"), await from(proxied.base, "203.0.113.7"), await from(proxied.base, "203.0.113.7")]).toEqual([401, 401, 429]);
+    expect(await from(proxied.base, "203.0.113.8")).toBe(401);
+    // Not behind a proxy: a caller can't pick its own address by sending the header.
+    const direct = await start({ maxRequestsPerAddress: 2 });
+    expect([await from(direct.base, "203.0.113.7"), await from(direct.base, "203.0.113.8"), await from(direct.base, "203.0.113.9")]).toEqual([401, 401, 429]);
+  });
+
+  it("T-PRT-09 TRUSTED_PROXY_HOPS is a whole number from 0 to 3, and 0 by default", async () => {
+    const { trustedProxyHops } = await import("../src/shared/address-limit.js");
+    expect([trustedProxyHops({}), trustedProxyHops({ TRUSTED_PROXY_HOPS: "" }), trustedProxyHops({ TRUSTED_PROXY_HOPS: "0" }), trustedProxyHops({ TRUSTED_PROXY_HOPS: "1" })]).toEqual([0, 0, 0, 1]);
+    for (const bad of ["true", "-1", "4", "1.5", "one", "10"]) expect(() => trustedProxyHops({ TRUSTED_PROXY_HOPS: bad }), bad).toThrow(/TRUSTED_PROXY_HOPS must be a whole number from 0 to 3/);
+  });
+
   it("T-PRT-01 the 121st request in a minute gets 429 with Retry-After; another person is unaffected", async () => {
     const p = await start();
     const token = await p.token("alice");

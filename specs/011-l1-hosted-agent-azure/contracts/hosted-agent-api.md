@@ -27,7 +27,9 @@ publishes no routes (research R1).
   ([access-and-sessions](access-and-sessions.md)).
 - **Body**: `{ "goal": string, "sessionRef"?: string }`, JSON, at most 16 KB.
 
-Order of checks: auth (401/403) → limits (429) → body (400) → session (400/404) → run.
+Order of checks: requests per client address (429; SPEC v1.10) → auth (401/403) → limits (429) → body (400) → session
+(400/404) → run. The per-address limit is 300 requests a minute, counted before the token is verified, so it also
+bounds a caller without a valid token; `TRUSTED_PROXY_HOPS` (1 in Azure) makes the address the client's.
 
 **200** when the run has ended, in any status:
 
@@ -70,7 +72,7 @@ Order of checks: auth (401/403) → limits (429) → body (400) → session (400
 | 403 | valid token without `Agent.Run`; v1.10: a person's token without the `user_impersonation` scope, or obtained by the portal's web app (013 SEC-20) |
 | 404 | well-formed `sessionRef` that doesn't verify for this requester (`unknown session`) |
 | 413 | body over 16 KB |
-| 429 | more than 2 concurrent runs, or 20 starts in the last hour, for this requester; `Retry-After` header set |
+| 429 | more than 2 concurrent runs, or 20 starts in the last hour, for this requester; or (v1.10) more than 300 requests in a minute from this client address, on any route but health and the docs; `Retry-After` header set |
 | 503 | not ready (startup not finished) |
 
 ## Run semantics

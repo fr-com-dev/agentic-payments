@@ -361,6 +361,14 @@ export function violations(arms: Templates, params: Params, infraFiles: Record<s
     const a = byName(name);
     if (!a || (configOf(a).ingress as Json)?.external !== false) v.push(`rule 3: ${name} must have external: false`);
   }
+  // The two public services that verify tokens limit requests per client address before they do (SEC-14, SEC-19).
+  // The ingress is the one proxy in front of them, so each is told to trust exactly one.
+  for (const [name, container] of [[MN.apps.l1, "agent"], [MN.apps.portal, "portal"]] as const) {
+    const a = byName(name);
+    if (!a) continue; // another unit's deployment
+    const env = containersOf(a).find((c) => c.name === container)?.env ?? [];
+    if (env.find((e) => e.name === "TRUSTED_PROXY_HOPS")?.value !== "1") v.push(`rule 3: ${name}/${container} is behind the ingress and must set TRUSTED_PROXY_HOPS to 1, for its per-address request limit`);
+  }
 
   // Rule 4: one L2 replica, single revision, NFS ledger at /app/.local.
   const l2 = byName(MN.apps.l2);
@@ -1038,6 +1046,13 @@ resource extraRead 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
     expect(v).toContain("rule 13: portal-apps looks up vaults l2,portal, not its own (portal)");
     expect(v).toContain(`rule 21: ${N.main.apps.portal} reads portal-token from a vault other than the portal's`);
   }, 60_000);
+
+  it("T-IAC-01 must-fail rule 3: a public service that doesn't trust the ingress for the client's address is reported", async () => {
+    const v = await mutant("modules/portal-apps.bicep", "            { name: 'TRUSTED_PROXY_HOPS', value: '1' }\n", "");
+    expect(v).toContain(`rule 3: ${N.main.apps.portal}/portal is behind the ingress and must set TRUSTED_PROXY_HOPS to 1, for its per-address request limit`);
+    const two = await mutant("modules/l1-apps.bicep", "{ name: 'TRUSTED_PROXY_HOPS', value: '1' }", "{ name: 'TRUSTED_PROXY_HOPS', value: '2' }");
+    expect(two).toContain(`rule 3: ${N.main.apps.l1}/agent is behind the ingress and must set TRUSTED_PROXY_HOPS to 1, for its per-address request limit`);
+  }, 120_000);
 
   it("T-IAC-01 must-fail rule 3: external ingress on L2's control app is reported", async () => {
     const v = await mutant("modules/l2-apps.bicep", "ingress: { external: false, targetPort: 8080", "ingress: { external: true, targetPort: 8080");

@@ -35,7 +35,11 @@ surface.
 ## Limits and headers
 
 - Body at most 16 KB (413); JSON only; unknown fields are a 400.
-- 120 requests per minute per user (429 with `Retry-After`), per replica.
+- 300 requests per minute per client address on every `/api` route but `/api/config`, counted **before** the token
+  is verified (429 `{ "error": "too many requests" }` with `Retry-After`), so a caller without a valid token is
+  bounded too. With `TRUSTED_PROXY_HOPS` set (1 in Azure) the address is the client's, from `X-Forwarded-For`;
+  unset, that header is ignored.
+- Then 120 requests per minute per user (429 with `Retry-After`). Both per replica.
 - Every `/api` response: `Cache-Control: no-store`.
 - Every response: `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`,
   `Strict-Transport-Security` off loopback, and this Content-Security-Policy:

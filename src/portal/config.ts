@@ -1,6 +1,7 @@
 // 013 portal configuration (SPEC.md §9 CFG-2 `portal.env`; specs/013 contracts/config-and-secrets.md).
 // Errors name the variable and never echo its value. The card vault credential is read in ./card-vault.ts only
 // (rule A10); this file just asks it for the result.
+import { trustedProxyHops } from "../shared/address-limit.js";
 import { apiDocsEnabled, ConfigError, networkProfile, PORTAL_BIND_HOST_DEFAULT, portalPort, serviceUrls, tokenFor } from "../shared/config.js";
 import { DEV_ISSUER, entraIssuer, GUID_RE } from "../shared/entra-token.js";
 import { cardVaultFromEnv, type CardVaultConfig } from "./card-vault.js";
@@ -32,6 +33,8 @@ export interface PortalConfig {
   webRoot: string;
   port: number;
   bindHost: string;
+  /** Reverse proxies in front of the service (TRUSTED_PROXY_HOPS): 0 locally, 1 behind the Azure ingress. */
+  trustedProxyHops?: number;
   apiDocs: boolean;
   /** Absent: cards are off. */
   cardVault?: CardVaultConfig;
@@ -83,6 +86,7 @@ export function loadPortalConfig(env: Env = process.env): PortalConfig {
     webRoot: present(env.PORTAL_WEB_ROOT) ? env.PORTAL_WEB_ROOT : DEFAULT_WEB_ROOT,
     port: portalPort(env),
     bindHost: present(env.PORTAL_BIND_HOST) ? env.PORTAL_BIND_HOST : PORTAL_BIND_HOST_DEFAULT,
+    trustedProxyHops: trustedProxyHops(env),
     apiDocs: apiDocsEnabled(env),
     ...(cardVault && { cardVault }),
   };

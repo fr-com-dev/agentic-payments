@@ -85,6 +85,9 @@ resource agent 'Microsoft.App/containerApps@2025-01-01' = {
             { name: 'AUTH_AUDIENCE', value: authAudience }
             { name: 'PORTAL_CLIENT_ID', value: userAccounts.portalClientId }
             { name: 'AGENT_BIND_HOST', value: '0.0.0.0' }
+            // One proxy, the environment's ingress, is in front: the per-address request limit reads the client's
+            // address from X-Forwarded-For (T-IAC-01 rule 3).
+            { name: 'TRUSTED_PROXY_HOPS', value: '1' }
             { name: 'AGENT_PORT', value: '4024' }
             { name: 'MASTRA_TELEMETRY_DISABLED', value: '1' }
             { name: 'CONTROL_TOKEN', secretRef: 'control-token' }

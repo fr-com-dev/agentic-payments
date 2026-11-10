@@ -172,6 +172,25 @@ describe("T-AGT-03 access matrix", () => {
     expect((await a.run("svc-app-id", { goal: "hi" }, { idtyp: "app" })).status).toBe(200);
   });
 
+  it("a caller without a valid token is limited per address, before any token is verified (SEC-14)", async () => {
+    const model = mockModel();
+    const a = await start({ model, maxRequestsPerAddress: 3 });
+    for (let i = 0; i < 3; i++) expect((await get(a.base, "/v1/runs")).status).toBe(401);
+    const over = await fetch(`${a.base}/v1/runs`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ goal: "hi" }) });
+    expect(over.status).toBe(429);
+    expect(await over.json()).toEqual({ error: "too many requests" });
+    expect(Number(over.headers.get("retry-after"))).toBeGreaterThan(0);
+    expect((await get(a.base, "/v1/runs", "not-a-jwt")).status).toBe(429);
+    // Health stays reachable, and nothing reached the model.
+    expect((await get(a.base, "/healthz")).status).toBe(200);
+    expect(model.doGenerateCalls.length).toBe(0);
+  });
+
+  it("must-fail: with the test-only skipAddressLimit hook, token-less requests are never limited", async () => {
+    const a = await start({ maxRequestsPerAddress: 3, skipAddressLimit: true });
+    for (let i = 0; i < 12; i++) expect((await get(a.base, "/v1/runs")).status).toBe(401);
+  });
+
   it("must-fail: with the test-only bypassAuth hook, an unauthenticated request reaches the model", async () => {
     const model = mockModel();
     const a = await start({ model, bypassAuth: true });

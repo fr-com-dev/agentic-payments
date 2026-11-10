@@ -32,6 +32,9 @@ export interface StartPortalOptions {
   /** L2 can't be reached (the portal's client points at a closed port). */
   controlDown?: boolean;
   bypassAuth?: boolean;
+  /** The per-address limit's test hooks (PortalDeps). */
+  maxRequestsPerAddress?: number;
+  skipAddressLimit?: boolean;
   env?: Record<string, string>;
   webRoot?: string;
   /** Call markReady() after building the app (default true). */
@@ -100,6 +103,8 @@ export async function startPortal(o: StartPortalOptions = {}): Promise<PortalTes
     now: l2.clock.now,
     log: (line) => rawLogs.push(line),
     ...(o.bypassAuth && { bypassAuth: true }),
+    ...(o.maxRequestsPerAddress !== undefined && { maxRequestsPerAddress: o.maxRequestsPerAddress }),
+    ...(o.skipAddressLimit && { skipAddressLimit: true }),
   };
   const portal = createPortalApp(deps);
   if (o.ready !== false) portal.markReady();

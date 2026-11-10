@@ -506,8 +506,18 @@ describe("T-CARD-06 what the vault is sent, and what never appears anywhere (SEC
     }
     expect(setups).toHaveLength(2);
     for (const text of setups) for (const secret of [TEST_VAULT_KEY, "fp_", "pm_stub_", "cus_stub_", VAULT_MESSAGE]) expect(text.includes(secret), secret).toBe(false);
-    // The ledger knows cards by identifier only: no brand, digits or expiry (FR-044).
-    expect(/visa|4242|2030|exp_/i.test(ledger)).toBe(false);
-    expect(ledger).toContain(String(added.body.cardId));
+    // The ledger knows cards by identifier only: no brand, digits or expiry (FR-044). The card entries are checked
+    // field by field: scanning the whole file for the digits would also match a hash or an identifier by chance.
+    expect(/visa|exp_/i.test(ledger)).toBe(false);
+    const cardEntries = ledger
+      .split("\n")
+      .filter((line) => line !== "")
+      .map((line) => JSON.parse(line) as { type: string; data: Record<string, unknown> })
+      .filter((e) => e.type === "CARD_ADDED" || e.type === "CARD_REMOVED");
+    expect(cardEntries.map((e) => e.type)).toEqual(["CARD_ADDED", "CARD_REMOVED"]);
+    for (const e of cardEntries) {
+      expect(Object.keys(e.data).sort()).toEqual(["cardId", "userId"]);
+      expect(e.data.cardId).toBe(String(added.body.cardId));
+    }
   });
 });
