@@ -75,8 +75,8 @@ Terraform for what L2's backchannel approval (SPEC L2-7, `specs/012`) needs from
    ```
 
 4. **Variables.** There is no tfvars file. Terraform's variables are variables of the GitHub environment, which the
-   plan step exports as `TF_VAR_*`. None is a secret. `infra/github-setup.sh` (step 1) already created all eight:
-   the first four as the placeholder `REPLACE_ME`, the others as their defaults. Replace the four placeholders; the
+   plan step exports as `TF_VAR_*`. None is a secret. `infra/github-setup.sh` (step 1) already created all six:
+   the first four as the placeholder `REPLACE_ME`, the other two as their defaults. Replace the four placeholders; the
    pipeline plans nothing while one is left:
 
    ```bash
@@ -100,9 +100,7 @@ Terraform for what L2's backchannel approval (SPEC L2-7, `specs/012`) needs from
    | `AUTH0_TENANT_DOMAIN` | `tenant_domain` | always |
    | `AUTH0_API_IDENTIFIER` | `api_identifier` | always |
    | `AUTH0_APPROVER_USER_ID` | `approver_user_id` | always |
-   | `AUTH0_CLIENT_PUBLIC_KEY` | `client_public_key_pem` | with `credential = "key"` (the default) |
-   | `AUTH0_CREDENTIAL` | `credential` | only to choose `secret` |
-   | `AUTH0_CLIENT_SECRET_VERSION` | `client_secret_version` | only to rotate the secret |
+   | `AUTH0_CLIENT_PUBLIC_KEY` | `client_public_key_pem` | always |
    | `AUTH0_MANAGE_GUARDIAN` | `manage_guardian` | only to set `false` |
    | `AUTH0_GUARDIAN_POLICY` | `guardian_policy` | only to change `never` |
 
@@ -131,13 +129,9 @@ Terraform for what L2's backchannel approval (SPEC L2-7, `specs/012`) needs from
      `CIBA_CLIENT_ID`, `CIBA_AUDIENCE` and `CIBA_APPROVER`, with `CIBA_APPROVAL=1`. Add `CIBA_CLIENT_KEY` yourself.
 4. **The approver enrolls in Guardian push**, then you run the live check (`specs/012` quickstart §5).
 
-With `credential = "secret"`:
-- generate the secret yourself (16 or more characters);
-- store it as the environment's secret `AUTH0_L2_CLIENT_SECRET` (it is an ephemeral, write-only value: never in
-  the state or the plan file);
-- seed the same value into the vault.
-
-To rotate it, bump the variable `AUTH0_CLIENT_SECRET_VERSION`.
+**Key only.** The pipeline provisions `credential = "key"` and nothing else, so GitHub holds only the public half
+of L2's key. L2's credential is held by L2 only (Constitution V), which rules out sending a client secret through
+GitHub. `private_key_jwt` needs Auth0's Enterprise plan; on a lower plan the pipeline can't provision L2's client.
 
 ## Notes
 
