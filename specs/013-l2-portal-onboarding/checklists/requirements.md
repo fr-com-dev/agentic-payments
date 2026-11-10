@@ -58,6 +58,6 @@
   constitution v1.3.0 and SPEC §1.3. The spec lists the constitution amendment (MINOR) and the
   SPEC.md sections to change; the plan's Constitution Check must cover them.
 - **Two storage questions are left to the plan on purpose:** where profiles are kept (they must
-  stay out of the ledger, FR-040) and how per-user account keys are kept inside the signer's
+  stay out of the ledger, FR-046) and how per-user account keys are kept inside the signer's
   boundary (FR-014).
 - **Validation:** iteration 2. Every item passes. Ready for `/speckit-clarify` or `/speckit-plan`.

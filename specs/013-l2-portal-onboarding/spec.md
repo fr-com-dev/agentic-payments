@@ -22,6 +22,18 @@
 - Q: A policy sets an auto-approve limit. Who approves a user's payments above it? → A: Unchanged
   for now. The existing paths decide: the deployment's approver by phone (012) and the operator
   (004, 010). The user only sets the threshold. Per-user approval is a later feature.
+- Q: How should a user's expense policies combine? → A: Several active policies, each for its own
+  sellers with its own budgets, plus one daily ceiling per user across all their policies,
+  checked at every payment.
+- Q: Which sellers may a user put in a policy's "where"? → A: Only sellers on a list the operator
+  maintains. Users pick from it and can't type a seller of their own.
+- Q: With the portal on, whose money and rules does a run started by a system identity (a
+  pipeline or service, not a person) use? → A: The platform account, under today's mandate,
+  unchanged. Such a run has no portal user.
+- Q: What can a user do when they want to stop using the portal? → A: Disable their account.
+  Nothing is deleted: the account, its policies and its wallet are disabled and kept.
+- Q: Who is allowed to sign in to the portal and onboard? → A: Everyone who may start agent runs.
+  The same permission gives both; there is no separate portal permission.
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -29,6 +41,8 @@ Terms used below:
 - **User**: a person who signs in to the portal. They own one profile, one wallet and their own
   expense policies. It is the same person, with the same identity, who starts agent runs (the
   requester of feature 011).
+- **Portal access**: what a person has when the organization lets them start agent runs. The
+  same permission gives both.
 - **Portal**: the new web interface where a user manages their profile, wallet and policies. It
   is for people only. The agent never uses it.
 - **Wallet**: the user's payment methods: one crypto account, and any cards they registered.
@@ -39,7 +53,13 @@ Terms used below:
   human must approve, how fast, and until when).
 - **Platform limits**: the ceilings the operator sets for every user of the deployment. A user's
   policy can be stricter than the platform limits, never looser.
-- **Platform account**: today's single payer and mandate. It stays, for runs that carry no user.
+- **Seller list**: the sellers the operator has vetted for the deployment. A policy's "where" is
+  chosen from it.
+- **User daily ceiling**: the most one user's agent may spend in any 24 hours, across all their
+  policies together. It is one of the platform limits.
+- **Platform account**: today's single payer and mandate. It stays, for runs that carry no user:
+  those started by a system identity (a pipeline or a service), the scripted regression and the
+  local demo.
 
 ### User Story 1 - A new user signs in and creates their profile (Priority: P1)
 
@@ -66,8 +86,8 @@ without portal access: they are refused and no profile exists for them.
    step is offered next.
 3. **Given** a user who left onboarding after the profile step, **When** they sign in again,
    **Then** the portal opens on the wallet step, with the profile shown as done.
-4. **Given** a person the organization has not granted portal access, **When** they try to sign
-   in, **Then** they are refused, and no profile, wallet or policy is created for them.
+4. **Given** a person who is not allowed to start agent runs, **When** they try to sign in,
+   **Then** they are refused, and no profile, wallet or policy is created for them.
 5. **Given** an onboarded user, **When** they change their name or email, **Then** the new values
    show at once and nothing about their wallet or policies changes.
 
@@ -109,7 +129,7 @@ ledger and the logs for the account's key: it is nowhere.
 ### User Story 3 - The user writes an expense policy and it governs their agent's payments (Priority: P1)
 
 The user creates their first policy in three parts:
-- **Where**: the sellers the agent may pay.
+- **Where**: the sellers the agent may pay, picked from the operator's seller list.
 - **How much**: the amount it may pay without asking, the most it may pay in one payment, and the
   budgets per agent run and per day.
 - **How**: the payment method (their crypto account), how many payments per minute, and the date
@@ -153,6 +173,9 @@ daily budget of 0.50. Then start agent runs as that user:
 7. **Given** a user who has not finished onboarding (no profile, no crypto account, or no policy
    saved yet), **When** their agent requests a payment, **Then** it is denied, and the agent is
    told only that the user's setup is incomplete.
+8. **Given** the "where" part of a policy, **When** the user chooses sellers, **Then** only
+   sellers on the operator's seller list are offered, each by its name and host. A seller that is
+   not on the list can't be added by any means.
 
 ---
 
@@ -184,6 +207,11 @@ Must-fail check: with the ownership check removed, A reads B's policy.
    B, **Then** the portal answers "not found" and reveals nothing about B.
 4. **Given** an agent run, **When** it requests a payment, **Then** the user it pays for is the
    verified person who started the run. It is never taken from the agent's text or tool input.
+5. **Given** a run started by a system identity, **When** it requests a payment, **Then** it is
+   decided against the platform account and its mandate, as today. No user's account, policy or
+   budget is touched.
+6. **Given** a run started by a person who has not finished onboarding, **When** it requests a
+   payment, **Then** it is denied. It never falls back to the platform account.
 
 ---
 
@@ -216,10 +244,14 @@ policy's history lists every change in order.
 4. **Given** two policies of one user, **When** the user tries to list the same seller in both
    while both are active, **Then** the second is refused, naming the policy that already lists
    the seller.
-5. **Given** a pending escalation created under an earlier version, **When** it is approved and
+5. **Given** two active policies of one user whose daily budgets add up to more than the user
+   daily ceiling, **When** the user's payments under both reach the ceiling within 24 hours,
+   **Then** the next payment under either policy is denied by the daily budget, although that
+   policy's own daily budget is not used up.
+6. **Given** a pending escalation created under an earlier version, **When** it is approved and
    the purchase is paid, **Then** every rule is checked against the policy as it is at payment
    time. If the purchase no longer fits, it is denied.
-6. **Given** a policy whose end date has passed, **When** the agent requests a payment under it,
+7. **Given** a policy whose end date has passed, **When** the agent requests a payment under it,
    **Then** it is denied as expired, and the portal shows the policy as expired with the option
    to extend it.
 
@@ -262,10 +294,48 @@ reference no longer works.
 
 ---
 
-### User Story 7 - The operator bounds every user, and the auditor sees who spent under which policy (Priority: P3)
+### User Story 7 - The user disables their account (Priority: P3)
+
+A user wants to stop. They disable their account in the portal. From that moment their agent can
+pay nothing: every policy and the wallet are disabled with the account. Nothing is deleted. The
+profile, the policies and their history, the crypto account with its funds, and the registered
+cards all stay as they were. The user can still sign in to see them, and can enable the account
+again later.
+
+**Why this priority**: A person must be able to stop all spending in one step, and the audit
+trail must stay whole. It is used rarely, so it follows the main flows.
+
+**Independent Test**: As an onboarded user with a funded account, an active policy and a card,
+disable the account. Start an agent run and request a payment the policy allowed before: it is
+denied. Sign in again: the profile, the policy, the balance and the card are all still shown,
+marked as disabled. Enable the account: the policy is shown as paused, and after the user resumes
+it, the same payment is authorized. Must-fail check: with the disabled check removed, the
+disabled user's run pays.
+
+**Acceptance Scenarios**:
+
+1. **Given** an onboarded user, **When** they disable their account and confirm, **Then** the
+   account, every policy and the wallet show as disabled, and the next payment decision for that
+   user is denied.
+2. **Given** a disabled account, **When** the user signs in, **Then** they can still see their
+   profile, policies, policy history, balance and cards. They can't create or change a policy,
+   create a wallet or add a card.
+3. **Given** a disabled account, **When** anything is checked afterwards, **Then** nothing was
+   deleted: the profile, every policy version, the crypto account, its funds and the card
+   references are all still there.
+4. **Given** a disabled account, **When** the user enables it again, having confirmed their
+   identity within the last 15 minutes, **Then** the account and the wallet are usable again and
+   every policy that was active comes back paused, for the user to resume.
+5. **Given** an escalation that was pending when the account was disabled, **When** it is
+   approved, **Then** the purchase is still denied at payment time.
+
+---
+
+### User Story 8 - The operator bounds every user, and the auditor sees who spent under which policy (Priority: P3)
 
 The operator sets the platform limits once for the deployment: the highest per-payment cap and
-budgets a user may choose, the sellers users may list, and the longest a policy may last. No user
+budgets a user may choose, the daily ceiling for each user across all their policies, the sellers
+users may list, and the longest a policy may last. No user
 policy can go beyond them. For every payment, the ledger tells the auditor which user it was for,
 which policy and version decided it, and which account paid. The operator's escalation views show
 whose payment each escalation is.
@@ -315,22 +385,34 @@ version, and the policy's whole history can be rebuilt from the ledger alone.
   a definite order.
 - **A policy removed or paused while an escalation is pending.** The escalation can still be
   approved, but the purchase is denied at payment time, because no active policy allows it.
-- **The platform removes a seller that a user's policy lists.** Payments to it are denied. The
-  portal flags the policy.
+- **The operator takes a seller off the seller list while a user's policy names it.** Payments to
+  it are denied. The portal flags the policy.
+- **An empty seller list.** No policy can be created. The portal says that no sellers are
+  available yet, and the user's onboarding waits at the policy step.
 - **The platform lowers a limit below a saved policy's value.** The stricter value applies to each
   field. If the platform's per-payment cap falls to or below the policy's auto-approve limit,
   nothing above the platform cap is paid, with or without approval.
 - **The portal is down.** Payments continue under the policies last recorded. No decision waits
   on the portal.
 - **The card vault is down or slow.** Only adding and removing cards is affected.
-- **The user's organization account is disabled.** They can't sign in to the portal or start
-  agent runs, so nothing is spent. Their policies and funds stay as they are.
-- **A run with no user.** The scripted regression and the local demo carry no user. They are
-  decided against the platform account, exactly as today.
+- **The user's organization account is disabled, or they lose the permission to start runs.**
+  They can't sign in to the portal or start agent runs, so nothing is spent. Their profile,
+  policies and funds stay as they are, and are theirs again if the permission returns.
+- **A run with no user.** Runs started by a system identity, the scripted regression and the
+  local demo carry no user. They are decided against the platform account, exactly as today.
+- **A person who has not onboarded starts a run.** Their payments are denied as incomplete setup.
+  They never use the platform account, even if the same person could before the portal was on.
 - **Text typed by users.** A profile name, a policy name or a card nickname could be written to
   mislead. None of them is ever an input to a payment decision, and none reaches the agent.
 - **The agent tries to reach the portal.** It has no credential the portal accepts and no tool
   for it. A request with the agent's credentials is refused.
+- **Disabling with a payment already signed.** A payment authorized before the account was
+  disabled can still settle, because a signature can't be taken back. It stays committed until it
+  settles or lapses. Nothing new is signed.
+- **Disabling twice, or enabling an account that is not disabled.** Nothing changes and nothing
+  new is recorded.
+- **A disabled user's funds.** They stay in the crypto account. Funds sent to it while it is
+  disabled still arrive and show in the wallet.
 - **A restart of the control layer.** Every user's account, policies and budgets are the same
   after the restart as before it.
 - **Local development.** The portal and multi-user mode are off unless configured, so the local
@@ -346,13 +428,17 @@ version, and the policy's whole history can be rebuilt from the ledger alone.
   them. With them off, every behavior of features 001 to 012 is unchanged. *(SPEC: §1.3 amended,
   proposed L2-8, CFG-2)*
 - **FR-002**: With multi-user mode on, a payment request that carries no user MUST be decided
-  against the platform account and its mandate, exactly as today. The scripted regression plan
-  (L1-4) and the local demo MUST keep working this way. *(SPEC: L2-1, L1-4, T-E2E-01)*
+  against the platform account and its mandate, exactly as today. A request carries no user when
+  its run was started by a system identity, by the scripted regression plan (L1-4) or by the
+  local demo, which MUST all keep working this way. A request for a person MUST never be decided
+  against the platform account, whether or not that person has onboarded. *(SPEC: L2-1, L1-4,
+  L1-6 auth, T-E2E-01)*
 
 **Sign-in and access**
 
 - **FR-003**: A person MUST sign in to the portal with the same organization identity they use to
-  start agent runs. Only people the organization has granted portal access MAY sign in. A refused
+  start agent runs. Everyone who is allowed to start agent runs MAY sign in and onboard, and
+  nobody else: there is no separate portal permission. A system identity can't sign in. A refused
   sign-in MUST create no record. *(SPEC: L1-6 auth, SEC-14, proposed L2-8)*
 - **FR-004**: A signed-in user MUST be able to read and change only their own profile, wallet,
   cards and policies. A request for anything that belongs to another user MUST get "not found",
@@ -363,7 +449,7 @@ version, and the policy's whole history can be rebuilt from the ledger alone.
 - **FR-006**: The agent MUST gain no tool, field or route that reads or changes a profile, a
   wallet or a policy. Its tools stay `fetch_resource` and `check_budget`. *(SPEC: L1-3, L1-6,
   Constitution I)*
-- **FR-007**: A change that raises a limit, adds a seller or payee, extends a policy's end date,
+- **FR-007**: A change that raises a limit, adds a seller, extends a policy's end date,
   or resumes a paused policy MUST require the user to have confirmed their identity within the
   last 15 minutes. Changes that only tighten MUST NOT require it. *(SPEC: proposed L2-8, §11)*
 
@@ -397,7 +483,8 @@ version, and the policy's whole history can be rebuilt from the ledger alone.
 - **FR-015**: The wallet MUST show the account's address, network and asset, and three figures:
   - the USDC balance on the network, at most 30 seconds old, with the time it was read;
   - the amount committed to payments that can still settle;
-  - the amount spent in the last 24 hours, the period the daily budget counts.
+  - the amount spent in the last 24 hours, the period the daily budget counts, next to the user
+    daily ceiling.
 
   The last two MUST come from the ledger. *(SPEC: INV-7, L2-4.1, L2-5 budget)*
 - **FR-016**: The wallet MUST tell the user how to fund the account: by sending USDC on the
@@ -434,8 +521,8 @@ version, and the policy's whole history can be rebuilt from the ledger alone.
 
 - **FR-024**: A user MUST be able to create a policy with these parts:
   - **a name**, for the user's own reference;
-  - **where**: one or more sellers, each identified by its host, and optionally the payee
-    addresses accepted for it;
+  - **where**: one or more sellers, picked from the operator's seller list (FR-042). The payee
+    addresses accepted for a seller come from that list, never from the user;
   - **how much**: an auto-approve limit, a per-payment cap, a budget per agent run and a budget
     per day;
   - **how**: the payment method, the highest number of payments per minute, and the date the
@@ -449,8 +536,8 @@ version, and the policy's whole history can be rebuilt from the ledger alone.
 - **FR-026**: A policy MUST be refused, naming each value to fix, when:
   - the auto-approve limit is not below the per-payment cap, or the per-payment cap is above the
     run budget (CFG-3's constraint);
-  - any value is beyond a platform limit (FR-036);
-  - a seller is not a valid host, or is not among the sellers the platform allows;
+  - any value is beyond a platform limit (FR-041);
+  - a seller is not on the operator's seller list;
   - the end date is in the past, or later than the platform allows;
   - a seller is already listed by another active policy of the same user (FR-028).
 
@@ -467,68 +554,105 @@ version, and the policy's whole history can be rebuilt from the ledger alone.
 - **FR-029**: For a payment request that carries a user, the policy that applies MUST be that
   user's active policy that lists the requested seller. If none does, the request MUST be DENIED
   with `host_not_allowed`. *(SPEC: L2-2 R6)*
-- **FR-030**: The applicable policy, bounded by the platform limits (FR-036), MUST be given to the
-  policy engine as the mandate. The engine MUST stay unchanged and pure: the same rules, in the
-  same order, with time as an input and no agent text. *(SPEC: INV-5, L2-2)*
+- **FR-030**: The applicable policy, bounded by the platform limits (FR-041), MUST be given to the
+  policy engine as the mandate. The engine MUST stay pure, with time as an input and no agent
+  text, and keep today's rules in today's order. The only additions are the incomplete-setup rule
+  (FR-012), the disabled-account rule (FR-038) and the user daily ceiling (FR-032). *(SPEC:
+  INV-5, L2-2)*
 - **FR-031**: Budgets and the payments-per-minute count MUST be computed from the ledger, per user
   and per policy. One user's payments MUST never count against another's. No mutable counter is
   added. *(SPEC: INV-7, L2-2 R11..R13)*
-- **FR-032**: The user a payment request is for MUST be the verified person who started the agent
+- **FR-032**: At every decision, the user's committed spending over the last 24 hours across all
+  their policies, plus the requested amount, MUST NOT exceed the user daily ceiling. A request
+  over it MUST be DENIED with `daily_budget_exceeded`, whatever the applicable policy's own daily
+  budget allows. The figure MUST come from the ledger. *(SPEC: INV-7, L2-2 R12, L2-4.1)*
+- **FR-033**: The user a payment request is for MUST be the verified person who started the agent
   run, set by the agent service. It MUST NOT come from the model's text or a tool's input. The
-  person's sign-in credential MUST NOT be forwarded to the control layer. *(SPEC: L1-6, SEC-15,
+  person's sign-in credential MUST NOT be forwarded to the control layer. For a run started by a
+  system identity, the agent service MUST set no user (FR-002). *(SPEC: L1-6, SEC-15,
   Constitution V)*
-- **FR-033**: A payment above a policy's auto-approve limit and within its per-payment cap MUST be
+- **FR-034**: A payment above a policy's auto-approve limit and within its per-payment cap MUST be
   escalated to the existing approval paths, unchanged (features 004, 010 and 012). The portal
   offers no way to approve or reject. *(SPEC: L2-2 R14, L2-4.3, L2-7)*
 
 **Expense policies: changing them**
 
-- **FR-034**: A user MUST be able to change, pause, resume and remove their policies.
+- **FR-035**: A user MUST be able to change, pause, resume and remove their policies.
   - Every change makes a new version. Earlier versions stay readable.
   - A paused or removed policy authorizes nothing.
   - A removed policy can't be resumed.
 
   *(SPEC: INV-9, proposed L2-8)*
-- **FR-035**: A policy change MUST apply to every payment decision recorded after it, and each
+- **FR-036**: A policy change MUST apply to every payment decision recorded after it, and each
   decision MUST use exactly one version. Recording a change and deciding a payment MUST be
   serialized with each other. An approved escalation MUST be re-evaluated against the policy as it
   is at payment time. *(SPEC: INV-8, INV-12)*
 
+**Disabling an account**
+
+- **FR-037**: A user MUST be able to disable their own account in the portal, after confirming
+  the action. Disabling MUST delete nothing: the profile, every policy and version, the crypto
+  account and its key, its funds and the registered cards are all kept. *(SPEC: INV-9, proposed
+  L2-8)*
+- **FR-038**: While an account is disabled:
+  - every payment request for that user MUST be DENIED with a rule that says the account can't
+    pay (proposed rule `user_disabled`), from the next decision on;
+  - nothing MUST be signed with the user's crypto account;
+  - every policy and the wallet MUST show as disabled, and the user can't create or change a
+    policy, create a wallet or add a card;
+  - the user can still sign in and read everything they own, and can still correct their name
+    and email.
+
+  *(SPEC: L2-2 new rule, L2-3, SEC-12)*
+- **FR-039**: A user MUST be able to enable their disabled account again, having confirmed their
+  identity within the last 15 minutes. Every policy that was active when the account was disabled
+  MUST come back paused, so that spending restarts only when the user resumes a policy (FR-007).
+  *(SPEC: proposed L2-8)*
+- **FR-040**: Disabling and enabling MUST be serialized with payment decisions, like a policy
+  change (FR-036), and each MUST be idempotent. *(SPEC: INV-8)*
+
 **Platform limits**
 
-- **FR-036**: The operator MUST be able to set platform limits for all users: the highest
-  per-payment cap, run budget and daily budget, the highest payments per minute, the longest a
-  policy may last, and the sellers users may list. They are checked when a policy is saved and
+- **FR-041**: The operator MUST be able to set platform limits for all users: the highest
+  per-payment cap and run budget, the user daily ceiling (which is also the highest daily budget
+  one policy may have), the highest payments per minute, the longest a policy may last, and the
+  seller list (FR-042). They are checked when a policy is saved and
   again at every decision, where the stricter of the policy and the platform limits applies.
   Users can't change them. *(SPEC: L2-1, CFG-3)*
-- **FR-037**: The portal MUST flag a policy that the platform limits currently make stricter than
+- **FR-042**: The operator MUST maintain the seller list. Each entry holds the seller's host, a
+  name shown to users, and the payee addresses accepted for it. Users can read the list and
+  can't change it. A seller that is not on it MUST NOT be accepted in a policy, and a payment to a
+  seller taken off the list MUST be denied with `host_not_allowed`, even if a saved policy still
+  names it. *(SPEC: L2-1, L2-2 R5, R6)*
+- **FR-043**: The portal MUST flag a policy that the platform limits currently make stricter than
   the user wrote it. *(SPEC: proposed L2-8)*
 
 **Recording**
 
-- **FR-038**: The ledger MUST record each of these as a new append-only entry:
+- **FR-044**: The ledger MUST record each of these as a new append-only entry:
   - a user completed their profile, named only by their identifier;
   - a crypto account was created, with its address;
   - a card was added or removed, named only by an identifier (no brand, digits or expiry);
-  - a policy was created, changed, paused, resumed or removed, with its version and every value.
+  - a policy was created, changed, paused, resumed or removed, with its version and every value;
+  - an account was disabled or enabled, named only by the user's identifier.
 
   Existing entries are never rewritten. *(SPEC: INV-9, L2-4 table)*
-- **FR-039**: Every ledger entry about a user's payment MUST name the user's identifier, and every
+- **FR-045**: Every ledger entry about a user's payment MUST name the user's identifier, and every
   decision MUST also name the policy and version that decided it and the account that paid. The
   operator's escalation list and event stream MUST show the user's identifier. *(SPEC: L2-4,
   L2-5 escalation reads)*
-- **FR-040**: A user's name and email MUST NOT be written to the ledger. They are kept apart from
+- **FR-046**: A user's name and email MUST NOT be written to the ledger. They are kept apart from
   it, so they can be corrected. The ledger names users only by an identifier that reveals neither.
   *(SPEC: INV-9, SEC-16)*
-- **FR-041**: The portal MUST show a user the history of each of their policies: every version,
+- **FR-047**: The portal MUST show a user the history of each of their policies: every version,
   when it was made and what changed. *(SPEC: proposed L2-8)*
 
 **Isolation and credentials**
 
-- **FR-042**: The part of the portal that browsers reach MUST run apart from the process that
+- **FR-048**: The part of the portal that browsers reach MUST run apart from the process that
   holds the signer. It MUST hold no payment key. The control layer MUST gain no public route and
   keep listening only where it does today. *(SPEC: §3.1, INV-2, Constitution V)*
-- **FR-043**: The portal MUST reach the control layer with its own role credential. That
+- **FR-049**: The portal MUST reach the control layer with its own role credential. That
   credential MUST NOT be able to authorize, approve, reject or reconcile a payment. No other
   role's credential MAY change a profile, a wallet or a policy. *(SPEC: INV-13, §3.3)*
 
@@ -537,8 +661,8 @@ version, and the policy's whole history can be rebuilt from the ledger alone.
 - **NFR-001 (Security: monotonicity)**: No user policy can allow what the platform limits forbid.
   Anything done in the portal takes effect only inside them. *(SPEC: L2-1, INV-5)*
 - **NFR-002 (Security: fail closed)**: Every failure fails closed. An unknown user, a user who has
-  not finished onboarding, a seller no active policy lists, a policy that can't be read, and a
-  failed ownership check all end in no payment. *(SPEC: SEC-3)*
+  not finished onboarding, a disabled account, a seller no active policy lists, a policy that
+  can't be read, and a failed ownership check all end in no payment. *(SPEC: SEC-3)*
 - **NFR-003 (Security: secrets)**: These MUST NEVER appear in the ledger, logs, portal responses,
   operator events, the agent's tool results, L1 or L3:
   - any crypto account's key;
@@ -549,7 +673,8 @@ version, and the policy's whole history can be rebuilt from the ledger alone.
   A known-value scan over test output MUST find none. *(SPEC: SEC-10, SEC-16)*
 - **NFR-004 (Privacy)**: The system keeps only the personal data the profile needs: a name and an
   email. It is visible only to its owner, kept out of the ledger and the logs, and can be
-  corrected by its owner. *(SPEC: SEC-16)*
+  corrected by its owner. It is kept while the account exists, disabled or not; this feature has
+  no deletion. *(SPEC: SEC-16)*
 - **NFR-005 (Availability)**: Payment decisions MUST NOT depend on the portal or the card vault
   being up. An outage of either MUST NOT change a decision or delay it by more than 50 ms.
   *(SPEC: L2-5)*
@@ -560,9 +685,13 @@ version, and the policy's whole history can be rebuilt from the ledger alone.
   - the ownership check (FR-004): without it, user A reads user B's policy;
   - the per-user account (FR-017): without it, A's payment is signed with B's account;
   - the per-user budget (FR-031): without it, A's spending uses up B's budget;
-  - the platform bound (FR-036): without it, a policy over the limit pays;
+  - the platform bound (FR-041): without it, a policy over the limit pays;
+  - the user daily ceiling (FR-032): without it, two policies together pay more than the ceiling;
+  - the disabled-account rule (FR-038): without it, a disabled user's run pays;
+  - the no-fallback rule (FR-002): without it, a person who has not onboarded pays from the
+    platform account;
   - the one-policy-per-seller check (FR-028): without it, two policies apply to one payment;
-  - the serialized policy change (FR-035): without it, a decision mixes two versions.
+  - the serialized policy change (FR-036): without it, a decision mixes two versions.
 
   *(Constitution VIII)*
 - **NFR-008 (Regression)**: The `npm run demo:local` summary and the L1-4 baseline MUST stay
@@ -577,7 +706,8 @@ version, and the policy's whole history can be rebuilt from the ledger alone.
 ### Key Entities
 
 - **User**: a person with portal access. Identified by their organization identity, and in the
-  ledger by an identifier that reveals neither name nor email. Owns one profile, one wallet and
+  ledger by an identifier that reveals neither name nor email. Their account is enabled or
+  disabled; a disabled account keeps everything and pays nothing. Owns one profile, one wallet and
   up to 10 active policies. The same identity starts their agent runs.
 - **Profile**: the user's display name, contact email and test-funds acknowledgement. Kept
   outside the ledger. Editable by its owner only.
@@ -592,15 +722,20 @@ version, and the policy's whole history can be rebuilt from the ledger alone.
   digits, expiry, nickname and time added. It can't pay in this feature.
 - **Card Vault**: the outside service that holds card details, in test mode. The system sends it
   nothing about payments.
-- **Expense Policy**: a user's named set of rules: sellers and their payees (where); the
+- **Seller List**: the operator's vetted sellers: for each, a host, a display name and its
+  accepted payee addresses. The only source of a policy's "where".
+- **Expense Policy**: a user's named set of rules: sellers picked from the seller list (where); the
   auto-approve limit, per-payment cap, run budget and daily budget (how much); the payment
   method, payments per minute and end date (how). It has a state (active, paused, removed) and
   versions.
 - **Policy Version**: one recorded state of a policy, with every value, the time and the user who
   made it. Decisions name the version they used.
-- **Platform Limits**: the operator's ceilings for all users, and the sellers users may list. The
+- **User Daily Ceiling**: the limit on one user's spending in any 24 hours across all their
+  policies. Set by the operator as a platform limit, the same for every user.
+- **Platform Limits**: the operator's ceilings for all users, together with the seller list. The
   effective rules for a payment are the user's policy, made no looser than these.
-- **Platform Account**: today's payer and mandate, used only for runs that carry no user.
+- **Platform Account**: today's payer and mandate, used only for runs that carry no user: system
+  identities, the scripted regression and the local demo.
 
 ## Success Criteria *(mandatory)*
 
@@ -617,7 +752,7 @@ version, and the policy's whole history can be rebuilt from the ledger alone.
 - **SC-005**: 0 payments are signed with an account other than the paying user's. 0 requests by
   one user return another user's profile, wallet, card or policy.
 - **SC-006**: 0 payments go beyond the user's applicable policy or the platform limits: none to a
-  seller not listed, none above a cap, none over a budget.
+  seller not listed, none above a cap, none over a budget, none over the user daily ceiling.
 - **SC-007**: Funds sent to a user's crypto account show in their wallet within 30 seconds.
 - **SC-008**: A known-value scan finds 0 occurrences of an account key, a full card number, a
   security code or a credential in the ledger, logs, portal responses or agent results.
@@ -631,6 +766,9 @@ version, and the policy's whole history can be rebuilt from the ledger alone.
   `hash chain ok=true`), and the existing tests pass.
 - **SC-013**: A user can tell from the policy summary alone, in under 30 seconds, what their
   agent may spend, where, and when a human will be asked.
+- **SC-014**: After a user disables their account, 0 payments are authorized for them, starting
+  with the next decision, and 100% of their profile, policies, funds and cards are still there
+  when they enable it again.
 
 ## Assumptions
 
@@ -645,42 +783,62 @@ version, and the policy's whole history can be rebuilt from the ledger alone.
 - **Test funds and test cards only.** Networks stay `local` and `base-sepolia`; mainnet stays out
   of scope. The card vault runs in test mode. The profile's acknowledgement says so.
 - **No withdrawals.** A user funds their account by sending test USDC to it. Moving funds out
-  through the portal, and closing an account, are out of scope.
-- **Many users, self-service** (clarified 2026-11-10). "Portal access" is granted by the
-  organization through its sign-in (for example, a role or group), not by the portal. There is no
-  invitation or operator approval step.
+  through the portal is out of scope.
+- **Disable, never delete** (clarified 2026-11-10). A user who wants to stop disables their
+  account, which disables their policies and wallet with it. Nothing is deleted, so closing an
+  account for good and erasing a profile are out of scope. Two details are assumed: the user can
+  enable the account again themself, and their policies then come back paused, so that enabling
+  alone never restarts spending. Only the user disables their own account; an operator disabling
+  a user is out of scope, and the organization can still block the person's sign-in.
+- **Many users, self-service** (clarified 2026-11-10). Portal access comes with the
+  organization's permission to start agent runs, so nobody can start runs without being able to
+  set up payment. The organization grants that permission through its sign-in, as today (011).
+  There is no invitation or operator approval step, and no separate portal permission.
 - **One identity for the portal and for agent runs.** The portal signs people in with the same
   organization identity the hosted agent accepts (011), so a run's verified requester names the
   user. Locally, the existing dev issuer stands in. The plan chooses the sign-in mechanics.
 - **The agent service is trusted to name the user.** L2 can't verify the person itself, because
   their credential is never forwarded to it (Constitution V). A compromised agent service could
   name another user; it would still be bound by that user's policy and by the platform limits.
-  This is a new accepted residual risk.
-- **Several policies, split by seller.** "Policies" is read as several rule sets that differ by
-  where they apply. One active policy per seller keeps the decision deterministic: exactly one
-  policy, or none, applies to any payment. Budgets are per policy, and the platform limits bound
-  each one. A user's total daily exposure is therefore the sum of their active policies' daily
-  budgets: at most 10 times the platform's daily limit. A single ceiling per user across policies
-  is not part of this feature.
-- **Policy fields are today's mandate fields.** Where: allowed hosts and payees. How much:
+  It could also name no user and spend from the platform account, within today's mandate, as any
+  run can today. This is a new accepted residual risk.
+- **System identities keep today's behavior** (clarified 2026-11-10). A pipeline or service
+  allowed to start runs spends from the platform account under the deployment's mandate, so the
+  deployment's regression check needs no user, wallet or policy. Tying a system identity to a
+  person's wallet is out of scope.
+- **Several policies, split by seller, under one user daily ceiling** (clarified 2026-11-10).
+  One active policy per seller keeps the decision deterministic: exactly one policy, or none,
+  applies to any payment. Budgets are per policy. The user daily ceiling bounds what all of a
+  user's policies can spend together, so a user's exposure in 24 hours is never more than that
+  ceiling. It starts as today's daily budget (0.50 USDC), is the same for every user, and is not
+  editable by users.
+- **Policy fields are today's mandate fields.** Where: allowed hosts, picked from the operator's
+  seller list, which also supplies the allowed payees (clarified 2026-11-10). How much:
   auto-approve limit, per-payment cap, session ("run") budget and daily budget. How: payments per
   minute, end date, and the payment method. Schemes, networks, assets and the timeout range come
   from the deployment and the platform limits, not from the user.
 - **Approvals are unchanged** (clarified 2026-11-10). Escalations go to the deployment's approver
   by phone (012) and to the operator (004, 010). A user approving their own payments, in the
   portal or by phone, is a later feature.
-- **Platform limits start from today's mandate.** The deployment's mandate file becomes the
-  source of the platform limits and of the platform account's rules. With one mandate today, the
-  default limits are today's values.
+- **Platform limits start from today's mandate** (planning, 2026-11-10: they live in their own
+  file, `config/platform.json`, with today's values; the mandate file stays the platform
+  account's rules, unchanged; plan research R12). The deployment's mandate values are the
+  starting point for both. With one mandate today, the
+  default limits are today's values, and the seller list starts as today's allowed hosts and
+  payees.
 - **Constants.** At most 10 active policies per user, 20 sellers per policy and 5 cards per user;
   balances at most 30 seconds old; identity confirmed within 15 minutes for loosening changes.
   They are constants, like the 300-second escalation window.
 - **Where profiles are kept is for the plan.** Profiles must stay out of the append-only ledger
-  (FR-040). The plan chooses the store, and says whether "no persistent database beyond JSONL"
-  needs amending.
+  (FR-046). The plan chooses the store, and says whether "no persistent database beyond JSONL"
+  needs amending. Planning, 2026-11-10: one small file per user, owned by the portal; no
+  database, so that constraint stays (plan research R9). Policy names and card nicknames are kept
+  there or at the card vault too, so no text a user types reaches the control layer (R6).
 - **Where user account keys are kept is for the plan.** Today the single payer key is an
   environment variable, in Key Vault in Azure. The plan chooses how per-user keys are created and
-  kept inside the signer's boundary.
+  kept inside the signer's boundary. Planning, 2026-11-10: one mnemonic held by the signer, and
+  each user's account derived at an index recorded in the ledger; nothing is stored per user
+  (plan research R3).
 - **"Per day" means the last 24 hours,** as the daily budget counts today (L2-5).
 - **Out of scope:** a payment history view (the wallet shows the balance, the committed amount
   and the last 24 hours' spending), notifications, shared or team wallets, delegating a policy to
@@ -701,9 +859,10 @@ version, and the policy's whole history can be rebuilt from the ledger alone.
   - **§4.1:** an architecture rule confining the card vault credential, and one for per-user keys.
   - **§7:** the user on `PaymentIntent`, and the user, policy and version on decisions.
   - **L2-1:** the mandate per user and policy, bounded by the platform limits.
-  - **L2-2:** the new rule `user_not_onboarded`; the context computed per user and policy.
+  - **L2-2:** the new rules `user_not_onboarded` and `user_disabled`; the context computed per
+    user and policy; the user daily ceiling, checked with `daily_budget_exceeded`.
   - **L2-3:** one signing account per user.
-  - **L2-4:** the new entry types (FR-038) and fields (FR-039).
+  - **L2-4:** the new entry types (FR-044) and fields (FR-045).
   - **L2-5:** the routes the portal uses, with the portal's token; the user's identifier in the
     escalation reads.
   - **L2-8 (new section):** the portal.
