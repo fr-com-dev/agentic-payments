@@ -34,6 +34,7 @@ export interface PreDeployNames {
   apiApp: string;
   deployApp: string;
   operators: string;
+  stateStorage: string;
 }
 
 /** Every string leaf of an object, with its dotted path. */

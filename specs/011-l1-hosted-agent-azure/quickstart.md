@@ -35,7 +35,7 @@ npm run check                                 # typecheck + all tests + demo:loc
 
 ```bash
 az bicep install && export BICEP_PATH="$HOME/.azure/bin/bicep"   # Bicep CLI 0.47.16
-npx vitest run test/infra.test.ts             # T-IAC-01: rules 1–19 on main.bicep, pre-deploy.bicep and their parameter files, plus 25 must-fail mutant tests
+npx vitest run test/infra.test.ts             # T-IAC-01: rules 1–20 on main.bicep, pre-deploy.bicep and their parameter files, plus 25 must-fail mutant tests
 # Preview against Azure (reads only). Graph resources aren't previewed; main.bicep needs pre-deploy's resource group,
 # and a unit's preview needs the platform deployed (its apps look the platform up by name).
 # v prints one value of a parameter file, as Bicep compiles it.

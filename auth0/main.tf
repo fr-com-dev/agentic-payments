@@ -82,7 +82,7 @@ resource "auth0_client_credentials" "l2" {
       credentials {
         name            = "l2-ciba-${var.environment}"
         credential_type = "public_key"
-        pem             = file(var.client_public_key_file)
+        pem             = var.client_public_key_pem
         algorithm       = "RS256"
       }
     }
@@ -93,8 +93,8 @@ resource "auth0_client_credentials" "l2" {
 
   lifecycle {
     precondition {
-      condition     = var.credential != "key" || var.client_public_key_file != ""
-      error_message = "credential = key needs client_public_key_file: the public half of L2's key."
+      condition     = var.credential != "key" || var.client_public_key_pem != ""
+      error_message = "credential = key needs client_public_key_pem: the public half of L2's key."
     }
   }
 }

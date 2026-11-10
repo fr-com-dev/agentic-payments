@@ -109,7 +109,7 @@ With backchannel approval on (`CIBA_APPROVAL=1` in L2's env file, SPEC L2-7), L2
 - **The operator path keeps working** whatever happens on the phone, and the first decision recorded wins. `npm run escalations -- --watch` shows each request's state and who decided, through which channel.
 - **Automated checks never ask the approver**: the scripted regression is operator-only, there are at most 10 requests per hour, and repeats of a pending purchase reuse its escalation.
 
-The Auth0 tenant is Terraform in [`auth0/`](auth0/README.md), applied by a tenant administrator. Its outputs are the env values and the `ciba` object for Azure. The steps and a live check are in [specs/012 quickstart](specs/012-ciba-escalation-approval/quickstart.md). It is off by default, and the local demo never uses it.
+The Auth0 tenant is Terraform in [`auth0/`](auth0/README.md), applied by its own pipeline, `provision-auth0.yml`. Its outputs are the env values and the `ciba` object for Azure. The steps and a live check are in [specs/012 quickstart](specs/012-ciba-escalation-approval/quickstart.md). It is off by default, and the local demo never uses it.
 
 ## Base Sepolia
 
@@ -300,7 +300,7 @@ A milestone must pass its exit check before the next one starts.
 | `test/infra.test.ts` | T-IAC-01: the compiled `main.bicep` and `pre-deploy.bicep` keep identities, secrets and ingress per the Azure matrix, take every name from the parameter files' `names` (each one the standard name), set up the Entra apps and the deploy app's roles, and take every value from their parameter files (needs `BICEP_PATH`) |
 | `test/images.test.ts` | T-IMG-01: each image holds only its own unit's code and packages (only L2's has the signer) |
 | `test/deploy-workflow.test.ts` | T-E2E-AZ: one pipeline per unit, each calling `deploy.yml` with its unit in one concurrency group; `deploy.yml`'s OIDC sign-in from the parameter file, no GitHub secret, Bicep-only provisioning (also in `infra/*.sh`), gates, skips and the unit's rollback |
-| `test/github-setup.test.ts` | T-E2E-AZ: `infra/github-setup.sh` against a fake `gh`: creates only the GitHub environment the parameter file names, and reports leftover secrets |
+| `test/github-setup.test.ts` | T-E2E-AZ: `infra/github-setup.sh` against a fake `gh`: creates only the two GitHub environments the parameter file names (the deploy job's and the Auth0 job's), and reports leftover secrets |
 | `test/cleanup.test.ts` | T-E2E-AZ: `infra/cleanup.sh` against a fake tenant and `gh`: deletes the GitHub environment, role assignments, resource group, app registrations and the operators' group and nothing else, leaves no orphaned role assignment, and deletes nothing on `--dry-run`, unconfirmed or for the wrong tenant |
 | `test/openapi.test.ts` | T-API-01..03: `docs/l2-control.openapi.yaml` matches L2's routes, tokens, statuses and response shapes; T-API-04: the Swagger UI routes are off by default, same-origin and serve fixed files only |
 | `test/seller-monetization.test.ts` | T-MON-01..03: the seller's tiers and prices, what's derived from its decorators, the free catalog while payments are down, `usdc()`, and every declaration mistake refused while the seller is built |

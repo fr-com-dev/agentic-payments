@@ -40,7 +40,7 @@ contract are dev's (`eastus2`).
 | User-assigned identities | `id-l1-eastus2-dev`, `id-l2-eastus2-dev`, `id-l3-eastus2-dev`, `id-op-eastus2-dev`, `id-seller-eastus2-dev` | one per runtime unit |
 | Foundry resource + deployment | `ais-x402-eastus2-dev`, deployment `claude-sonnet-5-5` (version 2, Global Standard, capacity 10) | `MODEL_PROVIDER=foundry` only; API keys disabled. The deployment declares `modelProviderData` (organization, country, industry, from `main.<env>.bicepparam`), which accepts Anthropic's Azure Marketplace terms |
 | Entra app registration (API) | `app-l1-eastus2-dev` | identifier URI `api://app-l1-eastus2-dev`, v2.0 tokens; app role `Agent.Run` (User, Application), assignment required; delegated scope `user_impersonation` (admin consent), the Azure CLI pre-authorized |
-| Entra app registration (deploy) | `app-deploy-eastus2-dev` | no secret, no API permission; one federated credential for GitHub's immutable subject `repo:<owner>@<githubOwnerId>/<name>@<githubRepositoryId>:environment:<githubEnvironment>` (GitHub OIDC; the IDs are in `pre-deploy.<env>.bicepparam`) |
+| Entra app registration (deploy) | `app-deploy-eastus2-dev` | no secret, no API permission; two federated credentials for GitHub's immutable subject `repo:<owner>@<githubOwnerId>/<name>@<githubRepositoryId>:environment:<githubEnvironment>`, one for the deploy environment and one for `auth0-<env>` (GitHub OIDC; the IDs are in `pre-deploy.<env>.bicepparam`) |
 | Entra security group | `grp-op-eastus2-dev` | the operators (`operators` in `pre-deploy.<env>.bicepparam`, added, never removed by a redeployment) |
 
 ## Apps and jobs
@@ -59,7 +59,7 @@ contract are dev's (`eastus2`).
 
 | Template | Scope | Deploys | Deployed by |
 |---|---|---|---|
-| `infra/pre-deploy.bicep` | subscription | the resource group; the API and deploy app registrations and their service principals; the deploy app's federated credential; `Agent.Run` for the deploy app and `agentUsers`; the operators' group; the deploy app's roles (`modules/deploy-access.bicep`) | an administrator, by hand (quickstart §4 step 0) |
+| `infra/pre-deploy.bicep` | subscription | the resource group; the API and deploy app registrations and their service principals; the deploy app's two federated credentials; `Agent.Run` for the deploy app and `agentUsers`; the operators' group; the deploy app's roles (`modules/deploy-access.bicep`); the storage for the Terraform state of `auth0/` (`modules/state-storage.bicep`, SPEC v1.9) | an administrator, by hand (quickstart §4 step 0) |
 | `infra/main.bicep` | resource group | one unit per deployment (`unit`): the platform (network, logs, identities, registry, vaults, storage, Foundry and its model, both environments), or one unit's apps (`modules/l1-apps.bicep`, `l2-apps.bicep`, `l3-apps.bicep`, `operator-apps.bicep`, `sellers.bicep`) | the unit's pipeline, `.github/workflows/deploy-<unit>.yml` (`deploy-infra.yml` for the platform), through the shared `deploy.yml` ([deploy-pipeline](deploy-pipeline.md)) |
 
 - Every value is in `infra/<template>.<env>.bicepparam`, the target (tenant, subscription, location) and
@@ -189,8 +189,9 @@ both copies, then restarts both units.
     `api://app-l1-<location>-<env>`, has only the `Agent.Run` role and only the admin-consent
     `user_impersonation` scope, with only the Azure CLI pre-authorized; its service principal requires
     assignment. No app has a password or key credential, and both are single-tenant. The deploy app
-    has no API or permissions, and exactly one federated credential, for GitHub's immutable subject
-    `repo:<owner>@<githubOwnerId>/<name>@<githubRepositoryId>:environment:<githubEnvironment>` (both IDs numeric). `Agent.Run` goes to the deploy app and
+    has no API or permissions, and exactly two federated credentials, for GitHub's immutable subject
+    `repo:<owner>@<githubOwnerId>/<name>@<githubRepositoryId>:environment:<githubEnvironment>` (both IDs numeric):
+    one for the deploy environment and one for the Auth0 environment, `auth0-<env>` (SPEC v1.9). `Agent.Run` goes to the deploy app and
     `agentUsers` only. The operators' group is a security group of `operators`. The deploy app has
     Contributor and Role Based Access Control Administrator on the resource group only, the latter's
     condition listing exactly the roles `main.bicep` assigns.
@@ -208,6 +209,11 @@ both copies, then restarts both units.
     `main.bicep` refuses (`fail()`) a `ciba` with another credential kind, or one that is enabled without an `https://`
     issuer, a client ID, an audience and an approver. No other app, job or container gets a `CIBA_*` variable or the
     secret.
+20. (SPEC v1.9) The Terraform state of `auth0/` (`pre-deploy.bicep`, `modules/state-storage.bicep`). One storage
+    account, `names.stateStorage`, with Entra sign-in only (no account key, no anonymous access, HTTPS with TLS
+    1.2), versions and deleted blobs kept, and one private container, `tfstate`. The deploy app is the only
+    principal with a role there: Storage Blob Data Contributor, on the container only. The account has no firewall,
+    because GitHub-hosted runners have no fixed address.
 
 **Must fail**: mutated copies of the templates and parameter files, each must trip its check:
 - an extra role assignment of `id-l1-eastus2-dev` on `kv-l2-eastus2-dev` (rule 1);
@@ -231,4 +237,6 @@ both copies, then restarts both units.
 - L1's apps deployed by the platform's runs too, Foundry deployed by every run, and a seventh value of
   `unit` (rule 18);
 - the CIBA credential on the agent, as a literal secret, or under one fixed name; a `CIBA_ISSUER` written in the
-  template; and `main.bicep` without its `ciba` check (rule 19).
+  template; and `main.bicep` without its `ciba` check (rule 19);
+- a Terraform state readable with an account key, a role on the whole account, another role, or no versioning
+  (rule 20).

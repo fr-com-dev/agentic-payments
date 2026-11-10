@@ -157,6 +157,8 @@ const COGNITIVE_SERVICES_USER = "a97b65f3-24c7-4388-baec-2e87135dc908";
 const JOBS_OPERATOR = "b9a307c4-5aa3-4b52-ba60-2b17c136cd7b";
 const CONTRIBUTOR = "b24988ac-6180-42a0-ab88-20f7382dd24c";
 const RBAC_ADMINISTRATOR = "f58310d9-a9f6-439a-9e8d-f62e7b41a168";
+/** Storage Blob Data Contributor: the deploy app's role on the Terraform state's container (rule 20). */
+const BLOB_CONTRIBUTOR = "ba92f5b4-2d11-453d-a403-e96b0029c9fe";
 const AGENT_RUN = "5b2c3a7e-6f1d-4c55-9f0e-0a1b2c3d4e51";
 const USER_IMPERSONATION = "5b2c3a7e-6f1d-4c55-9f0e-0a1b2c3d4e52";
 const AZURE_CLI = "04b07795-8ddb-461a-bbee-02f9e1bf7b46";
@@ -200,9 +202,10 @@ const STANDARD: Record<string, { type: string; app?: string; compact?: boolean; 
   apiApp: { type: "app", app: "l1", limits: [1, 120, /^[a-z][a-z0-9-]*[a-z0-9]$/] },
   deployApp: { type: "app", app: "deploy", limits: [1, 120, /^[a-z][a-z0-9-]*[a-z0-9]$/] },
   operators: { type: "grp", app: "op", limits: [1, 64, /^[a-z][a-z0-9-]*[a-z0-9]$/] },
+  stateStorage: { type: "st", app: "tfstate", compact: true, limits: [3, 24, /^[a-z0-9]+$/] },
 };
-/** The {app} segments: the layers, the operator, the sellers, what the layers share, and the deploy app. */
-const APPS = ["l1", "l2", "l3", "op", "seller", "seller-alias", "x402", "deploy"];
+/** The {app} segments: the layers, the operator, the sellers, what the layers share, the deploy app, and the Terraform state. */
+const APPS = ["l1", "l2", "l3", "op", "seller", "seller-alias", "x402", "deploy", "tfstate"];
 /** The resource types whose names come from `names` (rule 15). */
 const NAMED_TYPES = [
   "Microsoft.Resources/resourceGroups",
@@ -225,6 +228,10 @@ const PER_RUN = ["unit", "imageTag", "seedIp", "recoverVaults", "agentStableRevi
 const TARGET = ["tenantId", "subscriptionId", "location", "names.resourceGroup"];
 /** GitHub's immutable OIDC subject for a deploy job: the owner and repository by name and ID (rule 16). */
 const IMMUTABLE_SUBJECT = "repo:<owner>@<githubOwnerId>/<name>@<githubRepositoryId>:environment:<githubEnvironment>";
+const FIC_PROBLEM = `rule 16: the deploy app's two federated credentials must trust only ${IMMUTABLE_SUBJECT}, for the deploy environment and the Auth0 environment`;
+/** The compiled subject of a federated credential for the GitHub environment a parameter names. */
+const subjectFor = (envParam: string) =>
+  `[format('repo:{0}@{1}/{2}@{3}:environment:{4}', split(parameters('githubRepository'), '/')[0], parameters('githubOwnerId'), split(parameters('githubRepository'), '/')[1], parameters('githubRepositoryId'), parameters('${envParam}'))]`;
 /** A dotted path's value in an object. */
 const at = (o: unknown, path: string) => path.split(".").reduce<unknown>((v, k) => (v as Json | undefined)?.[k], o);
 
@@ -266,7 +273,7 @@ const vaultKeysOf = (r: Res, url: string | undefined) => [...withVars(url ?? "",
 const paramLines = (text: string) => new Map([...text.matchAll(/^param (\w+) = (.+)$/gm)].map((m) => [m[1]!, m[2]!.trim()]));
 
 /**
- * Rules 1–18 of contracts/cloud-topology.md, on the compiled templates, the compiled parameter files (`params`, by
+ * Rules 1–20 of contracts/cloud-topology.md, on the compiled templates, the compiled parameter files (`params`, by
  * file name) and the infra sources. Returns one message per violation, prefixed `rule N:`.
  */
 export function violations(arms: Templates, params: Params, infraFiles: Record<string, string>): string[] {
@@ -307,7 +314,8 @@ export function violations(arms: Templates, params: Params, infraFiles: Record<s
       (ra.module === "registry" && role.includes(ACR_PULL) && principal.includes("parameters('names').identities[parameters('identityKeys')[copyIndex()]]")) ||
       (ra.module === "foundry" && role.includes(COGNITIVE_SERVICES_USER) && principal.includes("parameters('names').identities.l1)")) ||
       (ra.module === "operator-apps" && role.includes(JOBS_OPERATOR) && principal === "[parameters('operatorsGroupId')]" && scope.some((s) => s === MN.jobs.l2 || s.endsWith(`/${MN.jobs.l2}`))) ||
-      (ra.module === "deploy-access" && (role.includes(CONTRIBUTOR) || role.includes(RBAC_ADMINISTRATOR)) && principal === "[parameters('principalId')]");
+      (ra.module === "deploy-access" && (role.includes(CONTRIBUTOR) || role.includes(RBAC_ADMINISTRATOR)) && principal === "[parameters('principalId')]") ||
+      (ra.module === "state-storage" && role.includes(BLOB_CONTRIBUTOR) && principal === "[parameters('principalId')]");
     if (!ok) v.push(`rule 1: role assignment ${ra.name} in ${ra.module} is not in the matrix`);
   }
   for (const module of ["vault", "foundry", "registry"]) {
@@ -558,8 +566,8 @@ export function violations(arms: Templates, params: Params, infraFiles: Record<s
 
   // Rule 16: the Entra objects (pre-deploy.bicep). The API app takes v2.0 tokens for its standard URI, has one
   // role (Agent.Run, assignment required) and one admin scope with only the Azure CLI pre-authorized. The deploy
-  // app has no API, no permissions and no secret: GitHub signs in as it through one federated credential, for the
-  // repository's deploy environment. Agent.Run goes to the deploy app and agentUsers only. The deploy app's roles are
+  // app has no API, no permissions and no secret: GitHub signs in as it through two federated credentials, for the
+  // repository's deploy environment and its Auth0 environment (provision-auth0.yml). Agent.Run goes to the deploy app and agentUsers only. The deploy app's roles are
   // Contributor and Role Based Access Control Administrator on the resource group only, the latter limited by
   // condition to exactly the roles main.bicep assigns.
   const graph = (type: string) => pre.filter((r) => r.type === `Microsoft.Graph/${type}@v1.0`);
@@ -591,16 +599,17 @@ export function violations(arms: Templates, params: Params, infraFiles: Record<s
   const apiSp = graph("servicePrincipals").find((r) => String(r.properties.appId).includes("reference('apiApp')"));
   if (apiSp?.properties.appRoleAssignmentRequired !== true) v.push("rule 16: the API app's service principal must require assignment");
   const fics = graph("applications/federatedIdentityCredentials");
-  const fic = fics[0]?.properties ?? {};
+  const subjectOf = (f: Res) => {
+    const subject = String(f.properties.subject);
+    const viaVar = /^\[variables\('(\w+)'\)\]$/.exec(subject);
+    return viaVar ? String(f.vars[viaVar[1]!]) : subject;
+  };
   if (
-    fics.length !== 1 ||
-    !String(fic.name).includes("reference('deployApp')") ||
-    fic.issuer !== "https://token.actions.githubusercontent.com" ||
-    JSON.stringify(fic.audiences) !== '["api://AzureADTokenExchange"]' ||
-    (fic.subject === "[variables('githubSubject')]" ? fics[0]!.vars.githubSubject : fic.subject) !==
-      "[format('repo:{0}@{1}/{2}@{3}:environment:{4}', split(parameters('githubRepository'), '/')[0], parameters('githubOwnerId'), split(parameters('githubRepository'), '/')[1], parameters('githubRepositoryId'), parameters('githubEnvironment'))]"
+    fics.length !== 2 ||
+    fics.some((f) => !String(f.properties.name).includes("reference('deployApp')") || f.properties.issuer !== "https://token.actions.githubusercontent.com" || JSON.stringify(f.properties.audiences) !== '["api://AzureADTokenExchange"]') ||
+    JSON.stringify(fics.map(subjectOf).sort()) !== JSON.stringify([subjectFor("githubEnvironment"), subjectFor("githubAuth0Environment")].sort())
   ) {
-    v.push(`rule 16: the deploy app's one federated credential must trust only ${IMMUTABLE_SUBJECT}`);
+    v.push(FIC_PROBLEM);
   }
   const assigned = graph("appRoleAssignedTo");
   const principals = assigned.map((r) => String(r.properties.principalId)).sort();
@@ -614,7 +623,7 @@ export function violations(arms: Templates, params: Params, infraFiles: Record<s
   if (group.securityEnabled !== true || group.mailEnabled !== false || !JSON.stringify(group.members ?? {}).includes("operatorUser")) {
     v.push("rule 16: the operators' group must be a security group of the operators");
   }
-  const access = pre.filter((r) => r.type === "Microsoft.Authorization/roleAssignments");
+  const access = pre.filter((r) => r.type === "Microsoft.Authorization/roleAssignments" && r.module === "deploy-access");
   const contributor = access.find((r) => roleOf(r).includes(CONTRIBUTOR));
   const administrator = access.find((r) => roleOf(r).includes(RBAC_ADMINISTRATOR));
   const mainRoles = [...new Set(main.filter((r) => r.type === "Microsoft.Authorization/roleAssignments").flatMap((r) => roleOf(r).match(GUID) ?? []))].sort();
@@ -653,6 +662,7 @@ export function violations(arms: Templates, params: Params, infraFiles: Record<s
     const pre = params[file]!;
     const mainParams = params[`main.${env}.bicepparam`] ?? {};
     for (const p of TARGET) if (at(pre, p) === undefined || at(pre, p) !== at(mainParams, p)) v.push(`rule 17: pre-deploy.${env}.bicepparam and main.${env}.bicepparam name different ${p}s (${at(pre, p)}, ${at(mainParams, p)})`);
+    if (pre.githubAuth0Environment !== `auth0-${env}`) v.push(`rule 17: pre-deploy.${env}.bicepparam's githubAuth0Environment ${pre.githubAuth0Environment} is not auth0-${env}, the environment provision-auth0.yml's job runs in`);
     if (pre.githubEnvironment !== env) v.push(`rule 17: pre-deploy.${env}.bicepparam's githubEnvironment ${pre.githubEnvironment} is not ${env}, the environment deploy.yml's job runs in`);
     for (const p of ["githubOwnerId", "githubRepositoryId"]) if (!/^[1-9][0-9]*$/.test(String(pre[p]))) v.push(`rule 17: pre-deploy.${env}.bicepparam's ${p} ${pre[p]} is not a numeric GitHub ID`);
   }
@@ -700,6 +710,32 @@ export function violations(arms: Templates, params: Params, infraFiles: Record<s
       v.push("rule 19: main must refuse (fail()) a ciba with another credential kind, or enabled without an https:// issuer, a clientId, an audience and an approver");
       break;
     }
+  }
+
+  // Rule 20: the Terraform state of auth0/ (pre-deploy.bicep's state-storage module; provision-auth0.yml). One
+  // storage account, with Entra sign-in only (no account key, no anonymous access, HTTPS and TLS 1.2), versions and
+  // deleted blobs kept, and one private container. The deploy app is the only principal with a role there: Storage
+  // Blob Data Contributor, on the container only. No other role assignment exists outside deploy-access.
+  const state = pre.filter((r) => r.module === "state-storage");
+  const account = state.filter((r) => r.type === "Microsoft.Storage/storageAccounts");
+  const acct = account[0]?.properties ?? {};
+  if (account.length !== 1 || pre.filter((r) => r.type === "Microsoft.Storage/storageAccounts").length !== 1 || acct.allowSharedKeyAccess !== false || acct.allowBlobPublicAccess !== false || acct.supportsHttpsTrafficOnly !== true || acct.minimumTlsVersion !== "TLS1_2") {
+    v.push("rule 20: the Terraform state's storage account must take Entra sign-in only: no account key, no anonymous access, HTTPS with TLS 1.2");
+  }
+  const blobService = state.find((r) => r.type === "Microsoft.Storage/storageAccounts/blobServices")?.properties ?? {};
+  if (blobService.isVersioningEnabled !== true || (blobService.deleteRetentionPolicy as Json | undefined)?.enabled !== true) v.push("rule 20: the Terraform state's blobs must keep their versions and deleted blobs");
+  const containers = state.filter((r) => r.type === "Microsoft.Storage/storageAccounts/blobServices/containers");
+  if (containers.length !== 1 || !/'tfstate'\)\]$/.test(containers[0]!.name) || containers[0]!.properties.publicAccess !== "None") v.push("rule 20: the Terraform state must have one private container, tfstate");
+  const stateRoles = pre.filter((r) => r.type === "Microsoft.Authorization/roleAssignments" && r.module !== "deploy-access");
+  if (
+    stateRoles.length !== 1 ||
+    stateRoles[0]!.module !== "state-storage" ||
+    !roleOf(stateRoles[0]!).includes(BLOB_CONTRIBUTOR) ||
+    !String(stateRoles[0]!.raw.scope).startsWith("[resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', parameters('names').stateStorage, ") ||
+    deploymentParam(pre, "state-storage", "principalId") !== JSON.stringify({ value: "[reference('deploySp').id]" }) ||
+    stateRoles[0]!.properties.principalId !== "[parameters('principalId')]"
+  ) {
+    v.push("rule 20: only the deploy app may read and write the Terraform state: Storage Blob Data Contributor on the tfstate container only");
   }
 
   // Rule 18: each module is deployed by exactly one unit's runs: the platform's modules by the platform's
@@ -783,7 +819,7 @@ describe.skipIf(!BICEP_PATH)("T-IAC-01 Azure identity, secret, exposure and nami
     return violations(arms, params, infraSources(dir));
   }
 
-  it("T-IAC-01 the real templates and parameter files pass rules 1–19", async () => {
+  it("T-IAC-01 the real templates and parameter files pass rules 1–20", async () => {
     const { arms, params } = await compile("infra");
     expect(violations(arms, params, infraSources("infra"))).toEqual([]);
   }, 60_000);
@@ -914,13 +950,32 @@ resource extraRead 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
 
   it("T-IAC-01 must-fail rule 16: a federated credential trusting a branch, or a subject without the immutable IDs, is reported", async () => {
     const v = await mutant("pre-deploy.bicep", "  subject: githubSubject", "  subject: 'repo:${githubRepository}:ref:refs/heads/main'");
-    expect(v).toContain(`rule 16: the deploy app's one federated credential must trust only ${IMMUTABLE_SUBJECT}`);
+    expect(v).toContain(FIC_PROBLEM);
     const plain = await mutant(
       "pre-deploy.bicep",
       "var githubSubject = 'repo:${split(githubRepository, '/')[0]}@${githubOwnerId}/${split(githubRepository, '/')[1]}@${githubRepositoryId}:environment:${githubEnvironment}'",
       "#disable-next-line no-unused-params\nvar githubSubject = 'repo:${githubRepository}:environment:${githubEnvironment}'",
     );
-    expect(plain).toContain(`rule 16: the deploy app's one federated credential must trust only ${IMMUTABLE_SUBJECT}`);
+    expect(plain).toContain(FIC_PROBLEM);
+    const sameEnvironment = await mutant("pre-deploy.bicep", "@${githubRepositoryId}:environment:${githubAuth0Environment}'", "@${githubRepositoryId}:environment:${githubEnvironment}'");
+    expect(sameEnvironment).toContain(FIC_PROBLEM);
+  }, 60_000);
+
+  it("T-IAC-01 must-fail rule 20: a Terraform state readable with an account key, a role on the whole account, or another role, is reported", async () => {
+    const key = await mutant("modules/state-storage.bicep", "allowSharedKeyAccess: false", "allowSharedKeyAccess: true");
+    expect(key).toContain("rule 20: the Terraform state's storage account must take Entra sign-in only: no account key, no anonymous access, HTTPS with TLS 1.2");
+    const ROLE = "rule 20: only the deploy app may read and write the Terraform state: Storage Blob Data Contributor on the tfstate container only";
+    const wide = await mutant("modules/state-storage.bicep", "  scope: container\n", "  scope: st\n");
+    expect(wide).toContain(ROLE);
+    const owner = await mutant("modules/state-storage.bicep", "var blobContributorRoleId = 'ba92f5b4-2d11-453d-a403-e96b0029c9fe'", "var blobContributorRoleId = 'b7e6dc6d-f1e8-4753-8033-0f276bb0955b'");
+    expect(owner).toContain(ROLE);
+    const unversioned = await mutant("modules/state-storage.bicep", "isVersioningEnabled: true", "isVersioningEnabled: false");
+    expect(unversioned).toContain("rule 20: the Terraform state's blobs must keep their versions and deleted blobs");
+  }, 120_000);
+
+  it("T-IAC-01 must-fail rule 17: an Auth0 environment that is the deploy environment is reported", async () => {
+    const v = await mutant("pre-deploy.dev.bicepparam", "param githubAuth0Environment = 'auth0-${environment}'", "param githubAuth0Environment = environment");
+    expect(v).toContain("rule 17: pre-deploy.dev.bicepparam's githubAuth0Environment dev is not auth0-dev, the environment provision-auth0.yml's job runs in");
   }, 60_000);
 
   it("T-IAC-01 must-fail rule 16: an unconditioned Role Based Access Control Administrator, or one that may grant Owner, is reported", async () => {
