@@ -10,14 +10,17 @@
 // - (013) the portal web app registration app-portal-<location>-<environment>: a public single-page client
 //   (authorization code with PKCE), with no secret, no role and no permissions of its own;
 // - the deploy app registration app-deploy-<location>-<environment>, its service principal and a federated
-//   credential for the repository's GitHub environment: GitHub Actions sign in with OIDC, and no secret exists;
+//   credential for each of the repository's two GitHub environments, the deploy pipelines' and the Auth0 pipeline's:
+//   GitHub Actions sign in with OIDC, and no secret exists;
 // - Agent.Run for the deploy app (the pipeline's smoke run) and for agentUsers;
 // - the operators' group grp-op-<location>-<environment> (main.bicep lets it start the operator job);
-// - the deploy app's roles on the resource group (modules/deploy-access.bicep).
+// - the deploy app's roles on the resource group (modules/deploy-access.bicep);
+// - the storage for the Terraform state of auth0/, which only the deploy app reads and writes
+//   (modules/state-storage.bicep; .github/workflows/provision-auth0.yml).
 // The Entra objects come from the Microsoft Graph Bicep extension (bicepconfig.json), which what-if can't preview.
 // Every value comes from pre-deploy.<environment>.bicepparam, the target and every name included: run anywhere other
 // than the file's tenant and subscription, the deployment fails validation before it creates anything. T-IAC-01
-// rules 15–17 assert on the compiled form of this file and on its parameter file.
+// rules 15–17 and 20 assert on the compiled form of this file and on its parameter file.
 targetScope = 'subscription'
 
 extension microsoftGraphV1
@@ -27,7 +30,7 @@ param tenantId string
 @description('The subscription the resource group goes in.')
 param subscriptionId string
 param location string
-@description('The names, {type}-{app}-{location}-{environment}: resourceGroup (the one main.bicep deploys into), apiApp, deployApp, portalApp and operators.')
+@description('The names, {type}-{app}-{location}-{environment}: resourceGroup (the one main.bicep deploys into), apiApp, deployApp, portalApp, operators and stateStorage (the Terraform state of auth0/).')
 param names object
 @description('owner/name of the GitHub repository whose deploy job signs in as the deploy app.')
 param githubRepository string
@@ -37,6 +40,8 @@ param githubOwnerId string
 param githubRepositoryId string
 @description('The GitHub environment the deploy job runs in (deploy.yml: environment: <environment>), so named like the environment.')
 param githubEnvironment string
+@description('The GitHub environment the Auth0 job runs in (provision-auth0.yml: environment: auth0-<environment>). It holds the Auth0 Management API credential, so it is not the deploy pipelines\' environment.')
+param githubAuth0Environment string
 @description('People who may run the agent (Agent.Run), by user principal name.')
 param agentUsers array
 @description('People who may start the operator job, by user principal name: the operators\' group members.')
@@ -157,6 +162,19 @@ resource githubCredential 'Microsoft.Graph/applications/federatedIdentityCredent
   subject: githubSubject
 }
 
+// The Auth0 pipeline's job (provision-auth0.yml, job `environment: <githubAuth0Environment>`) signs in the same way,
+// for the Terraform state only. One credential at a time: Entra refuses concurrent writes to one application.
+var githubAuth0Subject = 'repo:${split(githubRepository, '/')[0]}@${githubOwnerId}/${split(githubRepository, '/')[1]}@${githubRepositoryId}:environment:${githubAuth0Environment}'
+
+resource githubAuth0Credential 'Microsoft.Graph/applications/federatedIdentityCredentials@v1.0' = {
+  name: '${deployApp.uniqueName}/github-${githubAuth0Environment}'
+  description: 'GitHub Actions: the Auth0 job of ${githubRepository} in its ${githubAuth0Environment} environment'
+  audiences: ['api://AzureADTokenExchange']
+  issuer: 'https://token.actions.githubusercontent.com'
+  subject: githubAuth0Subject
+  dependsOn: [githubCredential]
+}
+
 resource deploySp 'Microsoft.Graph/servicePrincipals@v1.0' = {
   appId: deployApp.appId
 }
@@ -202,6 +220,17 @@ module deployAccess 'modules/deploy-access.bicep' = {
   name: 'deploy-access'
   scope: rg
   params: {
+    principalId: deploySp.id
+  }
+}
+
+// ---- The Terraform state of auth0/: the deploy app's, on its container only ------------------------------------
+module stateStorage 'modules/state-storage.bicep' = {
+  name: 'state-storage'
+  scope: rg
+  params: {
+    location: location
+    names: names
     principalId: deploySp.id
   }
 }

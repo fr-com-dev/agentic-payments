@@ -41,7 +41,8 @@ The rows are in first-deployment order (quickstart §4).
   so two deployments never overlap in an environment: every run's checks go through all the units, and
   a unit mid-rollout would fail another's. GitHub keeps one pending run per group and cancels it when a
   third is queued, so start the pipelines one after another.
-- **Sign-in, target and names.** No GitHub secret or variable. The job runs in the GitHub environment
+- **Sign-in, target and names.** No GitHub secret or variable (SPEC v1.9: only `provision-auth0.yml`, the Auth0
+  tenant's pipeline, reads secrets, from its own GitHub environment `auth0-<env>`; T-IAC-02). The job runs in the GitHub environment
   named like the deploy environment (`environment: dev`), which `infra/github-setup.sh` creates. The
   pinned Bicep CLI compiles `infra/main.<environment>.bicepparam`, and the workflow reads from it the
   deploy app's client ID, the tenant, the subscription, the API app's client ID (`authAudience`), the

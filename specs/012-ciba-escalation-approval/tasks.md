@@ -651,7 +651,7 @@ secret.
 
   Add 16 must-fail mutants, `terraform fmt -check` when Terraform is installed, and `terraform validate` once `auth0/.terraform` exists.
 - [X] T070 Update spec.md (the 2026-11-08 clarifications and the tenant assumption), research R17, plan.md, quickstart §2, SPEC.md v1.8 (§5, §6, §12, §13), the constitution 1.3.0 report, CLAUDE.md, README.md and specs/README.md.
-- [ ] T071 Manual, needs the tenant: `plan` and `apply`. Already done on 2026-11-08: `init` (provider 1.60.0, `.terraform.lock.hcl` written; commit it) and `validate` ("The configuration is valid"; T-IAC-02 runs it whenever `.terraform` exists). Fold the results into T065's live check: whether `subject_type = "user"` passes the access policy, `"null"` is standard consent, and push works with `guardian_policy = "never"`.
+- [ ] T071 Manual, needs the tenant: `plan` and `apply` (since 2026-11-10 through `provision-auth0.yml`, SPEC v1.9; see `auth0/README.md`). Already done on 2026-11-08: `init` (provider 1.60.0, `.terraform.lock.hcl` written; commit it) and `validate` ("The configuration is valid"; T-IAC-02 runs it whenever `.terraform` exists). Fold the results into T065's live check: whether `subject_type = "user"` passes the access policy, `"null"` is standard consent, and push works with `guardian_policy = "never"`.
 
 ---
 

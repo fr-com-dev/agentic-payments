@@ -36,6 +36,7 @@ export interface PreDeployNames {
   /** 013: the portal web app's registration (a public client). */
   portalApp: string;
   operators: string;
+  stateStorage: string;
 }
 
 /** Every string leaf of an object, with its dotted path. */

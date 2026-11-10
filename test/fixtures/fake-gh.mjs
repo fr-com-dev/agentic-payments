@@ -6,7 +6,9 @@
 // - `api repos/<repo>/environments/<name>` (a GET) exits 1 with HTTP 404 unless the environment exists;
 // - `api repos/<repo>/actions/oidc/customization/sub` prints FAKE_GH_OIDC_SUB, the repository's OIDC subject
 //   settings (GitHub's old default, `{"use_default":true}`, when unset);
-// - `api --method PUT|DELETE`, `secret set` and `secret delete` change what it holds.
+// - `variable list` prints the environment variables it holds (FAKE_GH_ENV_VARIABLES, plus each `variable set`
+//   logged so far), one per line;
+// - `api --method PUT|DELETE`, `secret set`, `secret delete` and `variable set` change what it holds.
 // Unknown commands exit 99.
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
 
@@ -50,6 +52,12 @@ else if (cmd === "secret delete") {
     process.exit(1);
   }
   record(null);
+} else if (cmd === "variable set") record(null);
+else if (cmd === "variable list") {
+  record(null);
+  const names = new Set(split(process.env.FAKE_GH_ENV_VARIABLES));
+  for (const c of calls()) if (c.args[0] === "variable" && c.args[1] === "set") names.add(c.args[2]);
+  for (const name of names) process.stdout.write(`${name}\n`);
 } else if (cmd === "secret list") {
   record(null);
   const names = args.includes("--env") ? split(process.env.FAKE_GH_ENV_SECRETS) : [...holdings().secrets];

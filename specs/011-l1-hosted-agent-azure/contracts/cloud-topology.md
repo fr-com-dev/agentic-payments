@@ -46,7 +46,7 @@ contract are dev's (`eastus2`).
 | Foundry resource + deployment | `ais-x402-eastus2-dev`, deployment `claude-sonnet-5-5` (version 2, Global Standard, capacity 10) | `MODEL_PROVIDER=foundry` only; API keys disabled. The deployment declares `modelProviderData` (organization, country, industry, from `main.<env>.bicepparam`), which accepts Anthropic's Azure Marketplace terms |
 | Entra app registration (API) | `app-l1-eastus2-dev` | identifier URI `api://app-l1-eastus2-dev`, v2.0 tokens; app role `Agent.Run` (User, Application), assignment required; delegated scope `user_impersonation` (admin consent), the Azure CLI pre-authorized. 013: a second delegated scope `Portal.Access` (admin consent), the portal web app pre-authorized for it only; optional access-token claims `auth_time`, and `idtyp` with `include_user_token` |
 | Entra app registration (portal web app, 013) | `app-portal-eastus2-dev` | a public single-page client (authorization code with PKCE): no secret, no certificate, no role, no API permission. `spa.redirectUris`: `http://localhost:4025/redirect.html`, plus `<portalOrigin>/redirect.html` once `portalOrigin` is set in `pre-deploy.<env>.bicepparam` |
-| Entra app registration (deploy) | `app-deploy-eastus2-dev` | no secret, no API permission; one federated credential for GitHub's immutable subject `repo:<owner>@<githubOwnerId>/<name>@<githubRepositoryId>:environment:<githubEnvironment>` (GitHub OIDC; the IDs are in `pre-deploy.<env>.bicepparam`) |
+| Entra app registration (deploy) | `app-deploy-eastus2-dev` | no secret, no API permission; two federated credentials for GitHub's immutable subject `repo:<owner>@<githubOwnerId>/<name>@<githubRepositoryId>:environment:<githubEnvironment>`, one for the deploy environment and one for `auth0-<env>` (GitHub OIDC; the IDs are in `pre-deploy.<env>.bicepparam`) |
 | Entra security group | `grp-op-eastus2-dev` | the operators (`operators` in `pre-deploy.<env>.bicepparam`, added, never removed by a redeployment) |
 
 ## Apps and jobs
@@ -66,7 +66,7 @@ contract are dev's (`eastus2`).
 
 | Template | Scope | Deploys | Deployed by |
 |---|---|---|---|
-| `infra/pre-deploy.bicep` | subscription | the resource group; the API and deploy app registrations and their service principals; the portal web app's registration (013); the deploy app's federated credential; `Agent.Run` for the deploy app and `agentUsers`; the operators' group; the deploy app's roles (`modules/deploy-access.bicep`) | an administrator, by hand (quickstart §4 step 0) |
+| `infra/pre-deploy.bicep` | subscription | the resource group; the API and deploy app registrations and their service principals; the portal web app's registration (013); the deploy app's two federated credentials; `Agent.Run` for the deploy app and `agentUsers`; the operators' group; the deploy app's roles (`modules/deploy-access.bicep`); the storage for the Terraform state of `auth0/` (`modules/state-storage.bicep`, SPEC v1.9) | an administrator, by hand (quickstart §4 step 0) |
 | `infra/main.bicep` | resource group | one unit per deployment (`unit`): the platform (network, logs, identities, registry, vaults, storage, Foundry and its model, both environments), or one unit's apps (`modules/l1-apps.bicep`, `l2-apps.bicep`, `l3-apps.bicep`, `operator-apps.bicep`, `portal-apps.bicep`, `sellers.bicep`) | the unit's pipeline, `.github/workflows/deploy-<unit>.yml` (`deploy-infra.yml` for the platform), through the shared `deploy.yml` ([deploy-pipeline](deploy-pipeline.md)) |
 
 - Every value is in `infra/<template>.<env>.bicepparam`, the target (tenant, subscription, location) and
@@ -213,8 +213,9 @@ place, because L2 refuses to start when recorded wallet addresses no longer matc
     app (013) has no role, no API, no permissions of its own, and only `http://localhost:4025/redirect.html`
     and `portalOrigin`'s `/redirect.html` as single-page-app redirect URIs; `mainParameters` gives its client
     ID. The deploy app
-    has no API or permissions, and exactly one federated credential, for GitHub's immutable subject
-    `repo:<owner>@<githubOwnerId>/<name>@<githubRepositoryId>:environment:<githubEnvironment>` (both IDs numeric). `Agent.Run` goes to the deploy app and
+    has no API or permissions, and exactly two federated credentials, for GitHub's immutable subject
+    `repo:<owner>@<githubOwnerId>/<name>@<githubRepositoryId>:environment:<githubEnvironment>` (both IDs numeric):
+    one for the deploy environment and one for the Auth0 environment, `auth0-<env>` (SPEC v1.9). `Agent.Run` goes to the deploy app and
     `agentUsers` only. The operators' group is a security group of `operators`. The deploy app has
     Contributor and Role Based Access Control Administrator on the resource group only, the latter's
     condition listing exactly the roles `main.bicep` assigns.
@@ -232,7 +233,12 @@ place, because L2 refuses to start when recorded wallet addresses no longer matc
     `main.bicep` refuses (`fail()`) a `ciba` with another credential kind, or one that is enabled without an `https://`
     issuer, a client ID, an audience and an approver. No other app, job or container gets a `CIBA_*` variable or the
     secret.
-20. (013, SPEC L2-8) User accounts. `ca-l2-eastus2-dev/l2` always references the l2 vault's `portal-token` and
+20. (SPEC v1.9) The Terraform state of `auth0/` (`pre-deploy.bicep`, `modules/state-storage.bicep`). One storage
+    account, `names.stateStorage`, with Entra sign-in only (no account key, no anonymous access, HTTPS with TLS
+    1.2), versions and deleted blobs kept, and one private container, `tfstate`. The deploy app is the only
+    principal with a role there: Storage Blob Data Contributor, on the container only. The account has no firewall,
+    because GitHub-hosted runners have no fixed address.
+21. (013, SPEC L2-8) User accounts. `ca-l2-eastus2-dev/l2` always references the l2 vault's `portal-token` and
     `user-wallet-mnemonic`, as `PORTAL_TOKEN` and `USER_WALLET_MNEMONIC`. Its `USER_ACCOUNTS` comes from
     `userAccounts.enabled`, and its `PLATFORM_SELLERS` is one seller: the `ALLOWED_HOSTS` host (never the alias),
     `userAccounts.sellerName` and `sellerPayTo`. The portal reads only `kv-portal-eastus2-dev`, always both
@@ -276,6 +282,8 @@ place, because L2 refuses to start when recorded wallet addresses no longer matc
   `unit` (rule 18);
 - the CIBA credential on the agent, as a literal secret, or under one fixed name; a `CIBA_ISSUER` written in the
   template; and `main.bicep` without its `ciba` check (rule 19);
+- a Terraform state readable with an account key, a role on the whole account, another role, or no versioning
+  (rule 20).
 - 013: L2 without `PORTAL_TOKEN`, with `portal-token` as a literal, or with a literal `USER_ACCOUNTS`;
   `PLATFORM_SELLERS` naming the alias, a second seller or no payee; a portal with `CONTROL_TOKEN`,
   `PAYER_PRIVATE_KEY`, `API_DOCS` or a `SETTLEMENT_URL`; `PORTAL_TOKEN` on L3; a client ID written in a

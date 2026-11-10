@@ -1,5 +1,7 @@
-# Every value comes from <env>.tfvars (gitignored; dev.tfvars.example is the template), except the ephemeral client
-# secret, which comes from TF_VAR_client_secret only when credential = "secret". No variable holds a private key.
+# No tfvars file exists: the pipeline (provision-auth0.yml) sets every value as TF_VAR_<name>, from the variables of
+# its GitHub environment (AUTH0_TENANT_DOMAIN and the like; auth0/README.md). None of those is a secret. The one
+# secret, the ephemeral client secret, comes from the environment's secret AUTH0_L2_CLIENT_SECRET, with
+# credential = "secret" only. No variable holds a private key.
 
 variable "environment" {
   description = "The deployment environment these objects serve, as in infra/main.<environment>.bicepparam (dev)."
@@ -47,18 +49,18 @@ variable "credential" {
   }
 }
 
-variable "client_public_key_file" {
-  description = "Path to the PUBLIC half (SPKI PEM, RSA 2048-4096) of L2's client key, when credential = key. Keep both halves outside the repository; only the private half goes into the l2 vault."
+variable "client_public_key_pem" {
+  description = "The PUBLIC half (SPKI PEM, RSA 2048-4096) of L2's client key, as text, when credential = key. The private half goes only into the l2 vault, never here."
   type        = string
   default     = ""
   validation {
-    condition     = var.client_public_key_file == "" || endswith(var.client_public_key_file, ".pem")
-    error_message = "client_public_key_file must be a .pem file."
+    condition     = var.client_public_key_pem == "" || (startswith(trimspace(var.client_public_key_pem), "-----BEGIN PUBLIC KEY-----") && !strcontains(var.client_public_key_pem, "PRIVATE KEY"))
+    error_message = "client_public_key_pem must be a PEM public key (-----BEGIN PUBLIC KEY-----), never a private key."
   }
 }
 
 variable "client_secret" {
-  description = "L2's client secret, when credential = secret: generate it yourself (16+ characters), pass it as TF_VAR_client_secret, and seed the same value into the l2 vault. Write-only: never stored in state or plan."
+  description = "L2's client secret, when credential = secret: generate it yourself (16+ characters), store it as the secret AUTH0_L2_CLIENT_SECRET of the pipeline's GitHub environment (it becomes TF_VAR_client_secret), and seed the same value into the l2 vault. Write-only: never stored in state or plan."
   type        = string
   default     = null
   sensitive   = true
