@@ -1,7 +1,7 @@
 # No tfvars file exists: the pipeline (provision-auth0.yml) sets every value as TF_VAR_<name>, from the variables of
-# its GitHub environment (AUTH0_TENANT_DOMAIN and the like; auth0/README.md). None of those is a secret. The one
-# secret, the ephemeral client secret, comes from the environment's secret AUTH0_L2_CLIENT_SECRET, with
-# credential = "secret" only. No variable holds a private key.
+# its GitHub environment (AUTH0_TENANT_DOMAIN and the like; auth0/README.md). None of those is a secret. The pipeline
+# always sets credential = "key": GitHub never holds a credential of L2's (Constitution V), so it never sets
+# client_secret. No variable holds a private key.
 
 variable "environment" {
   description = "The deployment environment these objects serve, as in infra/main.<environment>.bicepparam (dev)."
@@ -60,7 +60,7 @@ variable "client_public_key_pem" {
 }
 
 variable "client_secret" {
-  description = "L2's client secret, when credential = secret: generate it yourself (16+ characters), store it as the secret AUTH0_L2_CLIENT_SECRET of the pipeline's GitHub environment (it becomes TF_VAR_client_secret), and seed the same value into the l2 vault. Write-only: never stored in state or plan."
+  description = "L2's client secret, when credential = secret: the pipeline never sets it (it provisions credential = key only), because the secret is held by L2 only; it would come from TF_VAR_client_secret in an administrator's own shell, with the same value seeded into the l2 vault. Write-only: never stored in state or plan."
   type        = string
   default     = null
   sensitive   = true
