@@ -86,7 +86,7 @@ describe("T-CIBA-07 outcomes (lapse and expiry)", () => {
     expect(second.body.authorizationId).not.toBe(first.body.authorizationId);
     await l2.until((es) => es.filter((e) => e.type === "APPROVAL_REQUESTED").length === 2);
     expect(l2.stub.authReqIds).toHaveLength(2);
-    expect(approvalRequestCount(l2.ledger.entries(), l2.clock.now())).toBe(2);
+    expect(approvalRequestCount(l2.ledger.entries(), l2.clock.now(), 3_600_000, l2.people.alice.userId)).toBe(2);
   });
 });
 

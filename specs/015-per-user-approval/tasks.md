@@ -275,11 +275,11 @@ times, the 11th is `capped`, and bob is asked.
 
 ### Tests for User Story 5 (write first; they must fail)
 
-- [ ] T038 [P] [US5] T-CIBA-19 in test/backchannel-fatigue.test.ts: 11 escalations of alice's on 11 resources within the hour, then one of bob's: 10 requests carry alice's subject, alice's 11th is `capped` and pending for the operator, bob's is `requested` and sent; an hour and a second after alice's first, alice's next is `requested` again; a repeat of a pending purchase counts nothing (T-CIBA-03 unchanged). Pure cases in test/escalations.test.ts for `approvalRequestCount(entries, nowMs, windowMs, userId)`: entries of another user and entries with no user count for nobody. **Must fail**: with `sharedRequestCap`, bob is not asked.
+- [X] T038 [P] [US5] T-CIBA-19 in test/backchannel-fatigue.test.ts: 11 escalations of alice's on 11 resources within the hour, then one of bob's: 10 requests carry alice's subject, alice's 11th is `capped` and pending for the operator, bob's is `requested` and sent; an hour and a second after alice's first, alice's next is `requested` again; a repeat of a pending purchase counts nothing (T-CIBA-03 unchanged). Pure cases in test/escalations.test.ts for `approvalRequestCount(entries, nowMs, windowMs, userId)`: entries of another user and entries with no user count for nobody. **Must fail**: with `sharedRequestCap`, bob is not asked.
 
 ### Implementation for User Story 5
 
-- [ ] T039 [US5] Count per person: `approvalRequestCount` in src/layer2-control/escalations.ts takes a required `userId` and counts only `ESCALATED` entries with `approvalRequest: "requested"` and that `userId`; `eligibility` in src/layer2-control/backchannel.ts passes the owner. Add the test-only switch `sharedRequestCap?: boolean` (counts every `requested` entry, whoever it is for). Reword SEC-18 in SPEC §11 ("per person") and the eligibility bullet of L2-7. T038 passes; T-CIBA-04 keeps passing with one person.
+- [X] T039 [US5] Count per person: `approvalRequestCount` in src/layer2-control/escalations.ts takes a required `userId` and counts only `ESCALATED` entries with `approvalRequest: "requested"` and that `userId`; `eligibility` in src/layer2-control/backchannel.ts passes the owner. Add the test-only switch `sharedRequestCap?: boolean` (counts every `requested` entry, whoever it is for). Reword SEC-18 in SPEC §11 ("per person") and the eligibility bullet of L2-7. T038 passes; T-CIBA-04 keeps passing with one person.
 
 **Checkpoint**: one person at the limit changes nothing for another.
 

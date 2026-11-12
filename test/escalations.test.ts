@@ -451,15 +451,38 @@ describe("012 approval request derivations", () => {
     expect(answerIdUsed(l.entries(), "jti-8")).toBe(false);
   });
 
-  it("approvalRequestCount counts `requested` marks in the trailing hour; exactly 3 600 000 ms later the first drops out", () => {
+  it("approvalRequestCount counts one person's `requested` marks in the trailing hour; exactly 3 600 000 ms later the first drops out", () => {
     const l = new AuditLedger(file);
-    requested(l, "auth_1", T0);
-    requested(l, "auth_2", T0 + 1000);
+    const HOUR = 3_600_000;
+    const A = `usr_${"a".repeat(32)}`;
+    requested(l, "auth_1", T0, 300_000, A);
+    requested(l, "auth_2", T0 + 1000, 300_000, A);
     mark(l, "auth_c", "capped", T0 + 2000);
-    expect(approvalRequestCount(l.entries(), T0 + 5000)).toBe(2);
-    expect(approvalRequestCount(l.entries(), T0 + 3_600_000 - 1)).toBe(2);
-    expect(approvalRequestCount(l.entries(), T0 + 3_600_000)).toBe(1);
-    expect(approvalRequestCount(l.entries(), T0 + 3_601_000)).toBe(0);
+    expect(approvalRequestCount(l.entries(), T0 + 5000, HOUR, A)).toBe(2);
+    expect(approvalRequestCount(l.entries(), T0 + 3_600_000 - 1, HOUR, A)).toBe(2);
+    expect(approvalRequestCount(l.entries(), T0 + 3_600_000, HOUR, A)).toBe(1);
+    expect(approvalRequestCount(l.entries(), T0 + 3_601_000, HOUR, A)).toBe(0);
+  });
+
+  it("T-CIBA-19 approvalRequestCount is per person: another user's entries, and entries with no user, count for nobody else", () => {
+    const l = new AuditLedger(file);
+    const HOUR = 3_600_000;
+    const A = `usr_${"a".repeat(32)}`;
+    const B = `usr_${"b".repeat(32)}`;
+    const C = `usr_${"c".repeat(32)}`;
+    for (let i = 0; i < 3; i++) requested(l, `auth_a${i}`, T0 + i, 300_000, A);
+    requested(l, "auth_b0", T0 + 10, 300_000, B);
+    // Written before v1.16, for the configured approver: no user. They count for nobody.
+    for (let i = 0; i < 12; i++) requested(l, `auth_old${i}`, T0 + 20 + i);
+    // A mark that asked nobody is never counted, whoever it is for.
+    l.append({ type: "ESCALATED", sessionId: "sess_r", authorizationId: "auth_capped_a", data: { violations: [], resourceKey: KEY, payTo: PAY_TO, amount: "50000", approvalRequest: "capped", userId: A } }, T0 + 40);
+    l.append({ type: "ESCALATED", sessionId: "sess_r", authorizationId: "auth_mismatch_a", data: { violations: [], resourceKey: KEY, payTo: PAY_TO, amount: "50000", approvalRequest: "identity_mismatch", userId: A } }, T0 + 41);
+    const at = T0 + 1000;
+    expect(approvalRequestCount(l.entries(), at, HOUR, A)).toBe(3);
+    expect(approvalRequestCount(l.entries(), at, HOUR, B)).toBe(1);
+    expect(approvalRequestCount(l.entries(), at, HOUR, C)).toBe(0);
+    // A shorter window: only what is inside it.
+    expect(approvalRequestCount(l.entries(), T0 + 2, 2, A)).toBe(2);
   });
 
   it("openApprovalRequest needs a pending escalation, no ending entry and the request's own expiry ahead", () => {

@@ -376,11 +376,15 @@ const REQUEST_ENDINGS: ReadonlySet<LedgerEntry["type"]> = new Set([
   "APPROVAL_VERIFICATION_FAILED",
 ]);
 
-/** FR-008: `ESCALATED` entries marked `requested` within the trailing window (an attempt counts, sent or not). */
-export function approvalRequestCount(entries: Entries, nowMs: number, windowMs = 3_600_000): number {
+/**
+ * FR-008, and per person since 015 (FR-015): one user's `ESCALATED` entries marked `requested` within the trailing
+ * window (an attempt counts, sent or not). An entry of another user, or of no user (written before v1.16), counts
+ * for nobody else. Derived from the ledger on each decision: there is no counter.
+ */
+export function approvalRequestCount(entries: Entries, nowMs: number, windowMs: number, userId: string): number {
   let n = 0;
   for (const e of entries) {
-    if (e.type === "ESCALATED" && e.data.approvalRequest === "requested" && Date.parse(e.ts) > nowMs - windowMs) n++;
+    if (e.type === "ESCALATED" && e.data.approvalRequest === "requested" && e.data.userId === userId && Date.parse(e.ts) > nowMs - windowMs) n++;
   }
   return n;
 }

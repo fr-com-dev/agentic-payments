@@ -34,7 +34,7 @@ import { bindingMessage, paymentDetails, requestedExpirySeconds } from "./paymen
 
 /** The authorize call that created the escalation waits at most this long (FR-016). Fixed. */
 export const BACKCHANNEL_WAIT_MS = 120_000;
-/** FR-008: at most this many approval requests per rolling hour. */
+/** FR-008: at most this many approval requests per rolling hour. 015 (FR-015): for each person. */
 export const APPROVAL_REQUEST_CAP = 10;
 export const APPROVAL_REQUEST_CAP_WINDOW_MS = 3_600_000;
 /** FR-009: the waits after the 1st and 2nd transient start failures (3 attempts, the first at once). */
@@ -75,6 +75,11 @@ export interface BackchannelDeps {
    * Never set outside tests: `main()` does not set it and no environment variable reaches it.
    */
   ownerlessSubject?: string;
+  /**
+   * Test-only (must-fail proof of FR-015, T-CIBA-19): one count for everybody, as before v1.16, so one person at the
+   * limit stops everyone else from being asked. Never set outside tests.
+   */
+  sharedRequestCap?: boolean;
   /** Test-only (must-fail proof, T-CIBA-10): false checks the state, awaits verification, then appends unserialized. */
   serializeOutcomes?: boolean;
   /** Log sink for the whitelisted lifecycle lines. Default console.log. */
@@ -143,8 +148,15 @@ export class Backchannel {
     if (o.subject === undefined) return "no_identity";
     // FR-009, FR-011: the subject must be this user's, under L2's own approval issuer.
     if (!this.d.skipIdentityCheck && !subjectIsOwner(this.d.issuer, o.subject, o.owner)) return "identity_mismatch";
+    // FR-015: the limit is this person's own, and it is checked last, so an escalation that could never be sent
+    // uses up nobody's allowance.
     const cap = this.d.approvalRequestCap ?? APPROVAL_REQUEST_CAP;
-    if (approvalRequestCount(this.d.ledger.entries(), o.nowMs, APPROVAL_REQUEST_CAP_WINDOW_MS) >= cap) return "capped";
+    const entries = this.d.ledger.entries();
+    const since = o.nowMs - APPROVAL_REQUEST_CAP_WINDOW_MS;
+    const asked = this.d.sharedRequestCap
+      ? entries.filter((e) => e.type === "ESCALATED" && e.data.approvalRequest === "requested" && Date.parse(e.ts) > since).length
+      : approvalRequestCount(entries, o.nowMs, APPROVAL_REQUEST_CAP_WINDOW_MS, o.owner);
+    if (asked >= cap) return "capped";
     return "requested";
   }
 

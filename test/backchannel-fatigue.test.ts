@@ -1,7 +1,8 @@
 // 012 US6 — the approver is not flooded with requests (specs/012 tasks T040, T041): T-CIBA-03 (repeats and
 // operator-only intents) and T-CIBA-04 (the cap, with its must-fail proof).
+// 015 US5: T-CIBA-19, the cap counted for each person (with its must-fail proof).
 import { afterEach, describe, expect, it } from "vitest";
-import { startBackchannelL2, type BackchannelL2 } from "./helpers/backchannel-l2.js";
+import { ALICE_SUB, BOB_SUB, startBackchannelL2, type BackchannelL2 } from "./helpers/backchannel-l2.js";
 
 let l2: BackchannelL2 | undefined;
 afterEach(async () => {
@@ -85,5 +86,56 @@ describe("T-CIBA-04 cap", () => {
     l2 = await startBackchannelL2({ backchannel: { waitMs: 50, approvalRequestCap: Infinity } });
     await elevenPurchases(l2);
     expect(l2.stub.startForms()).toHaveLength(11);
+  });
+});
+
+describe("T-CIBA-19 the limit is counted for each person (015 US5, FR-015, SEC-18)", () => {
+  const subjects = (b: BackchannelL2) => b.stub.startForms().map((f) => (JSON.parse(f.login_hint!) as { sub: string }).sub);
+  /** 11 escalations of alice's, on 11 resources of one run, then one of bob's. */
+  async function aliceElevenThenBob(b: BackchannelL2) {
+    b.stub.setAnswers("pending");
+    for (let i = 0; i < 11; i++) {
+      const r = await b.authorize(b.intentFor(`/api/report-${i}`, "50000", { sessionId: "sess_alice" }));
+      expect(r.body.status).toBe("ESCALATE");
+    }
+    const t0 = Date.now();
+    const bobs = await b.authorize(b.intentFor(PREMIUM, "50000", { sessionId: "sess_bob", as: "bob" }));
+    expect(bobs.body.status).toBe("ESCALATE");
+    await new Promise((r) => setTimeout(r, 100));
+    return { bobs, bobTookMs: Date.now() - t0 };
+  }
+
+  it("T-CIBA-19 11 escalations for alice and one for bob in an hour: alice is asked 10 times, her 11th is capped and pending, bob is asked", async () => {
+    l2 = await startBackchannelL2({ backchannel: { waitMs: 50 } });
+    const { alice, bob } = l2.people;
+    const { bobs } = await aliceElevenThenBob(l2);
+    expect(marks(l2)).toEqual([...Array(10).fill("requested"), "capped", "requested"]);
+    expect(subjects(l2)).toEqual([...Array(10).fill(ALICE_SUB), BOB_SUB]);
+    const pending = (await l2.pending()).pending;
+    expect(pending).toHaveLength(12);
+    expect(pending[10]).toMatchObject({ userId: alice.userId, approvalRequest: "capped" });
+    expect(pending[11]).toMatchObject({ authorizationId: bobs.body.authorizationId, userId: bob.userId, approvalRequest: "requested" });
+    // The capped one waits for the operator like any other: an approval pays it.
+    expect((await l2.approve(String(pending[10]!.authorizationId))).status).toBe(200);
+    expect((await l2.authorize(l2.intentFor("/api/report-10", "50000", { sessionId: "sess_alice" }))).body.status).toBe("AUTHORIZED");
+
+    // A repeat of a pending purchase counts nothing and asks nobody again (T-CIBA-03).
+    const repeat = await l2.authorize(l2.intentFor(PREMIUM, "50000", { sessionId: "sess_bob", as: "bob" }));
+    expect(repeat.body).toMatchObject({ status: "ESCALATE", authorizationId: bobs.body.authorizationId });
+    expect(subjects(l2)).toHaveLength(11);
+
+    // An hour and a second after alice's first, her next escalation is asked again.
+    l2.clock.advance(3_601_000);
+    await l2.authorize(l2.intentFor("/api/report-late", "50000", { sessionId: "sess_alice_late" }));
+    expect(marks(l2).at(-1)).toBe("requested");
+    expect(subjects(l2).at(-1)).toBe(ALICE_SUB);
+  });
+
+  it("T-CIBA-19 must fail with one shared count: with sharedRequestCap, alice at the limit stops bob from being asked", async () => {
+    l2 = await startBackchannelL2({ backchannel: { waitMs: 50, sharedRequestCap: true } });
+    const { bobTookMs } = await aliceElevenThenBob(l2);
+    expect(marks(l2)).toEqual([...Array(10).fill("requested"), "capped", "capped"]);
+    expect(subjects(l2)).toEqual(Array(10).fill(ALICE_SUB)); // bob's phone never rings
+    expect(bobTookMs).toBeLessThan(500);
   });
 });
