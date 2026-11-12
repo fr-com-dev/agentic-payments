@@ -64,28 +64,30 @@ param operatorsGroupId = '6d09c1a1-ae43-4b55-b6d3-277b546adf3c'
 param sellerPayTo = '0x95Aca02416F949489C1128223B35fBBE8c04f057'
 param payerAddress = '0x0048A66969cE8886A5e9bC00059Cb8c5D3989516'
 
-// 012 backchannel approval (SPEC L2-7): off in dev until an Auth0 tenant exists (specs/012 quickstart §6). The l2 vault
-// holds ciba-client-credential either way: the placeholder off now, the client key once enabled.
+// 012 backchannel approval (SPEC L2-7): the values are Terraform's output bicepparam_ciba (auth0/, applied by
+// provision-auth0.yml on 2026-11-12). Still off in dev: enabled goes to true only once the l2 vault's
+// ciba-client-credential holds L2's private key and the approver has enrolled in Guardian push (specs/012
+// quickstart §6). Until then the vault holds the placeholder off.
 param ciba = {
   enabled: false
-  issuer: ''
-  clientId: ''
-  audience: ''
-  approver: ''
+  issuer: 'https://fabriciorojas.us.auth0.com/'
+  clientId: 'EqXwAxwj0VXpiE9pn7vR5r6P2KBc5UD4'
+  audience: 'https://x402-payments/dev'
+  approver: 'auth0|6af359b5e09a8d4f4ebb5e89'
   credential: 'key'
   clientKeyId: ''
 }
 
 // 013 user accounts (SPEC L2-8; specs/013 contracts/config-and-secrets.md "Azure"): off in dev until the portal is
 // deployed and its secrets are seeded (specs/013 quickstart §6). portalClientId is the Auth0 single-page client's
-// ID, Terraform's output bicepparam_portal_client_id (auth0/; the summary of provision-auth0.yml's apply run): paste
-// it before the portal's next deployment, also while enabled is false (the portal doesn't start without it, and
-// main.bicep refuses the portal unit while it is empty). The l2 vault holds portal-token and user-wallet-mnemonic,
+// ID, Terraform's output bicepparam_portal_client_id (auth0/; the summary of provision-auth0.yml's apply run of
+// 2026-11-12). The portal doesn't start without it, also while enabled is false, and main.bicep refuses the portal
+// unit while it is empty. The l2 vault holds portal-token and user-wallet-mnemonic,
 // and the portal vault portal-token and card-vault-key, either way: the placeholder off now, the real values once
 // enabled.
 param userAccounts = {
   enabled: false
-  portalClientId: ''
+  portalClientId: 'iMNhIDWoJNpQf4dLINxOAzKFbRvy3Wjq'
   sellerName: 'x402 demo seller'
   cardVault: 'off'
   cardVaultPublishableKey: ''
@@ -93,12 +95,12 @@ param userAccounts = {
 
 // 013 people's sign-in (specs/013 research R19 and R20): people sign in with Auth0, at the portal only. The two
 // values are Terraform's output bicepparam_identity (auth0/; the same summary): the tenant's issuer
-// (https://<domain>/) and the API's identifier. Empty in dev until provision-auth0.yml has applied 013's additions;
-// main.bicep refuses userAccounts.enabled without them. The agent service accepts system identities only, which
+// (https://<domain>/) and the API's identifier, from the apply run of 2026-11-12; main.bicep refuses
+// userAccounts.enabled without them. The agent service accepts system identities only, which
 // stay on Entra (tenantId and authAudience above): the tenant has no client for it.
 param identity = {
-  issuer: ''
-  audience: ''
+  issuer: 'https://fabriciorojas.us.auth0.com/'
+  audience: 'https://x402-api/dev'
 }
 
 // Declared to Anthropic with the Claude deployment, which accepts its Azure Marketplace terms (owner's consent,

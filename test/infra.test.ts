@@ -218,6 +218,13 @@ const APPS = ["l1", "l2", "l3", "op", "portal", "seller", "seller-alias", "x402"
 const PAYMENT_KEYS = ["PAYER_PRIVATE_KEY", "USER_WALLET_MNEMONIC"];
 /** The hosted agent's settings for people's tokens. In Azure it gets none: the sign-in tenant has no client for it (013 research R20). */
 const PEOPLE_SETTINGS = /^(AUTH_ISSUER|AUTH_AUDIENCE|AGENT_CLIENT_IDS|PORTAL_CLIENT_ID|AUTH_JWKS_FILE|AUTH_TIME_CLAIM)$/;
+/**
+ * The dev parameter file's identity object and the head of its userAccounts object, as written. The parameter-file
+ * mutants replace them whole, so they hold whatever values the file has (empty, or the tenant's once pasted).
+ */
+const DEV_PARAMETERS = readFileSync("infra/main.dev.bicepparam", "utf8");
+const DEV_IDENTITY = /param identity = \{\n[^}]*\}/.exec(DEV_PARAMETERS)?.[0] ?? "param identity = {}";
+const DEV_ACCOUNTS_HEAD = /param userAccounts = \{\n  enabled: (?:true|false)\n  portalClientId: '[^']*'/.exec(DEV_PARAMETERS)?.[0] ?? "param userAccounts = {";
 const IDENTITY_CHECK = "rule 21: main must refuse (fail()) user accounts turned on without an identity.issuer of the form https://…/ and an identity.audience";
 /** The x402 environment's NFS storages, and the one app key (names.apps.<key>) that may mount each (rule 4). */
 const STORAGE_OWNER: Record<string, "l2" | "portal"> = { ledger: "l2", profiles: "portal" };
@@ -1449,19 +1456,19 @@ resource extraRead 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
 
   it("T-IAC-01 must-fail rule 21: a parameter file whose identity has other keys, lists clients for the agent, or turns user accounts on without an issuer, is reported", async () => {
     const KEYS = "rule 21: main.dev.bicepparam's identity must be exactly issuer and audience";
-    const keys = await mutant("main.dev.bicepparam", "  issuer: ''\n  audience: ''\n}", "  issuer: ''\n  apiAudience: ''\n}");
+    const NO_ISSUER = "rule 21: main.dev.bicepparam turns user accounts on without an identity.issuer of the form https://<domain>/ and an identity.audience";
+    const keys = await mutant("main.dev.bicepparam", DEV_IDENTITY, "param identity = {\n  issuer: ''\n  apiAudience: ''\n}");
     expect(keys).toContain(KEYS);
     // The tenant has no client for the agent service, so a parameter file lists none.
-    const clients = await mutant("main.dev.bicepparam", "  issuer: ''\n  audience: ''\n}", "  issuer: ''\n  audience: ''\n  agentClientIds: ['cli']\n}");
+    const clients = await mutant("main.dev.bicepparam", DEV_IDENTITY, "param identity = {\n  issuer: ''\n  audience: ''\n  agentClientIds: ['cli']\n}");
     expect(clients).toContain(KEYS);
-    const on = await mutant("main.dev.bicepparam", "param userAccounts = {\n  enabled: false\n  portalClientId: ''", "param userAccounts = {\n  enabled: true\n  portalClientId: 'web'");
-    expect(on).toEqual(["rule 21: main.dev.bicepparam turns user accounts on without an identity.issuer of the form https://<domain>/ and an identity.audience"]);
-    // Not vacuous: with the tenant's values, user accounts may be on. An issuer without its trailing slash is not one.
-    const identity = "param identity = {\n  issuer: ''\n  audience: ''\n}";
-    const tenant = (issuer: string) => `param identity = {\n  issuer: '${issuer}'\n  audience: 'https://x402-api/dev'\n}`;
-    const enabled: [string, string][] = [["  enabled: false\n  portalClientId: ''", "  enabled: true\n  portalClientId: 'web'"]];
-    expect(await mutant("main.dev.bicepparam", identity, tenant("https://x402-dev.us.auth0.com/"), enabled)).toEqual([]);
-    expect(await mutant("main.dev.bicepparam", identity, tenant("https://x402-dev.us.auth0.com"), enabled)).toEqual(["rule 21: main.dev.bicepparam turns user accounts on without an identity.issuer of the form https://<domain>/ and an identity.audience"]);
+    const enabled: [string, string][] = [[DEV_ACCOUNTS_HEAD, "param userAccounts = {\n  enabled: true\n  portalClientId: 'web'"]];
+    const tenant = (issuer: string, audience = "https://x402-api/dev") => `param identity = {\n  issuer: '${issuer}'\n  audience: '${audience}'\n}`;
+    expect(await mutant("main.dev.bicepparam", DEV_IDENTITY, tenant("", ""), enabled)).toEqual([NO_ISSUER]);
+    // Not vacuous: with a tenant's values, user accounts may be on. An issuer without its trailing slash is not one.
+    expect(await mutant("main.dev.bicepparam", DEV_IDENTITY, tenant("https://x402-dev.us.auth0.com/"), enabled)).toEqual([]);
+    expect(await mutant("main.dev.bicepparam", DEV_IDENTITY, tenant("https://x402-dev.us.auth0.com"), enabled)).toEqual([NO_ISSUER]);
+    expect(await mutant("main.dev.bicepparam", DEV_IDENTITY, tenant("https://x402-dev.us.auth0.com/", ""), enabled)).toEqual([NO_ISSUER]);
   }, 360_000);
 
   it("T-IAC-01 must-fail rule 19: the CIBA credential on the agent, as a literal, or under one name only is reported", async () => {
@@ -1507,7 +1514,7 @@ resource extraRead 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
     // 013: neither the two-step switch nor people's sign-in is a per-run value.
     const retire = await mutant("pre-deploy.dev.bicepparam", "param retirePortalScope = true", "param retirePortalScope = bool(readEnvironmentVariable('RETIRE_PORTAL_SCOPE', 'true'))");
     expect(retire).toContain(`rule 17: pre-deploy.dev.bicepparam reads retirePortalScope from the environment; only ${PER_RUN.join(", ")} may be`);
-    const issuer = await mutant("main.dev.bicepparam", "param identity = {\n  issuer: ''", "param identity = {\n  issuer: readEnvironmentVariable('AUTH_ISSUER', '')");
+    const issuer = await mutant("main.dev.bicepparam", DEV_IDENTITY, "param identity = {\n  issuer: readEnvironmentVariable('AUTH_ISSUER', '')\n  audience: ''\n}");
     expect(issuer).toContain(`rule 17: main.dev.bicepparam reads issuer: readEnvironmentVariable('AUTH_ISSUER', '') from the environment; only ${PER_RUN.join(", ")} may be`);
     const name = await mutant("pre-deploy.dev.bicepparam", "var environment = 'dev'", "var environment = readEnvironmentVariable('ENVIRONMENT', 'dev')");
     expect(name).toContain(`rule 17: pre-deploy.dev.bicepparam reads var environment = readEnvironmentVariable('ENVIRONMENT', 'dev') from the environment; only ${PER_RUN.join(", ")} may be`);
