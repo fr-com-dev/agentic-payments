@@ -11,8 +11,9 @@ info:
     origin, and it holds no payment key: deciding and signing stay in L2.
 
     - **One person per request.** Every `/api` operation except `/api/config` needs the person's own access token
-      from the sign-in tenant (Auth0): for the API, issued to the portal's web app, with the permission
-      `agent:run`. The user is derived from the token and nothing else: no operation takes a user identifier.
+      from the sign-in tenant (Auth0): for the API, issued to the portal's web app. No permission and no role is
+      asked for (since v1.14): whoever signs in through the portal's web app may use it, for their own account.
+      The user is derived from the token and nothing else: no operation takes a user identifier.
     - **A token for the agent service is refused** (403: it comes from another client), and so is a machine token.
       A token of any other issuer, the organization's directory included, is not valid here (401).
     - **Amounts** go in as USDC text with at most 6 decimals (never rounded) and come back as decimal strings of
@@ -834,8 +835,8 @@ components:
       bearerFormat: JWT
       description: >-
         The person's access token from the sign-in tenant (Auth0): `iss` the tenant, `aud` containing the API's
-        identifier, the portal's web app as the client (`azp`, or `client_id`), `permissions` containing
-        `agent:run`, and the sign-in time claim (`https://x402.dev/auth_time` by default). Never a machine token.
+        identifier, the portal's web app as the client (`azp`, or `client_id`), and the sign-in time claim
+        (`https://x402.dev/auth_time` by default). Never a machine token. `permissions` is not read (v1.14).
 
   parameters:
     PolicyId:
@@ -864,8 +865,8 @@ components:
             $ref: "#/components/schemas/Error"
     Forbidden:
       description: >-
-        A valid token that is not allowed here: a machine token, a token issued to an agent client or to any other
-        client, or a person without `agent:run`. Nothing is written.
+        A valid token that is not allowed here: a machine token, or a token issued to an agent client or to any
+        other client. Since v1.14 never a missing permission. Nothing is written.
       content:
         application/json:
           schema:

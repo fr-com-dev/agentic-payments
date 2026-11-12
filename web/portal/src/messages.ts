@@ -88,7 +88,7 @@ export function errorMessage(e: ApiError): string {
     case "unauthorized":
       return "Your sign-in has ended. Sign in again.";
     case "forbidden":
-      return "Your organization has not given you access to start agent runs.";
+      return "This sign-in can't be used for the portal. Sign in again from this page.";
     case "control_unavailable":
       return "The payment service can't be reached right now. Nothing was changed. Try again in a moment.";
     case "too many requests":
