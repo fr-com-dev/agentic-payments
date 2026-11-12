@@ -170,8 +170,9 @@ src/
 │   ├── approval-evidence.ts     # CHANGED  step 7 `owner`; evidence.userId
 │   ├── escalations.ts           # CHANGED  approvalRequestCount per user; approvalRequestState with the clock
 │   │                            #          and `unanswered`; waitingPayments (pure); requestsToResume
-│   ├── user-routes.ts           # CHANGED  GET /v1/users/:userId/escalations
-│   └── policy.ts, ledger.ts, signer.ts, users.ts, approval-routes.ts, admin-routes.ts   # unchanged
+│   ├── user-routes.ts           # CHANGED  GET /v1/users/:userId/escalations; phoneApproval on the platform view
+│   ├── users.ts                 # CHANGED  platformView's return type only (the route adds phoneApproval)
+│   └── policy.ts, ledger.ts, signer.ts, approval-routes.ts, admin-routes.ts   # unchanged
 ├── portal/
 │   ├── control-client.ts        # CHANGED  waitingPayments(userId)
 │   └── routes.ts                # CHANGED  GET /api/payments/waiting; phoneApproval on /api/platform
@@ -353,9 +354,11 @@ of the user-account routes, never environment variables.
 
 T-CIBA-15..24, T-USR-13, T-PRT-15, T-WEB-13..14, T-AGT-08 and T-E2E-15, and the changes to T-API-01..04 and
 12..15, T-IAC-01 rule 19, T-IAC-02 and the setup script's test. Existing tests that must pass with no change of
-meaning: T-E2E-01, T-E2E-02, T-E2E-07, T-E2E-10 to 14, T-CIBA-01..14, T-USR-01..12, T-ADM-01..10,
+meaning: T-E2E-01, T-E2E-02, T-E2E-07, T-E2E-11 to 14, T-CIBA-01..14, T-USR-01..12, T-ADM-01..10,
 T-PRT-01..14, T-WEB-01..12, T-AGT-01..07 and T-LED-01..07. T-CIBA-01..14 change in one stated way: the helper's
-two onboarded people replace the configured approver, and the payments they test are a person's.
+two onboarded people replace the configured approver, and the payments they test are a person's. T-E2E-10
+changes the same way: its approved purchase becomes a person's, because the platform account can no longer be
+asked; its scripted half is unchanged.
 
 ## SPEC and governance changes (same change)
 
