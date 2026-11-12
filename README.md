@@ -133,7 +133,7 @@ npm run -s dev-token -- --subject alice --portal   # a sign-in token to paste in
 npm run build:web && npm run portal   # the portal on http://127.0.0.1:4025
 ```
 
-People sign in with Auth0 where it is deployed (SPEC v1.11); locally the dev issuer stands in for it, and the "sign-in" is the pasted token. Then follow the three steps on screen. `npm run fund-user -- <address> 1` mints 1 test USDC to the new account. To pay as that person, start `npm run agent:hosted` and send a run with an agent token (`npm run -s dev-token -- --subject alice`, without `--portal`): the two services refuse each other's tokens. The full walk-through, the isolation checks, cards and Azure are in [specs/013 quickstart](specs/013-l2-portal-onboarding/quickstart.md). It is off by default, and the local demo never uses it.
+People sign in with Auth0 where it is deployed (SPEC v1.12); locally the dev issuer stands in for it, and the "sign-in" is the pasted token. Then follow the three steps on screen. `npm run fund-user -- <address> 1` mints 1 test USDC to the new account. To pay as that person, start `npm run agent:hosted` and send a run with an agent token (`npm run -s dev-token -- --subject alice`, without `--portal`): the two services refuse each other's tokens. The full walk-through, the isolation checks, cards and Azure are in [specs/013 quickstart](specs/013-l2-portal-onboarding/quickstart.md). It is off by default, and the local demo never uses it.
 
 ## Base Sepolia
 

@@ -12,7 +12,7 @@
 # secrets and variables a workflow reads are the Auth0 environment's. Its secrets (the Auth0 Management API
 # credential) are never set or read here: an administrator sets them by hand (auth0/README.md). Its variables
 # (Terraform's, none a secret) are created here when missing, never changed: the four without a default as the
-# placeholder REPLACE_ME, which provision-auth0.yml refuses to plan with, and the four optional ones as the default
+# placeholder REPLACE_ME, which provision-auth0.yml refuses to plan with, and the two optional ones as the default
 # of auth0/variables.tf. An administrator then replaces the placeholders by hand. AUTH0_PORTAL_ORIGIN (013) is not
 # created: it has no value until the portal is deployed, and a GitHub variable can't be empty. Unset, Terraform's
 # default (no deployed origin) holds; an administrator sets it then (auth0/README.md).
@@ -92,8 +92,6 @@ AUTH0_VARIABLES=(
   "AUTH0_API_IDENTIFIER=$PLACEHOLDER"
   "AUTH0_APPROVER_USER_ID=$PLACEHOLDER"
   "AUTH0_CLIENT_PUBLIC_KEY=$PLACEHOLDER"
-  "AUTH0_CREDENTIAL=key"
-  "AUTH0_CLIENT_SECRET_VERSION=1"
   "AUTH0_MANAGE_GUARDIAN=true"
   "AUTH0_GUARDIAN_POLICY=never"
 )

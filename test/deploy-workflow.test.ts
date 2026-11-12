@@ -79,9 +79,9 @@ const PIPELINES: Record<string, { unit: Unit; inputs: string[] }> = {
 /** The Auth0 tenant's pipeline (Terraform, auth0/): checked by T-IAC-02 (test/auth0-iac.test.ts), not here. */
 const AUTH0 = "provision-auth0.yml";
 /** The only GitHub secrets a workflow reads: the Auth0 pipeline's, from its own GitHub environment. */
-const AUTH0_SECRETS = ["AUTH0_CLIENT_ID", "AUTH0_CLIENT_SECRET", "AUTH0_L2_CLIENT_SECRET"];
+const AUTH0_SECRETS = ["AUTH0_CLIENT_ID", "AUTH0_CLIENT_SECRET"];
 /** The only GitHub variables a workflow reads: the Auth0 pipeline's Terraform variables, from the same environment. */
-const AUTH0_VARIABLES = /^AUTH0_(TENANT_DOMAIN|API_IDENTIFIER|APPROVER_USER_ID|CREDENTIAL|CLIENT_PUBLIC_KEY|CLIENT_SECRET_VERSION|MANAGE_GUARDIAN|GUARDIAN_POLICY|PORTAL_ORIGIN)$/;
+const AUTH0_VARIABLES = /^AUTH0_(TENANT_DOMAIN|API_IDENTIFIER|APPROVER_USER_ID|CLIENT_PUBLIC_KEY|MANAGE_GUARDIAN|GUARDIAN_POLICY|PORTAL_ORIGIN)$/;
 const FILES = [SHARED, AUTH0, ...Object.keys(PIPELINES)].sort();
 /** The image each unit's run builds, promotes and rolls back; the platform has none. */
 const UNIT_IMAGES: Record<Exclude<Unit, "platform">, ImageName> = { l1: "l1-agent", l2: "l2-control", l3: "l3-verifier", operator: "operator", portal: "portal", seller: "seller" };
@@ -582,6 +582,8 @@ describe("T-E2E-AZ deployment workflow gates", () => {
     const auth0 = text.replace('-u "$DEPLOY_CLIENT_ID"', '-u "${{ secrets.AUTH0_CLIENT_SECRET }}"');
     expect(secretProblems(SHARED, auth0)).toEqual([`${SHARED} reads secrets.AUTH0_CLIENT_SECRET: values come from infra/main.<environment>.bicepparam`]);
     expect(secretProblems(SHARED, text.replace('-u "$DEPLOY_CLIENT_ID"', '-u "${{ vars.AUTH0_TENANT_DOMAIN }}"'))).toEqual([`${SHARED} reads vars.AUTH0_TENANT_DOMAIN: values come from infra/main.<environment>.bicepparam`]);
+    // Constitution V: L2's client secret is held by L2 only, never by GitHub.
+    expect(secretProblems(AUTH0, "${{ secrets.AUTH0_L2_CLIENT_SECRET }}")).toEqual([`${AUTH0} reads secrets.AUTH0_L2_CLIENT_SECRET: values come from infra/main.<environment>.bicepparam`]);
     expect(secretProblems(AUTH0, "${{ secrets.AUTH0_CLIENT_ID }} ${{ vars.AUTH0_TENANT_DOMAIN }} ${{ secrets.AZURE_CLIENT_SECRET }} ${{ vars.AUTH0_CLIENT_ID }}")).toEqual([
       `${AUTH0} reads secrets.AZURE_CLIENT_SECRET: values come from infra/main.<environment>.bicepparam`,
       `${AUTH0} reads vars.AUTH0_CLIENT_ID: values come from infra/main.<environment>.bicepparam`,

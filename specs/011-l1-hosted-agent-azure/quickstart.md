@@ -192,7 +192,7 @@ Then check the platform facts the research could not confirm:
 | L2/L3 are private | from your machine: `curl -m 5 https://ca-l2-eastus2-dev.<env-domain>/v1/escalations` | 404 from the environment proxy, or no route; never 401 from L2 |
 | A person can get a token and run the agent | "Calling the agent as a person" below | 200. 403 means the person has no `x402-user` role in the Auth0 tenant, or the client is not on `AGENT_CLIENT_IDS`; 401 means `AUTH_ISSUER` or `AUTH_AUDIENCE` isn't the tenant's |
 
-**Calling the agent as a person.** Since SPEC v1.11 people sign in with Auth0 (`specs/013` research R19): the
+**Calling the agent as a person.** Since SPEC v1.12 people sign in with Auth0 (`specs/013` research R19): the
 person needs the role `x402-user` in the tenant, and `AUTH_ISSUER`, `AUTH_AUDIENCE` and `AGENT_CLI_CLIENT_ID` in
 `env/l1-hosted.env` or the environment (Terraform's `agent_env` output). `npm run user-token` shows an address and
 a code to confirm in a browser, then prints the token. The Azure CLI token of earlier versions

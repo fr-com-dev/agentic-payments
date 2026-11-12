@@ -19,16 +19,16 @@ import { DETAILS_TYPE } from "../src/layer2-control/payment-details.js";
 
 const DIR = "auth0";
 const WORKFLOW = ".github/workflows/provision-auth0.yml";
-/** The only GitHub secrets any workflow reads: the Management API credential and, with credential = "secret", L2's. */
-const SECRETS = ["AUTH0_CLIENT_ID", "AUTH0_CLIENT_SECRET", "AUTH0_L2_CLIENT_SECRET"];
+/** The only GitHub secrets any workflow reads: the Management API credential. Never a credential of L2's (Constitution V). */
+const SECRETS = ["AUTH0_CLIENT_ID", "AUTH0_CLIENT_SECRET"];
+/** The variables the plan refuses to run without: the three with no default, and the public key that credential = "key" needs. */
+const REQUIRED = ["tenant_domain", "api_identifier", "approver_user_id", "client_public_key_pem"];
 /** The GitHub environment variable behind each Terraform variable the pipeline sets; none is a secret. */
 const VARIABLES: Record<string, string> = {
   tenant_domain: "AUTH0_TENANT_DOMAIN",
   api_identifier: "AUTH0_API_IDENTIFIER",
   approver_user_id: "AUTH0_APPROVER_USER_ID",
-  credential: "AUTH0_CREDENTIAL",
   client_public_key_pem: "AUTH0_CLIENT_PUBLIC_KEY",
-  client_secret_version: "AUTH0_CLIENT_SECRET_VERSION",
   manage_guardian: "AUTH0_MANAGE_GUARDIAN",
   guardian_policy: "AUTH0_GUARDIAN_POLICY",
   portal_origin: "AUTH0_PORTAL_ORIGIN",
@@ -361,14 +361,19 @@ export function pipelineProblems(s: Sources): string[] {
   // Secrets: the three of the Auth0 environment, only as the plan and apply steps' environment.
   const read = [...s.workflow.matchAll(/\$\{\{\s*(secrets|vars)\.([A-Za-z0-9_]+)/g)].map((m) => `${m[1]}.${m[2]}`);
   const readable = [...SECRETS.map((x) => `secrets.${x}`), ...Object.values(VARIABLES).map((x) => `vars.${x}`)];
-  for (const name of read) if (!readable.includes(name)) p.push(`the pipeline reads ${name}: only its three secrets and its Terraform variables may be read`);
+  for (const name of read) if (!readable.includes(name)) p.push(`the pipeline reads ${name}: only its two secrets and its Terraform variables may be read`);
   // Terraform's variables: each one from its GitHub environment variable, in the plan step only, never a tfvars file.
   const planEnv = step("plan")?.env ?? {};
   const wired = Object.entries(VARIABLES).every(([name, source]) => planEnv[`VAR_${name}`] === `\${{ vars.${source} }}`);
   const exported = /for name in ([a-z_ ]+); do\n\s+source="VAR_\$name"\n\s+if \[\[ -n "\$\{!source\}" \]\]; then export "TF_VAR_\$name=\$\{!source\}"; fi/.exec(run("plan"))?.[1];
-  const required = /for name in ([a-z_ ]+); do\n\s+source="VAR_\$name"\n\s+if \[\[ -z "\$\{!source\}" \]\]; then\n[^\n]+\n\s+exit 1/.exec(run("plan"))?.[1];
-  if (!wired || exported !== Object.keys(VARIABLES).join(" ") || required !== "tenant_domain api_identifier approver_user_id" || !run("plan").includes('export TF_VAR_environment="$ENVIRONMENT"')) {
-    p.push("Terraform's variables must come from the GitHub environment's variables, as TF_VAR_* in the plan step: all nine wired, the three without a default required");
+  const required = /for required in ([A-Za-z0-9_: ]+); do\n\s+source="VAR_\$\{required%%:\*\}"\n\s+if \[\[ -z "\$\{!source\}" \]\]; then\n[^\n]+\n\s+exit 1/.exec(run("plan"))?.[1];
+  if (!wired || Object.keys(planEnv).filter((k) => k.startsWith("VAR_")).length !== Object.keys(VARIABLES).length || exported !== Object.keys(VARIABLES).join(" ") || required !== REQUIRED.map((name) => `${name}:${VARIABLES[name]}`).join(" ")) {
+    p.push("Terraform's variables must come from the GitHub environment's variables, as TF_VAR_* in the plan step: all seven wired, the four without a usable default required");
+  }
+  // Constitution V: L2's credential is held by L2 only. The pipeline provisions the key path alone, where GitHub
+  // holds the public half; it never takes L2's client secret, from a secret, a variable or a file.
+  if (!run("plan").includes('export TF_VAR_environment="$ENVIRONMENT" TF_VAR_credential=key') || /TF_VAR_client_secret|L2_CLIENT_SECRET|\bVAR_credential\b|credential=secret/.test(s.workflow)) {
+    p.push('the pipeline must provision credential = "key" only, and never hold L2\'s client secret (Constitution V)');
   }
   // infra/github-setup.sh creates exactly these variables, but the ones that have no value yet (a GitHub variable
   // can't be empty), and the plan refuses the placeholder it gives them.
@@ -631,23 +636,27 @@ describe("T-IAC-02 Auth0 tenant as code (auth0/)", () => {
 
   const SECRET_SCOPE = "the secrets must reach only the plan and apply steps, as their environment: never the job, another step or a script";
   const VARS_SCOPE = "the variables must reach only the plan step, and no tfvars file or -var argument may be used";
-  const VARS_WIRED = "Terraform's variables must come from the GitHub environment's variables, as TF_VAR_* in the plan step: all nine wired, the three without a default required";
+  const VARS_WIRED = "Terraform's variables must come from the GitHub environment's variables, as TF_VAR_* in the plan step: all seven wired, the four without a usable default required";
+  const KEY_ONLY = 'the pipeline must provision credential = "key" only, and never hold L2\'s client secret (Constitution V)';
   const ONLY_APPLY = "the only change to the tenant must be the apply step, when the apply input is checked, applying exactly the saved plan";
   it.each<[string, string | RegExp, string, string]>([
     ["a run on every push", "on:\n  workflow_dispatch:", "on:\n  push:\n    branches: [main]\n  workflow_dispatch:", "the pipeline must run by hand only (workflow_dispatch): never on a push, a pull request or a schedule"],
     ["write permission on the repository", "  contents: read", "  contents: write", "the pipeline's permissions must be id-token: write and contents: read only"],
     ["the deploy environment", "    environment: auth0-${{ inputs.environment }}", "    environment: ${{ inputs.environment }}", "the pipeline's one job must run in the GitHub environment auth0-<environment>, which holds the Auth0 credential, never the deploy environment"],
     ["cancelled runs", "  cancel-in-progress: false", "  cancel-in-progress: true", "the pipeline must hold the concurrency group provision-auth0 without cancelling: one run at a time for the tenant"],
-    ["another secret", "          L2_CLIENT_SECRET: ${{ secrets.AUTH0_L2_CLIENT_SECRET }}\n          VAR_tenant_domain", "          L2_CLIENT_SECRET: ${{ secrets.PAYER_PRIVATE_KEY }}\n          VAR_tenant_domain", "the pipeline reads secrets.PAYER_PRIVATE_KEY: only its three secrets and its Terraform variables may be read"],
-    ["a GitHub variable", "  TF_INPUT: \"0\"", "  TF_INPUT: \"0\"\n  TENANT: ${{ vars.AUTH0_DOMAIN }}", "the pipeline reads vars.AUTH0_DOMAIN: only its three secrets and its Terraform variables may be read"],
+    ["another secret", "          VAR_tenant_domain: ${{ vars.AUTH0_TENANT_DOMAIN }}", "          PAYER: ${{ secrets.PAYER_PRIVATE_KEY }}\n          VAR_tenant_domain: ${{ vars.AUTH0_TENANT_DOMAIN }}", "the pipeline reads secrets.PAYER_PRIVATE_KEY: only its two secrets and its Terraform variables may be read"],
+    ["a GitHub variable", "  TF_INPUT: \"0\"", "  TF_INPUT: \"0\"\n  TENANT: ${{ vars.AUTH0_DOMAIN }}", "the pipeline reads vars.AUTH0_DOMAIN: only its two secrets and its Terraform variables may be read"],
     ["a variable in every step", "  TF_INPUT: \"0\"", "  TF_INPUT: \"0\"\n  TENANT: ${{ vars.AUTH0_TENANT_DOMAIN }}", VARS_SCOPE],
     ["a tfvars file", '-out="$RUNNER_TEMP/auth0.tfplan"\n          {\n            echo "### Plan', '-var-file="$ENVIRONMENT.tfvars" -out="$RUNNER_TEMP/auth0.tfplan"\n          {\n            echo "### Plan', VARS_SCOPE],
     ["a variable that is never set", "          VAR_guardian_policy: ${{ vars.AUTH0_GUARDIAN_POLICY }}\n", "", VARS_WIRED],
-    ["a portal origin that never reaches Terraform", "client_secret_version manage_guardian guardian_policy portal_origin; do", "client_secret_version manage_guardian guardian_policy; do", VARS_WIRED],
+    ["a portal origin that never reaches Terraform", "client_public_key_pem manage_guardian guardian_policy portal_origin; do", "client_public_key_pem manage_guardian guardian_policy; do", VARS_WIRED],
     ["a summary without the identity values", "            terraform -chdir=auth0 output -json bicepparam_identity\n", "", "the apply step must show the output bicepparam_identity in the run's summary, for infra/main.<environment>.bicepparam"],
     ["a variable taken from another one", "VAR_approver_user_id: ${{ vars.AUTH0_APPROVER_USER_ID }}", "VAR_approver_user_id: ${{ vars.AUTH0_TENANT_DOMAIN }}", VARS_WIRED],
     ["a plan with a placeholder", 'if [[ "${!source}" == REPLACE_ME ]]; then', 'if [[ "${!source}" == NEVER ]]; then', "the plan step must refuse a variable that still holds infra/github-setup.sh's placeholder, before it plans"],
-    ["an approver that may be missing", "for name in tenant_domain api_identifier approver_user_id; do", "for name in tenant_domain api_identifier; do", VARS_WIRED],
+    ["an approver that may be missing", " approver_user_id:AUTH0_APPROVER_USER_ID", "", VARS_WIRED],
+    ["a public key that may be missing", " client_public_key_pem:AUTH0_CLIENT_PUBLIC_KEY; do", "; do", VARS_WIRED],
+    ["L2's client secret in GitHub", "          VAR_tenant_domain: ${{ vars.AUTH0_TENANT_DOMAIN }}", "          L2_CLIENT_SECRET: ${{ secrets.AUTH0_L2_CLIENT_SECRET }}\n          VAR_tenant_domain: ${{ vars.AUTH0_TENANT_DOMAIN }}", KEY_ONLY],
+    ["a credential kind chosen by a variable", 'export TF_VAR_environment="$ENVIRONMENT" TF_VAR_credential=key', 'export TF_VAR_environment="$ENVIRONMENT" TF_VAR_credential="$VAR_credential"', KEY_ONLY],
     ["the credential in every step", "  TF_INPUT: \"0\"", "  TF_INPUT: \"0\"\n  AUTH0_CLIENT_SECRET: ${{ secrets.AUTH0_CLIENT_SECRET }}", SECRET_SCOPE],
     ["the credential in the tests step", "        id: tests\n", "        id: tests\n        env:\n          AUTH0_CLIENT_SECRET: ${{ secrets.AUTH0_CLIENT_SECRET }}\n", SECRET_SCOPE],
     ["an input pasted into a script", 'if [[ ! "$ENVIRONMENT" =~', 'if [[ ! "${{ inputs.environment }}" =~', "an input is never pasted into a script"],

@@ -99,8 +99,8 @@ accepts only the clients in `AGENT_CLIENT_IDS`, never the portal's.
    ```
 
 4. **Variables.** There is no tfvars file. Terraform's variables are variables of the GitHub environment, which the
-   plan step exports as `TF_VAR_*`. None is a secret. `infra/github-setup.sh` (step 1) already created eight of the
-   nine: the first four as the placeholder `REPLACE_ME`, the next four as their defaults. Replace the four placeholders; the
+   plan step exports as `TF_VAR_*`. None is a secret. `infra/github-setup.sh` (step 1) already created six of the
+   seven: the first four as the placeholder `REPLACE_ME`, the next two as their defaults. Replace the four placeholders; the
    pipeline plans nothing while one is left:
 
    ```bash
@@ -124,9 +124,7 @@ accepts only the clients in `AGENT_CLIENT_IDS`, never the portal's.
    | `AUTH0_TENANT_DOMAIN` | `tenant_domain` | always |
    | `AUTH0_API_IDENTIFIER` | `api_identifier` | always |
    | `AUTH0_APPROVER_USER_ID` | `approver_user_id` | always |
-   | `AUTH0_CLIENT_PUBLIC_KEY` | `client_public_key_pem` | with `credential = "key"` (the default) |
-   | `AUTH0_CREDENTIAL` | `credential` | only to choose `secret` |
-   | `AUTH0_CLIENT_SECRET_VERSION` | `client_secret_version` | only to rotate the secret |
+   | `AUTH0_CLIENT_PUBLIC_KEY` | `client_public_key_pem` | always |
    | `AUTH0_MANAGE_GUARDIAN` | `manage_guardian` | only to set `false` |
    | `AUTH0_GUARDIAN_POLICY` | `guardian_policy` | only to change `never` |
    | `AUTH0_PORTAL_ORIGIN` | `portal_origin` | once the portal is deployed |
@@ -172,13 +170,9 @@ accepts only the clients in `AGENT_CLIENT_IDS`, never the portal's.
      `env/portal.env`). They hold the same values as the summary.
 6. **Assign the role `x402-user`** in Auth0 to each person who may onboard.
 
-With `credential = "secret"`:
-- generate the secret yourself (16 or more characters);
-- store it as the environment's secret `AUTH0_L2_CLIENT_SECRET` (it is an ephemeral, write-only value: never in
-  the state or the plan file);
-- seed the same value into the vault.
-
-To rotate it, bump the variable `AUTH0_CLIENT_SECRET_VERSION`.
+**Key only.** The pipeline provisions `credential = "key"` and nothing else, so GitHub holds only the public half
+of L2's key. L2's credential is held by L2 only (Constitution V), which rules out sending a client secret through
+GitHub. `private_key_jwt` needs Auth0's Enterprise plan; on a lower plan the pipeline can't provision L2's client.
 
 ## Notes
 

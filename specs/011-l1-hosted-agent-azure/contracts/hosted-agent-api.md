@@ -23,7 +23,7 @@ publishes no routes (research R1).
 
 ## `POST /v1/runs`
 
-- **Auth**: a bearer token, checked before the body is read. Since SPEC v1.11 a person's is an Auth0 access token
+- **Auth**: a bearer token, checked before the body is read. Since SPEC v1.12 a person's is an Auth0 access token
   with the permission `agent:run` from a client on `AGENT_CLIENT_IDS`, and a system identity's an Entra app-only
   token with role `Agent.Run` ([access-and-sessions.md](access-and-sessions.md)). Before: an Entra ID bearer token with role `Agent.Run`, checked before the body is read
   ([access-and-sessions](access-and-sessions.md)).
@@ -71,7 +71,7 @@ bounds a caller without a valid token; `TRUSTED_PROXY_HOPS` (1 in Azure) makes t
 |---|---|
 | 400 | goal missing, empty or over 4,000 characters; unknown body field; malformed `sessionRef`; a raw `sess_…` ID |
 | 401 | missing, malformed, invalid, expired, wrong-audience, wrong-issuer or wrong-tenant token |
-| 403 | valid token that may not start a run. v1.11: a person's without `agent:run`, from a client not on `AGENT_CLIENT_IDS` (the portal's web app included), or a machine token; the directory's without `Agent.Run`, or a person's (013 SEC-20) |
+| 403 | valid token that may not start a run. v1.12: a person's without `agent:run`, from a client not on `AGENT_CLIENT_IDS` (the portal's web app included), or a machine token; the directory's without `Agent.Run`, or a person's (013 SEC-20) |
 | 404 | well-formed `sessionRef` that doesn't verify for this requester (`unknown session`) |
 | 413 | body over 16 KB |
 | 429 | more than 2 concurrent runs, or 20 starts in the last hour, for this requester; or (v1.10) more than 300 requests in a minute from this client address, on any route but health and the docs; `Retry-After` header set |
@@ -116,7 +116,7 @@ Any other method or path → 404 `{ "error": "not found" }`, after auth. Unauthe
 ## Logs (research R13)
 
 There is one JSON line per step:
-`{ "event": "step", "runId", "requester": "<issuer host>:<sub>" (a person, v1.11) or "tid:oid" (a system identity), "sessionId", "index", "tool", "outcome", "intentId"?, "authorizationId"?, "ms" }`.
+`{ "event": "step", "runId", "requester": "<issuer host>:<sub>" (a person, v1.12) or "tid:oid" (a system identity), "sessionId", "index", "tool", "outcome", "intentId"?, "authorizationId"?, "ms" }`.
 There is one line per run: `{ "event": "run", "runId", "requester", "sessionId", "status", "stopReason", "steps", "ms" }`.
 They never include headers, tokens, the `sessionRef` MAC, the goal, `purpose`, or a response
 `body`.
@@ -140,7 +140,7 @@ They never include headers, tokens, the `sessionRef` MAC, the goal, `purpose`, o
 
 ## v1.10 (013): the user a run pays for
 
-- For a requester of kind `user`, every `PaymentIntent` of the run carries `userId = userIdFor(issuer, sub)` (v1.11; `userIdFor(tid, oid)` before)
+- For a requester of kind `user`, every `PaymentIntent` of the run carries `userId = userIdFor(issuer, sub)` (v1.12; `userIdFor(tid, oid)` before)
   (`src/shared/user-id.ts`), and `check_budget` asks L2 for that user's view. For kind `service` (an `idtyp: app`
   token), no user: with user accounts on, L2 decides those runs against the platform account, as before.
 - The value is fixed when the run starts, from the verified token. The request body still takes only `goal` and

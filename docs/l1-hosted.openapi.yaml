@@ -235,7 +235,7 @@ components:
         One of two access tokens. The service reads the token's issuer only to choose the checks, then verifies in
         full against that issuer (60 s tolerance on `exp` and `nbf`); any other issuer is 401.
 
-        **A person** (since v1.11): a token of the sign-in tenant (Auth0, `AUTH_ISSUER`) for the API
+        **A person** (since v1.12): a token of the sign-in tenant (Auth0, `AUTH_ISSUER`) for the API
         (`AUTH_AUDIENCE`), with the permission `agent:run` in `permissions`, issued to a client on the service's
         list (`AGENT_CLIENT_IDS`). The run's payments are that person's. Get one from a terminal with the
         tenant's device flow:
@@ -263,7 +263,7 @@ components:
         A valid token that may not start a run. A person's: without the permission `agent:run`, from a client that
         is not on the service's list (which covers the portal's web app, SEC-20), or a machine token of the sign-in
         tenant. The directory's: without the app role `Agent.Run`, or a person's token (people sign in with the
-        sign-in tenant since v1.11).
+        sign-in tenant since v1.12).
       content:
         application/json:
           schema:

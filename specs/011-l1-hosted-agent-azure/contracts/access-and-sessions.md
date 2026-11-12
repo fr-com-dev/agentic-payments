@@ -4,7 +4,7 @@
 
 It runs on every request except `GET /healthz` and `GET /readyz`, before the body is read.
 
-**Since SPEC v1.11 (specs/013 research R19) there are two issuers.** The service reads `iss` from the token,
+**Since SPEC v1.12 (specs/013 research R19) there are two issuers.** The service reads `iss` from the token,
 unverified, only to choose the checks, then verifies in full against that issuer (the shared verifier,
 `src/shared/identity-token.ts`). Any other issuer is 401.
 
@@ -33,10 +33,10 @@ longer starts a run); and the `scp`/`azp` row of v1.10 is gone. Without `AUTH_TE
 | Signature | key from the JWKS: `https://login.microsoftonline.com/<AUTH_TENANT_ID>/discovery/v2.0/keys` (cached by `jose`), or `AUTH_JWKS_FILE` when `NETWORK=local` | 401 |
 | `iss` | `https://login.microsoftonline.com/<AUTH_TENANT_ID>/v2.0`; or `urn:x402:dev-issuer` with `AUTH_JWKS_FILE` | 401 |
 | `tid` | equals `AUTH_TENANT_ID` (or `dev` locally) | 401 |
-| `aud` | equals `SERVICE_AUDIENCE` (`AUTH_AUDIENCE` before v1.11): the API app's client ID. Entra v2.0 tokens always carry the client ID, never the `api://` URI, so with Entra any other value is a startup error. The dev issuer uses `api://x402-l1-agent-service` | 401 |
+| `aud` | equals `SERVICE_AUDIENCE` (`AUTH_AUDIENCE` before v1.12): the API app's client ID. Entra v2.0 tokens always carry the client ID, never the `api://` URI, so with Entra any other value is a startup error. The dev issuer uses `api://x402-l1-agent-service` | 401 |
 | `exp`, `nbf` | 60 s clock tolerance | 401 |
 | `oid` | present | 401 |
-| `idtyp` (v1.11) | exactly `app` | 403 |
+| `idtyp` (v1.12) | exactly `app` | 403 |
 | `roles` | contains `Agent.Run` | 403 |
 
 - 401 and 403 bodies are `{ "error": "unauthorized" }` and `{ "error": "forbidden" }`. They never
@@ -57,8 +57,8 @@ longer starts a run); and the `scp`/`azp` row of v1.10 is gone. Without `AUTH_TE
     `main.<env>.bicepparam`. `AUTH_TENANT_ID` is that file's `tenantId`. T-IAC-01 rule 16 checks the
     whole setup.
 - **Getting a token**:
-  - a person with the role `x402-user` in the Auth0 tenant (v1.11): `npm run -s user-token`, the device flow of the
-    tenant's native client (`AUTH_ISSUER`, `AUTH_AUDIENCE`, `AGENT_CLI_CLIENT_ID`). Before v1.11 it was
+  - a person with the role `x402-user` in the Auth0 tenant (v1.12): `npm run -s user-token`, the device flow of the
+    tenant's native client (`AUTH_ISSUER`, `AUTH_AUDIENCE`, `AGENT_CLI_CLIENT_ID`). Before v1.12 it was
     `az account get-access-token --scope api://app-l1-eastus2-dev/user_impersonation`, which no longer starts a run;
   - a service principal assigned `Agent.Run`: client credentials for `api://app-l1-eastus2-dev/.default`
     (the pipeline's smoke check, signed in as the deploy app, uses
@@ -73,7 +73,7 @@ longer starts a run); and the `scp`/`azp` row of v1.10 is gone. Without `AUTH_TE
   43 base64url characters.
 - **MAC**: `HMAC-SHA256(SESSION_REF_SECRET, m)`, where `m` is `sr1`, the requester's kind (`user` or `service`), who
   vouches for it (a person's issuer, a system identity's tenant), its subject (`sub`, or `oid`) and the session ID,
-  joined by newlines. Before v1.11 it was `"sr1|" + tid + "|" + oid + "|" + sessionId`; a reference issued then no
+  joined by newlines. Before v1.12 it was `"sr1|" + tid + "|" + oid + "|" + sessionId`; a reference issued then no
   longer verifies (404).
 - **Issue**: a run without `sessionRef` gets a new `sessionId` (16 random hex characters) and its
   reference.
@@ -93,7 +93,7 @@ longer starts a run); and the `scp`/`azp` row of v1.10 is gone. Without `AUTH_TE
 | goal length | 1–4,000 characters | 400 |
 | request body | 16 KB | 413 |
 
-Limits are counted per requester key: `<issuer host>:<sub>` for a person (v1.11), `tid:oid` for a system identity. They are exact while `ca-l1-eastus2-dev` has
+Limits are counted per requester key: `<issuer host>:<sub>` for a person (v1.12), `tid:oid` for a system identity. They are exact while `ca-l1-eastus2-dev` has
 `maxReplicas: 1` (research R8).
 
 ## Tests
@@ -101,7 +101,7 @@ Limits are counted per requester key: `<issuer host>:<sub>` for a person (v1.11)
 - **T-AGT-03 (access)**:
   - no token, a bad signature, expired, wrong `aud`, wrong `tid`, an issuer the service does not know → 401;
   - no permission (a person) or no role (a system identity), a machine token of the sign-in tenant, a person's
-    Entra token → 403 (v1.11);
+    Entra token → 403 (v1.12);
   - a person's token with `agent:run` from a listed client and a system identity's (`idtyp: app`) with the role → 200;
   - 2 + 1 concurrent → 429;
   - 21st start → 429;

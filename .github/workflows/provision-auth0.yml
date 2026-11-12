@@ -4,8 +4,8 @@
 # only when `apply` is checked. T-IAC-02 (test/auth0-iac.test.ts) checks this file.
 # - The job runs in the GitHub environment auth0-<environment>, never the deploy pipelines' one. Protect it with
 #   required reviewers: it holds the only secrets in GitHub, the Auth0 Management API application's credential
-#   (AUTH0_CLIENT_ID, AUTH0_CLIENT_SECRET) and, with credential = "secret" only, L2's client secret
-#   (AUTH0_L2_CLIENT_SECRET). Auth0 has no sign-in without a credential for this. Only the plan and apply steps see them.
+#   (AUTH0_CLIENT_ID, AUTH0_CLIENT_SECRET). Auth0 has no sign-in without a credential for this. Only the plan and
+#   apply steps see them. It never holds a credential of L2's: the pipeline provisions credential = "key" only.
 # - The state is a blob in the storage account infra/pre-deploy.bicep makes (names.stateStorage). Terraform signs in
 #   to Azure as the deploy app with OIDC, for that container only, and asks GitHub for a fresh token itself on each
 #   command. No Azure credential exists, and the state holds no secret.
@@ -117,21 +117,18 @@ jobs:
           terraform -chdir=auth0 validate -no-color
 
       # Terraform's variables are built here, from the GitHub environment's variables: each one that is set becomes
-      # TF_VAR_<name>, and one left unset keeps the default of auth0/variables.tf. The first three have no default.
-      # The saved plan carries them to the apply step. L2's client secret reaches Terraform only when the environment
-      # holds one (credential = "secret"): it is an ephemeral, write-only value, in neither the plan file nor the state.
+      # TF_VAR_<name>, and one left unset keeps the default of auth0/variables.tf. The first four have no usable
+      # default. The saved plan carries them to the apply step. L2 authenticates with its key only
+      # (credential = "key"): GitHub holds the public half, and never a credential of L2's (Constitution V).
       - name: "3 plan, with the variables of the GitHub environment"
         id: plan
         env:
           AUTH0_CLIENT_ID: ${{ secrets.AUTH0_CLIENT_ID }}
           AUTH0_CLIENT_SECRET: ${{ secrets.AUTH0_CLIENT_SECRET }}
-          L2_CLIENT_SECRET: ${{ secrets.AUTH0_L2_CLIENT_SECRET }}
           VAR_tenant_domain: ${{ vars.AUTH0_TENANT_DOMAIN }}
           VAR_api_identifier: ${{ vars.AUTH0_API_IDENTIFIER }}
           VAR_approver_user_id: ${{ vars.AUTH0_APPROVER_USER_ID }}
-          VAR_credential: ${{ vars.AUTH0_CREDENTIAL }}
           VAR_client_public_key_pem: ${{ vars.AUTH0_CLIENT_PUBLIC_KEY }}
-          VAR_client_secret_version: ${{ vars.AUTH0_CLIENT_SECRET_VERSION }}
           VAR_manage_guardian: ${{ vars.AUTH0_MANAGE_GUARDIAN }}
           VAR_guardian_policy: ${{ vars.AUTH0_GUARDIAN_POLICY }}
           VAR_portal_origin: ${{ vars.AUTH0_PORTAL_ORIGIN }}
@@ -140,10 +137,10 @@ jobs:
             echo "::error::the GitHub environment auth0-$ENVIRONMENT has no secret AUTH0_CLIENT_ID or AUTH0_CLIENT_SECRET (auth0/README.md). Nothing was planned."
             exit 1
           fi
-          for name in tenant_domain api_identifier approver_user_id; do
-            source="VAR_$name"
+          for required in tenant_domain:AUTH0_TENANT_DOMAIN api_identifier:AUTH0_API_IDENTIFIER approver_user_id:AUTH0_APPROVER_USER_ID client_public_key_pem:AUTH0_CLIENT_PUBLIC_KEY; do
+            source="VAR_${required%%:*}"
             if [[ -z "${!source}" ]]; then
-              echo "::error::the GitHub environment auth0-$ENVIRONMENT has no variable AUTH0_${name^^} (auth0/README.md). Nothing was planned."
+              echo "::error::the GitHub environment auth0-$ENVIRONMENT has no variable ${required#*:} (auth0/README.md). Nothing was planned."
               exit 1
             fi
           done
@@ -154,12 +151,11 @@ jobs:
               exit 1
             fi
           done
-          export TF_VAR_environment="$ENVIRONMENT"
-          for name in tenant_domain api_identifier approver_user_id credential client_public_key_pem client_secret_version manage_guardian guardian_policy portal_origin; do
+          export TF_VAR_environment="$ENVIRONMENT" TF_VAR_credential=key
+          for name in tenant_domain api_identifier approver_user_id client_public_key_pem manage_guardian guardian_policy portal_origin; do
             source="VAR_$name"
             if [[ -n "${!source}" ]]; then export "TF_VAR_$name=${!source}"; fi
           done
-          if [[ -n "$L2_CLIENT_SECRET" ]]; then export TF_VAR_client_secret="$L2_CLIENT_SECRET"; fi
           terraform -chdir=auth0 plan -no-color -lock-timeout=120s -out="$RUNNER_TEMP/auth0.tfplan"
           {
             echo "### Plan for the Auth0 tenant ($ENVIRONMENT)"
@@ -176,9 +172,7 @@ jobs:
         env:
           AUTH0_CLIENT_ID: ${{ secrets.AUTH0_CLIENT_ID }}
           AUTH0_CLIENT_SECRET: ${{ secrets.AUTH0_CLIENT_SECRET }}
-          L2_CLIENT_SECRET: ${{ secrets.AUTH0_L2_CLIENT_SECRET }}
         run: |
-          if [[ -n "$L2_CLIENT_SECRET" ]]; then export TF_VAR_client_secret="$L2_CLIENT_SECRET"; fi
           terraform -chdir=auth0 apply -no-color -lock-timeout=120s "$RUNNER_TEMP/auth0.tfplan"
           {
             echo "### Applied. The ciba object for infra/main.$ENVIRONMENT.bicepparam"

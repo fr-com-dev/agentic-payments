@@ -432,7 +432,7 @@ Where this section and an earlier one disagree, this one holds. Tasks: Phase 14.
 **Constitution check.** Principle V names the requester credential as an Entra ID token: it becomes "the token a
 person or a system presents", with people on Auth0 and systems on Entra, still verified by L1 and the portal only
 and never forwarded. No principle is weakened: the portal still holds no key, the two services still refuse each
-other's tokens, and L2 still decides step-up. This is a MINOR amendment (1.5.0), made with SPEC v1.11.
+other's tokens, and L2 still decides step-up. This is a MINOR amendment (1.6.0), made with SPEC v1.12.
 
 **What does not change.** L2, the ledger, the policy engine, every portal route and screen, the card vault, the
 Azure unit's shape, and every test that uses the dev issuer's helpers rather than a claim name.

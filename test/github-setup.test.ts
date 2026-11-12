@@ -84,8 +84,6 @@ const VARIABLES: [string, string][] = [
   ["AUTH0_API_IDENTIFIER", "REPLACE_ME"],
   ["AUTH0_APPROVER_USER_ID", "REPLACE_ME"],
   ["AUTH0_CLIENT_PUBLIC_KEY", "REPLACE_ME"],
-  ["AUTH0_CREDENTIAL", "key"],
-  ["AUTH0_CLIENT_SECRET_VERSION", "1"],
   ["AUTH0_MANAGE_GUARDIAN", "true"],
   ["AUTH0_GUARDIAN_POLICY", "never"],
 ];
@@ -124,7 +122,7 @@ describe.skipIf(!BICEP_PATH)("T-E2E-AZ GitHub setup (infra/github-setup.sh again
     expect(r.out).toContain("dry run: would create the environment auth0-dev in acme/agentic-payments, and its missing AUTH0_* variables");
   });
 
-  it("T-E2E-AZ github-setup.sh creates the Auth0 environment's eight variables, the four without a default as placeholders to replace", () => {
+  it("T-E2E-AZ github-setup.sh creates the Auth0 environment's six variables, the four without a default as placeholders to replace", () => {
     const r = setup(PARAMS);
     expect(problems(r)).toEqual([]);
     expect(r.out).toContain("replace the placeholders before the first run (gh variable set <name> --repo acme/agentic-payments --env auth0-dev): AUTH0_TENANT_DOMAIN AUTH0_API_IDENTIFIER AUTH0_APPROVER_USER_ID AUTH0_CLIENT_PUBLIC_KEY.");
