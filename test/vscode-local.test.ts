@@ -173,7 +173,10 @@ describe("T-DEV-02 each process gets its own env file, its own local key and NET
   });
 
   it("T-DEV-02 warnings name a missing model key or a remote model provider, never a value", () => {
-    const hosted: EnvFile = { path: "env/l1-hosted.env", values: { MODEL_PROVIDER: "foundry", AUTH_JWKS_FILE: ".local/dev-issuer/jwks.json" } };
+    const hosted: EnvFile = {
+      path: "env/l1-hosted.env",
+      values: { MODEL_PROVIDER: "foundry", AUTH_JWKS_FILE: ".local/dev-issuer/jwks.json", AUTH_ISSUER: "urn:x402:dev-issuer", AGENT_CLIENT_IDS: "x402-agent-cli-dev" },
+    };
     expect(runWarnings("hosted", hosted, [])).toEqual([
       "locally the hosted agent needs MODEL_PROVIDER=anthropic (Foundry signs in as the Container App's managed identity)",
     ]);
@@ -182,6 +185,18 @@ describe("T-DEV-02 each process gets its own env file, its own local key and NET
       "env/portal.env has no AUTH_JWKS_FILE: locally the portal uses the dev issuer (.local/dev-issuer/jwks.json)",
       "the web app is not built: run `npm run build:web`, or the portal serves only its API",
     ]);
+    // 013 (research R19): an env file from before people signed in with Auth0 would stop the process at startup.
+    const before = { AUTH_TENANT_ID: "11111111-0000-4000-8000-000000000000", AUTH_AUDIENCE: "22222222-0000-4000-8000-000000000000", AUTH_JWKS_FILE: ".local/dev-issuer/jwks.json" };
+    expect(runWarnings("hosted", { path: "env/l1-hosted.env", values: { MODEL_PROVIDER: "anthropic", ANTHROPIC_API_KEY: "k", ...before } }, [])).toEqual([
+      "env/l1-hosted.env needs AUTH_ISSUER=urn:x402:dev-issuer with AUTH_JWKS_FILE (people sign in with Auth0 now; see the template): the hosted agent will refuse to start",
+      "env/l1-hosted.env has no AGENT_CLIENT_IDS: the hosted agent will refuse to start (the dev issuer's client is x402-agent-cli-dev)",
+    ]);
+    expect(runWarnings("portal", { path: "env/portal.env", values: { ...before, AUTH_ISSUER: "https://tenant.example/", PORTAL_WEB_ROOT: "." } }, [])[0]).toBe(
+      "env/portal.env needs AUTH_ISSUER=urn:x402:dev-issuer with AUTH_JWKS_FILE (people sign in with Auth0 now; see the template): the portal will refuse to start",
+    );
+    // The templates themselves start clean.
+    expect(runWarnings("portal", template("env/portal.env.example"), []).filter((w) => /AUTH_/.test(w))).toEqual([]);
+    expect(runWarnings("hosted", template("env/l1-hosted.env.example"), []).filter((w) => /AUTH_|AGENT_CLIENT_IDS/.test(w))).toEqual([]);
     const agent: EnvFile = { path: "env/l1-agent.env", values: { ANTHROPIC_API_KEY: "" } };
     expect(runWarnings("agent", agent, ["--scripted"])).toEqual([]);
     expect(runWarnings("agent", agent, ["Get the weather"])).toEqual([

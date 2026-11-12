@@ -112,6 +112,13 @@ export function Policies() {
                     Remove <span className="visually-hidden">{p.name}</span>
                   </button>
                 ) : null}{" "}
+                {p.expired && p.state !== "removed" && !locked ? (
+                  <>
+                    <Link to={`/policies/${p.policyId}`}>
+                      Extend <span className="visually-hidden">{p.name}</span>
+                    </Link>{" "}
+                  </>
+                ) : null}
                 <Link to={`/policies/${p.policyId}/history`}>
                   History <span className="visually-hidden">of {p.name}</span>
                 </Link>

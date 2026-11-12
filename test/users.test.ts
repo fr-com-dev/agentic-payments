@@ -1,7 +1,8 @@
 // Feature 013: user accounts in L2 (SPEC.md §8.2 L2-8; specs/013 data-model.md, contracts/control-api.md).
 // T-USR-01..12. Pure tests run over hand-built entries; route and decision tests run an in-process L2 with a real
 // keyring and ledger (test/helpers/users.ts). Every must-fail switch is a dep, never an environment variable.
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { devUserId } from "../scripts/dev-issuer-lib.js";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
@@ -29,7 +30,6 @@ import {
   type PolicyRecord,
 } from "../src/layer2-control/users.js";
 import type { PolicyValues, PolicyView, UserView } from "../src/shared/contracts.js";
-import { userIdFor } from "../src/shared/user-id.js";
 import {
   ALICE,
   ASSET,
@@ -827,14 +827,14 @@ describe("T-USR-11 decisions for a user (US3, FR-029..FR-033)", () => {
   it("T-USR-11 a user who has not finished onboarding, or is unknown, is DENIED user_not_onboarded with a fixed detail (FR-012)", async () => {
     const l2 = await start();
     await l2.withWallet(BOB); // profile and wallet, no policy
-    for (const userId of [BOB, userIdFor("dev", "nobody")]) {
+    for (const userId of [BOB, devUserId("nobody")]) {
       const res = await l2.authorize(l2.intentFor("/api/weather", "1000", { userId }));
       expect(res.body).toMatchObject({ status: "DENIED", violations: [{ rule: "user_not_onboarded", detail: "the user's setup is incomplete" }] });
     }
     expect(l2.entries("AUTHORIZED")).toEqual([]);
     expect(l2.entries("DENIED").map((e) => [e.data.userId, e.data.policyId])).toEqual([
       [BOB, undefined],
-      [userIdFor("dev", "nobody"), undefined],
+      [devUserId("nobody"), undefined],
     ]);
   });
 
@@ -1154,6 +1154,22 @@ describe("T-USR-11 changes apply to the next decision (US5, FR-032, FR-036)", ()
     expect(over.body).toMatchObject({ status: "DENIED", violations: [{ rule: "daily_budget_exceeded", detail: "60000 + 1 > 60000" }] });
   });
 
+  it("T-USR-11 must-fail: with skipUserCeiling, two policies together pay more than the user daily ceiling (NFR-007)", async () => {
+    const l2 = await start({ platform: testPlatform({ limits: { userDailyCeilingAtomic: "60000" } }), users: { skipUserCeiling: true } });
+    await l2.onboard(ALICE, { dailyBudgetAtomic: "50000", sessionBudgetAtomic: "50000", hardCapPerPaymentAtomic: "20000", autoApproveMaxAtomic: "19999" });
+    expect((await l2.createPolicy(ALICE, { sellers: [OTHER_HOST], dailyBudgetAtomic: "50000", sessionBudgetAtomic: "50000", hardCapPerPaymentAtomic: "20000", autoApproveMaxAtomic: "19999" })).status).toBe(201);
+    const pay = (host: string, sessionId: string, amount = "15000") => l2.authorize(l2.intentFor("/api/x", amount, { userId: ALICE, host, sessionId }));
+    for (const [host, session] of [[SELLER_HOST, "s1"], [SELLER_HOST, "s2"], [OTHER_HOST, "s3"], [OTHER_HOST, "s4"]] as const) {
+      expect((await pay(host, session)).body.status).toBe("AUTHORIZED");
+    }
+    // 60000 is committed, the whole ceiling. Without the check each policy still has room in its own budget, so
+    // the fifth and sixth payments go through: 90000 in a day against a ceiling of 60000.
+    expect((await pay(SELLER_HOST, "s5")).body.status).toBe("AUTHORIZED");
+    expect((await pay(OTHER_HOST, "s6")).body.status).toBe("AUTHORIZED");
+    const spent = l2.entries("AUTHORIZED").reduce((sum, e) => sum + BigInt(String((e.data as { amount: string }).amount)), 0n);
+    expect(spent).toBe(90000n);
+  });
+
   it("T-USR-11 an escalation approved after the policy tightened is DENIED at payment time (INV-12)", async () => {
     const l2 = await start();
     const { policyId } = await l2.onboard(ALICE);
@@ -1293,7 +1309,7 @@ describe("T-USR-01 the account, T-USR-11 a disabled user (US7, FR-037..FR-040)",
     await l2.portal("PUT", `/v1/users/${BOB}/registration`, { acknowledgedTestFunds: true });
     await l2.portal("POST", `/v1/users/${BOB}/disable`);
     expect((await l2.portal("PUT", `/v1/users/${BOB}/wallet`)).body).toEqual({ error: "account_disabled" });
-    expect((await l2.portal("POST", `/v1/users/${userIdFor("dev", "nobody")}/disable`)).body).toEqual({ error: "not_registered" });
+    expect((await l2.portal("POST", `/v1/users/${devUserId("nobody")}/disable`)).body).toEqual({ error: "not_registered" });
   });
 
   it("T-USR-01 enabling needs a fresh sign-in, pauses every active policy first, and is idempotent (FR-039)", async () => {
@@ -1456,10 +1472,54 @@ describe("013 US8 audit: the ledger alone tells who paid under which policy (SC-
   });
 });
 
+// ---------------------------------------------------------------------------
+// NFR-005, SC-011: a decision needs neither the portal nor the card vault
+// ---------------------------------------------------------------------------
+
+describe("013 NFR-005 a user's payment decision depends on neither the portal nor the card vault (SC-011)", () => {
+  it("013 NFR-005 with no portal and no card vault anywhere, L2 decides for a user and calls out to nothing", async () => {
+    const l2 = await start();
+    const realFetch = globalThis.fetch;
+    const outside: string[] = [];
+    // Every request made in this process while the user onboards and pays. The test's own calls go to this L2;
+    // anything else would be L2 reaching for another service.
+    globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (!url.startsWith(l2.url)) outside.push(url);
+      return realFetch(input, init);
+    }) as typeof fetch;
+    try {
+      await l2.onboard(ALICE);
+      const paid = await l2.authorize(l2.intentFor("/api/weather", "1000", { userId: ALICE }));
+      expect(paid.body.status).toBe("AUTHORIZED");
+      expect((await l2.authorize(l2.intentFor("/api/premium-report", "50000", { userId: ALICE }))).body.status).toBe("ESCALATE");
+      expect((await l2.authorize(l2.intentFor("/api/weather", "1000", { userId: BOB }))).body).toMatchObject({ status: "DENIED", violations: [{ rule: "user_not_onboarded" }] });
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+    expect(outside).toEqual([]);
+  });
+
+  it("013 NFR-005 no L2 module but the approval service's two can open a connection", () => {
+    // The approval service (L2-7) is L2's only outbound dependency, in two files. User accounts add none: the
+    // portal calls L2, never the reverse, and L2 knows nothing of the card vault.
+    const MAY_CALL_OUT = ["ciba-client.ts", "approval-evidence.ts"];
+    const NETWORK = /\bfetch\b|createRemoteJWKSet|node:https|node:net|node:dgram|node:tls|https?\.request|createPublicClient|createWalletClient|WebSocket/;
+    const stripComments = (code: string) => code.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "").replace(/\s\/\/ .*$/gm, "");
+    const dir = "src/layer2-control";
+    const callers = readdirSync(dir).filter((f) => f.endsWith(".ts") && NETWORK.test(stripComments(readFileSync(join(dir, f), "utf8"))));
+    expect(callers.sort()).toEqual([...MAY_CALL_OUT].sort());
+    for (const file of ["users.ts", "user-routes.ts", "platform.ts", "policy.ts"]) {
+      const code = stripComments(readFileSync(join(dir, file), "utf8"));
+      expect(/stripe|card.vault|PORTAL_URL|4025/i.test(code), file).toBe(false);
+    }
+  });
+});
+
 describe("T-USR-12 scale (NFR-010)", () => {
   it("T-USR-12 with 100 users and 10 policies each, a user decision adds under 50 ms to a platform one", async () => {
     const l2 = await start();
-    const users = Array.from({ length: 100 }, (_, i) => userIdFor("dev", `user-${i}`));
+    const users = Array.from({ length: 100 }, (_, i) => devUserId(`user-${i}`));
     const sellers = Array.from({ length: 10 }, (_, i) => ({ host: `s${i}.example`, name: `S${i}`, payees: [] }));
     const wide = testPlatform({ sellers: [...l2.platform.sellers, ...sellers] });
     // Written straight to the ledger: 100 users, each with a wallet and 10 policies at five versions.

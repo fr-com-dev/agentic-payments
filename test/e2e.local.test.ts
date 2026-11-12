@@ -2,6 +2,7 @@
 // seller, L2 control and L3 verifier, driven through L1's HTTP ports.
 // T-E2E-01 is owned by 008 (T024, sole writer). T-E2E-02 by 004, T-E2E-03 by 003/005,
 // T-E2E-04 by 002, T-E2E-05 by 003/007.
+import { DEV_PORTAL_CLIENT, devUserId } from "../scripts/dev-issuer-lib.js";
 import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
@@ -13,7 +14,6 @@ import {
   encodePaymentResponseHeader,
 } from "@x402/core/http";
 import { HARNESS_USER_MNEMONIC, startHarness, RegressionBaseline, type Harness } from "./helpers/harness.js";
-import { userIdFor } from "../src/shared/user-id.js";
 import { mockModel, startHostedApp, text, toolCall } from "./helpers/hosted.js";
 import { HttpAuthorizationGate, HttpSettlementVerifier } from "../src/layer1-intent/ports-http.js";
 import { PaidResourceOrchestrator, type PaidFetchResult } from "../src/layer1-intent/orchestrator.js";
@@ -789,8 +789,8 @@ describe("013 user accounts end to end", () => {
     await h?.close();
   });
 
-  const ALICE = userIdFor("dev", "alice");
-  const BOB = userIdFor("dev", "bob");
+  const ALICE = devUserId("alice");
+  const BOB = devUserId("bob");
   const sellerHost = () => new URL(h.urls.seller).host;
   const values = (over: Record<string, unknown> = {}) => ({
     sellers: [sellerHost()],
@@ -865,7 +865,7 @@ describe("013 user accounts end to end", () => {
     expect(await h.balanceOf(alice.address)).toBe(999_000n);
 
     // A person who never onboarded is denied, and nothing moves (FR-012).
-    const nobody = await l1For("sess_nobody", userIdFor("dev", "nobody")).fetchPaid(`${h.urls.seller}/api/weather?city=Lima`, "no setup");
+    const nobody = await l1For("sess_nobody", devUserId("nobody")).fetchPaid(`${h.urls.seller}/api/weather?city=Lima`, "no setup");
     expect(nobody.outcome).toBe("DENIED");
     expect(rulesOf(nobody)).toEqual(["user_not_onboarded"]);
 
@@ -878,7 +878,7 @@ describe("013 user accounts end to end", () => {
   });
 
   it("T-E2E-12 a user's account that can't cover the payment: signed, refused by the facilitator, nothing spent", async () => {
-    const carol = userIdFor("dev", "carol");
+    const carol = devUserId("carol");
     const { address } = await onboard(carol, 500n);
     const r = await l1For("sess_carol", carol).fetchPaid(`${h.urls.seller}/api/weather?city=Lima`, "underfunded");
     expect(r.outcome).toBe("PAYMENT_FAILED");
@@ -886,7 +886,7 @@ describe("013 user accounts end to end", () => {
   });
 
   it("T-E2E-13 disable and enable: an escalation approved after the disable is denied; after enable the policy is paused; after resume it pays once", async () => {
-    const dave = userIdFor("dev", "dave");
+    const dave = devUserId("dave");
     const { address, policyId } = await onboard(dave, 1_000_000n);
     const orchestrator = l1For("sess_dave", dave);
     const premium = `${h.urls.seller}/api/premium-report`;
@@ -928,4 +928,39 @@ describe("013 user accounts end to end", () => {
     expect((await l1For("sess_dave_2", dave).fetchPaid(premium, "new run")).outcome).toBe("ESCALATED");
     expect((await ledgerVerify(h)).ok).toBe(true);
   });
+
+  it("T-E2E-12 through the hosted agent service: a person's token pays from that person's account, a system identity's from the platform's (013 research R19)", async () => {
+    // The whole chain with the sign-in's token shape: the service derives the user from the issuer and `sub`.
+    const erin = devUserId("erin");
+    const { address, policyId } = await onboard(erin, 1_000_000n);
+    const weather = () => toolCall("fetch_resource", { url: `${h.urls.seller}/api/weather?city=Lima`, purpose: "weather" });
+    const a = await startHostedApp({ harness: h, model: mockModel([weather(), text("done"), weather(), text("done")]) });
+    try {
+      type Paid = { result: { outcome: string; authorizationId: string | null } };
+      const platform0 = await h.balanceOf(h.addresses.payer);
+
+      const mine = await a.run("erin", { goal: "Get the weather for Lima" });
+      expect(mine.status).toBe(200);
+      const paid = (mine.body.steps as Paid[])[0]!.result;
+      expect(paid.outcome).toBe("PAID");
+      expect(await h.balanceOf(address)).toBe(1_000_000n - 1_000n);
+      expect(await h.balanceOf(h.addresses.payer)).toBe(platform0);
+      const entry = h.ledgerEntries().find((e) => e.type === "AUTHORIZED" && e.authorizationId === paid.authorizationId)!;
+      expect([entry.data.userId, entry.data.policyId, String(entry.data.payer).toLowerCase()]).toEqual([erin, policyId, address.toLowerCase()]);
+
+      // A system identity names no user: the platform account pays, and the person's account is untouched (FR-002).
+      const system = await a.run("svc-app-id", { goal: "Get the weather for Lima" }, { service: true });
+      expect((system.body.steps as Paid[])[0]!.result.outcome).toBe("PAID");
+      expect(platform0 - (await h.balanceOf(h.addresses.payer))).toBe(1_000n);
+      expect(await h.balanceOf(address)).toBe(999_000n);
+
+      // The portal's token for the same person never starts a run (SEC-20), and neither moves anything.
+      const portalToken = await a.run("erin", { goal: "Get the weather for Lima" }, { azp: DEV_PORTAL_CLIENT, authTime: Math.floor(Date.now() / 1000) });
+      expect(portalToken.status).toBe(403);
+      expect(await h.balanceOf(address)).toBe(999_000n);
+      expect((await ledgerVerify(h)).ok).toBe(true);
+    } finally {
+      await a.close();
+    }
+  }, 120_000);
 });

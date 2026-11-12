@@ -11,22 +11,30 @@ import { z } from "zod";
 import { ConfigError } from "../src/shared/config.js";
 import { AGENT_TOOLS } from "../src/layer1-intent/agent.js";
 import { runGoal } from "../src/layer1-intent/hosted/agent.js";
-import { DEV_ISSUER, loadHostedConfig } from "../src/layer1-intent/hosted/config.js";
+import { DEV_DIRECTORY_ISSUER, DEV_ISSUER, loadHostedConfig } from "../src/layer1-intent/hosted/config.js";
 import { createModel } from "../src/layer1-intent/hosted/model.js";
 import { fakePorts, mockModel, startHostedApp, text, toolCall, toolNamesSeen, type HostedTestApp } from "./helpers/hosted.js";
 
 const SECRET_HEX = "ab".repeat(32);
 const API_KEY = "sk-ant-planted-value-0001";
-/** The API app's client ID: Entra v2.0 tokens carry it as `aud`. */
+/** The directory's API app client ID: Entra v2.0 tokens carry it as `aud` (`SERVICE_AUDIENCE`). */
 const API_CLIENT_ID = "22222222-2222-2222-2222-222222222222";
+const TENANT_ID = "11111111-1111-1111-1111-111111111111";
+/** The sign-in tenant (013 research R19): its issuer, the API's identifier and the agent CLI's client. */
+const SIGN_IN_ISSUER = "https://x402-test.eu.auth0.com/";
+const API_IDENTIFIER = "https://x402.example/api";
+const AGENT_CLIENT = "AgentCliClient0123456789abcdefgh";
 
 function env(over: Record<string, string | undefined> = {}): NodeJS.ProcessEnv {
   const base: Record<string, string | undefined> = {
     NETWORK: "local",
     MODEL_PROVIDER: "anthropic",
     ANTHROPIC_API_KEY: API_KEY,
-    AUTH_TENANT_ID: "dev",
-    AUTH_AUDIENCE: API_CLIENT_ID,
+    AUTH_ISSUER: SIGN_IN_ISSUER,
+    AUTH_AUDIENCE: API_IDENTIFIER,
+    AGENT_CLIENT_IDS: AGENT_CLIENT,
+    AUTH_TENANT_ID: TENANT_ID,
+    SERVICE_AUDIENCE: API_CLIENT_ID,
     SESSION_REF_SECRET: SECRET_HEX,
   };
   const out: NodeJS.ProcessEnv = {};
@@ -43,7 +51,6 @@ const foundry = (over: Record<string, string | undefined> = {}) =>
     ANTHROPIC_API_KEY: undefined,
     FOUNDRY_BASE_URL: "https://ais-x402.services.ai.azure.com/anthropic/v1",
     AZURE_CLIENT_ID: "00000000-0000-0000-0000-000000000001",
-    AUTH_TENANT_ID: "11111111-1111-1111-1111-111111111111",
     ...over,
   });
 
@@ -58,32 +65,87 @@ describe("T-AGT-02 hosted configuration", () => {
     expect(c.tokens).toEqual({ control: "dev-control-token", verifier: "dev-verifier-token" });
     expect(c.urls.control).toBe("http://127.0.0.1:4020");
     expect(c.sessionRefSecret.length).toBe(32);
-    expect(c.auth.issuer).toBe("https://login.microsoftonline.com/dev/v2.0");
+    expect(c.auth).toEqual({
+      person: { issuer: SIGN_IN_ISSUER, audience: API_IDENTIFIER, clientIds: [AGENT_CLIENT] },
+      service: { tenantId: TENANT_ID, audience: API_CLIENT_ID, issuer: `https://login.microsoftonline.com/${TENANT_ID}/v2.0` },
+    });
   });
 
-  it("a foundry config loads; the issuer is the tenant's v2.0 issuer", () => {
+  it("a foundry config loads; system identities come from the directory's v2.0 issuer", () => {
     const c = loadHostedConfig(foundry());
     expect(c.provider).toBe("foundry");
     expect(c.foundryBaseUrl).toBe("https://ais-x402.services.ai.azure.com/anthropic/v1");
     expect(c.azureClientId).toBe("00000000-0000-0000-0000-000000000001");
     expect(c.anthropicApiKey).toBeUndefined();
-    expect(c.auth.issuer).toBe("https://login.microsoftonline.com/11111111-1111-1111-1111-111111111111/v2.0");
+    expect(c.auth.service?.issuer).toBe(`https://login.microsoftonline.com/${TENANT_ID}/v2.0`);
+    expect(c.auth.person?.issuer).toBe(SIGN_IN_ISSUER);
   });
 
-  it("AUTH_JWKS_FILE selects the dev issuer on local, and is a startup error on any other network", () => {
-    expect(loadHostedConfig(env({ AUTH_JWKS_FILE: ".local/dev-issuer/jwks.json" })).auth).toMatchObject({
-      issuer: DEV_ISSUER,
+  const dev = (over: Record<string, string | undefined> = {}) =>
+    env({ AUTH_ISSUER: DEV_ISSUER, AUTH_AUDIENCE: "api://x402-l1-agent", AUTH_TENANT_ID: "dev", SERVICE_AUDIENCE: "api://x402-l1-agent-service", AUTH_JWKS_FILE: ".local/dev-issuer/jwks.json", ...over });
+
+  it("AUTH_JWKS_FILE selects the dev issuer on local, for both kinds of token, and is a startup error on any other network", () => {
+    expect(loadHostedConfig(dev()).auth).toEqual({
+      person: { issuer: DEV_ISSUER, audience: "api://x402-l1-agent", clientIds: [AGENT_CLIENT] },
+      service: { tenantId: "dev", audience: "api://x402-l1-agent-service", issuer: DEV_DIRECTORY_ISSUER },
       jwksFile: ".local/dev-issuer/jwks.json",
     });
     expect(() => loadHostedConfig(foundry({ AUTH_JWKS_FILE: "x.json" }))).toThrow(ConfigError);
+    // With the dev issuer's keys, only the dev issuer's name is accepted: a real tenant's tokens could never verify.
+    expect(() => loadHostedConfig(dev({ AUTH_ISSUER: SIGN_IN_ISSUER }))).toThrow(/AUTH_ISSUER must be urn:x402:dev-issuer with AUTH_JWKS_FILE/);
   });
 
-  it("with Entra, AUTH_AUDIENCE must be the API app's client ID: v2.0 tokens never carry the api:// URI as aud", () => {
-    expect(() => loadHostedConfig(foundry({ AUTH_AUDIENCE: "api://x402-l1-agent" }))).toThrow(/AUTH_AUDIENCE must be the API app's client ID/);
-    expect(() => loadHostedConfig(env({ AUTH_AUDIENCE: "api://x402-l1-agent" }))).toThrow(ConfigError);
-    expect(loadHostedConfig(foundry()).auth.audience).toBe(API_CLIENT_ID);
-    // The dev issuer signs its own tokens, so the documented api:// audience stays valid with AUTH_JWKS_FILE.
-    expect(loadHostedConfig(env({ AUTH_AUDIENCE: "api://x402-l1-agent", AUTH_JWKS_FILE: "x.json" })).auth.audience).toBe("api://x402-l1-agent");
+  it("AUTH_ISSUER must be the sign-in tenant's issuer exactly as its tokens carry it", () => {
+    for (const bad of [
+      "https://x402-test.eu.auth0.com",
+      "http://x402-test.eu.auth0.com/",
+      "https://x402-test.eu.auth0.com/v2/",
+      "x402-test.eu.auth0.com",
+      DEV_ISSUER,
+      `https://login.microsoftonline.com/${TENANT_ID}/v2.0`,
+    ]) {
+      expect(() => loadHostedConfig(env({ AUTH_ISSUER: bad })), bad).toThrow(/AUTH_ISSUER must be the sign-in tenant's issuer/);
+    }
+  });
+
+  it("AGENT_CLIENT_IDS is a comma-separated list of client IDs, never empty", () => {
+    expect(loadHostedConfig(env({ AGENT_CLIENT_IDS: " a1 ,b2,  c3 " })).auth.person?.clientIds).toEqual(["a1", "b2", "c3"]);
+    for (const bad of ["a1,,b2", "a1,", ",", "a 1", "a1;b2", "a1,b/2"]) {
+      expect(() => loadHostedConfig(env({ AGENT_CLIENT_IDS: bad })), bad).toThrow(/AGENT_CLIENT_IDS must be a comma-separated list/);
+    }
+    expect(() => loadHostedConfig(env({ AGENT_CLIENT_IDS: "a1,portal", PORTAL_CLIENT_ID: "portal" }))).toThrow(/must not contain PORTAL_CLIENT_ID/);
+    expect(loadHostedConfig(env({ AGENT_CLIENT_IDS: "a1", PORTAL_CLIENT_ID: "portal" })).auth.person?.clientIds).toEqual(["a1"]);
+  });
+
+  it("people need AUTH_ISSUER, AUTH_AUDIENCE and AGENT_CLIENT_IDS together; with none, no person is accepted", () => {
+    // How an environment runs until its sign-in tenant is set up: system identities only.
+    const none = { AUTH_ISSUER: undefined, AUTH_AUDIENCE: undefined, AGENT_CLIENT_IDS: undefined };
+    const c = loadHostedConfig(env(none));
+    expect(c.auth.person).toBeUndefined();
+    expect(c.auth.service?.tenantId).toBe(TENANT_ID);
+    // Empty values, as a deployment passes them before the tenant's are known, count as absent.
+    expect(loadHostedConfig(env({ AUTH_ISSUER: "", AUTH_AUDIENCE: "", AGENT_CLIENT_IDS: "", PORTAL_CLIENT_ID: "" })).auth.person).toBeUndefined();
+    for (const one of ["AUTH_ISSUER", "AUTH_AUDIENCE", "AGENT_CLIENT_IDS"]) {
+      expect(() => loadHostedConfig(env({ [one]: undefined })), one).toThrow(/AUTH_ISSUER, AUTH_AUDIENCE and AGENT_CLIENT_IDS go together/);
+    }
+    expect(() => loadHostedConfig(env({ ...none, AUTH_TENANT_ID: undefined, SERVICE_AUDIENCE: undefined }))).toThrow(/nobody could call the service/);
+  });
+
+  it("system identities need AUTH_TENANT_ID and SERVICE_AUDIENCE together; with neither, none is accepted", () => {
+    expect(loadHostedConfig(env({ AUTH_TENANT_ID: undefined, SERVICE_AUDIENCE: undefined })).auth.service).toBeUndefined();
+    expect(() => loadHostedConfig(env({ SERVICE_AUDIENCE: undefined }))).toThrow(/AUTH_TENANT_ID and SERVICE_AUDIENCE go together/);
+    expect(() => loadHostedConfig(env({ AUTH_TENANT_ID: undefined }))).toThrow(/AUTH_TENANT_ID and SERVICE_AUDIENCE go together/);
+    expect(() => loadHostedConfig(env({ AUTH_TENANT_ID: "contoso" }))).toThrow(/AUTH_TENANT_ID must be the directory's tenant ID/);
+  });
+
+  it("with the directory, SERVICE_AUDIENCE must be the API app's client ID: v2.0 tokens never carry the api:// URI as aud", () => {
+    expect(() => loadHostedConfig(foundry({ SERVICE_AUDIENCE: "api://x402-l1-agent" }))).toThrow(/SERVICE_AUDIENCE must be the API app's client ID/);
+    expect(() => loadHostedConfig(env({ SERVICE_AUDIENCE: "api://x402-l1-agent" }))).toThrow(ConfigError);
+    expect(loadHostedConfig(foundry()).auth.service?.audience).toBe(API_CLIENT_ID);
+    // The dev issuer signs its own tokens, so a plain name stays valid with AUTH_JWKS_FILE.
+    expect(loadHostedConfig(dev()).auth.service?.audience).toBe("api://x402-l1-agent-service");
+    // The sign-in tenant's API identifier is any text the tenant was given: not checked for shape.
+    expect(loadHostedConfig(env({ AUTH_AUDIENCE: "api://x402" })).auth.person?.audience).toBe("api://x402");
   });
 
   it.each([
@@ -91,8 +153,10 @@ describe("T-AGT-02 hosted configuration", () => {
     ["MODEL_PROVIDER unknown", { MODEL_PROVIDER: "openai" }],
     ["ANTHROPIC_MODEL off the allow-list", { ANTHROPIC_MODEL: "my-deployment" }],
     ["anthropic without ANTHROPIC_API_KEY", { ANTHROPIC_API_KEY: undefined }],
-    ["AUTH_TENANT_ID missing", { AUTH_TENANT_ID: undefined }],
-    ["AUTH_AUDIENCE missing", { AUTH_AUDIENCE: undefined }],
+    ["AUTH_ISSUER alone missing", { AUTH_ISSUER: undefined }],
+    ["AUTH_AUDIENCE alone missing", { AUTH_AUDIENCE: undefined }],
+    ["AGENT_CLIENT_IDS alone missing", { AGENT_CLIENT_IDS: undefined }],
+    ["neither people nor system identities", { AUTH_ISSUER: undefined, AUTH_AUDIENCE: undefined, AGENT_CLIENT_IDS: undefined, AUTH_TENANT_ID: undefined, SERVICE_AUDIENCE: undefined }],
     ["SESSION_REF_SECRET missing", { SESSION_REF_SECRET: undefined }],
     ["SESSION_REF_SECRET shorter than 32 bytes", { SESSION_REF_SECRET: "ab".repeat(31) }],
     ["AGENT_PORT invalid", { AGENT_PORT: "70000" }],
@@ -233,7 +297,16 @@ describe("T-AGT-02 tool set", () => {
     return runGoal({ goal: "hello", sessionId: "sess_0123456789abcdef", signal: new AbortController().signal, model, gate, settlement, sellerUrl: "http://127.0.0.1:4021" });
   }
 
-  const base = { MODEL_PROVIDER: "anthropic", ANTHROPIC_API_KEY: "sk-test", AUTH_TENANT_ID: "dev", AUTH_AUDIENCE: API_CLIENT_ID, SESSION_REF_SECRET: "ab".repeat(32) };
+  const base = {
+    MODEL_PROVIDER: "anthropic",
+    ANTHROPIC_API_KEY: "sk-test",
+    AUTH_ISSUER: SIGN_IN_ISSUER,
+    AUTH_AUDIENCE: API_IDENTIFIER,
+    AGENT_CLIENT_IDS: AGENT_CLIENT,
+    AUTH_TENANT_ID: TENANT_ID,
+    SERVICE_AUDIENCE: API_CLIENT_ID,
+    SESSION_REF_SECRET: "ab".repeat(32),
+  };
 
   it("HTTP level, anthropic: the request carries exactly the two tools, max_tokens 2048 and x-api-key", async () => {
     const f = fakeAnthropicFetch();
@@ -262,7 +335,6 @@ describe("T-AGT-02 tool set", () => {
       ANTHROPIC_API_KEY: "",
       FOUNDRY_BASE_URL: "https://ais-x402.services.ai.azure.com/anthropic/v1",
       AZURE_CLIENT_ID: "client-id",
-      AUTH_TENANT_ID: "tenant",
     });
     const scopes: string[] = [];
     const credential = {

@@ -2,6 +2,7 @@
 // docs/l2-control.openapi.yaml is a copy of L2-5 for tools. These tests fail when the copy and the service
 // disagree on routes (T-API-01), bearer tokens (T-API-02) or response shapes and statuses (T-API-03).
 // T-API-04 covers the token-free Swagger UI routes: off by default, same-origin only, fixed files (SEC-13).
+import { devUserId } from "../scripts/dev-issuer-lib.js";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -18,7 +19,6 @@ import { AuditLedger } from "../src/layer2-control/ledger.js";
 import { buildMandate } from "../src/layer2-control/mandate.js";
 import { createControlService } from "../src/layer2-control/service.js";
 import { WalletKeyring, type PaymentSignerLike } from "../src/layer2-control/signer.js";
-import { userIdFor } from "../src/shared/user-id.js";
 import { OTHER_HOST, policyValues, SELLER_HOST, TEST_MNEMONIC, testPlatform, UNLISTED_HOST } from "./helpers/users.js";
 import {
   conformance,
@@ -237,7 +237,7 @@ describe("T-API-03 live responses match the documented status and schema", () =>
 
     // v1.10 user accounts: the agent's calls for a user, then every portal operation and each of its statuses
     const P = { token: TOKENS.portal };
-    const [U, B, CAROL, DAVE] = ["alice", "bob", "carol", "dave"].map((n) => userIdFor("dev", n)) as [string, string, string, string];
+    const [U, B, CAROL, DAVE] = ["alice", "bob", "carol", "dave"].map((n) => devUserId(n)) as [string, string, string, string];
     const fresh = () => ({ identityConfirmedAtMs: now() });
     const values = (over: Record<string, unknown> = {}) => policyValues(over as never, now());
     const user = (userId: string) => ({ ...P, params: { userId } });

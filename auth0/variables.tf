@@ -88,3 +88,13 @@ variable "guardian_policy" {
     error_message = "guardian_policy must be never, all-applications or confidence-score."
   }
 }
+
+variable "portal_origin" {
+  description = "The deployed portal's origin, https://<host> (infra/main.bicep's portalFqdn output), which becomes an allowed callback, web origin and logout URL of the portal's client beside http://localhost:4025. Empty until the portal is deployed."
+  type        = string
+  default     = ""
+  validation {
+    condition     = var.portal_origin == "" || can(regex("^https://[a-z0-9][a-z0-9.-]*$", var.portal_origin))
+    error_message = "portal_origin must be empty or https://<host>, with no path, port, wildcard or trailing slash."
+  }
+}

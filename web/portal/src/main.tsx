@@ -1,5 +1,5 @@
 // Entry point of the portal web app (specs/013 contracts/portal-ui.md). It asks the portal for its public settings,
-// picks the sign-in for them (Entra, or the local dev issuer) and renders the app. It holds no credential: the only
+// picks the sign-in for them (Auth0, or the local dev issuer) and renders the app. It holds no credential: the only
 // secret in the browser is the person's own sign-in, kept by the sign-in library.
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
@@ -26,8 +26,8 @@ async function start(): Promise<void> {
   if (config.auth.mode === "dev") auth = createDevAuth();
   else {
     // Loaded only when it is used, so local development never downloads the sign-in library.
-    const { createEntraAuth } = await import("./auth/entra.js");
-    auth = await createEntraAuth({ tenantId: config.auth.tenantId, clientId: config.auth.clientId, scope: config.auth.scope });
+    const { createAuth0Auth } = await import("./auth/auth0.js");
+    auth = await createAuth0Auth({ domain: config.auth.domain, clientId: config.auth.clientId, audience: config.auth.audience });
   }
   const api = createApi(() => auth.token());
   root.render(

@@ -31,7 +31,7 @@ L2's state is derived from the ledger only (INV-7, INV-9); it keeps no other fil
 
 | Identifier | Format | Made by | Notes |
 |---|---|---|---|
-| `userId` | `usr_` + 32 lowercase hex | `userIdFor(tid, oid)` in `src/shared/user-id.ts` | First 16 bytes of SHA-256 over `x402-user-v1\|<tid>\|<oid>`. Pure, so the hosted agent and the portal compute the same value without sharing a secret. An empty `tid` or `oid`, or one containing `\|`, is refused. Reveals neither name nor email (FR-046). |
+| `userId` | `usr_` + 32 lowercase hex | `userIdFor(issuer, subject)` in `src/shared/user-id.ts` | First 16 bytes of SHA-256 over `x402-user-v2`, the issuer's host and the token's `sub`, separated by newlines. Pure, so the hosted agent and the portal compute the same value without sharing a secret. An empty value, or one containing a newline, is refused. Reveals neither name nor email (FR-046). Since 2026-11-10 the issuer is the Auth0 tenant and the subject its `sub` (`auth0\|…`), which is why the format moved from `x402-user-v1\|<tid>\|<oid>`: `sub` contains the old separator. Every identifier made under v1 belongs to an earlier user that nobody signs in as. |
 | `policyId` | `pol_<uuid>` | L2, on create | Unique across all users. |
 | `policyVersion` | integer, 1, 2, 3… | L2 | One per recorded value change. State changes (pause, resume, remove) keep the version. |
 | `mandateId` (existing field) | `<policyId>@<version>` for a user payment; the platform mandate's ID otherwise | L2 | Written on `AUTHORIZED` as today. |

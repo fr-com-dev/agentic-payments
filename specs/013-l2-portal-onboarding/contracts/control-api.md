@@ -29,7 +29,7 @@ export interface AuthorizationGatePort {
 `AuthorizationDecision` is unchanged. For a user payment, `remainingSessionBudgetAtomic` is the smallest of what
 remains of the policy's session budget, the policy's daily budget and the user daily ceiling, after this payment.
 
-New shared, pure helpers (no layer code): `src/shared/user-id.ts` (`userIdFor(tid, oid)`, `USER_ID_RE`) and
+New shared, pure helpers (no layer code): `src/shared/user-id.ts` (`userIdFor(issuer, subject)`, `USER_ID_RE`) and
 `parseUsdc(text, decimals)` beside `formatAtomic` in `src/shared/config.ts`. The portal's request and response
 shapes for L2 (`UserView`, `PolicyView`, `PolicyValues`, `PolicyIssue`, `PlatformView`) are added to
 `src/shared/contracts.ts`, because they cross the portal/L2 boundary.

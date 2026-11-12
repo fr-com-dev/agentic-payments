@@ -44,8 +44,8 @@ contract are dev's (`eastus2`).
 | Key Vaults (RBAC mode) | `kv-l1-eastus2-dev`, `kv-l2-…`, `kv-l3-…`, `kv-op-…`, `kv-portal-…` (013), `kv-seller-…` | firewall default Deny, with a VNet rule for the owning unit's subnet (`snet-x402-eastus2-dev`, or `snet-seller-eastus2-dev` for `-seller`). Seeding opens them to an operator's IP through `seedIp` (a run of `deploy-infra.yml`); the next platform run closes them. Purge protection on; `recoverVaults` recovers them from soft-delete |
 | User-assigned identities | `id-l1-eastus2-dev`, `id-l2-eastus2-dev`, `id-l3-eastus2-dev`, `id-op-eastus2-dev`, `id-portal-eastus2-dev` (013), `id-seller-eastus2-dev` | one per runtime unit |
 | Foundry resource + deployment | `ais-x402-eastus2-dev`, deployment `claude-sonnet-5-5` (version 2, Global Standard, capacity 10) | `MODEL_PROVIDER=foundry` only; API keys disabled. The deployment declares `modelProviderData` (organization, country, industry, from `main.<env>.bicepparam`), which accepts Anthropic's Azure Marketplace terms |
-| Entra app registration (API) | `app-l1-eastus2-dev` | identifier URI `api://app-l1-eastus2-dev`, v2.0 tokens; app role `Agent.Run` (User, Application), assignment required; delegated scope `user_impersonation` (admin consent), the Azure CLI pre-authorized. 013: a second delegated scope `Portal.Access` (admin consent), the portal web app pre-authorized for it only; optional access-token claims `auth_time`, and `idtyp` with `include_user_token` |
-| Entra app registration (portal web app, 013) | `app-portal-eastus2-dev` | a public single-page client (authorization code with PKCE): no secret, no certificate, no role, no API permission. `spa.redirectUris`: `http://localhost:4025/redirect.html`, plus `<portalOrigin>/redirect.html` once `portalOrigin` is set in `pre-deploy.<env>.bicepparam` |
+| Entra app registration (API) | `app-l1-eastus2-dev` | identifier URI `api://app-l1-eastus2-dev`, v2.0 tokens; app role `Agent.Run` (User, Application), assignment required; delegated scope `user_impersonation` (admin consent), the Azure CLI pre-authorized; optional access-token claim `idtyp` with `include_user_token`. SPEC v1.11: since people sign in with Auth0, the `Portal.Access` scope and the `auth_time` claim that 013 first added are gone; where the scope exists it stays disabled for one deployment (`retirePortalScope: true`), then is left out. The app now serves system identities only |
+| Auth0 clients (SPEC v1.11, `auth0/`, Terraform; not Azure resources) | `app-portal-<env>`, `app-agent-cli-<env>` | the portal's single-page client (authorization code with PKCE, rotating refresh tokens, no secret) and the agent CLI's native client (device flow only, no secret), with the API `api-x402-<env>`, the role `x402-user` and the post-login Action. They replace the Entra registration `app-portal-eastus2-dev` of v1.10, which no template makes any more: delete it by hand |
 | Entra app registration (deploy) | `app-deploy-eastus2-dev` | no secret, no API permission; two federated credentials for GitHub's immutable subject `repo:<owner>@<githubOwnerId>/<name>@<githubRepositoryId>:environment:<githubEnvironment>`, one for the deploy environment and one for `auth0-<env>` (GitHub OIDC; the IDs are in `pre-deploy.<env>.bicepparam`) |
 | Entra security group | `grp-op-eastus2-dev` | the operators (`operators` in `pre-deploy.<env>.bicepparam`, added, never removed by a redeployment) |
 
@@ -66,7 +66,7 @@ contract are dev's (`eastus2`).
 
 | Template | Scope | Deploys | Deployed by |
 |---|---|---|---|
-| `infra/pre-deploy.bicep` | subscription | the resource group; the API and deploy app registrations and their service principals; the portal web app's registration (013); the deploy app's two federated credentials; `Agent.Run` for the deploy app and `agentUsers`; the operators' group; the deploy app's roles (`modules/deploy-access.bicep`); the storage for the Terraform state of `auth0/` (`modules/state-storage.bicep`, SPEC v1.9) | an administrator, by hand (quickstart §4 step 0) |
+| `infra/pre-deploy.bicep` | subscription | the resource group; the API and deploy app registrations and their service principals (no portal web app registration since SPEC v1.11); the deploy app's two federated credentials; `Agent.Run` for the deploy app and `agentUsers`; the operators' group; the deploy app's roles (`modules/deploy-access.bicep`); the storage for the Terraform state of `auth0/` (`modules/state-storage.bicep`, SPEC v1.9) | an administrator, by hand (quickstart §4 step 0) |
 | `infra/main.bicep` | resource group | one unit per deployment (`unit`): the platform (network, logs, identities, registry, vaults, storage, Foundry and its model, both environments), or one unit's apps (`modules/l1-apps.bicep`, `l2-apps.bicep`, `l3-apps.bicep`, `operator-apps.bicep`, `portal-apps.bicep`, `sellers.bicep`) | the unit's pipeline, `.github/workflows/deploy-<unit>.yml` (`deploy-infra.yml` for the platform), through the shared `deploy.yml` ([deploy-pipeline](deploy-pipeline.md)) |
 
 - Every value is in `infra/<template>.<env>.bicepparam`, the target (tenant, subscription, location) and
@@ -105,12 +105,12 @@ computed in Bicep.
 
 | Unit / container | Env |
 |---|---|
-| `ca-l1-eastus2-dev/agent` | `NETWORK=base-sepolia`, `SELLER_URL=https://ca-seller-eastus2-dev.<cp-domain>`, `CONTROL_URL=http://ca-l2-eastus2-dev.internal.<main-domain>`, `SETTLEMENT_URL=http://ca-l3-eastus2-dev.internal.<main-domain>`, `MODEL_PROVIDER=foundry`, `ANTHROPIC_MODEL=claude-sonnet-5-5`, `FOUNDRY_BASE_URL=https://ais-x402-eastus2-dev.services.ai.azure.com/anthropic/v1`, `AZURE_CLIENT_ID=<id-l1-eastus2-dev clientId>`, `AUTH_TENANT_ID`, `AUTH_AUDIENCE=<the API app's client ID>`, `AGENT_BIND_HOST=0.0.0.0`, `AGENT_PORT=4024`, `MASTRA_TELEMETRY_DISABLED=1`; 013: `PORTAL_CLIENT_ID` from `userAccounts.portalClientId` (the `azp` the agent refuses) |
+| `ca-l1-eastus2-dev/agent` | `NETWORK=base-sepolia`, `SELLER_URL=https://ca-seller-eastus2-dev.<cp-domain>`, `CONTROL_URL=http://ca-l2-eastus2-dev.internal.<main-domain>`, `SETTLEMENT_URL=http://ca-l3-eastus2-dev.internal.<main-domain>`, `MODEL_PROVIDER=foundry`, `ANTHROPIC_MODEL=claude-sonnet-5-5`, `FOUNDRY_BASE_URL=https://ais-x402-eastus2-dev.services.ai.azure.com/anthropic/v1`, `AZURE_CLIENT_ID=<id-l1-eastus2-dev clientId>`, `AUTH_TENANT_ID`, `SERVICE_AUDIENCE=<the API app's client ID>` (system identities; `AUTH_AUDIENCE` before v1.11), `AGENT_BIND_HOST=0.0.0.0`, `AGENT_PORT=4024`, `MASTRA_TELEMETRY_DISABLED=1`; SPEC v1.11, people: `AUTH_ISSUER`, `AUTH_AUDIENCE` and `AGENT_CLIENT_IDS` from the `identity` parameter, and `PORTAL_CLIENT_ID` from `userAccounts.portalClientId` (the client the agent never accepts) |
 | `ca-l2-eastus2-dev/l2` | `NETWORK=base-sepolia`, `ALLOWED_PAYEES=<seller payTo>`, `ALLOWED_HOSTS=ca-seller-eastus2-dev.<cp-domain>` (no port: the policy compares `URL.host`, and an https URL on 443 has none; never the alias FQDN); 012: `CIBA_APPROVAL` (`1` or `0`), `CIBA_ISSUER`, `CIBA_CLIENT_ID`, `CIBA_AUDIENCE`, `CIBA_APPROVER`, `CIBA_CLIENT_KEY_ID`, all from the `ciba` parameter (empty while it is off); 013: `USER_ACCOUNTS` (`1` or `0`, from `userAccounts.enabled`) and `PLATFORM_SELLERS`, a JSON array of one seller: the `ALLOWED_HOSTS` host, `userAccounts.sellerName` and the seller's payTo |
 | `ca-l3-eastus2-dev/l3` | `NETWORK=base-sepolia`, `CONTROL_URL=http://ca-l2-eastus2-dev.internal.<main-domain>`, optional `BASE_SEPOLIA_RPC_URL` |
 | `caj-l1-eastus2-dev/regression` | `NETWORK=base-sepolia`, `SELLER_URL=https://ca-seller-eastus2-dev.<cp-domain>`, `SELLER_ALIAS_URL=https://ca-seller-alias-eastus2-dev.<cp-domain>`, `CONTROL_URL` and `SETTLEMENT_URL` as for the agent |
 | `caj-l2-eastus2-dev/operator` | `CONTROL_URL=http://ca-l2-eastus2-dev.internal.<main-domain>` |
-| `ca-portal-eastus2-dev/portal` (013) | `NETWORK=base-sepolia`, `PORTAL_BIND_HOST=0.0.0.0`, `CONTROL_URL=http://ca-l2-eastus2-dev.internal.<main-domain>`, `AUTH_TENANT_ID`, `AUTH_AUDIENCE=<the API app's client ID>`, `PORTAL_CLIENT_ID=<the web app's client ID>`, `PROFILE_DIR=/app/.local/portal/profiles` (on the `profiles` share, mounted at `/app/.local/portal`), `CARD_VAULT` (`stripe`, or empty: cards off), `CARD_VAULT_PUBLISHABLE_KEY`; the last three from `userAccounts`. Never `API_DOCS` |
+| `ca-portal-eastus2-dev/portal` (013) | `NETWORK=base-sepolia`, `PORTAL_BIND_HOST=0.0.0.0`, `CONTROL_URL=http://ca-l2-eastus2-dev.internal.<main-domain>`, `AUTH_ISSUER` and `AUTH_AUDIENCE` from the `identity` parameter (SPEC v1.11: the Auth0 tenant's issuer and the API's identifier; no `AUTH_TENANT_ID`), `PORTAL_CLIENT_ID=<the Auth0 single-page client's ID>`, `PROFILE_DIR=/app/.local/portal/profiles` (on the `profiles` share, mounted at `/app/.local/portal`), `CARD_VAULT` (`stripe`, or empty: cards off), `CARD_VAULT_PUBLISHABLE_KEY`; the last three from `userAccounts`. Never `API_DOCS` |
 | `ca-seller-eastus2-dev/seller`, `ca-seller-alias-eastus2-dev/seller` | `NETWORK=base-sepolia`, `SELLER_PAY_TO=<seller payTo>`, `FACILITATOR=cdp`, `SELLER_PORT=4021` |
 | `*/proxy` | none |
 
@@ -205,10 +205,13 @@ place, because L2 refuses to start when recorded wallet addresses no longer matc
     Vault). Each resource's name comes from `names`, each of `names` is deployed, every module gets
     `names` whole, and no template builds a string from the location or writes a name out.
 16. The Entra objects and the deploy app's roles (`pre-deploy.bicep`). The API app takes v2.0 tokens for
-    `api://app-l1-<location>-<env>`, has only the `Agent.Run` role and exactly two admin-consent scopes,
-    `user_impersonation` and (013) `Portal.Access`, each with one pre-authorized client: the Azure CLI for
-    `user_impersonation`, the portal web app for `Portal.Access`. Its access tokens carry the optional claims
-    `auth_time`, and `idtyp` with `include_user_token`, and no other. Its service principal requires
+    `api://app-l1-<location>-<env>`, has only the `Agent.Run` role and one admin-consent scope,
+    `user_impersonation`, with the Azure CLI as its only pre-authorized client. SPEC v1.11: the `Portal.Access`
+    scope of v1.10 may stay only while `retirePortalScope` (a required bool) is true, and then disabled and
+    pre-authorized for nobody: Entra removes only a disabled scope, so an environment that has it deploys once
+    with true and then with false. The app registrations are exactly the API app and the deploy app, and neither
+    has redirect URIs: nobody signs in through an Entra app of ours. Its access tokens carry the optional claim
+    `idtyp` with `include_user_token`, and no other. Its service principal requires
     assignment. No app has a password or key credential, and all three are single-tenant. The portal web
     app (013) has no role, no API, no permissions of its own, and only `http://localhost:4025/redirect.html`
     and `portalOrigin`'s `/redirect.html` as single-page-app redirect URIs; `mainParameters` gives its client
@@ -244,9 +247,11 @@ place, because L2 refuses to start when recorded wallet addresses no longer matc
     `userAccounts.sellerName` and `sellerPayTo`. The portal reads only `kv-portal-eastus2-dev`, always both
     `portal-token` and `card-vault-key`, and holds no other secret. It gets no `PAYER_PRIVATE_KEY`, no
     `USER_WALLET_MNEMONIC` and no token but `PORTAL_TOKEN`, which only it and L2 hold; only it holds the card vault
-    key. Its `AUTH_AUDIENCE`, `AUTH_TENANT_ID`, `PORTAL_CLIENT_ID`, `CARD_VAULT` and `CARD_VAULT_PUBLISHABLE_KEY`
-    come from parameters, its `CONTROL_URL` is L2's internal address, and it calls L2 only. The agent's
-    `PORTAL_CLIENT_ID` comes from `userAccounts` too. No container gets `API_DOCS`. `main.bicep` passes
+    key. Its `AUTH_ISSUER`, `AUTH_AUDIENCE` (both from `identity`, SPEC v1.11), `PORTAL_CLIENT_ID`, `CARD_VAULT` and
+    `CARD_VAULT_PUBLISHABLE_KEY` come from parameters, its `CONTROL_URL` is L2's internal address, and it calls L2 only. The agent's
+    `PORTAL_CLIENT_ID` comes from `userAccounts` too, and its `AUTH_ISSUER`, `AUTH_AUDIENCE` and `AGENT_CLIENT_IDS` from
+    `identity`; `main.bicep` refuses (`fail()`) `userAccounts.enabled` without an `identity.issuer` of the form
+    `https://<domain>/`, an audience, or with the portal's client among `agentClientIds`. No container gets `API_DOCS`. `main.bicep` passes
     `userAccounts` whole to `l1-apps`, `l2-apps` and `portal-apps`, and refuses (`fail()`) one whose `cardVault` is
     not `off` or `stripe`, that is enabled without a 36-character `portalClientId`, or whose `cardVault` is `stripe`
     without a `pk_test_` publishable key.
@@ -272,10 +277,9 @@ place, because L2 refuses to start when recorded wallet addresses no longer matc
   calling L2 under a name the template writes out, a module that doesn't get `names` whole, and a
   location whose vault names exceed 24 characters (rule 15);
 - a federated credential trusting a branch, an unconditioned Role Based Access Control Administrator or
-  one that may grant Owner, and an API app on v1.0 tokens; 013: the web app pre-authorized for
-  `user_impersonation` too, a third pre-authorized client, `Portal.Access` open to user consent, an API app
-  without `idtyp` or without `include_user_token`, and a web app with a secret, a role, permissions of its
-  own, a redirect URI that isn't its own page, or `web` redirect URIs (rule 16);
+  one that may grant Owner, and an API app on v1.0 tokens; a second pre-authorized client, an API app
+  without `idtyp` or without `include_user_token`; SPEC v1.11: a third app registration, redirect URIs on either
+  app, the retired `Portal.Access` scope left enabled or kept without `retirePortalScope` (rule 16);
 - `main.bicep` without its target check, a configuration value or the environment's name read from the
   environment, and the two parameter files naming different subscriptions (rule 17);
 - L1's apps deployed by the platform's runs too, Foundry deployed by every run, and an eighth value of

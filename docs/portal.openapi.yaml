@@ -10,10 +10,11 @@ info:
     The portal is where a person sets up what their agent may spend. It serves a web app and this API from one
     origin, and it holds no payment key: deciding and signing stay in L2.
 
-    - **One person per request.** Every `/api` operation except `/api/config` needs the person's own Entra ID access
-      token for the portal (scope `Portal.Access`, issued to the portal's web app, with the app role `Agent.Run`).
-      The user is derived from the token and nothing else: no operation takes a user identifier.
-    - **A token for the agent service is refused** (403), and so is a system identity.
+    - **One person per request.** Every `/api` operation except `/api/config` needs the person's own access token
+      from the sign-in tenant (Auth0): for the API, issued to the portal's web app, with the permission
+      `agent:run`. The user is derived from the token and nothing else: no operation takes a user identifier.
+    - **A token for the agent service is refused** (403: it comes from another client), and so is a machine token.
+      A token of any other issuer, the organization's directory included, is not valid here (401).
     - **Amounts** go in as USDC text with at most 6 decimals (never rounded) and come back as decimal strings of
       atomic units (`"20000"` is 0.02 USDC).
     - **Loosening** a policy, resuming one or enabling the account needs a sign-in at most 15 minutes old; otherwise
@@ -832,8 +833,9 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: >-
-        The person's Entra ID v2.0 access token for the portal: `aud` the API app, `scp` containing `Portal.Access`,
-        `azp` the portal's web app, `idtyp: user`, `roles` containing `Agent.Run`, and an `auth_time`.
+        The person's access token from the sign-in tenant (Auth0): `iss` the tenant, `aud` containing the API's
+        identifier, the portal's web app as the client (`azp`, or `client_id`), `permissions` containing
+        `agent:run`, and the sign-in time claim (`https://x402.dev/auth_time` by default). Never a machine token.
 
   parameters:
     PolicyId:
@@ -853,15 +855,17 @@ components:
 
   responses:
     Unauthorized:
-      description: Missing, malformed, invalid or expired token, or one without a sign-in time. Nothing is written.
+      description: >-
+        Missing, malformed, invalid or expired token, a token of another issuer (the organization's directory
+        included), or the portal's own token without a usable sign-in time. Nothing is written.
       content:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
     Forbidden:
       description: >-
-        A valid token that is not allowed here: a system identity, a token issued for the agent service or to another
-        client, or a person without `Agent.Run`. Nothing is written.
+        A valid token that is not allowed here: a machine token, a token issued to an agent client or to any other
+        client, or a person without `agent:run`. Nothing is written.
       content:
         application/json:
           schema:
@@ -918,17 +922,20 @@ components:
         auth:
           type: object
           additionalProperties: false
-          required: [mode, tenantId, clientId, scope]
+          required: [mode, domain, clientId, audience]
           properties:
             mode:
               type: string
-              enum: [entra, dev]
-            tenantId:
+              enum: [auth0, dev]
+            domain:
               type: string
+              description: The sign-in tenant's domain. Empty with the local dev issuer.
             clientId:
               type: string
-            scope:
+              description: The portal's web app at the sign-in tenant. Public.
+            audience:
               type: string
+              description: The API's identifier, which the web app asks a token for.
         network:
           type: string
         cards:

@@ -77,16 +77,29 @@ param ciba = {
 }
 
 // 013 user accounts (SPEC L2-8; specs/013 contracts/config-and-secrets.md "Azure"): off in dev until the portal is
-// deployed and its secrets are seeded (specs/013 quickstart §6). portalClientId is pre-deploy.bicep's fourth
-// mainParameters line: paste it before the portal's first deployment, also while enabled is false (the portal
-// doesn't start without it). The l2 vault holds portal-token and user-wallet-mnemonic, and the portal vault
-// portal-token and card-vault-key, either way: the placeholder off now, the real values once enabled.
+// deployed and its secrets are seeded (specs/013 quickstart §6). portalClientId is the Auth0 single-page client's
+// ID, Terraform's output bicepparam_portal_client_id (auth0/; the summary of provision-auth0.yml's apply run): paste
+// it before the portal's next deployment, also while enabled is false (the portal doesn't start without it, and
+// main.bicep refuses the portal unit while it is empty). The l2 vault holds portal-token and user-wallet-mnemonic,
+// and the portal vault portal-token and card-vault-key, either way: the placeholder off now, the real values once
+// enabled.
 param userAccounts = {
   enabled: false
   portalClientId: ''
   sellerName: 'x402 demo seller'
   cardVault: 'off'
   cardVaultPublishableKey: ''
+}
+
+// 013 people's sign-in (specs/013 research R19): people sign in with Auth0, at the portal and at the agent service.
+// The three values are Terraform's output bicepparam_identity (auth0/; the same summary): the tenant's issuer
+// (https://<domain>/), the API's identifier, and the clients the agent service accepts (the agent CLI's, never the
+// portal's). Empty in dev until provision-auth0.yml has applied 013's additions; main.bicep refuses
+// userAccounts.enabled without them. System identities stay on Entra (tenantId and authAudience above).
+param identity = {
+  issuer: ''
+  audience: ''
+  agentClientIds: []
 }
 
 // Declared to Anthropic with the Claude deployment, which accepts its Azure Marketplace terms (owner's consent,

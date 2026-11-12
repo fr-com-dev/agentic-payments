@@ -10,26 +10,28 @@ Every `/api` route except `/api/config` needs `Authorization: Bearer <access tok
 the body is read, then deleted from the request, as the hosted agent does. No cookie is used, so there is no CSRF
 surface.
 
+People sign in with Auth0 since 2026-11-10 ([R19](../research.md#r19-auth0-as-the-identity-provider-for-people)).
+The checks, in this order:
+
 | Check | Value | Failure |
 |---|---|---|
-| signature | the tenant's JWKS (`https://login.microsoftonline.com/<tid>/discovery/v2.0/keys`), or the dev issuer's file with `NETWORK=local` | 401 |
-| `iss` | `https://login.microsoftonline.com/<tid>/v2.0` (dev: `urn:x402:dev-issuer`) | 401 |
-| `aud` | the API app's client ID (`AUTH_AUDIENCE`), the same as the agent service | 401 |
-| `tid`, `oid` | the configured tenant; a non-empty `oid` | 401 |
+| signature | the Auth0 tenant's JWKS (`<AUTH_ISSUER>.well-known/jwks.json`, RS256), or the dev issuer's file with `NETWORK=local` | 401 |
+| `iss` | `AUTH_ISSUER` exactly (dev: `urn:x402:dev-issuer`). A token of any other issuer, the organization's directory included, is refused | 401 |
+| `aud` | contains `AUTH_AUDIENCE`, the API's identifier, the same as the agent service | 401 |
+| `sub` | not empty | 401 |
 | `exp`, `nbf` | 60 s tolerance | 401 |
-| `idtyp` | exactly `user` (a system identity is refused, FR-003) | 403 |
-| `scp` | contains `Portal.Access` | 403 |
-| `azp` | equals `PORTAL_CLIENT_ID`, the portal web app's client | 403 |
-| `roles` | contains `Agent.Run`: the one permission (clarified 2026-11-10) | 403 |
-| `auth_time` | present, an integer, not in the future beyond 60 s. Checked last: a token that is valid but not the portal's is 403 whether or not it carries the claim | 401 |
+| not a machine token | no `gty: client-credentials`, and `sub` does not end in `@clients` (a system identity is refused, FR-003) | 403 |
+| client | `azp` (or `client_id`, whichever the tenant's token dialect uses) equals `PORTAL_CLIENT_ID` | 403 |
+| `permissions` | contains `agent:run`: the one permission (clarified 2026-11-10) | 403 |
+| sign-in time | the claim named by `AUTH_TIME_CLAIM`: present, an integer, not in the future beyond 60 s. Checked last: a token that is valid but not the portal's is 403 whether or not it carries the claim | 401 |
 
-- A token issued for the agent service has `scp: user_impersonation` and another `azp`, so the portal refuses it
-  with 403 (FR-005). The agent service in turn refuses a portal token ([hosted-agent delta](#hosted-agent-delta-l1-6)).
+- A token issued for the agent service comes from another client, so the portal refuses it with 403 (FR-005). The
+  agent service in turn refuses a portal token ([hosted-agent delta](#hosted-agent-delta-l1-6)).
 - 401 and 403 bodies are `{ "error": "unauthorized" }` and `{ "error": "forbidden" }`, nothing more. A refused
   request creates no file, no ledger entry and no call to L2 or the card vault (T-PRT-01).
-- **The user** is `userIdFor(tid, oid)`. It is never read from the path, the query or the body: no route takes a
+- **The user** is `userIdFor(issuer, sub)` ([data-model.md](../data-model.md#identifiers)). It is never read from the path, the query or the body: no route takes a
   user identifier (FR-004).
-- **Identity confirmed at** is `auth_time × 1000`. The portal passes it to L2 as `identityConfirmedAtMs` on every
+- **Identity confirmed at** is the sign-in time claim × 1000. The portal passes it to L2 as `identityConfirmedAtMs` on every
   loosening call; L2 decides whether it is fresh enough ([control-api.md](control-api.md)).
 
 ## Limits and headers
@@ -46,15 +48,19 @@ surface.
 
   ```text
   default-src 'none'; script-src 'self' https://js.stripe.com https://*.js.stripe.com;
-  frame-src https://js.stripe.com https://*.js.stripe.com https://hooks.stripe.com https://login.microsoftonline.com;
-  connect-src 'self' https://api.stripe.com https://login.microsoftonline.com;
+  frame-src https://js.stripe.com https://*.js.stripe.com https://hooks.stripe.com;
+  connect-src 'self' https://api.stripe.com <AUTH_ISSUER origin>;
   style-src 'self'; img-src 'self' data:; font-src 'self'; base-uri 'none'; form-action 'none';
   frame-ancestors 'none'
   ```
 
-  The sign-in redirect page (`/redirect.html`) is the one exception: it is served without `frame-ancestors` and
-  `X-Frame-Options`, because the sign-in library loads it in a hidden frame of the same origin, and it runs no
-  application code.
+  `<AUTH_ISSUER origin>` is the Auth0 tenant's origin, from configuration (absent with the dev issuer);
+  `login.microsoftonline.com` is no longer allowed. As built: the tenant is in `connect-src` only, never in
+  `frame-src`, because the web app renews a session with a rotating refresh token and has the library's
+  hidden-frame fallback off. The first build's sign-in redirect page (`/redirect.html`) and its header exception
+  are gone: the sign-in library answers a pop-up with a web message (`response_mode=web_message`, read in the
+  library's source at the pinned version), so no page of the portal's own is loaded there. R19's third check
+  still confirms this against the tenant.
 - The portal's own log is whitelisted JSON lines: time, route template, status, `userId`, duration. Never a token, a
   name, an email, a body or a card vault message (NFR-003, NFR-004).
 
@@ -66,7 +72,7 @@ them.
 
 | Method & path | Request | 200 response | Errors |
 |---|---|---|---|
-| `GET /api/config` (no token) | — | `{ auth: { mode: "entra" \| "dev", tenantId, clientId, scope }, network, cards: { available, publishableKey? } }`: public values only | — |
+| `GET /api/config` (no token) | — | `{ auth: { mode: "auth0" \| "dev", domain, clientId, audience }, network, cards: { available, publishableKey? } }`: public values only | — |
 | `GET /api/me` | — | `{ userId, enabled, onboarding: { profile, wallet, policy }, profile?: { displayName, contactEmail } }` | 401, 403 |
 | `PUT /api/profile` | `{ displayName, contactEmail, acknowledgedTestFunds? }` | the `/api/me` body. First save needs `acknowledgedTestFunds: true` and registers the user at L2 | 400, 422 `invalid_profile` (`issues[]` by field) |
 | `GET /api/platform` | — | `{ limits, sellers: [{ host, name }], network, asset, decimals }`. Payee addresses are not returned | — |
@@ -121,21 +127,32 @@ taken back.
 
 Normative for `specs/011` contracts/hosted-agent-api.md and `docs/l1-hosted.openapi.yaml` (T-API-05..08).
 
-- **Naming the user (FR-033).** For a requester of kind `user`, every `PaymentIntent` of the run carries
-  `userId = userIdFor(tid, oid)`, and `check_budget` passes it to `GET /v1/budget`. For kind `service`, no user
-  (FR-002). The value is fixed when the run starts, from the verified token; no tool input and no model text can
-  change it.
-- **Refusing portal tokens (SEC-20).** A token is of kind `service` only when `idtyp === "app"`. Any other token
-  must have `scp` containing `user_impersonation`, and its `azp` must not be `PORTAL_CLIENT_ID` when that variable
-  is set; otherwise 403. Today the service checks neither claim.
-- Nothing else changes: the same two tools, limits, session references, statuses and response fields.
+- **Two issuers (2026-11-10).** The service reads `iss` from the token, without trusting it, only to choose the
+  checks, then verifies in full against that issuer:
+  - **the Auth0 tenant (`AUTH_ISSUER`): a person.** The same checks as the portal's table above, except that the
+    client must be on `AGENT_CLIENT_IDS` (never the portal's client) and the sign-in time claim is not required.
+  - **the organization's directory (Entra, `AUTH_TENANT_ID`): a system identity.** Accepted only when `idtyp` is
+    `app`, `aud` is `SERVICE_AUDIENCE` and `roles` contains `Agent.Run`. A person's Entra token is refused (403):
+    people no longer start runs with it.
+  - any other issuer: 401.
+- **Naming the user (FR-033).** For a person, every `PaymentIntent` of the run carries
+  `userId = userIdFor(issuer, sub)`, and `check_budget` passes it to `GET /v1/budget`. For a system identity, no
+  user (FR-002). The value is fixed when the run starts, from the verified token; no tool input and no model text
+  can change it.
+- **Refusing portal tokens (SEC-20).** A person's token whose client is not on `AGENT_CLIENT_IDS` is 403, which
+  covers the portal's client. The service refuses to start when `PORTAL_CLIENT_ID` is on that list.
+- **Session references and limits** are keyed by the requester as before; a person's key is now the issuer and
+  `sub`, so a session reference issued under the earlier sign-in no longer verifies.
+- **Getting a token as a person**: `npm run user-token` (the device flow of the tenant's native client) replaces
+  `az account get-access-token`.
+- Nothing else changes: the same two tools, limits, statuses and response fields.
 
 ## Tests
 
 | ID | Covers |
 |---|---|
 | T-API-12..15 | `docs/portal.openapi.yaml` matches routes, statuses, schemas and the security scheme; Swagger UI only with `API_DOCS=1` |
-| T-PRT-01 | access: each row of the access table; each refusal makes 0 calls to L2 and the vault and writes nothing. **Must fail**: with `bypassAuth`, an agent-service token reads a profile |
+| T-PRT-01 | access: each row of the access table, an Entra token included (401); each refusal makes 0 calls to L2 and the vault and writes nothing. **Must fail**: with `bypassAuth`, an agent-service token reads a profile |
 | T-PRT-02 | no route accepts a user identifier; user A's token with user B's `policyId` or `cardId` is 404. **Must fail** with L2's `skipOwnershipCheck` |
 | T-PRT-03 | profile: validation, the acknowledgement, edits don't touch L2 after the first save |
 | T-PRT-04 | wallet view: balance cache, the stale path when the RPC fails, low-balance flag |
@@ -144,4 +161,4 @@ Normative for `specs/011` contracts/hosted-agent-api.md and `docs/l1-hosted.open
 | T-PRT-07 | headers and CSP on every response; the redirect page exception; `no-store` on `/api` |
 | T-PRT-08 | the log whitelist; a known-value scan for tokens, names, emails and card fields |
 | T-AGT-06 | hosted agent: a user's intents and budget calls carry `userId`; a service's carry none; a goal or tool input naming another user changes nothing |
-| T-AGT-07 | hosted agent refuses a portal token (403). **Must fail** with the `scp`/`azp` check removed |
+| T-AGT-07 | hosted agent refuses a portal token (403), a person's Entra token (403) and a token of an unknown issuer (401); an Entra app token still runs with no user. **Must fail** with the client allow-list removed |

@@ -186,7 +186,7 @@ describe("T-API-05 every hosted agent route is documented, and every documented 
 async function authMismatches(doc: OpenApiDoc, a: HostedTestApp): Promise<string[]> {
   const out: string[] = [];
   const withRole = await a.token("alice");
-  const noRole = await a.token("mallory", { roles: [] });
+  const noRole = await a.token("mallory", { permissions: [] });
   for (const [method, path, op] of operations(doc)) {
     const open = op.security?.length === 0;
     const concrete = path.replace(/\{\w+\}/g, "x");
@@ -212,7 +212,7 @@ describe("T-API-06 each operation's security matches the agent's guard", () => {
     const a = await start();
     const doc = loadDoc();
     doc.paths["/v1/runs"]!.post!.security = [];
-    doc.paths["/healthz"]!.get!.security = [{ entraBearer: [] }];
+    doc.paths["/healthz"]!.get!.security = [{ requesterBearer: [] }];
     expect(await authMismatches(doc, a)).toEqual(["POST /v1/runs no token: 401", "GET /healthz no token: 200", "GET /healthz without Agent.Run: 200"]);
   });
 });
@@ -279,7 +279,7 @@ describe("T-API-07 live responses match the documented status, headers and schem
     // refusals: body, token, role, session, size
     await runs({ goal: "" });
     await call("POST", "/v1/runs", { body: { goal: "no token" } });
-    await runs({ goal: "no role" }, await a.token("mallory", { roles: [] }));
+    await runs({ goal: "no role" }, await a.token("mallory", { permissions: [] }));
     await runs({ goal: "not my session", sessionRef: first.sessionRef }, await a.token("bob"));
     await runs(JSON.stringify({ goal: "x".repeat(17_000) }));
 
@@ -368,8 +368,9 @@ describe("T-API-08 Swagger UI on the agent is opt-in, never set in Azure, same-o
       NETWORK: "local",
       MODEL_PROVIDER: "anthropic",
       ANTHROPIC_API_KEY: "k",
-      AUTH_TENANT_ID: "dev",
+      AUTH_ISSUER: "urn:x402:dev-issuer",
       AUTH_AUDIENCE: "api://x",
+      AGENT_CLIENT_IDS: "agent-client",
       AUTH_JWKS_FILE: "unused.json",
       SESSION_REF_SECRET: randomBytes(32).toString("hex"),
     };

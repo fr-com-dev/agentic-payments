@@ -16,7 +16,7 @@ const SIGNER = "src/layer2-control/signer.ts";
 const AGENT_PACKAGES = ["@mastra/core", "@ai-sdk/anthropic", "@anthropic-ai/sdk", "@azure/identity"];
 /** 013: the folders the portal image may hold nothing of, and the web app's packages, which are build-time only. */
 const NOT_IN_PORTAL = ["src/layer1-intent/", "src/layer2-control/", "src/layer3-settlement/", "src/counterparty/"];
-const WEB_PACKAGES = ["react", "react-dom", "@azure/msal-browser", "vite"];
+const WEB_PACKAGES = ["react", "react-dom", "@auth0/auth0-spa-js", "vite"];
 
 describe("T-IMG-01 per-layer images", { timeout: 30_000 }, () => {
   const closures = new Map<ImageName, Closure>();

@@ -37,6 +37,9 @@ The web app's source is `web/portal/`; it is built to static files that the port
 
 ## R2. Who the user is, and how the portal tells its tokens from the agent's
 
+> **Superseded for people's sign-in by [R19](#r19-auth0-as-the-identity-provider-for-people) (2026-11-10).** What follows
+> describes the first build, against Microsoft Entra ID. It still holds for system identities where R19 says so.
+
 **Decision.**
 - **One API app registration, two delegated scopes.** The existing API app keeps `user_impersonation` (the agent
   service) and gains `Portal.Access`. A new public-client app registration for the web app (single-page app,
@@ -140,6 +143,9 @@ daily ceiling, all driven by a new optional `ctx.user`. Without it, the engine i
   `ledger.subscribe` is the fallback if it fails.
 
 ## R5. Confirming identity again (step-up)
+
+> **Superseded for people's sign-in by [R19](#r19-auth0-as-the-identity-provider-for-people) (2026-11-10).** What follows
+> describes the first build, against Microsoft Entra ID. It still holds for system identities where R19 says so.
 
 **Decision.** The API app emits the optional claim `auth_time` in access tokens. For a loosening change the web app
 signs the person in again with `prompt: "login"` and retries. The portal passes `auth_time × 1000` to L2 as
@@ -248,6 +254,9 @@ portal app must run in the `x402` environment, whose subnet is the only one the 
 
 ## R10. The web app's stack
 
+> **Superseded for people's sign-in by [R19](#r19-auth0-as-the-identity-provider-for-people) (2026-11-10).** What follows
+> describes the first build, against Microsoft Entra ID. It still holds for system identities where R19 says so.
+
 **Decision.** A single-page app in `web/portal/`: React 19, TypeScript, built with Vite (already in the tree
 through vitest). `@azure/msal-browser` 5.x for sign-in, without `@azure/msal-react`. Stripe.js by script tag,
 without the React wrapper. No router library, no state library, no component library; plain CSS. Tests in vitest
@@ -264,6 +273,8 @@ built files.
 - *Server-rendered pages with form posts.* Needs cookie sessions (R2).
 - *No framework.* Fewer packages, but hand-written state and focus handling for every screen.
 - *A component library.* Faster to build, but accessibility then depends on a large dependency.
+
+**As built.** `@vitejs/plugin-react` is not used: Vite 8 compiles the JSX itself, for the build and for vitest.
 
 ## R11. Reading balances
 
@@ -342,6 +353,9 @@ Must-fail proofs are listed in [plan.md](plan.md#proofs-constitution-viii).
 pattern.
 
 ## R16. The portal as an Azure unit
+
+> **Partly superseded by [R19](#r19-auth0-as-the-identity-provider-for-people) (2026-11-10):** people's sign-in is
+> defined in `auth0/`, not in `infra/pre-deploy.bicep`, and the web app is an Auth0 client.
 
 **Decision.** A sixth unit, `portal`, deployed by its own pipeline `deploy-portal.yml` from its own image
 `x402-portal` ([config-and-secrets.md](contracts/config-and-secrets.md)):
@@ -447,3 +461,85 @@ Checked 2026-11-10.
 - Including Stripe.js and its CSP: https://docs.stripe.com/js/including , https://docs.stripe.com/security/guide
 - PCI scope: https://stripe.com/guides/pci-compliance
 - Rate limits: https://docs.stripe.com/rate-limits
+
+## R19. Auth0 as the identity provider for people
+
+Added 2026-11-10, after the first build ran against Microsoft Entra ID (clarifications, "identity provider"
+session). It replaces R2 and R5 for people, and the sign-in library of R10.
+
+**Decision.**
+- **People sign in with Auth0, at the portal and at the hosted agent service.** The tenant is the one 012 already
+  uses for approvals; its definition stays Terraform in `auth0/`, applied by `provision-auth0.yml`.
+- **System identities stay on Entra**, at the agent service only. An Entra token is accepted only when it is
+  app-only (`idtyp: app`) with the `Agent.Run` app role, and it never names a user. The portal accepts no Entra
+  token at all. The deploy pipeline's smoke run therefore still needs no secret.
+- **One API in Auth0, one permission.** A resource server whose identifier is the audience of both services, with
+  RBAC enforced and permissions added to the access token. Its one permission is `agent:run`; one role,
+  `x402-user`, holds it. An administrator assigns the role per person in Auth0. Terraform creates no user and
+  assigns none.
+- **Two public clients, told apart by client ID.** The portal's single-page client (authorization code with PKCE, no
+  secret) and a native client for getting an agent token from a terminal (device authorization flow), which
+  replaces the Azure CLI. Each service has an allow-list of the clients it accepts: the portal accepts only its own
+  client, the agent service only its own, never the portal's.
+- **The checks on a person's token** (one shared verifier, `src/shared/identity-token.ts`, replacing
+  `entra-token.ts`): signature against the tenant's JWKS (RS256); `iss` = `https://<domain>/`; `aud` contains the
+  API identifier; `exp` and `nbf` with 60 s tolerance; a non-empty `sub`; not a machine token; `permissions`
+  contains `agent:run`; the client is on the service's allow-list; and, at the portal, the sign-in time claim.
+- **The agent service picks the verifier by issuer.** It reads `iss` from the token without trusting it, only to
+  choose between the Auth0 checks and the Entra checks, then verifies fully against that issuer's keys and expected
+  values. Any other issuer is 401.
+- **The user identifier changes shape**: `usr_` + 32 hex of SHA-256 over `x402-user-v2`, the issuer's host and
+  `sub`, separated by newlines. Auth0's `sub` contains `|` (`auth0|…`), which the v1 format used as its separator.
+  Every person gets a new identifier, which is the "onboard again" answer of the clarification.
+- **Step-up keeps its rule and changes its source.** L2 still decides from `identityConfirmedAtMs`. Auth0 puts
+  `auth_time` in the ID token, not the access token, so a post-login Action adds the time of the most recent
+  authentication to the access token as a namespaced claim (`AUTH_TIME_CLAIM`). The web app forces a new sign-in
+  with `prompt=login` and `max_age=0`.
+- **The web app uses `@auth0/auth0-spa-js`** behind the existing `Auth` adapter (`auth/auth0.ts` replaces
+  `auth/entra.ts`; the dev adapter stays). Sign-in is still a pop-up started from a click. Tokens are cached in
+  session storage through the library's cache hook, with refresh-token rotation, which is the posture the first
+  build had.
+- **The dev issuer speaks the new shape** (`sub`, `permissions`, `azp`, the sign-in time claim), so local
+  development and every offline test stay without a tenant.
+
+**Rationale.**
+- FR-003 needs one identity for the portal and for runs. Moving only the portal would leave two identifiers per
+  person and a mapping between them deciding whose money is spent.
+- One API with one permission keeps the single-permission rule literally: the same grant opens the portal and
+  starts runs. Client allow-lists do what the two Entra scopes did.
+- Leaving system identities on Entra keeps the pipelines free of stored credentials, and keeps "a system identity
+  never names a user" a property of the issuer, not of a claim.
+- `provision-auth0.yml` already applies this tenant from code, so the new API, role, clients and Action get the
+  same review and tests (T-IAC-02) as the approval set-up.
+
+**Alternatives considered.**
+- *Auth0 federating to Entra* (an enterprise connection, passing the Entra IDs through). Keeps today's identifiers
+  and leaves the agent service alone, but Entra stays the real directory, which is not what was asked.
+- *Only the portal on Auth0, matched to the agent's Entra identity by verified email.* An email match would decide
+  whose account pays. Rejected.
+- *Two APIs in Auth0, one per service.* Separates the two services by audience, the standard way, but needs two
+  permissions, against the single-permission rule.
+- *Machine-to-machine clients in Auth0 for system identities.* One provider for everything, but the pipeline would
+  need a stored client secret, which the Azure side has avoided so far.
+- *Linking old identifiers to new ones in the ledger.* Carries wallets and history over, but needs a new entry type
+  and a verified linking step, for test funds only.
+
+**Unverified, to check against the tenant before user accounts are turned on** (quickstart §5):
+1. The claim names in a person's access token under the API's token dialect: the client as `azp` or `client_id`,
+   `permissions` as an array, and how a machine token is marked (`gty: client-credentials`, a `sub` ending in
+   `@clients`).
+2. The Action can set the sign-in time claim; its value is new after `prompt=login`, and unchanged after a silent
+   renewal or a refresh-token exchange.
+3. A pop-up sign-in needs no callback page of the portal's own, so `redirect.html` and its header exception can go.
+   *Read in the library's source at the pinned version (2.30.0): `loginWithPopup` asks for
+   `response_mode=web_message`, so the build removed the page. Still to confirm against the tenant.*
+4. The device flow gives the native client a token that carries `permissions` for the API.
+5. Removing the `Portal.Access` scope from the Entra API app: Entra wants a scope disabled before it is removed, so
+   this is expected to take two deployments, as adding it did.
+
+**Residual.**
+- One provider now stands behind sign-in and approvals (spec, Assumptions). Their clients, credentials and
+  permissions are separate.
+- A removed role stays in already-issued tokens until they expire; the access token lifetime bounds it.
+- The client ID in a token names the registration used, not proven client code, as before.
+- People who onboarded under Entra can't reach their earlier wallets. Test funds left there stay there.

@@ -6,8 +6,11 @@
 // T-IAC-01 asserts on the compiled form of this file:
 // - secrets come only from the l1 vault, as Key Vault references;
 // - identity lifecycle is Main only for the agent (Foundry tokens), None for the regression job;
-// - the agent's AUTH_AUDIENCE comes from the authAudience parameter;
-// - 013 (rule 21): the agent's PORTAL_CLIENT_ID, the azp it refuses, comes from the userAccounts parameter.
+// - the agent's SERVICE_AUDIENCE, the audience of system identities' Entra tokens, comes from the authAudience
+//   parameter (rule 11);
+// - 013 (rule 21): people sign in with Auth0, so the agent's AUTH_ISSUER, AUTH_AUDIENCE and AGENT_CLIENT_IDS (the
+//   clients it accepts) come from the identity parameter, and its PORTAL_CLIENT_ID, the client it refuses, from the
+//   userAccounts parameter.
 param location string
 @description('Every resource name (main.<environment>.bicepparam).')
 param names object
@@ -15,7 +18,9 @@ param names object
 param image string
 @description('The registry\'s login server.')
 param acrServer string
+@description('The Entra tenant of system identities\' tokens.')
 param authTenantId string
+@description('The Entra API app\'s client ID: the audience of system identities\' tokens.')
 param authAudience string
 @description('The Foundry model deployment, named exactly the model id: the agent\'s ANTHROPIC_MODEL.')
 param modelDeployment string
@@ -23,6 +28,8 @@ param modelDeployment string
 param agentStableRevision string = ''
 @description('013 user accounts (SPEC L2-8): the non-secret settings from the parameter file. The agent reads portalClientId only.')
 param userAccounts object
+@description('013 people\'s sign-in with Auth0: { issuer, audience, agentClientIds }, from the parameter file.')
+param identity object
 
 resource idL1 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' existing = { name: names.identities.l1 }
 resource mainEnv 'Microsoft.App/managedEnvironments@2025-01-01' existing = { name: names.environments.x402 }
@@ -81,9 +88,15 @@ resource agent 'Microsoft.App/containerApps@2025-01-01' = {
             { name: 'ANTHROPIC_MODEL', value: modelDeployment }
             { name: 'FOUNDRY_BASE_URL', value: 'https://${ais.properties.customSubDomainName}.services.ai.azure.com/anthropic/v1' }
             { name: 'AZURE_CLIENT_ID', value: idL1.properties.clientId }
-            { name: 'AUTH_TENANT_ID', value: authTenantId }
-            { name: 'AUTH_AUDIENCE', value: authAudience }
+            // People (Auth0): the tenant's issuer, the API's identifier, the clients accepted, and the portal's
+            // client, which is refused.
+            { name: 'AUTH_ISSUER', value: identity.issuer }
+            { name: 'AUTH_AUDIENCE', value: identity.audience }
+            { name: 'AGENT_CLIENT_IDS', value: join(identity.agentClientIds, ',') }
             { name: 'PORTAL_CLIENT_ID', value: userAccounts.portalClientId }
+            // System identities (Entra, app-only tokens): the tenant and the API app's client ID.
+            { name: 'AUTH_TENANT_ID', value: authTenantId }
+            { name: 'SERVICE_AUDIENCE', value: authAudience }
             { name: 'AGENT_BIND_HOST', value: '0.0.0.0' }
             // One proxy, the environment's ingress, is in front: the per-address request limit reads the client's
             // address from X-Forwarded-For (T-IAC-01 rule 3).

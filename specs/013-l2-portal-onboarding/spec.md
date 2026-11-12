@@ -35,6 +35,23 @@
 - Q: Who is allowed to sign in to the portal and onboard? → A: Everyone who may start agent runs.
   The same permission gives both; there is no separate portal permission.
 
+### Session 2026-11-10 (identity provider)
+
+The portal was first built against the organization's directory (Microsoft Entra ID). These answers replace it
+with Auth0 as the identity provider for people.
+
+- Q: With the portal on Auth0, how does the agent service recognize the same person, so that their
+  payments find their policies (FR-003)? → A: People sign in with Auth0 for both the portal and the
+  agent service. One identity names the user everywhere. System identities (a pipeline, a service)
+  keep the organization's directory, as today.
+- Q: A user's identifier is derived from their sign-in, so an Auth0 sign-in is a new user. What
+  happens to people who already onboarded? → A: They onboard again. Earlier users stay in the
+  ledger untouched, and no sign-in reaches them. Acceptable because wallets hold test funds only.
+- Q: Who may sign in to the portal and onboard, now that the permission no longer comes from the
+  organization's directory? → A: Whoever holds one permission in Auth0, assigned per person through
+  a role and carried in their sign-in. The single-permission rule stays: whoever may start agent
+  runs may onboard, and nobody else.
+
 ## User Scenarios & Testing *(mandatory)*
 
 Terms used below:
@@ -436,16 +453,18 @@ version, and the policy's whole history can be rebuilt from the ledger alone.
 
 **Sign-in and access**
 
-- **FR-003**: A person MUST sign in to the portal with the same organization identity they use to
-  start agent runs. Everyone who is allowed to start agent runs MAY sign in and onboard, and
-  nobody else: there is no separate portal permission. A system identity can't sign in. A refused
-  sign-in MUST create no record. *(SPEC: L1-6 auth, SEC-14, proposed L2-8)*
+- **FR-003**: A person MUST sign in to the portal with the same identity they use to start agent
+  runs, at the deployment's identity provider for people (Auth0, clarified 2026-11-10). Everyone
+  who is allowed to start agent runs MAY sign in and onboard, and nobody else: one permission at
+  the identity provider gives both, and there is no separate portal permission. A system identity
+  can't sign in. A refused sign-in MUST create no record. *(SPEC: L1-6 auth, SEC-14, proposed L2-8)*
 - **FR-004**: A signed-in user MUST be able to read and change only their own profile, wallet,
   cards and policies. A request for anything that belongs to another user MUST get "not found",
   with nothing revealed. *(SPEC: SEC-15, proposed L2-8)*
 - **FR-005**: The portal MUST accept only a person's own portal sign-in. It MUST refuse the
-  credentials of the agent, the verifier and the operator, and a sign-in issued for the agent
-  service. *(SPEC: INV-13)*
+  credentials of the agent, the verifier and the operator, a sign-in issued for the agent
+  service, and any sign-in from another identity provider, the organization's directory
+  included. *(SPEC: INV-13)*
 - **FR-006**: The agent MUST gain no tool, field or route that reads or changes a profile, a
   wallet or a policy. Its tools stay `fetch_resource` and `check_budget`. *(SPEC: L1-3, L1-6,
   Constitution I)*
@@ -705,7 +724,7 @@ version, and the policy's whole history can be rebuilt from the ledger alone.
 
 ### Key Entities
 
-- **User**: a person with portal access. Identified by their organization identity, and in the
+- **User**: a person with portal access. Identified by their identity at the identity provider for people, and in the
   ledger by an identifier that reveals neither name nor email. Their account is enabled or
   disabled; a disabled account keeps everything and pays nothing. Owns one profile, one wallet and
   up to 10 active policies. The same identity starts their agent runs.
@@ -792,11 +811,23 @@ version, and the policy's whole history can be rebuilt from the ledger alone.
   a user is out of scope, and the organization can still block the person's sign-in.
 - **Many users, self-service** (clarified 2026-11-10). Portal access comes with the
   organization's permission to start agent runs, so nobody can start runs without being able to
-  set up payment. The organization grants that permission through its sign-in, as today (011).
-  There is no invitation or operator approval step, and no separate portal permission.
-- **One identity for the portal and for agent runs.** The portal signs people in with the same
-  organization identity the hosted agent accepts (011), so a run's verified requester names the
-  user. Locally, the existing dev issuer stands in. The plan chooses the sign-in mechanics.
+  set up payment. The permission is granted in the identity provider for people, per person, as
+  one permission (clarified 2026-11-10). There is no invitation or operator approval step in the
+  portal, and no separate portal permission.
+- **One identity for the portal and for agent runs** (clarified 2026-11-10). People sign in with
+  Auth0, the identity provider for people, at the portal and at the hosted agent (011, amended by
+  this feature), so a run's verified requester names the user. System identities keep the
+  organization's directory and never name a user. Locally, the existing dev issuer stands in. The
+  plan chooses the sign-in mechanics.
+- **People who onboarded under the earlier sign-in start again** (clarified 2026-11-10). A user's
+  identifier comes from their sign-in, so the move to Auth0 gives everyone a new one. Earlier
+  users, wallets and policies stay in the ledger, untouched and unreachable; nothing is migrated
+  or linked. Funds left in an earlier test account are not moved.
+- **One provider for sign-in and for approvals is accepted.** The deployment's approver already
+  answers through Auth0 (012). Using the same provider for people's sign-in means one service
+  now stands behind both who may change a policy and who approves a payment. Their credentials,
+  clients and permissions stay separate, and an approval still has to verify against the exact
+  payment.
 - **The agent service is trusted to name the user.** L2 can't verify the person itself, because
   their credential is never forwarded to it (Constitution V). A compromised agent service could
   name another user; it would still be bound by that user's policy and by the platform limits.

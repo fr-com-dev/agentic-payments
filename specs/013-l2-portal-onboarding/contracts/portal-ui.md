@@ -26,7 +26,7 @@ person's data: every identifier in a URL is resolved by the portal API for the s
 
 ## Onboarding
 
-1. **Profile.** Name and email are prefilled from the sign-in (ID token `name` and `preferred_username`) and
+1. **Profile.** Name and email are prefilled from the sign-in (the ID token's `name` and `email`) and
    editable. A required checkbox: "I understand this wallet holds test funds only (test USDC on <network>)". Save is
    disabled until the checkbox is ticked and both fields are valid.
 2. **Wallet.** One button, "Create my wallet". After it: the address (with a copy button), the network, the asset
@@ -61,7 +61,8 @@ and the history show for a saved version.
 
 **Saving.**
 - Server issues (422) are mapped to their fields and listed in an error summary at the top that takes focus.
-- 403 `step_up_required`: the portal says "Confirm it's you to make this change", runs the sign-in again and
+- 403 `step_up_required`: the portal says "Confirm it's you to make this change", runs the sign-in again (a
+  pop-up with `prompt=login` and `max_age=0`, started from the person's click) and
   resubmits the same values once (FR-007).
 - 409 `version_conflict`: "This policy was changed in another window", with the current values and the user's
   values side by side; nothing is overwritten.
@@ -93,7 +94,9 @@ and the history show for a saved version.
   `dangerouslySetInnerHTML` anywhere in `web/portal/` (T-WEB-07 scans for it).
 - Amounts are shown from atomic strings with `formatAtomic`; inputs are parsed with `parseUsdc`. No floating-point
   arithmetic on amounts (Constitution VI; T-WEB-03).
-- The access token is kept in memory and `sessionStorage` by the sign-in library; it is never put in a URL, a log or
+- If another person signs in in the confirmation pop-up, the adapter signs out and reports `account_changed`:
+  one person's confirmation never finishes another's change.
+- The access token is kept in memory and `sessionStorage` by the sign-in library (through its cache hook); it is never put in a URL, a log or
   an error report.
 
 ## Accessibility and layout (NFR-009)

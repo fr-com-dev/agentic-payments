@@ -84,7 +84,7 @@ describe("T-CARD-01 configuration: test keys only (FR-018, SEC-22)", () => {
       expect(text).not.toContain("SECRETLIVEKEY");
     }
     // The portal's config loader refuses the same way.
-    const dev = { NETWORK: "local", AUTH_TENANT_ID: "dev", AUTH_AUDIENCE: "api://x402-l1-agent", PORTAL_CLIENT_ID: "x402-portal-dev", AUTH_JWKS_FILE: "jwks.json" };
+    const dev = { NETWORK: "local", AUTH_ISSUER: "urn:x402:dev-issuer", AUTH_AUDIENCE: "api://x402-l1-agent", PORTAL_CLIENT_ID: "x402-portal-dev", AUTH_JWKS_FILE: "jwks.json" };
     expect(() => loadPortalConfig({ ...dev, ...base, CARD_VAULT_KEY: "sk_live_SECRETLIVEKEY" })).toThrow(/CARD_VAULT_KEY must be a test key/);
   });
 

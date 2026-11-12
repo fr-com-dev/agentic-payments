@@ -18,7 +18,7 @@
 //   deployment (the checks through the other units; the portal smoke runs on the portal's own); a failure inside a
 //   pipe fails its step;
 // - 013: the image scan also refuses a mnemonic or the card vault key; the wait polls the portal's new revision; the
-//   portal smoke sends no token and expects health, Entra sign-in mode and a 401;
+//   portal smoke sends no token and expects health, Auth0 sign-in mode and a 401;
 // - step 0 first maps the unit to its image and refuses inputs that don't belong to it, before anything else (the
 //   guard itself is run, for every combination of unit and inputs);
 // - each job runs its own command: the deploy identity never starts the operator job with another;
@@ -81,7 +81,7 @@ const AUTH0 = "provision-auth0.yml";
 /** The only GitHub secrets a workflow reads: the Auth0 pipeline's, from its own GitHub environment. */
 const AUTH0_SECRETS = ["AUTH0_CLIENT_ID", "AUTH0_CLIENT_SECRET", "AUTH0_L2_CLIENT_SECRET"];
 /** The only GitHub variables a workflow reads: the Auth0 pipeline's Terraform variables, from the same environment. */
-const AUTH0_VARIABLES = /^AUTH0_(TENANT_DOMAIN|API_IDENTIFIER|APPROVER_USER_ID|CREDENTIAL|CLIENT_PUBLIC_KEY|CLIENT_SECRET_VERSION|MANAGE_GUARDIAN|GUARDIAN_POLICY)$/;
+const AUTH0_VARIABLES = /^AUTH0_(TENANT_DOMAIN|API_IDENTIFIER|APPROVER_USER_ID|CREDENTIAL|CLIENT_PUBLIC_KEY|CLIENT_SECRET_VERSION|MANAGE_GUARDIAN|GUARDIAN_POLICY|PORTAL_ORIGIN)$/;
 const FILES = [SHARED, AUTH0, ...Object.keys(PIPELINES)].sort();
 /** The image each unit's run builds, promotes and rolls back; the platform has none. */
 const UNIT_IMAGES: Record<Exclude<Unit, "platform">, ImageName> = { l1: "l1-agent", l2: "l2-control", l3: "l3-verifier", operator: "operator", portal: "portal", seller: "seller" };
@@ -278,12 +278,12 @@ export function workflowProblems(w: Workflow): string[] {
   if (!step("smoke")?.run?.includes('az account get-access-token --resource "${{ steps.target.outputs.authAudience }}"')) out.push("the smoke run's token must be for the API app's client ID (authAudience), the audience the agent accepts");
   // 012 (research R14): the hosted smoke run buys only auto-approved items; any escalation fails it.
   if (!step("smoke")?.run?.includes(`jq -e '[.steps[] | select(.result.outcome == "ESCALATED")] | length == 0'`)) out.push("the smoke run must fail when any step escalated (a deployment check never asks the approver)");
-  // 013: the portal smoke. The pipeline's identity is an application, which the portal refuses by design, so the
-  // check sends no token: the portal answers, verifies Entra tokens (not the dev issuer's), and refuses without one.
+  // 013: the portal smoke. The pipeline's identity is an Entra application, and the portal accepts no Entra token, so
+  // the check sends no token: the portal answers, verifies Auth0 tokens (not the dev issuer's), and refuses without one.
   const portal = step("portal-smoke")?.run ?? "";
   if (!portal.includes('az containerapp show -n "$CA_PORTAL" -g "$RG" --query properties.configuration.ingress.fqdn')) out.push("the portal smoke must go to the portal's own address ($CA_PORTAL)");
   if (!portal.includes('curl -fsS -m 10 -o /dev/null "https://$PORTAL/healthz"')) out.push("the portal smoke must wait for /healthz to answer 200");
-  if (!portal.includes(`curl -fsS -m 30 "https://$PORTAL/api/config" | jq -e '.auth.mode == "entra"' > /dev/null`)) out.push('the portal smoke must get /api/config with "mode":"entra": a deployed portal never trusts the dev issuer');
+  if (!portal.includes(`curl -fsS -m 30 "https://$PORTAL/api/config" | jq -e '.auth.mode == "auth0"' > /dev/null`)) out.push('the portal smoke must get /api/config with "mode":"auth0": a deployed portal never trusts the dev issuer');
   if (!/code=\$\(curl -sS -m 30 -o \/dev\/null -w '%\{http_code\}' "https:\/\/\$PORTAL\/api\/me"\)\n\s*if \[ "\$code" != 401 \]; then [^\n]*exit 1; fi/.test(portal)) out.push("the portal smoke must get 401 from /api/me without a token");
   if (/get-access-token|authorization|Bearer/i.test(portal)) out.push("the portal smoke must send no token: the portal refuses application identities");
   const promote = step("promote")?.run ?? "";
@@ -547,8 +547,12 @@ describe("T-E2E-AZ deployment workflow gates", () => {
     expect(workflowProblems(edit((run) => run.replace('"https://$PORTAL/api/me")', '-H "authorization: Bearer $ACCESS" "https://$PORTAL/api/me")')))).toContain(
       "the portal smoke must send no token: the portal refuses application identities",
     );
-    expect(workflowProblems(edit((run) => run.replace(`| jq -e '.auth.mode == "entra"' > /dev/null`, "> /dev/null")))).toEqual([
-      'the portal smoke must get /api/config with "mode":"entra": a deployed portal never trusts the dev issuer',
+    expect(workflowProblems(edit((run) => run.replace(`| jq -e '.auth.mode == "auth0"' > /dev/null`, "> /dev/null")))).toEqual([
+      'the portal smoke must get /api/config with "mode":"auth0": a deployed portal never trusts the dev issuer',
+    ]);
+    // People sign in with Auth0 (specs/013 research R19): a portal still in the first build's Entra mode fails the check.
+    expect(workflowProblems(edit((run) => run.replace('.auth.mode == "auth0"', '.auth.mode == "entra"')))).toEqual([
+      'the portal smoke must get /api/config with "mode":"auth0": a deployed portal never trusts the dev issuer',
     ]);
     expect(workflowProblems(edit((run) => run.replace('if [ "$code" != 401 ]', 'if [ "$code" = 500 ]')))).toEqual(["the portal smoke must get 401 from /api/me without a token"]);
     expect(workflowProblems(edit((run) => run.replace('-n "$CA_PORTAL"', '-n "$CA_L1"')))).toEqual(["the portal smoke must go to the portal's own address ($CA_PORTAL)"]);

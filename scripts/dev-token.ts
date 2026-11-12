@@ -1,9 +1,11 @@
 // npm run dev-token -- [--subject <name>] [--no-role] [--expired] [--service] [--portal] [--auth-age <seconds>]
-// Prints one access token from the local dev issuer (NETWORK=local only): for the hosted agent service by default,
-// or with --portal for the portal (013: scp Portal.Access, the portal's client as azp, a fresh auth_time).
-// --auth-age backdates auth_time, to try the "confirm it's you" step. Exit codes: 0 printed; 2 NETWORK is not local
-// or a bad argument.
-import { DEV_PORTAL_CLIENT, DEV_PORTAL_SCOPE, loadOrCreateDevIssuer, signDevToken } from "./dev-issuer-lib.js";
+// Prints one access token from the local dev issuer (NETWORK=local only). By default a person's token for the hosted
+// agent service: `sub` dev|<name>, the `agent:run` permission, the agent CLI's client. With --portal the same person's
+// token from the portal's client, with a fresh sign-in time; --auth-age backdates that time, to try the "confirm
+// it's you" step. With --service a system identity's token, in the shape of the organization's directory (app-only,
+// the Agent.Run role). --no-role leaves the permission (or the role) out. Exit codes: 0 printed; 2 NETWORK is not
+// local or a bad argument.
+import { DEV_PORTAL_CLIENT, loadOrCreateDevIssuer, signDevToken } from "./dev-issuer-lib.js";
 
 async function main(argv: string[]): Promise<number> {
   if ((process.env.NETWORK ?? "local") !== "local") {
@@ -24,15 +26,13 @@ async function main(argv: string[]): Promise<number> {
     return 2;
   }
   const issuer = await loadOrCreateDevIssuer();
+  const service = argv.includes("--service");
+  const noRole = argv.includes("--no-role");
   const token = await signDevToken(issuer, {
     subject,
-    ...(portal && {
-      scp: DEV_PORTAL_SCOPE,
-      azp: DEV_PORTAL_CLIENT,
-      authTime: Math.floor(Date.now() / 1000) - Number(ageRaw ?? 0),
-    }),
-    ...(argv.includes("--no-role") && { roles: [] }),
-    ...(argv.includes("--service") && { idtyp: "app" as const }),
+    ...(service && { service: true }),
+    ...(portal && { azp: DEV_PORTAL_CLIENT, authTime: Math.floor(Date.now() / 1000) - Number(ageRaw ?? 0) }),
+    ...(noRole && (service ? { roles: [] } : { permissions: [] })),
     ...(argv.includes("--expired") && { exp: Math.floor(Date.now() / 1000) - 120 }),
   });
   process.stdout.write(token + "\n");

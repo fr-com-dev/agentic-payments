@@ -301,10 +301,10 @@ jobs:
           jq -e '[.steps[] | select(.result.outcome == "ESCALATED")] | length == 0' "$RUNNER_TEMP/smoke.json" > /dev/null
           test "$SECS" -le 120
 
-      # 013: the portal answers, verifies Entra tokens (never the dev issuer's) and refuses a request without one. No
-      # token is sent: the pipeline's identity is an application, which the portal refuses by design. Skipped on a
-      # first deployment of a unit that precedes the portal; the portal's own first deployment runs it.
-      - name: "8b portal smoke: health, Entra sign-in mode, and 401 without a token"
+      # 013: the portal answers, verifies Auth0 tokens (never the dev issuer's) and refuses a request without one. No
+      # token is sent: the pipeline's identity is an Entra application, and the portal accepts no Entra token.
+      # Skipped on a first deployment of a unit that precedes the portal; the portal's own first deployment runs it.
+      - name: "8b portal smoke: health, Auth0 sign-in mode, and 401 without a token"
         id: portal-smoke
         if: ${{ !inputs.first-deployment || inputs.unit == 'portal' }}
         run: |
@@ -316,7 +316,7 @@ jobs:
             sleep 10
           done
           if [ -z "$ok" ]; then echo "$PORTAL did not answer /healthz within 3 minutes"; exit 1; fi
-          curl -fsS -m 30 "https://$PORTAL/api/config" | jq -e '.auth.mode == "entra"' > /dev/null
+          curl -fsS -m 30 "https://$PORTAL/api/config" | jq -e '.auth.mode == "auth0"' > /dev/null
           code=$(curl -sS -m 30 -o /dev/null -w '%{http_code}' "https://$PORTAL/api/me")
           if [ "$code" != 401 ]; then echo "/api/me without a token answered $code, not 401"; exit 1; fi
 

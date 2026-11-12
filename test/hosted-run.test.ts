@@ -208,7 +208,7 @@ describe("T-AGT-05 logs", () => {
     for (const p of parsed) {
       const allowed = p.event === "run" ? RUN_KEYS : STEP_KEYS;
       for (const k of Object.keys(p)) expect(allowed, `unexpected log key ${k}`).toContain(k);
-      expect(p.requester).toBe("dev:alice");
+      expect(p.requester).toBe("urn:x402:dev-issuer:dev|alice");
       expect(p.runId).toBe(body.runId);
     }
     expect(parsed[0]).toMatchObject({ tool: "fetch_resource", outcome: "FREE", index: 1 });

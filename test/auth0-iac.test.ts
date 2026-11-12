@@ -6,9 +6,13 @@
 // own GitHub environment, the only workflow that reads secrets (only in its plan and apply steps) and variables
 // (Terraform's, only in its plan step: no tfvars file exists), the pinned
 // Terraform and the locked provider, the state in Azure with OIDC and no key, and an apply of exactly the plan shown.
+// 013 (specs/013 contracts/config-and-secrets.md "auth0/", research R19): people's sign-in. The API with RBAC and its
+// one permission, the role that holds exactly it, the two public clients with one grant each, the portal client's
+// URLs, and the post-login Action, whose code is also run here against a stand-in for Auth0's `api`.
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { DETAILS_TYPE } from "../src/layer2-control/payment-details.js";
@@ -27,7 +31,22 @@ const VARIABLES: Record<string, string> = {
   client_secret_version: "AUTH0_CLIENT_SECRET_VERSION",
   manage_guardian: "AUTH0_MANAGE_GUARDIAN",
   guardian_policy: "AUTH0_GUARDIAN_POLICY",
+  portal_origin: "AUTH0_PORTAL_ORIGIN",
 };
+/**
+ * The variables infra/github-setup.sh doesn't create: they have no value until later (the portal's origin exists
+ * once the portal is deployed), and a GitHub variable can't be empty. Unset, Terraform's default holds.
+ */
+const SET_LATER = ["AUTH0_PORTAL_ORIGIN"];
+/** 013: the one permission of people's API, the role that holds it, and the portal's local origin (its default port). */
+const PERMISSION = "agent:run";
+const ROLE = "x402-user";
+const LOCAL_PORTAL = "http://localhost:4025";
+/** The access-token claim the Action sets: the services' default AUTH_TIME_CLAIM (contracts/config-and-secrets.md). */
+const AUTH_TIME_CLAIM = "https://x402.dev/auth_time";
+/** The Action's code, a file of its own so that this suite can run it. */
+const ACTION_FILE = "sign-in-time.js";
+const DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code";
 
 interface Sources {
   /** auth0/*.tf by file name. */
@@ -73,8 +92,18 @@ function block(text: string, header: RegExp): string | undefined {
   return undefined;
 }
 
-/** HCL without comments, so a comment never satisfies or trips a check. */
-const code = (text: string) => text.replace(/#.*$/gm, "").replace(/\/\/.*$/gm, "");
+/** The body of every block whose header matches (a global pattern), in order. */
+function blocks(text: string | undefined, header: RegExp): string[] {
+  const out: string[] = [];
+  for (const m of (text ?? "").matchAll(header)) {
+    const body = block(text!.slice(m.index), new RegExp(header.source));
+    if (body !== undefined) out.push(body);
+  }
+  return out;
+}
+
+/** HCL without comments, so a comment never satisfies or trips a check. A URL's `://` starts no comment. */
+const code = (text: string) => text.replace(/#.*$/gm, "").replace(/(?<!:)\/\/.*$/gm, "");
 const has = (body: string | undefined, re: RegExp) => body !== undefined && re.test(body);
 
 /** One message per problem. Empty for the real sources. */
@@ -138,8 +167,129 @@ export function auth0Problems(s: Sources): string[] {
   if (!/enabled\s*=\s*true/.test(block(guardian, /push\s*\{/) ?? "") || !/provider\s*=\s*"guardian"/.test(guardian)) p.push("Guardian push through the Guardian app must be on");
   if (!/prevent_destroy\s*=\s*true/.test(guardian)) p.push("auth0_guardian must never be destroyed (it would turn off every MFA factor of the tenant)");
 
-  // Nothing here manages users or holds secrets.
+  // ---- 013: people's sign-in (specs/013 research R19) ----------------------------------------------------------
+  const count = (type: string) => [...tf.matchAll(new RegExp(`resource\\s+"${type}"\\s`, "g"))].length;
+  // People's API: RS256, RBAC enforced with the permissions in the access token, refresh tokens allowed, and an
+  // identifier of its own, never the approval API's.
+  const people = block(tf, /resource\s+"auth0_resource_server"\s+"identity"\s*\{/);
+  if (!people) p.push("people's API (auth0_resource_server.identity) is missing");
+  else {
+    if (!has(people, /signing_alg\s*=\s*"RS256"/)) p.push("people's API must sign with RS256 (the services accept RS256 only)");
+    if (!has(people, /enforce_policies\s*=\s*true/)) p.push("people's API must enforce RBAC (enforce_policies = true)");
+    if (!has(people, /token_dialect\s*=\s*"access_token_authz"/)) p.push('people\'s API must put the permissions in the access token (token_dialect = "access_token_authz")');
+    if (!has(people, /allow_offline_access\s*=\s*true/)) p.push("people's API must allow offline access (the web app's refresh-token rotation)");
+    if (!has(people, /identifier\s*=\s*local\.identity_audience/) || !has(people, /condition\s*=\s*var\.api_identifier != local\.identity_audience/)) {
+      p.push("people's API must have an identifier of its own (local.identity_audience), never the approval API's");
+    }
+  }
+  if (count("auth0_resource_server") !== 2) p.push("the APIs must be exactly the approval API and people's API");
+
+  // Its one permission, and the one role, which holds exactly that permission.
+  const permission = /^\s*permission\s*=\s*"([^"]+)"/m.exec(tf)?.[1];
+  const scopes = block(tf, /resource\s+"auth0_resource_server_scopes"\s+"identity"\s*\{/);
+  const scopeBlocks = blocks(scopes, /\bscopes\s*\{/g);
+  if (
+    permission !== PERMISSION ||
+    !has(scopes, /resource_server_identifier\s*=\s*auth0_resource_server\.identity\.identifier/) ||
+    scopeBlocks.length !== 1 ||
+    !/name\s*=\s*local\.permission\b/.test(scopeBlocks[0]!) ||
+    count("auth0_resource_server_scopes") !== 1 ||
+    count("auth0_resource_server_scope") !== 0
+  ) {
+    p.push(`people's API must have exactly one permission, ${PERMISSION}`);
+  }
+  const role = block(tf, /resource\s+"auth0_role"\s+"user"\s*\{/);
+  if (!has(role, new RegExp(`name\\s*=\\s*"${ROLE}"`)) || count("auth0_role") !== 1) p.push(`the one role must be ${ROLE}`);
+  const rolePermissions = block(tf, /resource\s+"auth0_role_permissions"\s+"user"\s*\{/);
+  const held = blocks(rolePermissions, /\bpermissions\s*\{/g);
+  if (
+    !has(rolePermissions, /role_id\s*=\s*auth0_role\.user\.id/) ||
+    held.length !== 1 ||
+    !/name\s*=\s*local\.permission\b/.test(held[0]!) ||
+    !/resource_server_identifier\s*=\s*auth0_resource_server\.identity\.identifier/.test(held[0]!) ||
+    count("auth0_role_permissions") !== 1 ||
+    count("auth0_role_permission") !== 0
+  ) {
+    p.push(`the role ${ROLE} must hold exactly the permission ${PERMISSION} on people's API`);
+  }
+
+  // The two public clients: no secret, no key, and each with only its own grant.
+  const publicClient = (name: string, label: string, appType: string, grants: string[]): string | undefined => {
+    const c = block(tf, new RegExp(`resource\\s+"auth0_client"\\s+"${name}"\\s*\\{`));
+    const cred = block(tf, new RegExp(`resource\\s+"auth0_client_credentials"\\s+"${name}"\\s*\\{`));
+    if (!c) {
+      p.push(`${label} (auth0_client.${name}) is missing`);
+      return undefined;
+    }
+    if (
+      !has(c, new RegExp(`app_type\\s*=\\s*"${appType}"`)) ||
+      !has(cred, new RegExp(`client_id\\s*=\\s*auth0_client\\.${name}\\.client_id`)) ||
+      !has(cred, /authentication_method\s*=\s*"none"/) ||
+      has(cred, /client_secret|private_key_jwt|tls_client_auth/)
+    ) {
+      p.push(`${label} must be a public ${appType} client: authentication_method none, no secret and no key`);
+    }
+    const got = (/grant_types\s*=\s*\[([^\]]*)\]/.exec(c)?.[1] ?? "").split(",").map((g) => g.trim().replace(/^"|"$/g, "")).filter(Boolean);
+    if (JSON.stringify(got) !== JSON.stringify(grants)) p.push(`${label} must have only its own grant (${grants.join(", ")})`);
+    if (!has(c, /is_first_party\s*=\s*true/) || !has(c, /oidc_conformant\s*=\s*true/)) p.push(`${label} must be first-party and OIDC-conformant`);
+    return c;
+  };
+  // Refresh-token rotation needs the refresh_token grant beside the authorization code (with PKCE: a public client).
+  const portalClient = publicClient("portal", "the portal's client", "spa", ["authorization_code", "refresh_token"]);
+  const cliClient = publicClient("agent_cli", "the agent CLI's client", "native", [DEVICE_GRANT]);
+  const origins = /^\s*portal_origins\s*=\s*(.+)$/m.exec(tf)?.[1] ?? "";
+  if (portalClient) {
+    const urls = [...portalClient.matchAll(/^\s*(callbacks|web_origins|allowed_logout_urls|allowed_origins|initiate_login_uri|cross_origin_loc|oidc_backchannel_logout_urls)\s*=\s*(.+)$/gm)].map((m) => `${m[1]} = ${m[2]!.trim()}`).sort();
+    if (
+      JSON.stringify(urls) !== JSON.stringify(["allowed_logout_urls = local.portal_origins", "callbacks = local.portal_origins", "web_origins = local.portal_origins"]) ||
+      JSON.stringify([...origins.matchAll(/"([^"]*)"/g)].map((m) => m[1])) !== JSON.stringify([LOCAL_PORTAL, ""]) ||
+      !origins.includes('var.portal_origin == "" ? [] : [var.portal_origin]') ||
+      portalClient.includes("://")
+    ) {
+      p.push(`the portal client's callbacks, web origins and logout URLs must be exactly ${LOCAL_PORTAL} and var.portal_origin when set`);
+    }
+    const refresh = block(portalClient, /refresh_token\s*\{/);
+    if (!has(refresh, /rotation_type\s*=\s*"rotating"/) || !has(refresh, /expiration_type\s*=\s*"expiring"/) || has(refresh, /infinite_(idle_)?token_lifetime\s*=\s*true/)) {
+      p.push("the portal client's refresh tokens must rotate and expire");
+    }
+  }
+  if (!/condition\s*=\s*var\.portal_origin == "" \|\| can\(regex\("\^https:\/\/\[a-z0-9\]\[a-z0-9\.-\]\*\$", var\.portal_origin\)\)/.test(block(tf, /variable\s+"portal_origin"\s*\{/) ?? "")) {
+    p.push("var.portal_origin must be empty or one https origin: a host, with no path, port, wildcard or trailing slash");
+  }
+  if (cliClient && /^\s*(callbacks|web_origins|allowed_logout_urls|allowed_origins)\s*=/m.test(cliClient)) p.push("the agent CLI's client must have no callback, origin or logout URL: the device flow needs none");
+  const clients = [...tf.matchAll(/resource\s+"auth0_client"\s+"(\w+)"/g)].map((m) => m[1]).sort();
+  if (JSON.stringify(clients) !== JSON.stringify(["agent_cli", "l2", "portal"])) p.push("the clients must be exactly L2's, the portal's and the agent CLI's");
+
+  // The post-login Action: its code is the file this suite runs (actionProblems), it holds no secret and no package,
+  // and it is appended to the tenant's flow, never replacing it. It writes one namespaced claim on the access token.
+  const action = block(tf, /resource\s+"auth0_action"\s+"sign_in_time"\s*\{/);
+  const binding = block(tf, /resource\s+"auth0_trigger_action"\s+"sign_in_time"\s*\{/);
+  const triggers = blocks(action, /\bsupported_triggers\s*\{/g);
+  if (
+    !has(action, new RegExp(`code\\s*=\\s*file\\("\\$\\{path\\.module\\}/${ACTION_FILE.replace(".", "\\.")}"\\)`)) ||
+    triggers.length !== 1 ||
+    !/id\s*=\s*"post-login"/.test(triggers[0]!) ||
+    has(action, /\b(secrets|secrets_wo|dependencies|modules)\s*\{/) ||
+    !has(binding, /trigger\s*=\s*"post-login"/) ||
+    !has(binding, /action_id\s*=\s*auth0_action\.sign_in_time\.id/) ||
+    count("auth0_action") !== 1 ||
+    count("auth0_trigger_action") !== 1 ||
+    count("auth0_trigger_actions") !== 0
+  ) {
+    p.push(`the one Action must be the post-login sign-in time Action (${ACTION_FILE}, no secret, no package), appended to the flow (auth0_trigger_action), never replacing it`);
+  }
+  const claim = /^\s*auth_time_claim\s*=\s*"([^"]+)"/m.exec(tf)?.[1];
+  if (claim !== AUTH_TIME_CLAIM) p.push(`local.auth_time_claim must be ${AUTH_TIME_CLAIM}, the services' default AUTH_TIME_CLAIM`);
+  const js = (s.all[ACTION_FILE] ?? "").replace(/\/\*[\s\S]*?\*\//g, "").replace(/(?<!:)\/\/.*$/gm, "");
+  const apiUses = [...js.matchAll(/\bapi\s*\.\s*([\w.]+)/g)].map((m) => m[1]);
+  const strings = [...js.matchAll(/"([^"]*)"|'([^']*)'|`([^`]*)`/g)].map((m) => m[1] ?? m[2] ?? m[3]);
+  if (JSON.stringify(apiUses) !== '["accessToken.setCustomClaim"]' || JSON.stringify(strings) !== JSON.stringify([AUTH_TIME_CLAIM]) || /\bapi\s*\[|\brequire\s*\(|\bimport\b|\bfetch\s*\(|\bevent\.secrets\b/.test(js)) {
+    p.push(`the Action must write one namespaced claim, ${AUTH_TIME_CLAIM}, on the access token, and do nothing else`);
+  }
+
+  // Nothing here manages users, assigns a role or holds secrets.
   if (/resource\s+"auth0_user"/.test(tf) || /\bpassword\s*=/.test(tf)) p.push("users and passwords are never managed here");
+  if (/resource\s+"auth0_(user_roles?|user_permissions?|organization_member\w*)"/.test(tf)) p.push(`no role or permission is assigned to a person here: an administrator assigns ${ROLE} in Auth0`);
   for (const [f, text] of Object.entries(s.all)) {
     if (/-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(text)) p.push(`${f} holds a private key`);
     if (/eyJ[\w-]+\.eyJ[\w-]+\.[\w-]+/.test(text)) p.push(`${f} holds a JWT`);
@@ -147,10 +297,22 @@ export function auth0Problems(s: Sources): string[] {
   }
 
   // The output L2's parameter file takes: exactly the keys main.bicep reads.
-  const want = Object.keys(bicepCiba(s.bicepparam)).sort();
+  const want = Object.keys(bicepObject(s.bicepparam, "ciba")).sort();
   const out = block(block(tf, /output\s+"bicepparam_ciba"\s*\{/) ?? "", /value\s*=\s*\{/) ?? "";
   const got = [...out.matchAll(/^\s*(\w+)\s*=/gm)].map((m) => m[1]!).sort();
   if (JSON.stringify(got) !== JSON.stringify(want)) p.push(`output bicepparam_ciba must have exactly the ciba keys of the parameter file (${want.join(", ")}), got ${got.join(", ")}`);
+  // 013: the outputs for people's sign-in. The identity object has exactly the keys main.bicep reads, and the agent
+  // service's allow-list is the agent CLI's client only, never the portal's.
+  const wantIdentity = Object.keys(bicepObject(s.bicepparam, "identity")).sort();
+  const identityOut = block(block(tf, /output\s+"bicepparam_identity"\s*\{/) ?? "", /value\s*=\s*\{/) ?? "";
+  const gotIdentity = [...identityOut.matchAll(/^\s*(\w+)\s*=/gm)].map((m) => m[1]!).sort();
+  if (wantIdentity.length === 0 || JSON.stringify(gotIdentity) !== JSON.stringify(wantIdentity)) {
+    p.push(`output bicepparam_identity must have exactly the identity keys of the parameter file (${wantIdentity.join(", ")}), got ${gotIdentity.join(", ")}`);
+  }
+  if (!/issuer\s*=\s*local\.issuer\b/.test(identityOut) || !/audience\s*=\s*auth0_resource_server\.identity\.identifier\b/.test(identityOut) || !/agentClientIds\s*=\s*\[auth0_client\.agent_cli\.client_id\]/.test(identityOut)) {
+    p.push("output bicepparam_identity must be the tenant's issuer, people's API and the agent CLI's client only, never the portal's");
+  }
+  if (!has(block(tf, /output\s+"bicepparam_portal_client_id"\s*\{/), /value\s*=\s*auth0_client\.portal\.client_id\b/)) p.push("output bicepparam_portal_client_id must be the portal client's ID (userAccounts.portalClientId)");
 
   // The state: a blob in Azure, read and written with an Entra sign-in; nothing of it is written in the folder.
   const backend = block(tf, /backend\s+"azurerm"\s*\{/);
@@ -206,12 +368,13 @@ export function pipelineProblems(s: Sources): string[] {
   const exported = /for name in ([a-z_ ]+); do\n\s+source="VAR_\$name"\n\s+if \[\[ -n "\$\{!source\}" \]\]; then export "TF_VAR_\$name=\$\{!source\}"; fi/.exec(run("plan"))?.[1];
   const required = /for name in ([a-z_ ]+); do\n\s+source="VAR_\$name"\n\s+if \[\[ -z "\$\{!source\}" \]\]; then\n[^\n]+\n\s+exit 1/.exec(run("plan"))?.[1];
   if (!wired || exported !== Object.keys(VARIABLES).join(" ") || required !== "tenant_domain api_identifier approver_user_id" || !run("plan").includes('export TF_VAR_environment="$ENVIRONMENT"')) {
-    p.push("Terraform's variables must come from the GitHub environment's variables, as TF_VAR_* in the plan step: all eight wired, the three without a default required");
+    p.push("Terraform's variables must come from the GitHub environment's variables, as TF_VAR_* in the plan step: all nine wired, the three without a default required");
   }
-  // infra/github-setup.sh creates exactly these variables, and the plan refuses the placeholder it gives them.
+  // infra/github-setup.sh creates exactly these variables, but the ones that have no value yet (a GitHub variable
+  // can't be empty), and the plan refuses the placeholder it gives them.
   const created = [...s.setup.matchAll(/^ {2}"(AUTH0_[A-Z_]+)=/gm)].map((m) => m[1]!).sort();
   const placeholder = /^PLACEHOLDER="([A-Z_]+)"$/m.exec(s.setup)?.[1];
-  if (JSON.stringify(created) !== JSON.stringify(Object.values(VARIABLES).sort())) p.push("infra/github-setup.sh must create exactly the variables the pipeline reads");
+  if (JSON.stringify(created) !== JSON.stringify(Object.values(VARIABLES).filter((x) => !SET_LATER.includes(x)).sort())) p.push("infra/github-setup.sh must create exactly the variables the pipeline reads, but the ones set later (the portal's origin)");
   if (!placeholder || !new RegExp(`for source in "\\$\\{!VAR_@\\}"; do\\n\\s+if \\[\\[ "\\$\\{!source\\}" == ${placeholder} \\]\\]; then\\n[^\\n]+\\n\\s+exit 1`).test(run("plan").split("terraform -chdir=auth0 plan")[0]!)) {
     p.push("the plan step must refuse a variable that still holds infra/github-setup.sh's placeholder, before it plans");
   }
@@ -256,6 +419,10 @@ export function pipelineProblems(s: Sources): string[] {
   ) {
     p.push("the only change to the tenant must be the apply step, when the apply input is checked, applying exactly the saved plan");
   }
+  // 013: the apply step's summary gives every value the parameter file takes, none of them secret.
+  for (const output of ["bicepparam_ciba", "bicepparam_identity", "bicepparam_portal_client_id"]) {
+    if (!run("apply").includes(`terraform -chdir=auth0 output -json ${output}\n`)) p.push(`the apply step must show the output ${output} in the run's summary, for infra/main.<environment>.bicepparam`);
+  }
   return p;
 }
 
@@ -264,10 +431,64 @@ function elsewhereVars(w: Pipeline, steps: Step[]): string {
   return JSON.stringify({ ...w, jobs: { job: { steps: steps.map((x) => (x.id === "plan" ? { ...x, env: undefined } : x)) } } });
 }
 
-/** The ciba object in a parameter file, parsed from its text (keys and literal values). */
-function bicepCiba(bicepparam: string): Record<string, string> {
-  const body = block(bicepparam, /param ciba = \{/) ?? "";
+/** An object parameter (ciba, identity) in a parameter file, parsed from its text (keys and literal values). */
+function bicepObject(bicepparam: string, name: string): Record<string, string> {
+  const body = block(bicepparam, new RegExp(`param ${name} = \\{`)) ?? "";
   return Object.fromEntries([...body.matchAll(/^\s*(\w+):\s*(.+)$/gm)].map((m) => [m[1]!, m[2]!.trim()]));
+}
+
+/** One call the Action made on Auth0's `api`: its dotted path and its arguments. */
+type ApiCall = [path: string, args: unknown[]];
+
+/**
+ * Runs the Action's code as Auth0 does (CommonJS, `exports.onExecutePostLogin(event, api)`), in a context of its own,
+ * with a stand-in `api` that records every call on it, whatever its path. Throws when the Action does.
+ */
+export async function runAction(source: string, event: unknown): Promise<ApiCall[]> {
+  const calls: ApiCall[] = [];
+  const recorder = (path: string): unknown =>
+    new Proxy(function () {}, {
+      get: (_target, key) => (typeof key === "symbol" || key === "then" ? undefined : recorder(path ? `${path}.${key}` : key)),
+      apply: (_target, _self, args: unknown[]) => {
+        calls.push([path, args]);
+        return undefined;
+      },
+    });
+  const exports: Record<string, unknown> = {};
+  runInNewContext(source, { exports, module: { exports } });
+  if (JSON.stringify(Object.keys(exports)) !== '["onExecutePostLogin"]' || typeof exports.onExecutePostLogin !== "function") throw new Error("the Action must export onExecutePostLogin only");
+  await (exports.onExecutePostLogin as (event: unknown, api: unknown) => unknown)(event, recorder(""));
+  return calls;
+}
+
+/** A sign-in with a password at `first` and a second factor at `last` (ISO times), as the post-login event has it. */
+const signIn = (first: string, last: string) => ({ authentication: { methods: [{ name: "pwd", timestamp: first }, { name: "mfa", timestamp: last }] }, user: { user_id: "auth0|1" } });
+const FIRST = "2026-11-10T10:00:00.000Z";
+const LAST = "2026-11-10T10:05:30.900Z";
+
+/**
+ * What the Action does, by running it: the claim is the time of the most recent authentication, in whole seconds, and
+ * the only thing it sets; an event without a usable time sets nothing (never the current time, which would make a
+ * token renewal look like a new sign-in). One message per problem.
+ */
+export async function actionProblems(source: string): Promise<string[]> {
+  const p: string[] = [];
+  const cases: [string, unknown, ApiCall[]][] = [
+    ["a sign-in with two methods", signIn(FIRST, LAST), [["accessToken.setCustomClaim", [AUTH_TIME_CLAIM, Math.floor(Date.parse(LAST) / 1000)]]]],
+    ["the same methods in the other order", { authentication: { methods: [...signIn(FIRST, LAST).authentication.methods].reverse() } }, [["accessToken.setCustomClaim", [AUTH_TIME_CLAIM, Math.floor(Date.parse(LAST) / 1000)]]]],
+    ["an event without authentication details", { user: { user_id: "auth0|1" } }, []],
+    ["an event without methods", { authentication: { methods: [] } }, []],
+    ["a method without a readable time", { authentication: { methods: [{ name: "pwd", timestamp: "yesterday" }, { name: "mfa" }, null] } }, []],
+  ];
+  for (const [label, event, want] of cases) {
+    try {
+      const got = await runAction(source, event);
+      if (JSON.stringify(got) !== JSON.stringify(want)) p.push(`the Action, for ${label}, must call ${JSON.stringify(want)}, not ${JSON.stringify(got)}`);
+    } catch (e) {
+      p.push(`the Action, for ${label}, must not throw (a failing Action stops every sign-in of the tenant): ${(e as Error).message}`);
+    }
+  }
+  return p;
 }
 
 const mutate = (s: Sources, file: string, from: string | RegExp, to: string): Sources => {
@@ -285,7 +506,11 @@ describe("T-IAC-02 Auth0 tenant as code (auth0/)", () => {
   });
 
   it("the parameter file's ciba object is the one main.bicep reads, and starts off", () => {
-    expect(bicepCiba(load().bicepparam)).toMatchObject({ enabled: "false", credential: "'key'" });
+    expect(bicepObject(load().bicepparam, "ciba")).toMatchObject({ enabled: "false", credential: "'key'" });
+  });
+
+  it("013: the parameter file's identity object has the three keys main.bicep reads", () => {
+    expect(Object.keys(bicepObject(load().bicepparam, "identity")).sort()).toEqual(["agentClientIds", "audience", "issuer"]);
   });
 
   it.each<[string, string, string | RegExp, string, string]>([
@@ -310,6 +535,86 @@ describe("T-IAC-02 Auth0 tenant as code (auth0/)", () => {
     expect(auth0Problems(mutate(load(), file, from, to))).toContain(message);
   });
 
+  // 013: people's sign-in. One mutant, at least, for each rule of contracts/config-and-secrets.md "auth0/".
+  const ONE_PERMISSION = `people's API must have exactly one permission, ${PERMISSION}`;
+  const ROLE_HOLDS = `the role ${ROLE} must hold exactly the permission ${PERMISSION} on people's API`;
+  const PORTAL_PUBLIC = "the portal's client must be a public spa client: authentication_method none, no secret and no key";
+  const CLI_PUBLIC = "the agent CLI's client must be a public native client: authentication_method none, no secret and no key";
+  const PORTAL_GRANT = "the portal's client must have only its own grant (authorization_code, refresh_token)";
+  const CLI_GRANT = `the agent CLI's client must have only its own grant (${DEVICE_GRANT})`;
+  const PORTAL_URLS = `the portal client's callbacks, web origins and logout URLs must be exactly ${LOCAL_PORTAL} and var.portal_origin when set`;
+  const ONE_ACTION = `the one Action must be the post-login sign-in time Action (${ACTION_FILE}, no secret, no package), appended to the flow (auth0_trigger_action), never replacing it`;
+  const ONE_CLAIM = `the Action must write one namespaced claim, ${AUTH_TIME_CLAIM}, on the access token, and do nothing else`;
+  const NOBODY_ASSIGNED = `no role or permission is assigned to a person here: an administrator assigns ${ROLE} in Auth0`;
+  const IDENTITY_OUTPUT = "output bicepparam_identity must be the tenant's issuer, people's API and the agent CLI's client only, never the portal's";
+  it.each<[string, string, string | RegExp, string, string]>([
+    ["an API without RBAC", "main.tf", /enforce_policies(\s*)= true/, "enforce_policies$1= false", "people's API must enforce RBAC (enforce_policies = true)"],
+    ["permissions left out of the token", "main.tf", '"access_token_authz"', '"access_token"', 'people\'s API must put the permissions in the access token (token_dialect = "access_token_authz")'],
+    ["an API without refresh tokens", "main.tf", /(resource "auth0_resource_server" "identity" \{[\s\S]*?allow_offline_access\s*=\s*)true/, "$1false", "people's API must allow offline access (the web app's refresh-token rotation)"],
+    ["HS256 tokens for people", "main.tf", /(resource "auth0_resource_server" "identity" \{[\s\S]*?signing_alg\s*=\s*)"RS256"/, '$1"HS256"', "people's API must sign with RS256 (the services accept RS256 only)"],
+    ["the approval API reused for people", "main.tf", /identifier(\s*)= local\.identity_audience/, "identifier$1= var.api_identifier", "people's API must have an identifier of its own (local.identity_audience), never the approval API's"],
+    ["another permission name", "main.tf", new RegExp(`permission(\\s*)= "${PERMISSION}"`), 'permission$1= "agent:admin"', ONE_PERMISSION],
+    ["a second permission", "main.tf", /(\n  scopes \{\n[^}]*\})/, '$1\n  scopes {\n    name = "portal:admin"\n  }', ONE_PERMISSION],
+    ["a role under another name", "main.tf", `"${ROLE}"`, '"x402-admin"', `the one role must be ${ROLE}`],
+    ["a second role", "main.tf", 'resource "auth0_role" "user" {', 'resource "auth0_role" "admin" {\n  name = "x402-admin"\n}\n\nresource "auth0_role" "user" {', `the one role must be ${ROLE}`],
+    ["a role with a second permission", "main.tf", /(\n  permissions \{\n[^}]*\})/, '$1\n  permissions {\n    name                       = "read:users"\n    resource_server_identifier = "https://x402-dev.us.auth0.com/api/v2/"\n  }', ROLE_HOLDS],
+    ["a role holding a permission of another API", "main.tf", /(permissions \{\n\s+name\s*= local\.permission\n\s+resource_server_identifier\s*= )auth0_resource_server\.identity\.identifier/, "$1auth0_resource_server.payments.identifier", ROLE_HOLDS],
+    ["a portal client with a secret", "main.tf", /(resource "auth0_client_credentials" "portal" \{[\s\S]*?authentication_method\s*=\s*)"none"/, '$1"client_secret_post"', PORTAL_PUBLIC],
+    ["a confidential portal client", "main.tf", 'app_type        = "spa"', 'app_type        = "regular_web"', PORTAL_PUBLIC],
+    ["an agent CLI client with a secret", "main.tf", /(resource "auth0_client_credentials" "agent_cli" \{[\s\S]*?authentication_method\s*=\s*)"none"/, '$1"client_secret_basic"', CLI_PUBLIC],
+    ["a portal client with the implicit grant", "main.tf", '["authorization_code", "refresh_token"]', '["authorization_code", "refresh_token", "implicit"]', PORTAL_GRANT],
+    ["a portal client with the device grant", "main.tf", '["authorization_code", "refresh_token"]', `["authorization_code", "refresh_token", "${DEVICE_GRANT}"]`, PORTAL_GRANT],
+    ["an agent CLI client that can use the authorization code", "main.tf", `["${DEVICE_GRANT}"]`, `["${DEVICE_GRANT}", "authorization_code"]`, CLI_GRANT],
+    ["an agent CLI client with refresh tokens", "main.tf", `["${DEVICE_GRANT}"]`, `["${DEVICE_GRANT}", "refresh_token"]`, CLI_GRANT],
+    ["an agent CLI client with a callback", "main.tf", 'app_type        = "native"', 'app_type        = "native"\n  callbacks       = ["http://localhost:8080"]', "the agent CLI's client must have no callback, origin or logout URL: the device flow needs none"],
+    ["a fourth client", "main.tf", 'resource "auth0_client" "portal" {', 'resource "auth0_client" "admin" {\n  name = "admin"\n}\n\nresource "auth0_client" "portal" {', "the clients must be exactly L2's, the portal's and the agent CLI's"],
+    ["a second callback URL", "main.tf", `concat(["${LOCAL_PORTAL}"], `, `concat(["${LOCAL_PORTAL}", "https://portal.example"], `, PORTAL_URLS],
+    ["another local origin", "main.tf", `"${LOCAL_PORTAL}"`, '"http://localhost:3000"', PORTAL_URLS],
+    ["a callback written in the client", "main.tf", /callbacks(\s*)= local\.portal_origins/, 'callbacks$1= ["https://portal.example/callback"]', PORTAL_URLS],
+    ["a cross-origin URL of its own", "main.tf", /(\n  web_origins\s*= local\.portal_origins)/, "$1\n  allowed_origins     = local.portal_origins", PORTAL_URLS],
+    ["a wildcard portal origin", "variables.tf", 'can(regex("^https://[a-z0-9][a-z0-9.-]*$", var.portal_origin))', 'startswith(var.portal_origin, "https://")', "var.portal_origin must be empty or one https origin: a host, with no path, port, wildcard or trailing slash"],
+    ["refresh tokens that don't rotate", "main.tf", 'rotation_type                = "rotating"', 'rotation_type                = "non-rotating"', "the portal client's refresh tokens must rotate and expire"],
+    ["refresh tokens that never expire", "main.tf", "infinite_token_lifetime      = false", "infinite_token_lifetime      = true", "the portal client's refresh tokens must rotate and expire"],
+    ["an Action that replaces the tenant's flow", "main.tf", /resource "auth0_trigger_action" "sign_in_time" \{\n\s+trigger\s*= "post-login"\n\s+action_id\s*= auth0_action\.sign_in_time\.id\n\}/, 'resource "auth0_trigger_actions" "sign_in_time" {\n  trigger = "post-login"\n  actions {\n    id           = auth0_action.sign_in_time.id\n    display_name = "x"\n  }\n}', ONE_ACTION],
+    ["an Action with a secret", "main.tf", /(\n  supported_triggers \{)/, '\n  secrets {\n    name  = "KEY"\n    value = "abc"\n  }\n$1', ONE_ACTION],
+    ["an Action on another trigger", "main.tf", /(supported_triggers \{\n\s+id\s*= )"post-login"/, '$1"credentials-exchange"', ONE_ACTION],
+    ["Action code written elsewhere", "main.tf", 'code    = file("${path.module}/sign-in-time.js")', 'code    = "exports.onExecutePostLogin = async () => {};"', ONE_ACTION],
+    ["a second Action", "main.tf", 'resource "auth0_action" "sign_in_time" {', 'resource "auth0_action" "other" {\n  name = "other"\n  code = "x"\n}\n\nresource "auth0_action" "sign_in_time" {', ONE_ACTION],
+    ["another claim name in Terraform", "main.tf", `auth_time_claim   = "${AUTH_TIME_CLAIM}"`, 'auth_time_claim   = "https://example.com/auth_time"', `local.auth_time_claim must be ${AUTH_TIME_CLAIM}, the services' default AUTH_TIME_CLAIM`],
+    ["an Action that also writes the ID token", ACTION_FILE, /(\n\s+api\.accessToken\.setCustomClaim\(CLAIM, [^\n]+)/, "$1\n    api.idToken.setCustomClaim(CLAIM, 1);", ONE_CLAIM],
+    ["an Action that writes a second claim", ACTION_FILE, /(\n\s+api\.accessToken\.setCustomClaim\(CLAIM, [^\n]+)/, '$1\n    api.accessToken.setCustomClaim("https://x402.dev/roles", []);', ONE_CLAIM],
+    ["an Action that writes a claim without a namespace", ACTION_FILE, `"${AUTH_TIME_CLAIM}"`, '"auth_time"', ONE_CLAIM],
+    ["an Action that refuses sign-ins", ACTION_FILE, /(\n\s+api\.accessToken\.setCustomClaim\(CLAIM, [^\n]+)/, '$1\n    api.access.deny("no");', ONE_CLAIM],
+    ["a role assigned to a person", "main.tf", 'resource "auth0_role_permissions" "user" {', 'resource "auth0_user_roles" "someone" {\n  user_id = var.approver_user_id\n  roles   = [auth0_role.user.id]\n}\n\nresource "auth0_role_permissions" "user" {', NOBODY_ASSIGNED],
+    ["a connection with a password in code", "main.tf", 'resource "auth0_role" "user" {', 'resource "auth0_connection" "db" {\n  name     = "db"\n  strategy = "auth0"\n  options {\n    password = "x"\n  }\n}\n\nresource "auth0_role" "user" {', "users and passwords are never managed here"],
+    ["the portal's client on the agent's allow-list", "outputs.tf", "agentClientIds = [auth0_client.agent_cli.client_id]", "agentClientIds = [auth0_client.agent_cli.client_id, auth0_client.portal.client_id]", IDENTITY_OUTPUT],
+    ["an identity output for the approval API", "outputs.tf", /(output "bicepparam_identity" \{[\s\S]*?audience\s*= )auth0_resource_server\.identity\.identifier/, "$1auth0_resource_server.payments.identifier", IDENTITY_OUTPUT],
+    ["an identity output missing the audience", "outputs.tf", /(output "bicepparam_identity" \{[\s\S]*?)\n\s+audience\s*= auth0_resource_server\.identity\.identifier/, "$1", "output bicepparam_identity must have exactly the identity keys of the parameter file (agentClientIds, audience, issuer), got agentClientIds, issuer"],
+    ["the agent CLI's client as the portal's client ID", "outputs.tf", /(output "bicepparam_portal_client_id" \{[\s\S]*?value\s*= )auth0_client\.portal\.client_id/, "$1auth0_client.agent_cli.client_id", "output bicepparam_portal_client_id must be the portal client's ID (userAccounts.portalClientId)"],
+  ])("013 must fail: %s is reported", (_label, file, from, to, message) => {
+    expect(auth0Problems(mutate(load(), file, from, to))).toContain(message);
+  });
+
+  it("013: the Action, run against a stand-in for Auth0's api, sets the one claim to the most recent sign-in time and nothing else", async () => {
+    const source = load().all[ACTION_FILE]!;
+    expect(await actionProblems(source)).toEqual([]);
+    expect(await runAction(source, signIn(FIRST, LAST))).toEqual([["accessToken.setCustomClaim", [AUTH_TIME_CLAIM, 1794305130]]]);
+  });
+
+  it.each<[string, string | RegExp, string, RegExp]>([
+    ["the current time when the sign-in time is unknown", /if \(latest > 0\) \{\n(\s+)api\.accessToken\.setCustomClaim\(CLAIM, [^\n]+/, "{\n$1api.accessToken.setCustomClaim(CLAIM, Math.floor((latest || Date.now()) / 1000));", /for an event without authentication details, must call \[\], not/],
+    ["the first method's time, not the most recent", "at > latest", "latest === 0", /for a sign-in with two methods, must call/],
+    ["milliseconds", "Math.floor(latest / 1000)", "latest", /for a sign-in with two methods, must call/],
+    ["a second claim", /(\n\s+api\.accessToken\.setCustomClaim\(CLAIM, [^\n]+)/, '$1\n    api.idToken.setCustomClaim(CLAIM, 1);', /for a sign-in with two methods, must call/],
+    ["an error when the event has no authentication details", "(event.authentication && event.authentication.methods) || []", "event.authentication.methods", /for an event without authentication details, must not throw/],
+    ["a second handler", /$/, "\nexports.onContinuePostLogin = async () => {};\n", /must not throw[^:]*: the Action must export onExecutePostLogin only/],
+  ])("013 must fail (the Action, run): %s is reported", async (_label, from, to, message) => {
+    const source = load().all[ACTION_FILE]!;
+    expect(typeof from === "string" ? source.includes(from) : from.test(source), "the Action contains the mutation anchor").toBe(true);
+    const problems = await actionProblems(source.replace(from, to));
+    expect(problems.some((m) => message.test(m)), problems.join("\n")).toBe(true);
+  });
+
   it("must fail: a private key in the folder, committed state, and missing ignores are reported", () => {
     const s = load();
     const withKey = { ...s, all: { ...s.all, "key.pem": "-----BEGIN PRIVATE KEY-----\nMIIB\n-----END PRIVATE KEY-----\n", "terraform.tfstate": "{}" } };
@@ -326,7 +631,7 @@ describe("T-IAC-02 Auth0 tenant as code (auth0/)", () => {
 
   const SECRET_SCOPE = "the secrets must reach only the plan and apply steps, as their environment: never the job, another step or a script";
   const VARS_SCOPE = "the variables must reach only the plan step, and no tfvars file or -var argument may be used";
-  const VARS_WIRED = "Terraform's variables must come from the GitHub environment's variables, as TF_VAR_* in the plan step: all eight wired, the three without a default required";
+  const VARS_WIRED = "Terraform's variables must come from the GitHub environment's variables, as TF_VAR_* in the plan step: all nine wired, the three without a default required";
   const ONLY_APPLY = "the only change to the tenant must be the apply step, when the apply input is checked, applying exactly the saved plan";
   it.each<[string, string | RegExp, string, string]>([
     ["a run on every push", "on:\n  workflow_dispatch:", "on:\n  push:\n    branches: [main]\n  workflow_dispatch:", "the pipeline must run by hand only (workflow_dispatch): never on a push, a pull request or a schedule"],
@@ -338,6 +643,8 @@ describe("T-IAC-02 Auth0 tenant as code (auth0/)", () => {
     ["a variable in every step", "  TF_INPUT: \"0\"", "  TF_INPUT: \"0\"\n  TENANT: ${{ vars.AUTH0_TENANT_DOMAIN }}", VARS_SCOPE],
     ["a tfvars file", '-out="$RUNNER_TEMP/auth0.tfplan"\n          {\n            echo "### Plan', '-var-file="$ENVIRONMENT.tfvars" -out="$RUNNER_TEMP/auth0.tfplan"\n          {\n            echo "### Plan', VARS_SCOPE],
     ["a variable that is never set", "          VAR_guardian_policy: ${{ vars.AUTH0_GUARDIAN_POLICY }}\n", "", VARS_WIRED],
+    ["a portal origin that never reaches Terraform", "client_secret_version manage_guardian guardian_policy portal_origin; do", "client_secret_version manage_guardian guardian_policy; do", VARS_WIRED],
+    ["a summary without the identity values", "            terraform -chdir=auth0 output -json bicepparam_identity\n", "", "the apply step must show the output bicepparam_identity in the run's summary, for infra/main.<environment>.bicepparam"],
     ["a variable taken from another one", "VAR_approver_user_id: ${{ vars.AUTH0_APPROVER_USER_ID }}", "VAR_approver_user_id: ${{ vars.AUTH0_TENANT_DOMAIN }}", VARS_WIRED],
     ["a plan with a placeholder", 'if [[ "${!source}" == REPLACE_ME ]]; then', 'if [[ "${!source}" == NEVER ]]; then', "the plan step must refuse a variable that still holds infra/github-setup.sh's placeholder, before it plans"],
     ["an approver that may be missing", "for name in tenant_domain api_identifier approver_user_id; do", "for name in tenant_domain api_identifier; do", VARS_WIRED],
@@ -359,6 +666,15 @@ describe("T-IAC-02 Auth0 tenant as code (auth0/)", () => {
     const s = load();
     expect(typeof from === "string" ? s.workflow.includes(from) : from.test(s.workflow), "the workflow contains the mutation anchor").toBe(true);
     expect(pipelineProblems({ ...s, workflow: s.workflow.replace(from, () => to) })).toContain(message);
+  });
+
+  it("013 must fail (pipeline): a set-up script that creates the portal's origin, which has no value yet, is reported", () => {
+    const s = load();
+    const anchor = '  "AUTH0_GUARDIAN_POLICY=never"\n';
+    expect(s.setup.includes(anchor), "github-setup.sh contains the mutation anchor").toBe(true);
+    expect(pipelineProblems({ ...s, setup: s.setup.replace(anchor, `${anchor}  "AUTH0_PORTAL_ORIGIN=$PLACEHOLDER"\n`) })).toContain(
+      "infra/github-setup.sh must create exactly the variables the pipeline reads, but the ones set later (the portal's origin)",
+    );
   });
 
   it.skipIf(!terraform)("terraform fmt -check passes", () => {

@@ -2,12 +2,12 @@
 // Errors name the variable and never echo its value: several of them are secrets.
 import { trustedProxyHops } from "../../shared/address-limit.js";
 import { apiDocsEnabled, ConfigError, serviceUrls, tokenFor } from "../../shared/config.js";
-import { DEV_ISSUER, DEV_TENANT, entraIssuer, GUID_RE } from "../../shared/entra-token.js";
+import { DEV_DIRECTORY_ISSUER, DEV_ISSUER, DEV_TENANT, entraIssuer, GUID_RE, PERSON_ISSUER_RE } from "../../shared/identity-token.js";
 
 type Env = Record<string, string | undefined>;
 
-// 013: the dev issuer's constants live in src/shared/entra-token.ts (the portal uses them too); re-exported here.
-export { DEV_ISSUER, DEV_TENANT };
+// 013: the dev issuer's constants live in src/shared/identity-token.ts (the portal uses them too); re-exported here.
+export { DEV_DIRECTORY_ISSUER, DEV_ISSUER, DEV_TENANT };
 
 /** Recognized model ids. An unrecognized id makes the AI SDK provider add a third `json` tool (research R2). */
 export const MODEL_ALLOW_LIST = ["claude-sonnet-5-5", "claude-sonnet-5", "claude-opus-5-5", "claude-opus-5", "claude-haiku-5-5"] as const;
@@ -17,8 +17,8 @@ export const DEFAULT_MODEL: AllowedModel = "claude-sonnet-5-5";
 export const DEFAULT_AGENT_PORT = 4024;
 export const DEFAULT_AGENT_BIND_HOST = "127.0.0.1";
 const MIN_SECRET_BYTES = 32;
-/** An Entra application (client) ID. */
-const CLIENT_ID_RE = GUID_RE;
+/** One client ID on `AGENT_CLIENT_IDS`: no spaces, no commas. */
+const CLIENT_ID_RE = /^[A-Za-z0-9._~-]{1,128}$/;
 
 export type ModelProvider = "anthropic" | "foundry";
 
@@ -32,12 +32,14 @@ export interface HostedConfig {
   foundryBaseUrl?: string;
   azureClientId?: string;
   auth: {
-    tenantId: string;
-    audience: string;
-    issuer: string;
+    /**
+     * People (013, research R19): the Auth0 tenant's issuer, the API's identifier, and the clients whose tokens
+     * start runs. The portal's client is never among them (SEC-20). Absent: no person is accepted.
+     */
+    person?: { issuer: string; audience: string; clientIds: string[] };
+    /** System identities: the organization's directory (Entra). Absent: no system identity is accepted. */
+    service?: { tenantId: string; audience: string; issuer: string };
     jwksFile?: string;
-    /** 013 (SEC-20): the portal web app's client ID. A token obtained by that client is refused here. */
-    portalClientId?: string;
   };
   sessionRefSecret: Buffer;
   port: number;
@@ -99,17 +101,56 @@ export function loadHostedConfig(env: Env = process.env): HostedConfig {
     azureClientId = required(env, "AZURE_CLIENT_ID");
   }
 
-  const tenantId = required(env, "AUTH_TENANT_ID");
-  const audience = required(env, "AUTH_AUDIENCE");
   const jwksFile = present(env.AUTH_JWKS_FILE) ? env.AUTH_JWKS_FILE : undefined;
   if (jwksFile !== undefined && !local) throw new ConfigError("AUTH_JWKS_FILE is allowed only with NETWORK=local");
-  const issuer = jwksFile !== undefined ? DEV_ISSUER : entraIssuer(tenantId);
-  // 013 (SEC-20): optional. When set, a token whose `azp` is the portal's web app is refused by this service.
-  const portalClientId = present(env.PORTAL_CLIENT_ID) ? env.PORTAL_CLIENT_ID : undefined;
-  // Entra v2.0 access tokens always carry the API app's client ID as `aud`, never its api:// URI, so any other
-  // value would refuse every real token (research R6).
-  if (jwksFile === undefined && !CLIENT_ID_RE.test(audience)) {
-    throw new ConfigError("AUTH_AUDIENCE must be the API app's client ID (a GUID): Entra v2.0 tokens carry it as aud");
+  const dev = jwksFile !== undefined;
+
+  // People sign in with the Auth0 tenant (013, research R19). All three variables, or none: without them no person
+  // is accepted, which is how an environment runs until its sign-in tenant is set up.
+  const personVars = ["AUTH_ISSUER", "AUTH_AUDIENCE", "AGENT_CLIENT_IDS"] as const;
+  const personGiven = personVars.filter((name) => present(env[name]));
+  if (personGiven.length !== 0 && personGiven.length !== personVars.length) {
+    throw new ConfigError("AUTH_ISSUER, AUTH_AUDIENCE and AGENT_CLIENT_IDS go together: set all three to accept people, or none");
+  }
+  let person: HostedConfig["auth"]["person"];
+  if (personGiven.length === personVars.length) {
+    const issuer = required(env, "AUTH_ISSUER");
+    if (dev && issuer !== DEV_ISSUER) throw new ConfigError(`AUTH_ISSUER must be ${DEV_ISSUER} with AUTH_JWKS_FILE (the local dev issuer)`);
+    if (!dev && !PERSON_ISSUER_RE.test(issuer)) {
+      throw new ConfigError("AUTH_ISSUER must be the sign-in tenant's issuer, https://<domain>/ in lower case with the final slash");
+    }
+    const audience = required(env, "AUTH_AUDIENCE");
+    const clientIds = required(env, "AGENT_CLIENT_IDS").split(",").map((c) => c.trim());
+    if (clientIds.some((c) => !CLIENT_ID_RE.test(c))) throw new ConfigError("AGENT_CLIENT_IDS must be a comma-separated list of client IDs");
+    // SEC-20: a token the portal's web app obtained must never start a run, so its client can't be on the list.
+    if (present(env.PORTAL_CLIENT_ID) && clientIds.includes(env.PORTAL_CLIENT_ID)) {
+      throw new ConfigError("AGENT_CLIENT_IDS must not contain PORTAL_CLIENT_ID: the agent service never accepts a portal token");
+    }
+    person = { issuer, audience, clientIds };
+  }
+
+  // System identities stay with the organization's directory. Both variables, or neither (then none is accepted).
+  let service: HostedConfig["auth"]["service"];
+  if (present(env.AUTH_TENANT_ID) !== present(env.SERVICE_AUDIENCE)) {
+    throw new ConfigError("AUTH_TENANT_ID and SERVICE_AUDIENCE go together: set both to accept system identities, or neither");
+  }
+  if (present(env.AUTH_TENANT_ID) && present(env.SERVICE_AUDIENCE)) {
+    const tenantId = env.AUTH_TENANT_ID;
+    const serviceAudience = env.SERVICE_AUDIENCE;
+    if (!dev) {
+      if (!GUID_RE.test(tenantId)) throw new ConfigError("AUTH_TENANT_ID must be the directory's tenant ID (a GUID)");
+      // Entra v2.0 access tokens always carry the API app's client ID as `aud`, never its api:// URI, so any other
+      // value would refuse every real token (specs/011 research R6).
+      if (!GUID_RE.test(serviceAudience)) {
+        throw new ConfigError("SERVICE_AUDIENCE must be the API app's client ID (a GUID): Entra v2.0 tokens carry it as aud");
+      }
+    }
+    service = { tenantId, audience: serviceAudience, issuer: dev ? DEV_DIRECTORY_ISSUER : entraIssuer(tenantId) };
+  }
+  if (person === undefined && service === undefined) {
+    throw new ConfigError(
+      "nobody could call the service: set AUTH_ISSUER, AUTH_AUDIENCE and AGENT_CLIENT_IDS (people), AUTH_TENANT_ID and SERVICE_AUDIENCE (system identities), or both",
+    );
   }
 
   const secretRaw = required(env, "SESSION_REF_SECRET");
@@ -127,7 +168,7 @@ export function loadHostedConfig(env: Env = process.env): HostedConfig {
     ...(anthropicApiKey !== undefined && { anthropicApiKey }),
     ...(foundryBaseUrl !== undefined && { foundryBaseUrl }),
     ...(azureClientId !== undefined && { azureClientId }),
-    auth: { tenantId, audience, issuer, ...(jwksFile !== undefined && { jwksFile }), ...(portalClientId !== undefined && { portalClientId }) },
+    auth: { ...(person !== undefined && { person }), ...(service !== undefined && { service }), ...(jwksFile !== undefined && { jwksFile }) },
     sessionRefSecret,
     port: agentPort(env),
     bindHost: present(env.AGENT_BIND_HOST) ? env.AGENT_BIND_HOST : DEFAULT_AGENT_BIND_HOST,

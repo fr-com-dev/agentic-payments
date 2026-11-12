@@ -304,6 +304,15 @@ legend {
 .history h2 {
   margin-top: 0;
 }
+.history .changes {
+  list-style: disc;
+  margin: 0.5rem 0;
+  padding-left: 1.25rem;
+}
+.history .changes li {
+  padding: 0.125rem 0;
+  border-top: 0;
+}
 .figures {
   display: grid;
   grid-template-columns: minmax(8rem, 14rem) 1fr;

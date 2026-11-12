@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { Link } from "../components/Link.js";
 import { Banner, ScreenHeading, StatusLabel } from "../components/ui.js";
 import { useApp } from "../context.js";
+import { describeChanges } from "../changes.js";
 import { errorMessage } from "../messages.js";
 import { summarizePolicy } from "../summary.js";
 import type { Platform, Policy, PolicyVersion } from "../types.js";
@@ -47,13 +48,24 @@ export function PolicyHistory({ policyId }: { policyId: string }) {
             {policy.name} <StatusLabel state={policy.displayState} /> · version {policy.version}
           </p>
           <ol className="history">
-            {(policy.history ?? []).map((h) => (
+            {(policy.history ?? []).map((h, i, all) => {
+              // The values of the version before this entry: the last earlier entry that carries values.
+              const previous = h.kind === "changed" ? all.slice(0, i).reverse().find((e) => e.values !== undefined)?.values : undefined;
+              const changes = previous && h.values ? describeChanges(previous, h.values, platform.sellers, platform.decimals) : [];
+              return (
               <li key={h.seq}>
                 <h2>
                   {KIND_TEXT[h.kind] ?? h.kind}
                   {h.cause === "account_enabled" ? " when the account was enabled again" : ""} · version {h.version}
                 </h2>
                 <p className="muted">{timeOf(h.ts)}</p>
+                {changes.length > 0 ? (
+                  <ul className="changes" aria-label={`What changed in version ${h.version}`}>
+                    {changes.map((c) => (
+                      <li key={c}>{c}</li>
+                    ))}
+                  </ul>
+                ) : null}
                 {h.values
                   ? summarizePolicy(h.values, platform.sellers, platform.limits, platform.decimals).lines.map((line) => (
                       <p key={line} className="summary-line">
@@ -62,7 +74,8 @@ export function PolicyHistory({ policyId }: { policyId: string }) {
                     ))
                   : null}
               </li>
-            ))}
+              );
+            })}
           </ol>
           <p>
             {policy.state !== "removed" ? (
