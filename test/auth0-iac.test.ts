@@ -5,7 +5,8 @@
 // Its pipeline, .github/workflows/provision-auth0.yml, is checked here too (pipelineProblems): by hand only, in its
 // own GitHub environment, the only workflow that reads secrets (only in its plan and apply steps) and variables
 // (Terraform's, only in its plan step: no tfvars file exists), the pinned
-// Terraform and the locked provider, the state in Azure with OIDC and no key, and an apply of exactly the plan shown.
+// Terraform and the locked provider (its lock file holds the Linux runner's checksum too), the state in Azure with
+// OIDC and no key, and an apply of exactly the plan shown.
 // 013 (specs/013 contracts/config-and-secrets.md "auth0/", research R19): people's sign-in. The API with RBAC and its
 // one permission, the role that holds exactly it, the two public clients with one grant each, the portal client's
 // URLs, and the post-login Action, whose code is also run here against a stand-in for Auth0's `api`.
@@ -47,12 +48,17 @@ const AUTH_TIME_CLAIM = "https://x402.dev/auth_time";
 /** The Action's code, a file of its own so that this suite can run it. */
 const ACTION_FILE = "sign-in-time.js";
 const DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code";
+/** How the lock file gets the checksum of each platform that runs Terraform: the pipeline's runner and a Mac. */
+const LOCK_COMMAND = "terraform -chdir=auth0 providers lock -platform=linux_amd64 -platform=darwin_arm64";
+const LOCKED_FOR_RUNNER = `auth0/.terraform.lock.hcl must hold the provider's h1 checksum for the pipeline's Linux runner as well as a Mac's (${LOCK_COMMAND})`;
 
 interface Sources {
   /** auth0/*.tf by file name. */
   tf: Record<string, string>;
   /** Every file under auth0/ except .terraform/, by name. */
   all: Record<string, string>;
+  /** auth0/.terraform.lock.hcl: the provider's version and checksums, which the pipeline's init never changes. */
+  lock: string;
   gitignore: string;
   dockerignore: string;
   bicepparam: string;
@@ -70,6 +76,7 @@ function load(): Sources {
   return {
     tf: Object.fromEntries(Object.entries(all).filter(([f]) => f.endsWith(".tf"))),
     all,
+    lock: readFileSync(join(DIR, ".terraform.lock.hcl"), "utf8"),
     gitignore: readFileSync(".gitignore", "utf8"),
     dockerignore: readFileSync(".dockerignore", "utf8"),
     bicepparam: readFileSync("infra/main.dev.bicepparam", "utf8"),
@@ -115,6 +122,10 @@ export function auth0Problems(s: Sources): string[] {
   const req = block(tf, /required_providers\s*\{/) ?? "";
   if (!/source\s*=\s*"auth0\/auth0"/.test(req) || !/version\s*=\s*">= 1\.60\.0, < 2\.0\.0"/.test(req)) p.push("the provider must be auth0/auth0 pinned to >= 1.60.0, < 2.0.0");
   if (!/required_version\s*=\s*">= 1\.11\.0"/.test(tf)) p.push("Terraform must be >= 1.11.0 (write-only arguments keep the client secret out of state)");
+  // The lock file: one h1 checksum per platform that runs Terraform. `init -lockfile=readonly` adds none, and
+  // `validate` refuses a provider whose unpacked package matches no h1 here (a lock written on a Mac has only its own).
+  const locked = block(s.lock, /provider\s+"registry\.terraform\.io\/auth0\/auth0"\s*\{/) ?? "";
+  if ((locked.match(/"h1:[A-Za-z0-9+/]+=*"/g) ?? []).length < 2) p.push(LOCKED_FOR_RUNNER);
   const provider = block(tf, /provider\s+"auth0"\s*\{/) ?? "";
   if (/client_id|client_secret|api_token|client_assertion/.test(provider)) p.push("the provider block must take credentials from the environment only, never from a file");
 
@@ -538,6 +549,13 @@ describe("T-IAC-02 Auth0 tenant as code (auth0/)", () => {
     ["an output missing clientKeyId", "outputs.tf", '    clientKeyId = ""\n', "", "output bicepparam_ciba must have exactly the ciba keys of the parameter file (approver, audience, clientId, clientKeyId, credential, enabled, issuer), got approver, audience, clientId, credential, enabled, issuer"],
   ])("must fail: %s is reported", (_label, file, from, to, message) => {
     expect(auth0Problems(mutate(load(), file, from, to))).toContain(message);
+  });
+
+  it("must fail: a lock file written on one platform only is reported", () => {
+    const s = load();
+    const hashes = s.lock.match(/^\s*"h1:.*\n/gm) ?? [];
+    expect(hashes.length, "the lock file has an h1 checksum to take out").toBeGreaterThanOrEqual(2);
+    expect(auth0Problems({ ...s, lock: s.lock.replace(hashes[1]!, "") })).toContain(LOCKED_FOR_RUNNER);
   });
 
   // 013: people's sign-in. One mutant, at least, for each rule of contracts/config-and-secrets.md "auth0/".
