@@ -3,7 +3,8 @@
 // from a click; the tenant answers the pop-up with a web message, so no page of the portal's own is loaded there.
 // Confirming identity is a new pop-up with `prompt=login` and `max_age=0`, which makes the person enter their
 // credentials again; the tenant then puts the new sign-in time in the access token, and the portal and L2 judge
-// that time, not this code.
+// that time, not this code. Signing out is the one time the tab goes to the tenant: its logout address ends the
+// tenant's own session and sends the tab back to the portal's origin.
 import { Auth0Client, type Auth0ClientOptions, type ICache, type User } from "@auth0/auth0-spa-js";
 import type { Auth, AuthAccount } from "./types.js";
 
@@ -20,7 +21,7 @@ export interface SignInClient {
   loginWithPopup(o?: { authorizationParams?: Record<string, unknown> }): Promise<void>;
   getTokenSilently(): Promise<string | undefined>;
   getUser(): Promise<User | undefined>;
-  logout(o?: { openUrl?: false | ((url: string) => void | Promise<void>) }): Promise<void>;
+  logout(o?: { openUrl?: false | ((url: string) => void | Promise<void>); logoutParams?: { returnTo?: string } }): Promise<void>;
 }
 
 const CACHE_PREFIX = "@@auth0spajs@@";
@@ -76,7 +77,8 @@ export async function createAuth0Auth(
   s: Auth0Settings,
   o: { origin?: string; client?: SignInClient } = {},
 ): Promise<Auth> {
-  const client: SignInClient = o.client ?? new Auth0Client(clientOptions(s, o.origin ?? window.location.origin, sessionCache()));
+  const origin = o.origin ?? window.location.origin;
+  const client: SignInClient = o.client ?? new Auth0Client(clientOptions(s, origin, sessionCache()));
   // Who is signed in, from the library's cache: a reload keeps the person signed in for as long as the tab lives.
   let user: User | null = (await client.getUser().catch(() => undefined)) ?? null;
   let failure: string | null = null;
@@ -121,7 +123,8 @@ export async function createAuth0Auth(
       const before = user?.sub;
       if (!(await popup({ prompt: "login", max_age: 0 }))) return false;
       if (before !== undefined && user?.sub !== before) {
-        // Somebody else signed in in the pop-up. Their sign-in must not finish this person's change: sign out.
+        // Somebody else signed in in the pop-up. Their sign-in must not finish this person's change: sign out,
+        // here only, so that the reason stays on screen (the tenant's session is now that other person's).
         user = null;
         await client.logout({ openUrl: false }).catch(() => undefined);
         failure = "account_changed";
@@ -132,8 +135,11 @@ export async function createAuth0Auth(
     lastError: () => failure,
     signOut: async () => {
       user = null;
-      // Clears the library's cache. The tenant's own session is left alone: no navigation away from the portal.
-      await client.logout({ openUrl: false }).catch(() => undefined);
+      // Ends the tenant's own session too. Clearing only the library's cache would leave it alive, and the next
+      // "Sign in" would let whoever is at this browser back in without credentials. The library clears its cache,
+      // then sends the tab to the tenant's logout address, which sends it back to the portal's origin (one of the
+      // allowed logout URLs of the portal's client, auth0/main.tf).
+      await client.logout({ logoutParams: { returnTo: origin } }).catch(() => undefined);
     },
   };
 }
