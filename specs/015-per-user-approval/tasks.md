@@ -71,7 +71,7 @@ v1.15 and constitution 1.7.0 still forbid. No behavior changes.
   - the comment on `DecisionChannel` and on `EscalationDecision.decidedBy`: for the backchannel, the owner's `usr_…` (entries written before v1.16 hold the configured approver's subject).
 
   Make no behavior change; `npm run typecheck` stays green.
-- [ ] T002 [P] Amend the scope first, in SPEC.md and .specify/memory/constitution.md together (Governance: "change SPEC.md and this file together"; research R16), so that no later task builds what they forbid:
+- [X] T002 [P] Amend the scope first, in SPEC.md and .specify/memory/constitution.md together (Governance: "change SPEC.md and this file together"; research R16), so that no later task builds what they forbid:
   - SPEC.md version line: `1.16 (<date>)` and the clause "v1.16 sends each approval request to the person the run is for and removes the configured approver (L2-7, `specs/015`)"; a "Changes in 1.16" table with the columns of the 1.15 table and the rows of this task (later tasks add theirs);
   - SPEC §1.2 and §1.3: a person approves their own agent's escalated payments by phone; "Per-user approvers" leaves the out-of-scope list; approving in the portal as a user, and people's runs in a deployed environment, stay out;
   - SPEC L2-7: the sentence "One approver per L2 (`CIBA_APPROVER`)" becomes "Each request is addressed to the escalation's owner (v1.16)"; the tasks that change the behavior rewrite the rest of L2-7;

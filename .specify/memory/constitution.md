@@ -1,5 +1,21 @@
 <!--
 Sync Impact Report
+- Version change: 1.7.0 → 1.8.0 (MINOR, 2026-11-12, feature 015-per-user-approval)
+- Modified principles: V. Least-Privilege Credentials (one word in the bullet on the approval-service client
+  credential: an approval counts only when "the owner's" signed answer verifies, where it said "the approver's";
+  the owner is the user an escalation is for). No principle or invariant is redefined or removed.
+- Modified sections: Technology & Scope Constraints (scope: a user approves their own agent's escalated payments
+  by phone, and approving them in the portal stays out; residual risks for v1.16). No new technology and no new
+  credential: the request goes to the person the run is for instead of one configured approver.
+- Templates reviewed: plan-template.md, spec-template.md, tasks-template.md (no change)
+- Source: SPEC.md v1.16 (Changes in 1.16, §1.2, §1.3, L2-7, §11 residual risks)
+- Documents changed with it: SPEC.md. To follow in the feature's last slice (specs/015 tasks T053, T055):
+  specs/README.md and CLAUDE.md.
+- Deferred TODOs: the rest of SPEC v1.16 lands with the tasks that change each behavior (specs/015 tasks.md);
+  the five facts about enrollment in the tenant are from Auth0's documentation and are checked by hand
+  (specs/015 research R13, quickstart §7).
+
+Previous report (1.7.0)
 - Version change: 1.6.0 → 1.7.0 (MINOR, 2026-11-12, feature 014-portal-l2-control-api)
 - Modified principles: V. Least-Privilege Credentials (the caller roles gain a sixth, portal→control for
   administration; one new bullet for the administration credential; the bullet on the portal role credential is
@@ -180,8 +196,8 @@ Rationale: authorization must be reproducible, auditable and race-free.
   each service MUST accept only its own clients and refuse the other's.
 - The approval-service client credential (L2's Auth0 key or secret, for backchannel approval) is held by L2
   only and confined to one module by an architecture rule (A9). It authenticates L2 to the approval service; it
-  never signs a payment, and it never approves one by itself: an approval counts only when the approver's
-  signed answer verifies.
+  never signs a payment, and it never approves one by itself: an approval counts only when the owner's
+  signed answer verifies (since 1.8.0 the owner is the user the escalated payment is for).
 - The Auth0 Management API credential, which the tenant's pipeline (`provision-auth0.yml`) applies Terraform
   with, is held only by that pipeline's own GitHub environment and reaches only its plan and apply steps. It is
   the only credential GitHub holds: no deploy pipeline reads a secret. GitHub MUST NEVER hold a credential of
@@ -256,8 +272,8 @@ Rationale: authorization must be reproducible, auditable and race-free.
   Solana, AP2, ACP, Visa TAP, Mastercard Agent Pay, a persistent DB beyond JSONL, and mTLS.
   Since 1.4.0 user accounts are in scope (many users, each with their own account and expense
   policies); organizations of users, paying with a card, moving funds out of a user's account
-  and deleting a user stay out. Since 1.7.0 administrators decide escalated payments in the portal; a user
-  approving their own payments stays out. Each extension (EXT-1..EXT-9) is delivered one per change and MUST
+  and deleting a user stay out. Since 1.7.0 administrators decide escalated payments in the portal. Since 1.8.0 a
+  user approves their own agent's escalated payments by phone; approving them in the portal stays out. Each extension (EXT-1..EXT-9) is delivered one per change and MUST
   preserve every invariant.
 - Cross-layer types live only in the shared contract module. Changing them is a contract
   change: update every producer, consumer and test together.
@@ -289,6 +305,11 @@ Rationale: authorization must be reproducible, auditable and race-free.
   - a stolen administrator sign-in can approve pending escalations after a fresh sign-in, and an administrator
     permission taken away holds until the person's access token expires;
   - one portal process holds two role credentials, separate at the control layer and in its own code.
+  Added in 1.8.0:
+  - a person approves their own agent's spending, for every amount their policy and the platform limits allow;
+  - a compromised hosted agent that knows another user's subject can cause a request to that user's phone;
+  - a deployed environment asks nobody by phone until people can start runs there;
+  - whoever knows a person's sign-in credentials can enroll a phone where that person never did.
 
 ## Development Workflow & Quality Gates
 
@@ -317,4 +338,4 @@ New policy rules get a snake_case rule ID, a row in the SPEC rule table and a po
   design and again before implementation. Every review verifies the quality gates above.
 - Runtime guidance for agents lives in `CLAUDE.md`.
 
-**Version**: 1.7.0 | **Ratified**: 2026-10-16 | **Last Amended**: 2026-11-12
+**Version**: 1.8.0 | **Ratified**: 2026-10-16 | **Last Amended**: 2026-11-12
