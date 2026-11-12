@@ -102,7 +102,7 @@ this phase: T-CIBA-01..14 must pass at its end with no change of meaning (T005 s
   - `CibaStubOptions.approver` becomes optional and unused once T009 lands; keep it accepted until then.
 
   With L2 unchanged the hint still carries the configured approver, so every existing test passes.
-- [ ] T005 Run backchannel tests with user accounts and two people in test/helpers/backchannel-l2.ts (research R17):
+- [X] T005 Run backchannel tests with user accounts and two people in test/helpers/backchannel-l2.ts (research R17):
   - user accounts are always on (the `users` and `net` deps that the `admin` option adds today); `admin` keeps adding only the administration routes;
   - export `ALICE_SUB = "auth0|alice-1"`, `BOB_SUB = "auth0|bob-1"`, and build `alice` and `bob` as `userIdFor(stub.issuer, <sub>)` after the stub starts; expose them on `BackchannelL2` as `people: { alice: { userId, subject }, bob: { userId, subject } }`;
   - onboard both before returning (profile, crypto account, one policy), reusing the calls of test/helpers/users.ts `onboard`; choose the policy values so that every amount T-CIBA-01..14 use gets the decision it gets today, and say in a comment which amounts escalate;

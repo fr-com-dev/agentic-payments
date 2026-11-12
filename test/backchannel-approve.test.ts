@@ -189,9 +189,10 @@ describe("T-CIBA-09 wait in the call (approval)", () => {
       finalityClass: "included",
       detail: "ok",
       observedAt: new Date().toISOString(),
-      verified: { asset: ASSET, payer: "0x00000000000000000000000000000000000000f1", payTo: PAY_TO, amount: "1000" },
+      verified: { asset: ASSET, payer: l2.people.alice.address, payTo: PAY_TO, amount: "1000" }, // 015: alice's own account signed it
     };
     expect((await l2.reconcile(report)).status).toBe(200);
+    expect(l2.ledger.entries().find((e) => e.type === "SETTLEMENT")!.data.anomaly).toBe(false);
     expect((await l2.budget("sess_bc")).status).toBe(200);
     expect((await l2.authorize(l2.intentFor("/api/market", "5000", { sessionId: "sess_other" }))).body.status).toBe("AUTHORIZED");
     expect(Date.now() - started).toBeLessThan(1000);

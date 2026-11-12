@@ -42,10 +42,11 @@ describe("T-CIBA-03 repeats and operator-only", () => {
 
   it("operatorApprovalOnly that is not a boolean is 400, and the ledger is unchanged", async () => {
     l2 = await startBackchannelL2();
+    const before = l2.ledger.entries().length; // 015: the two people's onboarding entries
     const r = await l2.authorize(l2.intentFor(PREMIUM, "50000", { operatorApprovalOnly: "yes" }));
     expect(r.status).toBe(400);
     expect(r.body.error).toBe("malformed PaymentIntent");
-    expect(l2.ledger.entries()).toHaveLength(0);
+    expect(l2.ledger.entries()).toHaveLength(before);
   });
 
   it("operatorApprovalOnly: false behaves like an absent field", async () => {
