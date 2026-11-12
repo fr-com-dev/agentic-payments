@@ -61,8 +61,14 @@ export interface BackchannelDeps {
   retryDelaysMs?: readonly number[];
   /** Test-only (must-fail proof): the cap. Default APPROVAL_REQUEST_CAP. */
   approvalRequestCap?: number;
-  /** Test-only (must-fail proofs): verification checks to skip. */
+  /** Test-only (must-fail proofs): verification checks to skip. `owner` is the proof of FR-013 (T-CIBA-16). */
   skipChecks?: ReadonlySet<VerificationCheck>;
+  /**
+   * Test-only (must-fail proof of FR-009, T-CIBA-17): eligibility skips the identity check, so a request is sent to
+   * a subject that is not the user's. Never set outside tests: `main()` does not set it and no environment variable
+   * reaches it.
+   */
+  skipIdentityCheck?: boolean;
   /** Test-only (must-fail proof, T-CIBA-10): false checks the state, awaits verification, then appends unserialized. */
   serializeOutcomes?: boolean;
   /** Log sink for the whitelisted lifecycle lines. Default console.log. */
@@ -130,7 +136,7 @@ export class Backchannel {
     if (o.owner === undefined) return "no_owner";
     if (o.subject === undefined) return "no_identity";
     // FR-009, FR-011: the subject must be this user's, under L2's own approval issuer.
-    if (!subjectIsOwner(this.d.issuer, o.subject, o.owner)) return "identity_mismatch";
+    if (!this.d.skipIdentityCheck && !subjectIsOwner(this.d.issuer, o.subject, o.owner)) return "identity_mismatch";
     const cap = this.d.approvalRequestCap ?? APPROVAL_REQUEST_CAP;
     if (approvalRequestCount(this.d.ledger.entries(), o.nowMs, APPROVAL_REQUEST_CAP_WINDOW_MS) >= cap) return "capped";
     return "requested";

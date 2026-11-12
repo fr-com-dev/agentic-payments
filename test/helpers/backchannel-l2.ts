@@ -122,6 +122,11 @@ export interface BackchannelL2 {
   /** 015: the two onboarded people. */
   people: { alice: Person; bob: Person };
   /**
+   * 015: onboards one more user (profile, crypto account, the same policy) under the identifier a test gives, for
+   * people who are not `userIdFor(<the stand-in's issuer>, subject)`. Returns their account's address.
+   */
+  onboardUser(userId: string): Promise<string>;
+  /**
    * `as` (015, default `"alice"`): a person's intent carries their `userId` and `approvalSubject`; `"platform"`
    * carries neither, as the scripted agent, the command-line agent and a system identity's run send it.
    */
@@ -214,8 +219,7 @@ export async function startBackchannelL2(o: BackchannelL2Options = {}): Promise<
   };
 
   /** Profile, crypto account and one policy, through L2's own user-account routes. A restart on the same ledger adds nothing. */
-  const onboard = async (subject: string): Promise<Person> => {
-    const userId = userIdFor(stub.issuer, subject);
+  const onboardUser = async (userId: string): Promise<string> => {
     const portal = async (method: string, path: string, body?: unknown) => {
       const r = (await call(method, path, TOKENS.portal, body)) as { status: number; body: unknown };
       if (r.status !== 200 && r.status !== 201) throw new Error(`onboarding ${method} ${path} failed: ${r.status} ${JSON.stringify(r.body)}`);
@@ -225,7 +229,11 @@ export async function startBackchannelL2(o: BackchannelL2Options = {}): Promise<
     if (!view.onboarding.profile) await portal("PUT", `/v1/users/${userId}/registration`, { acknowledgedTestFunds: true });
     if (!view.onboarding.wallet) view = await portal("PUT", `/v1/users/${userId}/wallet`);
     if (!view.onboarding.policy) await portal("POST", `/v1/users/${userId}/policies`, { ...personPolicy(clock.now()), identityConfirmedAtMs: clock.now() });
-    return { userId, subject, address: view.wallet!.address };
+    return view.wallet!.address;
+  };
+  const onboard = async (subject: string): Promise<Person> => {
+    const userId = userIdFor(stub.issuer, subject);
+    return { userId, subject, address: await onboardUser(userId) };
   };
   const people = { alice: await onboard(ALICE_SUB), bob: await onboard(BOB_SUB) };
 
@@ -242,6 +250,7 @@ export async function startBackchannelL2(o: BackchannelL2Options = {}): Promise<
     logs,
     clock,
     people,
+    onboardUser,
     intentFor: (path, amount, io = {}) => {
       const resourceUrl = `${SELLER}${path}`;
       const person = io.as === "platform" ? undefined : people[io.as ?? "alice"];

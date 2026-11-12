@@ -1,9 +1,16 @@
 // 015 — backchannel approval by the person the run is for (SPEC L2-7 v1.16; specs/015 contracts/control-api.md
 // "Tests"). In-process L2 with user accounts, two onboarded people and the stand-in approval service
-// (test/helpers/backchannel-l2.ts): T-CIBA-15 (one request, to the owner, and their answer decides).
+// (test/helpers/backchannel-l2.ts): T-CIBA-15 (one request, to the owner, and their answer decides), T-CIBA-16
+// (another person's genuine answer approves nothing), T-CIBA-17 (a subject that is not the user's asks nobody) and
+// T-CIBA-20 (the subject is written nowhere).
 // Every must-fail switch is a test-only dep of the backchannel, never an environment variable.
-import { afterEach, describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { inspect } from "node:util";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { VerificationCheck } from "../src/layer2-control/approval-evidence.js";
 import type { LedgerEntry } from "../src/layer2-control/ledger.js";
+import { userIdFor } from "../src/shared/user-id.js";
+import { PLANTED_ERROR_TEXT } from "./helpers/ciba-stub.js";
 import { ALICE_SUB, BOB_SUB, PAY_TO, SELLER, startBackchannelL2, type BackchannelL2, types } from "./helpers/backchannel-l2.js";
 
 const opened: BackchannelL2[] = [];
@@ -13,6 +20,7 @@ async function start(o: Parameters<typeof startBackchannelL2>[0] = {}) {
   return l2;
 }
 afterEach(async () => {
+  vi.restoreAllMocks();
   for (const l2 of opened.splice(0)) await l2.close({ closeStub: true }).catch(() => {});
 });
 
@@ -147,5 +155,227 @@ describe("T-CIBA-15 one request, addressed to the owner, and their answer decide
     const res = await call;
     expect(res.body.status).toBe("AUTHORIZED");
     expect(ofType(l2, "HUMAN_APPROVAL").map((e) => [e.data.channel, e.data.approver])).toEqual([["backchannel", alice.userId]]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// US2: only the owner's verified answer counts
+// ---------------------------------------------------------------------------
+
+describe("T-CIBA-16 another person's genuine answer approves nothing (US2, FR-013, SEC-30)", () => {
+  /** Alice's escalation; the approval service returns bob's signed answer for it, same request, same payment details. */
+  async function bobAnswersForAlice(skipChecks?: VerificationCheck[]) {
+    const l2 = await start(skipChecks ? { backchannel: { skipChecks: new Set(skipChecks) } } : {});
+    l2.stub.setAnswers("pending", { approve: { as: BOB_SUB } });
+    const res = await l2.authorize(l2.intentFor(PREMIUM, "50000"));
+    return { l2, res };
+  }
+
+  it("T-CIBA-16 bob's signed answer for alice's escalation: one APPROVAL_VERIFICATION_FAILED{owner}, no approval, nothing signed, still pending; an operator approval pays", async () => {
+    const { l2, res } = await bobAnswersForAlice();
+    expect(res.body.status).toBe("ESCALATE");
+    expect(l2.stub.tokensIssued.length).toBeGreaterThan(0); // bob's answer was genuine: signed by the service, for this request
+    expect(ofType(l2, "HUMAN_APPROVAL")).toHaveLength(0);
+    expect(ofType(l2, "APPROVAL_VERIFICATION_FAILED").map((e) => e.data.check)).toEqual(["owner"]);
+    expect(ofType(l2, "AUTHORIZED")).toHaveLength(0);
+    const id = res.body.authorizationId;
+    expect((await l2.pending()).pending.map((p) => [p.authorizationId, p.approvalRequest])).toEqual([[id, "verification_failed"]]);
+    // The failure names nobody: neither bob nor his subject is in the ledger for this escalation.
+    const trail = JSON.stringify(l2.trail({ escalationId: id }));
+    expect(trail).not.toContain(BOB_SUB);
+    expect(trail).not.toContain(l2.people.bob.userId);
+    expect((await l2.approve(id)).status).toBe(200);
+    const paid = await l2.authorize(l2.intentFor(PREMIUM, "50000"));
+    expect(paid.body.status).toBe("AUTHORIZED");
+    expect((paid.body as { payer: string }).payer.toLowerCase()).toBe(l2.people.alice.address.toLowerCase());
+  });
+
+  it("T-CIBA-16 must fail without the owner check: bob's answer approves alice's payment, and it is paid from her account", async () => {
+    const { l2, res } = await bobAnswersForAlice(["owner"]);
+    expect(res.body.status).toBe("AUTHORIZED");
+    expect((res.body as { payer: string }).payer.toLowerCase()).toBe(l2.people.alice.address.toLowerCase());
+    expect(ofType(l2, "APPROVAL_VERIFICATION_FAILED")).toHaveLength(0);
+    expect(ofType(l2, "HUMAN_APPROVAL")).toHaveLength(1);
+  });
+});
+
+describe("T-CIBA-17 a subject that is not the user's asks nobody (US2, FR-009, FR-011, SEC-30)", () => {
+  /** An intent that names `userId` and carries `subject` (or none), as a caller holding CONTROL_TOKEN could send it. */
+  const intentAs = (l2: BackchannelL2, userId: string, subject: string | undefined, sessionId: string) => ({
+    ...l2.intentFor(PREMIUM, "50000", { as: "platform", sessionId }),
+    userId,
+    ...(subject !== undefined && { approvalSubject: subject }),
+  });
+  /** No request, the mark on the entry, an answer at once, and the operator path pays. */
+  async function asksNobody(l2: BackchannelL2, intent: ReturnType<typeof intentAs>, mark: string, payer: string) {
+    const starts = l2.stub.startForms().length;
+    const t0 = Date.now();
+    const res = await l2.authorize(intent);
+    expect(Date.now() - t0).toBeLessThan(500); // no wait: the helper's wait is 1500 ms
+    expect([res.body.status, rulesOf(res.body)]).toEqual(["ESCALATE", ["human_approval_required"]]);
+    const esc = l2.ledger.entries().find((e) => e.type === "ESCALATED" && e.authorizationId === res.body.authorizationId)!;
+    expect(esc.data).toMatchObject({ approvalRequest: mark, userId: intent.userId });
+    await new Promise((r) => setTimeout(r, 60));
+    expect(l2.stub.startForms()).toHaveLength(starts);
+    expect(l2.trail({ escalationId: res.body.authorizationId }).map((e) => e.type)).toEqual(["ESCALATED"]);
+    expect((await l2.approve(res.body.authorizationId)).status).toBe(200);
+    const paid = await l2.authorize({ ...intent, intentId: `${intent.intentId}_retry` });
+    expect(paid.body.status).toBe("AUTHORIZED");
+    expect((paid.body as { payer: string }).payer.toLowerCase()).toBe(payer.toLowerCase());
+  }
+
+  it("T-CIBA-17 alice's userId with bob's subject: identity_mismatch, no request, ESCALATE at once; an operator approval pays", async () => {
+    const l2 = await start();
+    const { alice } = l2.people;
+    await asksNobody(l2, intentAs(l2, alice.userId, BOB_SUB, "sess_mismatch"), "identity_mismatch", alice.address);
+    expect(l2.stub.requests).toHaveLength(0);
+  });
+
+  it("T-CIBA-17 a subject that is the user's only under another issuer: identity_mismatch (FR-011, same tenant or nobody is asked)", async () => {
+    const l2 = await start();
+    // Dana signed in with the local dev issuer. Her subject there is spelled like alice's at the approval service.
+    const dana = userIdFor("urn:x402:dev-issuer", ALICE_SUB);
+    expect(dana).not.toBe(l2.people.alice.userId);
+    const address = await l2.onboardUser(dana);
+    await asksNobody(l2, intentAs(l2, dana, ALICE_SUB, "sess_other_issuer"), "identity_mismatch", address);
+    expect(l2.stub.requests).toHaveLength(0);
+  });
+
+  it("T-CIBA-17 alice's userId and no subject: no_identity, no request", async () => {
+    const l2 = await start();
+    const { alice } = l2.people;
+    await asksNobody(l2, intentAs(l2, alice.userId, undefined, "sess_no_identity"), "no_identity", alice.address);
+    expect(l2.stub.requests).toHaveLength(0);
+  });
+
+  it("T-CIBA-17 the payment itself is decided as without the field: the same decisions and violations, whatever the subject", async () => {
+    const l2 = await start({ backchannel: { waitMs: 50 } });
+    l2.stub.setAnswers("pending");
+    const { alice } = l2.people;
+    const decide = async (path: string, amount: string, subject: string | undefined, sessionId: string) => {
+      const res = await l2.authorize({ ...intentAs(l2, alice.userId, subject, sessionId), resourceUrl: `${SELLER}${path}`, ...paymentFor(l2, path, amount) });
+      return [res.body.status, rulesOf(res.body)];
+    };
+    // Auto-approved, escalated, and denied above the hard cap: with alice's own subject, with bob's, and with none.
+    for (const [path, amount] of [["/api/weather", "1000"], ["/api/premium-report", "50000"], ["/api/too-much", "200000"]] as const) {
+      const own = await decide(path, amount, ALICE_SUB, `sess_own_${amount}`);
+      expect(await decide(path, amount, BOB_SUB, `sess_bobs_${amount}`)).toEqual(own);
+      expect(await decide(path, amount, undefined, `sess_none_${amount}`)).toEqual(own);
+    }
+    expect(ofType(l2, "ESCALATED").map((e) => e.data.approvalRequest)).toEqual(["requested", "identity_mismatch", "no_identity"]);
+  });
+
+  it("T-CIBA-17 must fail without the identity check: the request is sent with the mismatched subject in its login_hint", async () => {
+    const l2 = await start({ backchannel: { skipIdentityCheck: true, waitMs: 200 } });
+    l2.stub.setAnswers("pending");
+    const res = await l2.authorize(intentAs(l2, l2.people.alice.userId, BOB_SUB, "sess_mismatch"));
+    expect(res.body.status).toBe("ESCALATE");
+    expect(ofType(l2, "ESCALATED")[0]!.data.approvalRequest).toBe("requested");
+    // Alice's payment, on bob's phone.
+    expect(l2.stub.startForms().map((f) => hintOf(f).sub)).toEqual([BOB_SUB]);
+  });
+});
+
+/** The challenge for `path` at `amount`, from the helper's own intent builder. */
+function paymentFor(l2: BackchannelL2, path: string, amount: string) {
+  return { paymentRequired: l2.intentFor(path, amount, { as: "platform" }).paymentRequired };
+}
+
+describe("T-CIBA-20 the subject is written nowhere (US2, FR-020, NFR-004, SC-009)", () => {
+  // Some sign-in methods build the subject from an address, so the planted one is email-shaped.
+  const ADDRESS = "planted.person-7f3a91@example.test";
+  const PLANTED = `email|${ADDRESS}`;
+
+  it("T-CIBA-20 after an approval, a refusal, a mismatch and a failed start, neither the planted subject nor its address is in the ledger, a log line, a response or an event", async () => {
+    const consoleLines: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((...a: unknown[]) => void consoleLines.push(a.map(String).join(" ")));
+    vi.spyOn(console, "error").mockImplementation((...a: unknown[]) => void consoleLines.push(a.map(String).join(" ")));
+    const l2 = await start({ admin: true, backchannel: { log: undefined } });
+    const pat = userIdFor(l2.stub.issuer, PLANTED);
+    await l2.onboardUser(pat);
+    const bodies: unknown[] = [];
+    const keep = async <T extends { body: unknown }>(p: Promise<T>) => {
+      const r = await p;
+      bodies.push(r.body);
+      return r;
+    };
+    const patsIntent = (path: string, sessionId: string) => ({ ...l2.intentFor(path, "50000", { as: "platform", sessionId }), userId: pat, approvalSubject: PLANTED });
+
+    // An approval and a refusal, from the planted person's own phone.
+    l2.stub.setAnswersFor(0, "pending", { approve: {} });
+    l2.stub.setAnswersFor(1, "deny");
+    const approved = await keep(l2.authorize(patsIntent("/api/p1", "p1")));
+    expect(approved.body.status).toBe("AUTHORIZED");
+    const refused = await keep(l2.authorize(patsIntent("/api/p2", "p2")));
+    expect(refused.body.status).toBe("DENIED");
+    // A mismatch: alice's payment carrying the planted subject.
+    const mismatch = await keep(l2.authorize({ ...l2.intentFor("/api/p3", "50000", { as: "platform", sessionId: "p3" }), userId: l2.people.alice.userId, approvalSubject: PLANTED }));
+    expect(mismatch.body.status).toBe("ESCALATE");
+    // A failed start: the service refuses the request for good.
+    l2.stub.setStart({ permanent: "invalid_request" });
+    const failed = await keep(l2.authorize(patsIntent("/api/p4", "p4")));
+    expect(failed.body.status).toBe("ESCALATE");
+    // A malformed value (a space) is refused without being repeated.
+    const malformed = await keep(l2.authorize({ ...patsIntent("/api/p5", "p5"), approvalSubject: `${PLANTED} x` }));
+    expect(malformed.status).toBe(400);
+    expect(ofType(l2, "ESCALATED").map((e) => e.data.approvalRequest)).toEqual(["requested", "requested", "identity_mismatch", "requested"]);
+    expect(l2.stub.startForms().map((f) => hintOf(f).sub)).toEqual([PLANTED, PLANTED, PLANTED]); // the subject did travel
+
+    // Every read a person or a process can make of it: the operator's, the administration's and the user-account routes.
+    const escalationId = failed.body.authorizationId;
+    await keep(l2.approve(escalationId));
+    bodies.push(await l2.pending(), await l2.events());
+    const details = ofType(l2, "ESCALATED").map((e) => `/v1/admin/escalations/${e.authorizationId!}`); // approved, denied, pending, approved
+    for (const path of ["/v1/admin/escalations", "/v1/admin/escalations/events", ...details]) {
+      const r = await keep(l2.admin("GET", path));
+      expect(r.status, path).toBe(200);
+    }
+    for (const path of [`/v1/users/${pat}`, "/v1/platform"]) {
+      const r = await keep(l2.portal("GET", path));
+      expect(r.status, path).toBe(200);
+    }
+    await keep(l2.budget("p1"));
+
+    const haystack = [readFileSync(l2.ledgerFile, "utf8"), ...consoleLines, ...l2.logs, JSON.stringify(bodies)].join("\n");
+    for (const needle of [PLANTED, ADDRESS, encodeURIComponent(PLANTED), encodeURIComponent(ADDRESS), PLANTED_ERROR_TEXT]) {
+      expect(haystack.includes(needle), needle).toBe(false);
+    }
+    // The scan saw something: lifecycle lines were logged, and the ledger names the person by usr_… only.
+    expect(consoleLines.some((l) => l.includes("approval request sent"))).toBe(true);
+    expect(haystack).toContain(pat);
+    expect(haystack).not.toContain("approvalSubject");
+    expect(l2.ledger.verifyChain().ok).toBe(true);
+  });
+
+  it("T-CIBA-20 a body that is not JSON is answered without quoting it, and L2 logs nothing of it (with Express as main() runs it)", async () => {
+    // What the console would print: an object is inspected, with its properties, as console.error does.
+    const consoleLines: string[] = [];
+    const printed = (...a: unknown[]) => void consoleLines.push(a.map((x) => (typeof x === "string" ? x : inspect(x))).join(" "));
+    vi.spyOn(console, "log").mockImplementation(printed);
+    vi.spyOn(console, "error").mockImplementation(printed);
+    const l2 = await start();
+    // Outside tests Express's environment is not "test", and its default handler then prints an unhandled error. A
+    // body-parser error carries the raw request body as a property, so the body would be in L2's log.
+    l2.service.app.set("env", "development");
+    const before = l2.ledger.entries().length;
+    const send = (body: string) =>
+      fetch(`${l2.url}/v1/authorize`, { method: "POST", headers: { authorization: "Bearer b-control", "content-type": "application/json" }, body });
+    const answers: [number, string][] = [];
+    for (const broken of [`{"approvalSubject":"${PLANTED}",}`, `{"intentId":"int_x","sessionId":"s","approvalSubject":"${PLANTED}" oops`, `"${PLANTED}`]) {
+      const res = await send(broken);
+      answers.push([res.status, await res.text()]);
+    }
+    // A body over the size limit is refused the same way, unread.
+    const big = await send(JSON.stringify({ approvalSubject: PLANTED, pad: "x".repeat(300_000) }));
+    answers.push([big.status, await big.text()]);
+    await new Promise((r) => setTimeout(r, 50)); // Express's default handler logs after it answers
+    const haystack = [...answers.map((a) => a[1]), ...consoleLines, ...l2.logs].join("\n");
+    for (const needle of [PLANTED, ADDRESS, "planted.person"]) expect(haystack.includes(needle), needle).toBe(false);
+    expect(consoleLines).toEqual([]);
+    expect(answers.map((a) => a[0])).toEqual([400, 400, 400, 413]);
+    for (const [status, text] of answers) expect(JSON.parse(text)).toEqual({ error: status === 400 ? "malformed PaymentIntent" : "PaymentIntent body refused" });
+    expect(l2.ledger.entries().length).toBe(before);
+    // Without a token the body is never read: 401 precedes everything.
+    expect((await fetch(`${l2.url}/v1/authorize`, { method: "POST", headers: { "content-type": "application/json" }, body: `{"approvalSubject":"${PLANTED}",}` })).status).toBe(401);
   });
 });

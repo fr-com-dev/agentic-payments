@@ -14,7 +14,7 @@
 import { randomUUID } from "node:crypto";
 import type { Server } from "node:http";
 import { pathToFileURL } from "node:url";
-import express, { type Express } from "express";
+import express, { type ErrorRequestHandler, type Express } from "express";
 import type { PaymentRequirements } from "@x402/core/types";
 import { requireRole } from "../shared/auth.js";
 import { apiDocsEnabled, ConfigError, CONTROL_BIND_HOST, controlPort, loadEnv, networkProfile, ROLE_TOKEN_VAR, tokenFor, type NetworkProfile } from "../shared/config.js";
@@ -146,6 +146,22 @@ function validIntent(body: unknown): body is PaymentIntent {
     (b.approvalSubject === undefined || (typeof b.approvalSubject === "string" && APPROVAL_SUBJECT_RE.test(b.approvalSubject) && b.userId !== undefined))
   );
 }
+
+/**
+ * 015 (FR-020, T-CIBA-20): answers an authorize body that could not be read (not JSON, too large, cut off). Without
+ * it the error reaches Express's default handler, which logs it outside the test environment, and a body-parser
+ * error carries the raw body: `approvalSubject` (or `purpose`) would be in L2's log. Nothing of the request is
+ * logged or repeated here. Any other error is passed on unchanged.
+ */
+const refuseUnreadBody: ErrorRequestHandler = (err: unknown, _req, res, next) => {
+  const e = err as { type?: unknown; status?: unknown } | null;
+  const status = typeof e?.status === "number" && e.status >= 400 && e.status < 500 ? e.status : undefined;
+  if (res.headersSent || typeof e?.type !== "string" || status === undefined) {
+    next(err);
+    return;
+  }
+  res.status(status).json({ error: status === 400 ? "malformed PaymentIntent" : "PaymentIntent body refused" });
+};
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 const maxZero = (n: bigint) => (n < 0n ? 0n : n);
@@ -497,6 +513,8 @@ export function createControlService(deps: ControlServiceDeps): ControlService {
       if (!res.headersSent) res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
+
+  app.use("/v1/authorize", refuseUnreadBody);
 
   app.get("/v1/budget/:sessionId", requireRole("agent-control", tok(deps.tokens?.control)), (req, res) => {
     const sessionId = String(req.params.sessionId);

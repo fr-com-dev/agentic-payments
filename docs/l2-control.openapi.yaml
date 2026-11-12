@@ -77,7 +77,8 @@ paths:
           description: >-
             Malformed intent (missing ids, `paymentRequired.accepts` not an array, non-http(s) URL, a non-boolean
             `operatorApprovalOnly`, a `userId` that is not a user identifier, or, v1.16, an `approvalSubject` that
-            is malformed or sent without `userId`). The answer never repeats a value.
+            is malformed or sent without `userId`), or a body that is not JSON. The answer never repeats a value,
+            and L2 logs nothing of the body.
           content:
             application/json:
               schema:
