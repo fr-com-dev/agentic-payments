@@ -11,6 +11,7 @@ import type { PaymentRequired, PaymentRequirements } from "@x402/core/types";
 import { AuditLedger, type LedgerEntry } from "../../src/layer2-control/ledger.js";
 import { buildMandate, type SpendingMandate } from "../../src/layer2-control/mandate.js";
 import { buildPlatform, type PlatformConfig } from "../../src/layer2-control/platform.js";
+import type { AdminDeps } from "../../src/layer2-control/admin-routes.js";
 import { createControlService, recordPlatformConfig, type ControlService } from "../../src/layer2-control/service.js";
 import { WalletKeyring, type PaymentSignerLike } from "../../src/layer2-control/signer.js";
 import type { UserAccountsDeps } from "../../src/layer2-control/users.js";
@@ -23,7 +24,7 @@ export const PLATFORM_PAYER = "0x00000000000000000000000000000000000000f1";
 export const SELLER_HOST = "127.0.0.1:4021";
 export const OTHER_HOST = "127.0.0.1:4031";
 export const UNLISTED_HOST = "127.0.0.1:4099";
-export const TOKENS = { control: "u-control", settlement: "u-settlement", operator: "u-operator", portal: "u-portal" };
+export const TOKENS = { control: "u-control", settlement: "u-settlement", operator: "u-operator", portal: "u-portal", portalAdmin: "u-portal-admin" };
 /** A fixed, valid 24-word phrase for tests only. Its accounts never hold anything. */
 export const TEST_MNEMONIC =
   "legal winner thank year wave sausage worth useful legal winner thank year wave sausage worth useful legal winner thank year wave sausage worth title";
@@ -106,6 +107,8 @@ export interface UsersL2Options {
   users?: Partial<UserAccountsDeps>;
   /** User accounts off entirely (FR-001). */
   off?: boolean;
+  /** 014: the administration routes on (`true`), or on with must-fail switches. Absent: off, each is 404. */
+  admin?: true | AdminDeps;
   signerLatencyMs?: number;
   /** Reuse a ledger file (restart tests). */
   ledgerFile?: string;
@@ -129,6 +132,12 @@ export interface UsersL2 {
   /** Any route with any token (default: the portal's). */
   call<T = Record<string, unknown>>(method: string, path: string, o?: { token?: string | null; body?: unknown }): Promise<Reply<T>>;
   portal<T = Record<string, unknown>>(method: string, path: string, body?: unknown): Promise<Reply<T>>;
+  /** 014: an administration route, with the administration role's token. */
+  admin<T = Record<string, unknown>>(method: string, path: string, body?: unknown): Promise<Reply<T>>;
+  /** 014: an operator route, with the operator's token. */
+  operator<T = Record<string, unknown>>(method: string, path: string, body?: unknown): Promise<Reply<T>>;
+  /** 014: how many HTTP requests this L2 has received (to prove a refusal made no call). */
+  requestCount(): number;
   intentFor(path: string, amount: string, o?: { sessionId?: string; userId?: string; host?: string; payTo?: string }): PaymentIntent;
   authorize(intent: PaymentIntent | Record<string, unknown>): Promise<Reply<AuthorizationDecision & { error?: string }>>;
   /** Profile registered and a crypto account created. Returns the account's address. */
@@ -165,11 +174,16 @@ export async function startUsersL2(o: UsersL2Options = {}): Promise<UsersL2> {
     now: clock.now,
     ...(o.signerLatencyMs !== undefined && { signerLatencyMs: o.signerLatencyMs }),
     ...(!o.off && { users: { platform, keyring, ...o.users }, net }),
+    ...(o.admin !== undefined && { admin: o.admin === true ? {} : o.admin }),
   });
   const server = await new Promise<Server>((r) => {
     const s = service.app.listen(0, "127.0.0.1", () => r(s));
   });
   const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  let requests = 0;
+  server.on("request", () => {
+    requests++;
+  });
 
   const call: UsersL2["call"] = async (method, path, co = {}) => {
     const token = co.token === undefined ? TOKENS.portal : co.token;
@@ -218,6 +232,9 @@ export async function startUsersL2(o: UsersL2Options = {}): Promise<UsersL2> {
     mandate,
     call,
     portal,
+    admin: (method, path, body) => call(method, path, { token: TOKENS.portalAdmin, ...(body !== undefined && { body }) }),
+    operator: (method, path, body) => call(method, path, { token: TOKENS.operator, ...(body !== undefined && { body }) }),
+    requestCount: () => requests,
     intentFor: (path, amount, io = {}) => {
       const resourceUrl = `http://${io.host ?? SELLER_HOST}${path}`;
       return {

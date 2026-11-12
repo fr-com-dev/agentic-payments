@@ -80,7 +80,7 @@ export function envFileFor(p: DemoProcess, opts: { allowExample?: boolean } = {}
 export function childEnv(
   p: DemoProcess,
   file: EnvFile | null,
-  opts: { network: string; sessionId: string; users?: boolean },
+  opts: { network: string; sessionId: string; users?: boolean; admin?: boolean },
 ): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "" };
   for (const [k, v] of Object.entries(process.env)) if (k.startsWith("NODE_") && v !== undefined) env[k] = v;
@@ -95,6 +95,8 @@ export function childEnv(
     if (opts.users) {
       env.USER_ACCOUNTS = "1";
       if (!value("USER_WALLET_MNEMONIC")) env.USER_WALLET_MNEMONIC = DEV_USER_WALLET_MNEMONIC;
+      // 014 (`--admin`, with `--users` only): the administration routes, for the portal's administration area.
+      if (opts.admin) env.PORTAL_ADMIN = "1";
     }
   }
   if (p.role === "facilitator" && local && !value("FACILITATOR_PRIVATE_KEY")) {

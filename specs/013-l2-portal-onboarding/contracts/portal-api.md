@@ -1,5 +1,10 @@
 # Contract: the portal API (browser → portal)
 
+> **Since 014 (SPEC v1.15).** With the administration area on, the `roles` row of the access table accepts
+> `Agent.Run` or `Portal.Admin`, each route requires one of them, and `/api/me` and `/api/config` gain additive
+> fields. The administration routes are defined in
+> [specs/014 contracts/portal-api.md](../../014-portal-l2-control-api/contracts/portal-api.md).
+
 The portal process serves the web app's static files and this JSON API under `/api`. It is the only new public
 entry point. Normative for SPEC L2-8 and `docs/portal.openapi.yaml`; T-API-12..15 fail until they match the service.
 `API_DOCS=1` adds Swagger UI at `/docs`, as on the other services, and is never set in Azure.

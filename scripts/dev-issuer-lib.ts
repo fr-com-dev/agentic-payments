@@ -12,6 +12,7 @@ import {
   DEV_DIRECTORY_ISSUER,
   DEV_ISSUER,
   DEV_TENANT,
+  PORTAL_ADMIN_PERMISSION,
   SERVICE_ROLE,
 } from "../src/shared/identity-token.js";
 import { userIdFor } from "../src/shared/user-id.js";
@@ -22,6 +23,8 @@ export const DEV_AUDIENCE = "api://x402-l1-agent";
 export const DEV_SERVICE_AUDIENCE = "api://x402-l1-agent-service";
 export const DEV_ROLE = SERVICE_ROLE;
 export const DEV_PERMISSION = AGENT_RUN_PERMISSION;
+/** 014: the permission of a portal administrator. */
+export const DEV_ADMIN_PERMISSION = PORTAL_ADMIN_PERMISSION;
 /** The client a person's agent token comes from (`AGENT_CLIENT_IDS` in env/l1-hosted.env.example). */
 export const DEV_AGENT_CLIENT = "x402-agent-cli-dev";
 /** 013: the portal web app's client ID with the dev issuer (`PORTAL_CLIENT_ID` in env/portal.env.example). */

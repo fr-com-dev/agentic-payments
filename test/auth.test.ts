@@ -119,6 +119,13 @@ describe("role separation must-fail proof backing T-E2E-05 (007 T033)", () => {
       "POST /v1/users/:userId/enable": "portal-control",
       "PUT /v1/users/:userId/cards/:cardId": "portal-control",
       "DELETE /v1/users/:userId/cards/:cardId": "portal-control",
+      // 014: the administration routes, all for the portal's second role and none shared with another role.
+      "GET /v1/admin/escalations": "portal-admin",
+      "GET /v1/admin/escalations/events": "portal-admin",
+      "GET /v1/admin/escalations/:authorizationId": "portal-admin",
+      "POST /v1/admin/escalations/:authorizationId/approve": "portal-admin",
+      "POST /v1/admin/escalations/:authorizationId/reject": "portal-admin",
+      "GET /v1/admin/ledger/verify": "portal-admin",
     });
   });
 });
@@ -139,6 +146,21 @@ describe("CFG-2 role token resolution (007 T036)", () => {
 
   it("off local, an unset token is an error (fail closed)", () => {
     expect(() => tokenFor("agent-verifier", { NETWORK: "base-sepolia" })).toThrow(/missing VERIFIER_TOKEN/);
+  });
+});
+
+describe("014 shared the sixth role (INV-13)", () => {
+  it("portal-admin resolves PORTAL_ADMIN_TOKEN: the dev default on local only, and its own name in the error", () => {
+    expect(ROLE_TOKEN_VAR["portal-admin"]).toBe("PORTAL_ADMIN_TOKEN");
+    expect(tokenFor("portal-admin", { NETWORK: "local" })).toBe("dev-portal-admin-token");
+    expect(tokenFor("portal-admin", { NETWORK: "base-sepolia", PORTAL_ADMIN_TOKEN: "a-value" })).toBe("a-value");
+    expect(() => tokenFor("portal-admin", { NETWORK: "base-sepolia" })).toThrow(/missing PORTAL_ADMIN_TOKEN/);
+    expect(() => tokenFor("portal-admin", { NETWORK: "local", PORTAL_ADMIN_TOKEN: "" })).toThrow(/empty PORTAL_ADMIN_TOKEN/);
+  });
+
+  it("no two roles share a dev token", () => {
+    const values = Object.values(ROLE_TOKEN_VAR).map((name) => DEV_TOKENS[name]);
+    expect(new Set(values).size).toBe(values.length);
   });
 });
 

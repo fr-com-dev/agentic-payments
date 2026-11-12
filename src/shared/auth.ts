@@ -28,6 +28,13 @@ export const ENDPOINT_ROLES = {
   "POST /v1/users/:userId/enable": "portal-control",
   "PUT /v1/users/:userId/cards/:cardId": "portal-control",
   "DELETE /v1/users/:userId/cards/:cardId": "portal-control",
+  // 014 portal administration (L2-8): the portal's second role, and nothing else, reaches these; it reaches nothing above.
+  "GET /v1/admin/escalations": "portal-admin",
+  "GET /v1/admin/escalations/events": "portal-admin",
+  "GET /v1/admin/escalations/:authorizationId": "portal-admin",
+  "POST /v1/admin/escalations/:authorizationId/approve": "portal-admin",
+  "POST /v1/admin/escalations/:authorizationId/reject": "portal-admin",
+  "GET /v1/admin/ledger/verify": "portal-admin",
 } as const satisfies Record<string, Role>;
 
 const digest = (s: string) => createHash("sha256").update(s, "utf8").digest();

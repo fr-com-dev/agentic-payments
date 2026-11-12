@@ -1,5 +1,22 @@
 <!--
 Sync Impact Report
+- Version change: 1.6.0 → 1.7.0 (MINOR, 2026-11-12, feature 014-portal-l2-control-api)
+- Modified principles: V. Least-Privilege Credentials (the caller roles gain a sixth, portal→control for
+  administration; one new bullet for the administration credential; the bullet on the portal role credential is
+  unchanged word for word, and stays true: that credential still can't approve or reject). No principle is
+  redefined or removed.
+- Modified sections: Technology & Scope Constraints (scope: administrators decide escalations in the portal, a user
+  approving their own payments stays out; residual risks for v1.15). No new technology: who is an administrator is
+  a second permission of the sign-in tenant, in the same Terraform.
+- Templates reviewed: plan-template.md, spec-template.md, tasks-template.md (no change)
+- Source: SPEC.md v1.15 (Changes in 1.15, §3.3, §4 INV-13, §4.1 A12 and A13, L2-4.3, L2-5, L2-8, §11 SEC-8 and
+  SEC-27..SEC-29)
+- Deferred TODOs: none. The first design kept a "seen" marker in the browser's localStorage; it was dropped during
+  implementation because the web app's standing safety test forbids it. The feature was first written as 1.5.0
+  against SPEC v1.11, with the administrator as an app role of the organization's directory; main took those
+  numbers and moved people's sign-in to Auth0 before it merged, so it is 1.7.0 and a permission of the tenant.
+
+Previous report (1.6.0)
 - Version change: 1.5.0 → 1.6.0 (MINOR, 2026-11-11, feature 013-l2-portal-onboarding, research R19)
 - Modified principles: V. Least-Privilege Credentials (the requester credential is now one of two: a person's
   access token from the sign-in tenant, Auth0, or a system identity's token from the organization's directory,
@@ -148,7 +165,8 @@ Rationale: authorization must be reproducible, auditable and race-free.
 ### V. Least-Privilege Credentials
 
 - Every caller role (agent→control, agent→verifier, verifier→control, operator→control,
-  portal→control) MUST use its own credential. One credential MUST NEVER authorize two roles. (INV-13)
+  portal→control for user accounts, portal→control for administration) MUST use its own credential. One
+  credential MUST NEVER authorize two roles. (INV-13)
 - Secrets are scoped per process. A shared environment file containing the payer key is
   forbidden.
 - A third-party API credential (for example, the seller's CDP facilitator key) is held by
@@ -175,6 +193,14 @@ Rationale: authorization must be reproducible, auditable and race-free.
   public process beside the hosted agent service; it holds no payment key and MUST refuse to start if it
   can see one. A person's portal token is verified by the portal only and is never accepted by the agent
   service, nor the agent's by the portal.
+- The portal administration credential opens only the control layer's administration routes: the escalation
+  reads, approving and rejecting a pending escalation for a signed-in administrator, the budget behind an
+  escalation and the ledger check. It MUST NOT open a user-account route, authorize or reconcile, and no other
+  role credential opens those routes. It is held by the portal only and confined to one module by an
+  architecture rule (A13), apart from the user-account half. The portal relays an administrator's decision and
+  never signs; the control layer checks it (a pending escalation only, never the decider's own payment, a
+  recent identity confirmation for an approval) and records it. An approval from the portal is an approval
+  like any other: it MUST NEVER override a DENY rule. (INV-12)
 - The wallet mnemonic, from which every user's account is derived, is payment key material: it is held by
   L2 only and read by the signer component only. (INV-2)
 - The card vault credential is held by the portal only and confined to one module by an architecture rule
@@ -230,7 +256,8 @@ Rationale: authorization must be reproducible, auditable and race-free.
   Solana, AP2, ACP, Visa TAP, Mastercard Agent Pay, a persistent DB beyond JSONL, and mTLS.
   Since 1.4.0 user accounts are in scope (many users, each with their own account and expense
   policies); organizations of users, paying with a card, moving funds out of a user's account
-  and deleting a user stay out. Each extension (EXT-1..EXT-9) is delivered one per change and MUST
+  and deleting a user stay out. Since 1.7.0 administrators decide escalated payments in the portal; a user
+  approving their own payments stays out. Each extension (EXT-1..EXT-9) is delivered one per change and MUST
   preserve every invariant.
 - Cross-layer types live only in the shared contract module. Changing them is a contract
   change: update every producer, consumer and test together.
@@ -256,6 +283,12 @@ Rationale: authorization must be reproducible, auditable and race-free.
     permissions are separate;
   - step-up relies on a claim that a post-login Action of the tenant sets, to be checked against the tenant
     before user accounts are turned on anywhere.
+  Added in 1.7.0:
+  - the portal is trusted to name the administrator who decided an escalation and when they confirmed their
+    identity; a compromised portal could approve pending escalations within the policies' limits;
+  - a stolen administrator sign-in can approve pending escalations after a fresh sign-in, and an administrator
+    permission taken away holds until the person's access token expires;
+  - one portal process holds two role credentials, separate at the control layer and in its own code.
 
 ## Development Workflow & Quality Gates
 
@@ -284,4 +317,4 @@ New policy rules get a snake_case rule ID, a row in the SPEC rule table and a po
   design and again before implementation. Every review verifies the quality gates above.
 - Runtime guidance for agents lives in `CLAUDE.md`.
 
-**Version**: 1.6.0 | **Ratified**: 2026-10-16 | **Last Amended**: 2026-11-11
+**Version**: 1.7.0 | **Ratified**: 2026-10-16 | **Last Amended**: 2026-11-12

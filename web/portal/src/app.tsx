@@ -9,8 +9,13 @@ import { Link } from "./components/Link.js";
 import { Banner, Dialog, ScreenHeading } from "./components/ui.js";
 import { AppProvider, type AppContext } from "./context.js";
 import { errorMessage } from "./messages.js";
-import { firstStepNotDone, matchRoute, resolveRoute } from "./routes.js";
+import { ADMIN_HOME, firstStepNotDone, matchRoute, resolveRoute } from "./routes.js";
 import { Account } from "./screens/Account.js";
+import { Activity } from "./screens/admin/Activity.js";
+import { AdminNav } from "./screens/admin/AdminNav.js";
+import { LedgerCheck } from "./screens/admin/LedgerCheck.js";
+import { Payment } from "./screens/admin/Payment.js";
+import { Waiting } from "./screens/admin/Waiting.js";
 import { Home } from "./screens/Home.js";
 import { Policies } from "./screens/Policies.js";
 import { PolicyEditor } from "./screens/PolicyEditor.js";
@@ -35,9 +40,50 @@ export interface AppProps {
 
 type Phase = { name: "signed-out"; refused: boolean } | { name: "loading" } | { name: "failed"; message: string } | { name: "ready"; me: Me };
 
-function Screen({ path, cardFields, onSignOut }: { path: string; cardFields?: CardFieldsFactory; onSignOut(): void }) {
+function NotFound({ to }: { to: string }) {
+  return (
+    <section>
+      <ScreenHeading>Not found</ScreenHeading>
+      <p>
+        <Link to={to}>Go to the start</Link>
+      </p>
+    </section>
+  );
+}
+
+/**
+ * 014: the administration area. Only an administrator ever gets a screen here; for anyone else the path is simply
+ * not found, and nothing is asked of the portal (FR-004).
+ */
+function AdminScreen({ screen, administrator }: { screen: ReturnType<typeof matchRoute>; administrator: boolean }) {
+  if (!administrator) return <NotFound to="/" />;
+  const body =
+    screen.name === "admin-waiting" ? (
+      <Waiting />
+    ) : screen.name === "admin-payment" ? (
+      <Payment authorizationId={screen.authorizationId} />
+    ) : screen.name === "admin-activity" ? (
+      <Activity />
+    ) : screen.name === "admin-ledger" ? (
+      <LedgerCheck />
+    ) : null;
+  if (body === null) return <NotFound to={ADMIN_HOME} />;
+  return (
+    <>
+      <AdminNav current={screen.name} />
+      {body}
+    </>
+  );
+}
+
+function Screen({ path, cardFields, onSignOut, administrator }: { path: string; cardFields?: CardFieldsFactory; onSignOut(): void; administrator: boolean }) {
   const screen = matchRoute(path);
   switch (screen.name) {
+    case "admin-waiting":
+    case "admin-payment":
+    case "admin-activity":
+    case "admin-ledger":
+      return <AdminScreen screen={screen} administrator={administrator} />;
     case "home":
       return <Home />;
     case "profile-step":
@@ -61,14 +107,7 @@ function Screen({ path, cardFields, onSignOut }: { path: string; cardFields?: Ca
     case "account":
       return <Account onSignOut={onSignOut} />;
     default:
-      return (
-        <section>
-          <ScreenHeading>Not found</ScreenHeading>
-          <p>
-            <Link to="/">Go to the start</Link>
-          </p>
-        </section>
-      );
+      return <NotFound to="/" />;
   }
 }
 
@@ -163,6 +202,9 @@ export function App({ api, auth, config, cardFields }: AppProps) {
   }
 
   const onboarded = firstStepNotDone(me.onboarding) === null;
+  // 014: the administration area exists for an administrator, in a deployment where it is on.
+  const administrator = me.admin && config.admin.available;
+  const adminLink = administrator ? <Link to={ADMIN_HOME}>Administration</Link> : null;
   return (
     <AppProvider value={context}>
       <a href="#main" className="skip-link">
@@ -177,11 +219,16 @@ export function App({ api, auth, config, cardFields }: AppProps) {
             <Link to="/policies">Policies</Link>
             <Link to="/profile">Profile</Link>
             <Link to="/account">Account</Link>
+            {adminLink}
           </nav>
         ) : (
-          <button type="button" className="link" onClick={signOut}>
-            Sign out
-          </button>
+          <>
+            {/* Not onboarded yet: the administration area (if theirs) and the way out. */}
+            {adminLink ? <nav aria-label="Main">{adminLink}</nav> : null}
+            <button type="button" className="link" onClick={signOut}>
+              Sign out
+            </button>
+          </>
         )}
       </header>
       <main id="main">
@@ -191,7 +238,7 @@ export function App({ api, auth, config, cardFields }: AppProps) {
           </Banner>
         )}
         {/* Keyed by path, so each screen starts fresh and its heading takes focus. */}
-        <Screen key={shown} path={shown} onSignOut={signOut} {...(cardFields && { cardFields })} />
+        <Screen key={shown} path={shown} onSignOut={signOut} administrator={administrator} {...(cardFields && { cardFields })} />
       </main>
       {confirming ? (
         <DevConfirm

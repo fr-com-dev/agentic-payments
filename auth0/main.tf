@@ -19,6 +19,7 @@ locals {
   # People's sign-in. The API's identifier is the portal's AUTH_AUDIENCE; it can't change
   # once created. The claim is the services' default AUTH_TIME_CLAIM, and the one sign-in-time.js writes (T-IAC-02).
   identity_audience = "https://x402-api/${var.environment}"
+  admin_permission  = "portal:admin"
   auth_time_claim   = "https://x402.dev/auth_time"
   # The local portal (its default port), and the deployed one once var.portal_origin is set.
   portal_origins = concat(["http://localhost:4025"], var.portal_origin == "" ? [] : [var.portal_origin])
@@ -152,6 +153,36 @@ resource "auth0_resource_server" "identity" {
       error_message = "api_identifier is the approval API's: it can't be people's API identifier too."
     }
   }
+}
+
+# 014: the one permission of people's API, and the one role, which holds exactly it. Using the portal needs neither
+# (research R21): they are for the portal's administration area only, where a person decides other people's escalated
+# payments. An administrator of the tenant assigns the role per person, by hand, in Auth0: nobody is assigned here.
+# Taking it away takes effect when the person's access token expires (an hour at most, above). The hosted agent
+# service never reads this permission, so it starts no run.
+resource "auth0_resource_server_scopes" "identity" {
+  resource_server_identifier = auth0_resource_server.identity.identifier
+
+  scopes {
+    name        = local.admin_permission
+    description = "Use the x402 portal's administration area: decide escalated payments"
+  }
+}
+
+resource "auth0_role" "admin" {
+  name        = "x402-admin"
+  description = "May use the x402 portal's administration area (${var.environment})."
+}
+
+resource "auth0_role_permissions" "admin" {
+  role_id = auth0_role.admin.id
+
+  permissions {
+    name                       = local.admin_permission
+    resource_server_identifier = auth0_resource_server.identity.identifier
+  }
+
+  depends_on = [auth0_resource_server_scopes.identity]
 }
 
 # The portal's web app: a public single-page client. Authorization code with PKCE (a public client has no other way

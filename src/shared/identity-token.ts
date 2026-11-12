@@ -16,6 +16,8 @@ export const DEV_DIRECTORY_ISSUER = "urn:x402:dev-directory";
 export const DEV_TENANT = "dev";
 /** The one permission a person needs, at the portal and at the agent service (013, clarified 2026-11-10). */
 export const AGENT_RUN_PERMISSION = "agent:run";
+/** 014: the permission of an administrator of the portal. Only the portal reads it; the agent service ignores it. */
+export const PORTAL_ADMIN_PERMISSION = "portal:admin";
 /** The app role a system identity needs at the agent service. */
 export const SERVICE_ROLE = "Agent.Run";
 /** The access-token claim the tenant's post-login Action sets to the time of the person's last sign-in. */

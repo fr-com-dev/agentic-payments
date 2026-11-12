@@ -47,6 +47,8 @@ export interface HarnessOptions {
    * seller. `limits` and the must-fail switches are optional. Default: off, as before.
    */
   users?: { limits?: Partial<PlatformConfig["limits"]>; switches?: Partial<UserAccountsDeps> };
+  /** 014: L2's administration routes (needs `users`), for the portal's administration area. Default: off. */
+  admin?: boolean;
 }
 
 /** 013: a fixed, valid 24-word phrase for the harness's user wallets. Local MockUSDC only. */
@@ -55,7 +57,7 @@ export const HARNESS_USER_MNEMONIC =
 
 export interface Harness {
   urls: { seller: string; control: string; settlement: string; facilitator: string };
-  tokens: { control: string; verifier: string; settlement: string; operator: string; portal: string };
+  tokens: { control: string; verifier: string; settlement: string; operator: string; portal: string; portalAdmin: string };
   /** 013: any L2 user-account route, with the portal's token. Only useful with `users`. */
   portal<T = Record<string, unknown>>(method: string, path: string, body?: unknown): Promise<{ status: number; body: T }>;
   /** 013: mints local MockUSDC to an address (a user's account). */
@@ -75,7 +77,7 @@ export interface Harness {
   close(): Promise<void>;
 }
 
-const TOKENS = { control: "h-control", verifier: "h-verifier", settlement: "h-settlement", operator: "h-operator", portal: "h-portal" };
+const TOKENS = { control: "h-control", verifier: "h-verifier", settlement: "h-settlement", operator: "h-operator", portal: "h-portal", portalAdmin: "h-portal-admin" };
 
 export async function startHarness(opts: HarnessOptions = {}): Promise<Harness> {
   const dir = mkdtempSync(join(tmpdir(), "x402-harness-"));
@@ -159,8 +161,9 @@ export async function startHarness(opts: HarnessOptions = {}): Promise<Harness> 
       signer,
       ledger,
       asset: { address: net.asset, decimals: net.decimals },
-      tokens: { control: TOKENS.control, settlement: TOKENS.settlement, operator: TOKENS.operator, portal: TOKENS.portal },
+      tokens: { control: TOKENS.control, settlement: TOKENS.settlement, operator: TOKENS.operator, portal: TOKENS.portal, portalAdmin: TOKENS.portalAdmin },
       ...(platform && keyring && { users: { platform, keyring, ...opts.users?.switches }, net }),
+      ...(platform && opts.admin && { admin: {} }),
       ...(opts.signerLatencyMs !== undefined && { signerLatencyMs: opts.signerLatencyMs }),
       ...(opts.controlNow !== undefined && { now: opts.controlNow }),
       ...(opts.controlBackchannel !== undefined && { backchannel: opts.controlBackchannel }),

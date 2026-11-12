@@ -37,7 +37,8 @@ For people's sign-in:
 
 | Resource | What it is | Becomes |
 |---|---|---|
-| `auth0_resource_server.identity` | People's API, `https://x402-api/<environment>`. It uses RS256 and defines no permission, so a token's `permissions` list is empty. Tokens live one hour. Refresh tokens are allowed. | `AUTH_AUDIENCE`, `identity.audience` |
+| `auth0_resource_server.identity` | People's API, `https://x402-api/<environment>`. It uses RS256. Its only permission is the administrator's (next row), so everyone else's `permissions` list is empty. Tokens live one hour. Refresh tokens are allowed. | `AUTH_AUDIENCE`, `identity.audience` |
+| `auth0_resource_server_scopes.identity`, `auth0_role.admin`, `auth0_role_permissions.admin` | 014: the one permission, `portal:admin`, and the one role, `x402-admin`, which holds exactly it. They open the portal's administration area and nothing else. Nobody is assigned here. | read by the portal from the token |
 | `auth0_client.portal`, `auth0_client_credentials.portal` | The portal's web app: a public single-page client with no secret. It uses the authorization code with PKCE, and the `refresh_token` grant because its refresh tokens rotate. Its callbacks, web origins and logout URLs are `http://localhost:4025` and `portal_origin` when set. | `PORTAL_CLIENT_ID`, `userAccounts.portalClientId` |
 | `auth0_action.sign_in_time`, `auth0_trigger_action.sign_in_time` | The post-login Action in `sign-in-time.js`. It writes one claim on the access token, `https://x402.dev/auth_time`: the time of the person's most recent authentication, in seconds. It is appended to the tenant's post-login flow and replaces nothing there. | `AUTH_TIME_CLAIM` |
 
@@ -52,7 +53,11 @@ The portal accepts only its own client. The agent service accepts no client of t
 - **L2's private key** (or the secret): it goes into the l2 vault (`ciba-client-credential`) or a local
   `env/l2-control.env`, never into this folder, GitHub or the state.
 - **The live check**, in `specs/012` quickstart §5.
-- **People.** There is no role to assign (SPEC v1.14, `specs/013` research R21): whoever signs in through the
+- **Administrators** (SPEC v1.15, `specs/014`). To let a person use the portal's administration area, assign them
+  the role `x402-admin` in Auth0 (**User Management → Users → the user → Roles**). It takes effect at their next
+  sign-in or token renewal; taking it away takes effect when their access token expires, an hour at most. Assign it
+  only once the area is on (`userAccounts.administration`) and to people who should decide payments.
+- **People.** There is no role to assign for using the portal (SPEC v1.14, `specs/013` research R21): whoever signs in through the
   portal's application may use the portal, for their own account. Terraform creates no user. Who can sign up is
   the tenant's own setting: to keep strangers out, turn sign-ups off on the connection (**Authentication →
   Database → the connection → Disable Sign Ups**) and create users yourself; to keep one person out, block that

@@ -88,6 +88,9 @@ param ciba = {
 param userAccounts = {
   enabled: false
   portalClientId: 'iMNhIDWoJNpQf4dLINxOAzKFbRvy3Wjq'
+  // 014: the portal's administration area (the portal:admin permission of the sign-in tenant). It needs enabled:
+  // true, and a real portal-admin-token in the l2 vault and in the portal's (the placeholder off until then).
+  administration: false
   sellerName: 'x402 demo seller'
   cardVault: 'off'
   cardVaultPublishableKey: ''

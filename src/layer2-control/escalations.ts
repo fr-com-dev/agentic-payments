@@ -3,10 +3,21 @@
 // that needs time takes `nowMs` (INV-5, NFR-007 of 003). An escalation is created by its ESCALATED
 // entry and ends exactly once: approved (HUMAN_APPROVAL), denied (HUMAN_REJECTION) or expired
 // (ESCALATION_EXPIRED, or the clock passing createdMs + ESCALATION_TTL_MS). Final states are never left.
+import { REJECTION_REASON_CODES, type EscalationDecision, type EscalationDetail, type EventPage, type RejectionReasonCode } from "../shared/contracts.js";
+import type {
+  ApprovalRequestMark,
+  ApprovalRequestState,
+  DecisionChannel,
+  EscalationEvent,
+  EscalationEventKind,
+  EscalationView,
+} from "../shared/contracts.js";
 import type { AuditLedger, LedgerEntry } from "./ledger.js";
 import { referenceCode } from "./payment-details.js";
 
 export { referenceCode };
+// 014: the view shapes live in src/shared/contracts.ts (the portal reads them too); re-exported for this layer.
+export type { ApprovalRequestMark, ApprovalRequestState, DecisionChannel, EscalationEvent, EscalationEventKind, EscalationView };
 
 /** Fixed escalation window (clarification Q3). Not configurable. */
 export const ESCALATION_TTL_MS = 300_000;
@@ -159,70 +170,6 @@ export function sweep(ledger: AuditLedger, nowMs: number): LedgerEntry[] {
   return appended;
 }
 
-/** One pending escalation as the operator sees it (GET /v1/escalations). */
-export interface EscalationView {
-  authorizationId: string;
-  sessionId: string;
-  resourceKey: string;
-  payTo: string;
-  amount: string;
-  createdAt: string;
-  expiresAt: string;
-  /** 012: the first 8 hex characters of the ID, shown to the approver too. */
-  referenceCode: string;
-  /** 012: present when the escalation carries an approval-request mark (backchannel approval on). */
-  approvalRequest?: ApprovalRequestState;
-  /** 013 (FR-045): whose payment it is, when the escalation is a user's. An identifier only, never a name. */
-  userId?: string;
-}
-
-export type EscalationEventKind =
-  | "escalated"
-  | "approved"
-  | "denied"
-  | "expired"
-  | "approval_lapsed"
-  // 012 (L2-7): the approval request's own events
-  | "approval_requested"
-  | "approval_request_failed"
-  | "approval_request_lapsed"
-  | "approval_verification_failed";
-
-/**
- * One lifecycle event (GET /v1/escalations/events). Built field by field from a whitelist, never by
- * spreading entry data, so no token, payment header, `accepts` or `purpose` can leak (NFR-007).
- */
-export interface EscalationEvent {
-  seq: number;
-  at: string;
-  kind: EscalationEventKind;
-  authorizationId: string;
-  sessionId: string;
-  resourceKey: string;
-  payTo: string;
-  amount: string;
-  expiresAt?: string;
-  approvalId?: string;
-  approver?: string;
-  approvalExpiresAt?: string;
-  rejectionId?: string;
-  operator?: string;
-  reason?: string;
-  // 012 (FR-029): whitelisted fields only. Never a token, a handle, details, the binding message or evidence.
-  referenceCode?: string;
-  approvalRequest?: string;
-  channel?: DecisionChannel;
-  decidedBy?: string;
-  requestId?: string;
-  requestExpiresAt?: string;
-  failure?: string;
-  error?: string;
-  cause?: string;
-  check?: string;
-  /** 013 (FR-045): on `escalated` events of a user's payment. */
-  userId?: string;
-}
-
 const iso = (ms: number) => new Date(ms).toISOString();
 
 /** IDs of escalations with a final-state entry (one pass, so the 1 s reads stay linear). */
@@ -303,6 +250,9 @@ export function escalationEvents(entries: Entries, after: number): EscalationEve
         ev.operator = String(d.operator);
         if (typeof d.reason === "string") ev.reason = d.reason;
       }
+      // 014: a portal rejection carries a code from a fixed list, never text.
+      const reasonCode = channel === "portal" ? reasonCodeOf(e) : undefined;
+      if (reasonCode !== undefined) ev.reasonCode = reasonCode;
       Object.assign(ev, { channel, decidedBy: channel === "operator" ? String(d.operator) : String(d.approver) });
     }
     if (kind === "expired") ev.expiresAt = iso(d.expiresAtMs as number);
@@ -323,23 +273,102 @@ export function escalationEvents(entries: Entries, after: number): EscalationEve
 }
 
 // ---------------------------------------------------------------------------
+// 014 one escalation in any state (SPEC L2-5; specs/014 data-model.md "EscalationDetail").
+// ---------------------------------------------------------------------------
+
+/** Who decided, as every view shows it: an identifier or a subject, or the operator's label (untrusted text). */
+export const deciderOf = (e: LedgerEntry): string => String(channelOf(e) === "operator" && e.type === "HUMAN_REJECTION" ? e.data.operator : e.data.approver);
+
+/** How a person ended an escalation, from a whitelist of the decision entry's fields. */
+export function decisionOf(e: LedgerEntry): EscalationDecision {
+  const channel = channelOf(e);
+  const reasonCode = channel === "portal" ? reasonCodeOf(e) : undefined;
+  return {
+    at: e.ts,
+    channel,
+    decidedBy: deciderOf(e),
+    ...(e.type === "HUMAN_APPROVAL" && { approvalId: String(e.data.approvalId), approvalExpiresAt: iso(e.data.expiresAtMs as number) }),
+    ...(e.type === "HUMAN_REJECTION" && { rejectionId: String(e.data.rejectionId) }),
+    ...(reasonCode !== undefined && { reasonCode }),
+    ...(channel === "operator" && typeof e.data.reason === "string" && { reason: e.data.reason }),
+  };
+}
+
+/** The escalation as its ESCALATED entry describes it, whatever became of it. */
+function viewOf(entries: Entries, e: LedgerEntry): EscalationView {
+  return {
+    authorizationId: e.authorizationId!,
+    sessionId: String(e.sessionId ?? ""),
+    resourceKey: String(e.data.resourceKey),
+    payTo: String(e.data.payTo),
+    amount: String(e.data.amount),
+    createdAt: e.ts,
+    expiresAt: iso(expiresAtMsOf(e)),
+    referenceCode: referenceCode(e.authorizationId!),
+    ...(typeof e.data.approvalRequest === "string" && { approvalRequest: approvalRequestState(entries, e.authorizationId!)! }),
+    ...(typeof e.data.userId === "string" && { userId: e.data.userId }),
+  };
+}
+
+/** One escalation in any state, with how it ended when a person ended it. The budget is added by the caller. */
+export function escalationDetail(entries: Entries, escalationId: string, nowMs: number): Omit<EscalationDetail, "budget"> | undefined {
+  const escalated = findEscalation(entries, escalationId);
+  const state = escalationState(entries, escalationId, nowMs);
+  if (!escalated || state === "not_found") return undefined;
+  const decision = decisionEntry(entries, escalationId);
+  const byPerson = decision !== undefined && decision.type !== "ESCALATION_EXPIRED" && state !== "expired" && state !== "pending";
+  return { ...viewOf(entries, escalated), state, ...(byPerson && { decision: decisionOf(decision) }) };
+}
+
+// ---------------------------------------------------------------------------
+// 014 the trail in pages, for the portal's administration area (SPEC L2-5; specs/014 data-model.md "EventPage").
+// ---------------------------------------------------------------------------
+
+export const EVENT_PAGE_DEFAULT = 50;
+export const EVENT_PAGE_MAX = 200;
+
+/**
+ * One page of lifecycle events, oldest first. `after`: the first `limit` events with a higher `seq` (polling).
+ * `before`: the last `limit` events with a lower one ("show earlier"). Neither: the latest `limit`. Sequence numbers
+ * are the ledger's own order, so reading by cursor yields every event exactly once (FR-021).
+ * Every event here also names the payment's owner and reference code, whatever its kind (FR-020); the operator's
+ * feed (`escalationEvents`) is unchanged.
+ */
+export function eventPage(entries: Entries, q: { after?: number; before?: number; limit: number }): EventPage {
+  const all = escalationEvents(entries, -1);
+  const pool = q.after !== undefined ? all.filter((e) => e.seq > q.after!) : q.before !== undefined ? all.filter((e) => e.seq < q.before!) : all;
+  const events = q.after !== undefined ? pool.slice(0, q.limit) : pool.slice(Math.max(0, pool.length - q.limit));
+  const owners = new Map<string, string | null>();
+  for (const ev of events) {
+    if (!owners.has(ev.authorizationId)) owners.set(ev.authorizationId, escalationOwner(entries, ev.authorizationId));
+    const owner = owners.get(ev.authorizationId);
+    if (typeof owner === "string") ev.userId = owner;
+    ev.referenceCode = referenceCode(ev.authorizationId);
+  }
+  return {
+    events,
+    first: events[0]?.seq ?? -1,
+    last: events.at(-1)?.seq ?? -1,
+    cursor: entries.length - 1,
+    more: pool.length > events.length,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // 012 approval request derivations (SPEC L2-7; specs/012 data-model.md "Derived functions"). Pure, like the rest
 // of this file: every function takes `nowMs` when it needs time.
 // ---------------------------------------------------------------------------
 
-export type DecisionChannel = "operator" | "backchannel";
+/**
+ * The channel of an approval or rejection. An entry written before 012 has none, and reads as `operator`.
+ * 014: `portal` is the administrator's decision, relayed by the portal.
+ */
+export const channelOf = (e: LedgerEntry): DecisionChannel =>
+  e.data.channel === "backchannel" ? "backchannel" : e.data.channel === "portal" ? "portal" : "operator";
 
-/** The channel of an approval or rejection. An entry written before 012 has none, and reads as `operator`. */
-export const channelOf = (e: LedgerEntry): DecisionChannel => (e.data.channel === "backchannel" ? "backchannel" : "operator");
-
-export type ApprovalRequestMark = "requested" | "capped" | "operator_only" | "reevaluation";
-export type ApprovalRequestState =
-  | ApprovalRequestMark
-  | "failed"
-  | "verification_failed"
-  | "lapsed"
-  | "answered"
-  | "abandoned";
+/** 014: a reason code only if it is one of the fixed list, so nothing else can reach a view. */
+export const reasonCodeOf = (e: LedgerEntry): RejectionReasonCode | undefined =>
+  (REJECTION_REASON_CODES as readonly unknown[]).includes(e.data.reasonCode) ? (e.data.reasonCode as RejectionReasonCode) : undefined;
 
 const REQUEST_ENDINGS: ReadonlySet<LedgerEntry["type"]> = new Set([
   "APPROVAL_REQUEST_FAILED",

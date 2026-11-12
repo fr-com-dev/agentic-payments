@@ -41,8 +41,12 @@ afterEach(async () => {
   stubs = [];
 });
 
+/** v1.15: the administration operations (tag `administration`), mounted only with `PORTAL_ADMIN=1`. */
+const isAdminRoute = (op: { tags?: string[] }) => op.tags?.includes("administration") === true;
+
+/** The full surface: the administration area is on here unless a test says `admin: false`. */
 async function start(o: StartPortalOptions = {}) {
-  const p = await startPortal(o);
+  const p = await startPortal({ admin: true, ...o });
   portals.push(p);
   return p;
 }
@@ -74,6 +78,17 @@ describe("T-API-12 every portal route is documented, and every documented route 
   it("T-API-12 without API_DOCS, the mounted routes are exactly the documented non-docs operations", async () => {
     const p = await start();
     expect(routeDiff(documentedRoutes(loadDoc(), (op) => !isDocsRoute(op)), mountedRoutes(p.app))).toEqual({ undocumented: [], unmounted: [] });
+  });
+
+  it("T-API-12 without PORTAL_ADMIN, the administration operations are not mounted and everything else is (v1.15)", async () => {
+    const p = await start({ admin: false });
+    const doc = loadDoc();
+    expect(routeDiff(documentedRoutes(doc, (op) => !isDocsRoute(op) && !isAdminRoute(op)), mountedRoutes(p.app))).toEqual({ undocumented: [], unmounted: [] });
+    expect(documentedRoutes(doc, isAdminRoute).length).toBeGreaterThan(0);
+    const token = await p.adminToken("dana");
+    for (const [method, path, op] of operations(doc)) {
+      if (isAdminRoute(op)) expect((await send(p.base, method, path.replace(/\{\w+\}/g, "x"), token)).status, `${method} ${path}`).toBe(404);
+    }
   });
 
   it("T-API-12 no operation takes a user identifier: not in a path, a query or a body schema (FR-004)", () => {
@@ -109,13 +124,19 @@ describe("T-API-13 the person's token is the only credential, exactly where docu
   async function mismatches(doc: OpenApiDoc, p: PortalTestApp): Promise<string[]> {
     const out: string[] = [];
     const portalToken = await p.token("alice");
+    const adminToken = await p.adminToken("dana");
     const agentToken = await p.agentToken("alice");
     for (const [method, path, op] of operations(doc)) {
       const open = op.security?.length === 0;
       const concrete = path.replace(/\{\w+\}/g, "x");
       const none = (await send(p.base, method, concrete)).status;
       const agent = (await send(p.base, method, concrete, agentToken)).status;
-      const person = (await send(p.base, method, concrete, portalToken)).status;
+      // v1.15: an administration operation needs the administrator's token; a user's own token is 403 there.
+      const person = (await send(p.base, method, concrete, isAdminRoute(op) ? adminToken : portalToken)).status;
+      if (isAdminRoute(op)) {
+        const user = (await send(p.base, method, concrete, portalToken)).status;
+        if (user !== 403) out.push(`${method} ${path} a user's token: ${user}`);
+      }
       if (open) {
         if (none === 401 || none === 403) out.push(`${method} ${path}: documented open, got ${none}`);
         continue;
@@ -153,9 +174,13 @@ describe("T-API-14 live responses match the documented status and schema", () =>
       bob: await p.token("bob"),
       carol: await p.token("carol"),
       agent: await p.agentToken("alice"),
+      // v1.15: an administrator who is also a user, and one who is only an administrator
+      admin: await p.adminToken("dana"),
+      adminStale: await p.adminToken("dana", { authTime: Math.floor(T0 / 1000) - STEP_UP_AGE - 1 }),
+      adminOnly: await p.adminToken("erin"),
     };
-    const call = async (method: string, path: string, o: { as?: keyof typeof tokens | null; params?: Record<string, string>; body?: unknown } = {}) => {
-      const concrete = path.replace(/\{(\w+)\}/g, (_, k: string) => o.params?.[k] ?? "x");
+    const call = async (method: string, path: string, o: { as?: keyof typeof tokens | null; params?: Record<string, string>; query?: string; body?: unknown } = {}) => {
+      const concrete = path.replace(/\{(\w+)\}/g, (_, k: string) => o.params?.[k] ?? "x") + (o.query ?? "");
       const who = o.as === undefined ? "alice" : o.as;
       const res = await send(p.base, method, concrete, who === null ? undefined : tokens[who], o.body);
       seen.add(`${method} ${path} ${res.status}`);
@@ -264,6 +289,49 @@ describe("T-API-14 live responses match the documented status and schema", () =>
     expect((await call("POST", "/api/account/enable")).enabled).toBe(true);
     expect((await act("remove", p2)).state).toBe("removed");
 
+    // v1.15 the administration area: who the administrator is, then every operation and each of its statuses
+    await call("GET", "/api/me", { as: "adminOnly" });
+    await call("GET", "/api/admin/escalations", { as: "admin" });
+    await call("GET", "/api/admin/escalations");
+    // the two decisions: each refusal, then the decision, a repeat, and the opposite decision on a decided one
+    const escalated = async (sessionId: string, subject?: string) => {
+      const userId = subject === undefined ? undefined : p.userId(subject);
+      const r = await p.l2.authorize(p.l2.intentFor("/api/premium-report", "50000", { sessionId, ...(userId !== undefined && { userId }) }));
+      expect(r.body.status, sessionId).toBe("ESCALATE");
+      return { params: { authorizationId: r.body.authorizationId } };
+    };
+    const APPROVE = "/api/admin/escalations/{authorizationId}/approve";
+    const REJECT = "/api/admin/escalations/{authorizationId}/reject";
+    const unknown = { params: { authorizationId: "auth_00000000-0000-4000-8000-000000000000" } };
+    await p.l2.onboard(p.userId("dana"));
+    const own = await escalated("sess_dana", "dana");
+    const e1 = await escalated("sess_adm_1");
+    const e2 = await escalated("sess_adm_2");
+    await call("POST", APPROVE, { as: "admin", params: { authorizationId: "nope" } });
+    const EVENTS = "/api/admin/escalations/events";
+    await call("POST", APPROVE, { as: "admin", ...e1, body: { decidedBy: p.userId("bob") } });
+    await call("POST", APPROVE, { as: "admin", ...unknown });
+    await call("POST", APPROVE, { as: "admin", ...own });
+    await call("POST", APPROVE, { as: "adminStale", ...e1 });
+    expect((await call("POST", APPROVE, { as: "admin", ...e1 })).already).toBe(false);
+    expect((await call("POST", APPROVE, { as: "adminOnly", ...e1 })).already).toBe(true);
+    await call("POST", REJECT, { as: "admin", ...e2, body: { reason: "typed text" } });
+    await call("POST", REJECT, { as: "admin", ...unknown, body: { reasonCode: "other" } });
+    await call("POST", REJECT, { as: "admin", ...own, body: { reasonCode: "other" } });
+    expect((await call("POST", REJECT, { as: "admin", ...e2, body: { reasonCode: "wrong_seller" } })).already).toBe(false);
+    expect((await call("POST", REJECT, { as: "adminOnly", ...e2, body: { reasonCode: "wrong_seller" } })).already).toBe(true);
+    expect((await call("POST", REJECT, { as: "admin", ...e1, body: { reasonCode: "other" } })).error).toBe("not_pending");
+    expect((await call("POST", APPROVE, { as: "admin", ...e2 })).error).toBe("not_pending");
+    // one payment in any state with its budget: decided, the administrator's own, unknown and malformed
+    const ONE = "/api/admin/escalations/{authorizationId}";
+    for (const which of [e1, e2, own]) expect((await call("GET", ONE, { as: "admin", ...which })).budget).toBeDefined();
+    await call("GET", ONE, { as: "admin", ...unknown });
+    await call("GET", ONE, { as: "admin", params: { authorizationId: "nope" } });
+    expect((await call("GET", "/api/admin/ledger/verify", { as: "admin" })).ok).toBe(true);
+    // the trail: the latest page (every kind of decision is in it by now), and a refused query
+    expect(((await call("GET", EVENTS, { as: "admin" })).events as unknown[]).length).toBeGreaterThan(4);
+    await call("GET", EVENTS, { as: "admin", query: "?after=1&before=2" });
+
     // docs (API_DOCS=1): the page, every documented asset, another name, and the document itself
     await call("GET", "/docs", { as: null });
     const assetParam = doc.paths["/docs/{asset}"]!.get!.parameters!.find((x) => x.name === "asset")!;
@@ -317,7 +385,7 @@ describe("T-API-14 live responses match the documented status and schema", () =>
   it("T-API-14 must-fail: an undocumented field, a missing field and a wrong type are reported", () => {
     const doc = loadDoc();
     const me = { $ref: "#/components/schemas/Me" };
-    const ok = { userId: "usr_deeee4478bc01dab1b0afa3fbe31f010", enabled: true, onboarding: { profile: true, wallet: false, policy: false } };
+    const ok = { userId: "usr_deeee4478bc01dab1b0afa3fbe31f010", enabled: true, onboarding: { profile: true, wallet: false, policy: false }, admin: false };
     expect(conformance(doc, me, ok)).toEqual([]);
     const { enabled: _, ...missing } = ok;
     expect(conformance(doc, me, { ...missing, userId: 7, displayName: "Ana" })).toEqual(["$.enabled: missing", "$.userId: expected string", "$.displayName: not documented"]);

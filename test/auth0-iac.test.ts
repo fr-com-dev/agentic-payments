@@ -41,7 +41,10 @@ const VARIABLES: Record<string, string> = {
  */
 const SET_LATER = ["AUTH0_PORTAL_ORIGIN"];
 /** 013 research R21: the portal asks for no permission, so people's API defines none and the tenant has no role. */
-const NO_ROLE = "people's API must define no permission and the tenant no role: the portal asks for none (research R21)";
+const ADMIN_PERMISSION = "portal:admin";
+const ADMIN_ROLE = "x402-admin";
+/** 014: using the portal still needs no permission; its administration area needs the one permission there is. */
+const NO_ROLE = `people's API must define exactly one permission, ${ADMIN_PERMISSION}, and the tenant exactly one role, ${ADMIN_ROLE}, which holds exactly it: the portal asks for no permission to use it (research R21), and for that one to administer (014)`;
 const NOBODY_ASSIGNED = "no role or permission is assigned to a person here";
 const LOCAL_PORTAL = "http://localhost:4025";
 /** The access-token claim the Action sets: the services' default AUTH_TIME_CLAIM (contracts/config-and-secrets.md). */
@@ -199,11 +202,29 @@ export function auth0Problems(s: Sources): string[] {
   }
   if (count("auth0_resource_server") !== 2) p.push("the APIs must be exactly the approval API and people's API");
 
-  // No permission and no role (research R21): whoever signs in through the portal's client may use the portal, so
-  // nothing here defines a permission, a role, or what a role holds.
+  // Using the portal needs no permission and no role (research R21). 014 adds the only ones there are: the
+  // administrator's permission, and one role that holds exactly it, for the portal's administration area.
+  const adminPermission = /^\s*admin_permission\s*=\s*"([^"]+)"/m.exec(tf)?.[1];
+  const scopes = block(tf, /resource\s+"auth0_resource_server_scopes"\s+"identity"\s*\{/);
+  const scopeBlocks = blocks(scopes, /\bscopes\s*\{/g);
+  const adminRole = block(tf, /resource\s+"auth0_role"\s+"admin"\s*\{/);
+  const rolePermissions = block(tf, /resource\s+"auth0_role_permissions"\s+"admin"\s*\{/);
+  const held = blocks(rolePermissions, /\bpermissions\s*\{/g);
   if (
     /^\s*permission\s*=/m.test(tf) ||
-    ["auth0_resource_server_scopes", "auth0_resource_server_scope", "auth0_role", "auth0_role_permissions", "auth0_role_permission"].some((type) => count(type) !== 0)
+    adminPermission !== ADMIN_PERMISSION ||
+    !has(scopes, /resource_server_identifier\s*=\s*auth0_resource_server\.identity\.identifier/) ||
+    scopeBlocks.length !== 1 ||
+    !/name\s*=\s*local\.admin_permission\b/.test(scopeBlocks[0]!) ||
+    !has(adminRole, new RegExp(`name\\s*=\\s*"${ADMIN_ROLE}"`)) ||
+    !has(rolePermissions, /role_id\s*=\s*auth0_role\.admin\.id/) ||
+    held.length !== 1 ||
+    !/name\s*=\s*local\.admin_permission\b/.test(held[0]!) ||
+    !/resource_server_identifier\s*=\s*auth0_resource_server\.identity\.identifier/.test(held[0]!) ||
+    count("auth0_resource_server_scopes") !== 1 ||
+    count("auth0_role") !== 1 ||
+    count("auth0_role_permissions") !== 1 ||
+    ["auth0_resource_server_scope", "auth0_role_permission"].some((type) => count(type) !== 0)
   ) {
     p.push(NO_ROLE);
   }
@@ -577,6 +598,16 @@ describe("T-IAC-02 Auth0 tenant as code (auth0/)", () => {
     ["an Action that writes a second claim", ACTION_FILE, /(\n\s+api\.accessToken\.setCustomClaim\(CLAIM, [^\n]+)/, '$1\n    api.accessToken.setCustomClaim("https://x402.dev/roles", []);', ONE_CLAIM],
     ["an Action that writes a claim without a namespace", ACTION_FILE, `"${AUTH_TIME_CLAIM}"`, '"auth_time"', ONE_CLAIM],
     ["an Action that refuses sign-ins", ACTION_FILE, /(\n\s+api\.accessToken\.setCustomClaim\(CLAIM, [^\n]+)/, '$1\n    api.access.deny("no");', ONE_CLAIM],
+    // 014: the administrator's permission and role, and nothing beside them.
+    ["014: another name for the administrator's permission", "main.tf", `admin_permission  = "${ADMIN_PERMISSION}"`, 'admin_permission  = "agent:run"', NO_ROLE],
+    ["014: a permission to use the portal, back again", "main.tf", `  admin_permission  = "${ADMIN_PERMISSION}"\n`, `  admin_permission  = "${ADMIN_PERMISSION}"\n  permission        = "agent:run"\n`, NO_ROLE],
+    ["014: a second permission on the API", "main.tf", /(\n  scopes \{\n[^}]*\})/, '$1\n\n  scopes {\n    name = "portal:owner"\n  }', NO_ROLE],
+    ["014: no administrator's permission on the API", "main.tf", /resource "auth0_resource_server_scopes" "identity" \{[\s\S]*?\n\}\n\n/, "", NO_ROLE],
+    ["014: the administrator's role under another name", "main.tf", `"${ADMIN_ROLE}"`, '"x402-user"', NO_ROLE],
+    ["014: no administrator's role", "main.tf", /resource "auth0_role" "admin" \{[\s\S]*?\n\}\n\n/, "", NO_ROLE],
+    ["014: an administrator's role with a second permission", "main.tf", /(resource "auth0_role_permissions" "admin" \{[\s\S]*?\n  permissions \{\n[^}]*\})/, '$1\n\n  permissions {\n    name                       = "read:users"\n    resource_server_identifier = "https://x402-dev.us.auth0.com/api/v2/"\n  }', NO_ROLE],
+    ["014: an administrator's role holding a permission of the approval API", "main.tf", /(resource "auth0_role_permissions" "admin" \{[\s\S]*?resource_server_identifier\s*= )auth0_resource_server\.identity\.identifier/, "$1auth0_resource_server.payments.identifier", NO_ROLE],
+    ["014: the administrator's role assigned to a person", "main.tf", 'resource "auth0_role_permissions" "admin" {', 'resource "auth0_user_roles" "someone" {\n  user_id = var.approver_user_id\n  roles   = [auth0_role.admin.id]\n}\n\nresource "auth0_role_permissions" "admin" {', NOBODY_ASSIGNED],
     ["a role assigned to a person", "main.tf", 'resource "auth0_client" "portal" {', 'resource "auth0_user_roles" "someone" {\n  user_id = var.approver_user_id\n  roles   = ["rol_x"]\n}\n\nresource "auth0_client" "portal" {', NOBODY_ASSIGNED],
     ["a connection with a password in code", "main.tf", 'resource "auth0_client" "portal" {', 'resource "auth0_connection" "db" {\n  name     = "db"\n  strategy = "auth0"\n  options {\n    password = "x"\n  }\n}\n\nresource "auth0_client" "portal" {', "users and passwords are never managed here"],
     ["a client the agent service would accept", "outputs.tf", /(output "bicepparam_identity" \{[\s\S]*?audience\s*= auth0_resource_server\.identity\.identifier)/, "$1\n    agentClientIds = [auth0_client.portal.client_id]", IDENTITY_OUTPUT],

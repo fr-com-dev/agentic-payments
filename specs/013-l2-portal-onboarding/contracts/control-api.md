@@ -1,5 +1,10 @@
 # Contract: L2-5 delta (control API) and §7 contracts
 
+> **Since 014 (SPEC v1.15).** L2 also serves six administration routes under `/v1/admin/` to a sixth role,
+> `portal-admin` (`PORTAL_ADMIN_TOKEN`). They are defined in
+> [specs/014 contracts/control-api.md](../../014-portal-l2-control-api/contracts/control-api.md). `PORTAL_TOKEN` is
+> refused on all of them, and everything below is unchanged.
+
 Normative for the SPEC L2-5 table, §7 and `docs/l2-control.openapi.yaml`; T-API-01..04 fail until all three match the
 service. L2 still binds 127.0.0.1 only. Every route below exists only when user accounts are on (`USER_ACCOUNTS=1`);
 off, each answers 404 and `PaymentIntent.userId` is ignored.

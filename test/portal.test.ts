@@ -153,6 +153,8 @@ describe("T-PRT-01 access (FR-003, FR-005, SEC-19, SEC-20)", () => {
       auth: { mode: "dev", domain: "", clientId: "x402-portal-dev", audience: "api://x402-l1-agent" },
       network: "local",
       cards: { available: false },
+      // 014: additive. Off unless PORTAL_ADMIN=1.
+      admin: { available: false },
     });
     expect(res.text).not.toContain(TOKENS.portal);
   });
@@ -370,7 +372,8 @@ describe("T-PRT-03 profile (US1, FR-008..FR-011)", () => {
   it("T-PRT-03 a new person: three steps, none done, no profile", async () => {
     const p = await start();
     const res = await p.as("alice")("GET", "/api/me");
-    expect(res.body).toEqual({ userId: p.userId("alice"), enabled: true, onboarding: { profile: false, wallet: false, policy: false } });
+    // 014: `user` and `admin` are additive.
+    expect(res.body).toEqual({ userId: p.userId("alice"), enabled: true, onboarding: { profile: false, wallet: false, policy: false }, admin: false });
   });
 
   it("T-PRT-03 the first save writes the profile, then registers the user at L2", async () => {
@@ -382,6 +385,8 @@ describe("T-PRT-03 profile (US1, FR-008..FR-011)", () => {
       enabled: true,
       onboarding: { profile: true, wallet: false, policy: false },
       profile: { displayName: "Ana Pérez", contactEmail: "ana.perez@example.com" },
+      // 014: additive, on every answer that is "the /api/me body".
+      admin: false,
     });
     expect(p.l2.entries("USER_REGISTERED").map((e) => e.data.userId)).toEqual([p.userId("alice")]);
     const file = join(p.profilesDir, `${p.userId("alice")}.json`);
@@ -958,5 +963,36 @@ describe("T-PRT-09 the local dev issuer must exist before a service that trusts 
     const { personKeys, serviceKeys } = await import("../src/shared/identity-token.js");
     expect(() => personKeys({ issuer: "urn:x402:dev-issuer", jwksFile: ".local/no-such-issuer/jwks.json" })).toThrow(/AUTH_JWKS_FILE: no file at .*npm run dev-token/);
     expect(() => serviceKeys({ tenantId: "dev", jwksFile: ".local/no-such-issuer/jwks.json" })).toThrow(/AUTH_JWKS_FILE: no file at .*npm run dev-token/);
+  });
+});
+
+describe("014 dev-token --admin (the portal:admin permission of the local dev issuer)", () => {
+  it("014 dev-token --admin adds portal:admin, alone with --no-role, and only with --portal", async () => {
+    const { permissionsFor } = await import("../scripts/dev-token.js");
+    expect(permissionsFor(["--portal"])).toEqual({});
+    expect(permissionsFor(["--no-role"])).toEqual({ permissions: [] });
+    expect(permissionsFor(["--portal", "--admin"])).toEqual({ permissions: ["agent:run", "portal:admin"] });
+    expect(permissionsFor(["--portal", "--admin", "--no-role"])).toEqual({ permissions: ["portal:admin"] });
+    expect(permissionsFor(["--admin"])).toEqual({ error: expect.stringContaining("--admin needs --portal") });
+  });
+
+  it("014 dev-token still prints a token when run as a script", async () => {
+    const dir = (await import("node:fs")).mkdtempSync(join((await import("node:os")).tmpdir(), "x402-devtoken-"));
+    // A temporary working directory, so the issuer's key pair is not written into the repository's .local/.
+    const loader = (await import("node:url")).pathToFileURL(join(process.cwd(), "node_modules/tsx/dist/loader.mjs")).href;
+    const out = await new Promise<{ code: number | null; stdout: string }>((resolve) => {
+      const child = spawn(process.execPath, ["--import", loader, join(process.cwd(), "scripts/dev-token.ts"), "--portal", "--admin"], {
+        cwd: dir,
+        env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", NETWORK: "local" },
+      });
+      let stdout = "";
+      child.stdout.on("data", (d: Buffer) => (stdout += d.toString()));
+      child.on("close", (code) => resolve({ code, stdout }));
+    });
+    expect(out.code).toBe(0);
+    const claims = JSON.parse(Buffer.from(out.stdout.trim().split(".")[1]!, "base64url").toString()) as { permissions: string[]; azp: string; roles?: unknown };
+    expect(claims.permissions).toEqual(["agent:run", "portal:admin"]);
+    expect(claims.azp).toBe("x402-portal-dev");
+    expect(claims.roles).toBeUndefined();
   });
 });
