@@ -96,6 +96,10 @@ and the history show for a saved version.
   arithmetic on amounts (Constitution VI; T-WEB-03).
 - If another person signs in in the confirmation pop-up, the adapter signs out and reports `account_changed`:
   one person's confirmation never finishes another's change.
+- "Sign out" ends the sign-in tenant's own session, not only the portal's copy of it (2026-11-12): the tab goes to
+  the tenant's logout address and comes back to the portal's origin, signed out, so the next sign-in asks for
+  credentials again. It is the only time the tab leaves the portal. With the dev issuer it forgets the pasted
+  token.
 - The access token is kept in memory and `sessionStorage` by the sign-in library (through its cache hook); it is never put in a URL, a log or
   an error report.
 

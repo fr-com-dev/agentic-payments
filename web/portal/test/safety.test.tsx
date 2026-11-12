@@ -158,7 +158,7 @@ describe("T-WEB-07: the Auth0 sign-in (013 research R19)", () => {
         return o.token ?? "the.access.token";
       }),
       getUser: vi.fn(async () => user ?? undefined),
-      logout: vi.fn(async (_o?: { openUrl?: false | ((url: string) => void) }) => {
+      logout: vi.fn(async (_o?: { openUrl?: false | ((url: string) => void); logoutParams?: { returnTo?: string } }) => {
         user = null;
       }),
     };
@@ -262,11 +262,22 @@ describe("T-WEB-07: the Auth0 sign-in (013 research R19)", () => {
     expect(auth.signedIn()).toBe(true);
   });
 
-  it("signing out clears the library's cache without leaving the portal", async () => {
+  it("signing out ends the tenant's session too, and comes back to the portal's own origin", async () => {
     const client = library({ user: { sub: "auth0|alice" } });
-    const auth = await createAuth0Auth(settings, { client });
+    const auth = await createAuth0Auth(settings, { client, origin: "https://portal.example" });
     await auth.signOut();
-    expect(client.logout).toHaveBeenCalledWith({ openUrl: false });
+    // Not `openUrl: false`: that clears the library's cache only, and the next sign-in would need no credentials.
+    expect(client.logout).toHaveBeenCalledTimes(1);
+    expect(client.logout).toHaveBeenCalledWith({ logoutParams: { returnTo: "https://portal.example" } });
+    expect(auth.signedIn()).toBe(false);
+    expect(await auth.token()).toBeNull();
+  });
+
+  it("signing out still signs the person out here when the tenant can't be reached", async () => {
+    const client = library({ user: { sub: "auth0|alice" } });
+    client.logout.mockRejectedValueOnce(new Error("offline"));
+    const auth = await createAuth0Auth(settings, { client, origin: "https://portal.example" });
+    await auth.signOut();
     expect(auth.signedIn()).toBe(false);
     expect(await auth.token()).toBeNull();
   });
