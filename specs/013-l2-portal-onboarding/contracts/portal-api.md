@@ -143,8 +143,10 @@ Normative for `specs/011` contracts/hosted-agent-api.md and `docs/l1-hosted.open
   covers the portal's client. The service refuses to start when `PORTAL_CLIENT_ID` is on that list.
 - **Session references and limits** are keyed by the requester as before; a person's key is now the issuer and
   `sub`, so a session reference issued under the earlier sign-in no longer verifies.
-- **Getting a token as a person**: `npm run user-token` (the device flow of the tenant's native client) replaces
-  `az account get-access-token`.
+- **Getting a token as a person**: not possible from the sign-in tenant since 2026-11-11
+  ([R20](../research.md#r20-two-applications-in-auth0-no-client-for-the-agent-service)): the tenant has no client for
+  the agent service, and a deployed agent accepts system identities only. Locally the dev issuer gives one
+  (`npm run -s dev-token -- --subject <name>`).
 - Nothing else changes: the same two tools, limits, statuses and response fields.
 
 ## Tests

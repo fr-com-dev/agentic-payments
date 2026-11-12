@@ -24,7 +24,7 @@ param image string
 param acrServer string
 @description('013 user accounts (SPEC L2-8): the non-secret settings from the parameter file.')
 param userAccounts object
-@description('013 people\'s sign-in with Auth0: { issuer, audience, agentClientIds }, from the parameter file. The portal reads the issuer and the audience.')
+@description('013 people\'s sign-in with Auth0: { issuer, audience }, from the parameter file.')
 param identity object
 
 resource idPortal 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' existing = { name: names.identities.portal }

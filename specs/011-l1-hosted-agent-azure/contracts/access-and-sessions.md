@@ -57,9 +57,11 @@ longer starts a run); and the `scp`/`azp` row of v1.10 is gone. Without `AUTH_TE
     `main.<env>.bicepparam`. `AUTH_TENANT_ID` is that file's `tenantId`. T-IAC-01 rule 16 checks the
     whole setup.
 - **Getting a token**:
-  - a person with the role `x402-user` in the Auth0 tenant (v1.12): `npm run -s user-token`, the device flow of the
-    tenant's native client (`AUTH_ISSUER`, `AUTH_AUDIENCE`, `AGENT_CLI_CLIENT_ID`). Before v1.12 it was
-    `az account get-access-token --scope api://app-l1-eastus2-dev/user_impersonation`, which no longer starts a run;
+  - a person: none from the sign-in tenant since SPEC v1.13. The Auth0 tenant has two applications, the portal's
+    and L2's (`specs/013` research R20), so no client issues a token this service accepts, and a deployed agent is
+    configured without `AUTH_ISSUER`, `AUTH_AUDIENCE` and `AGENT_CLIENT_IDS`. v1.12 had a native client with the
+    device flow (`npm run user-token`); before v1.12 it was
+    `az account get-access-token --scope api://app-l1-eastus2-dev/user_impersonation`. Neither starts a run now;
   - a service principal assigned `Agent.Run`: client credentials for `api://app-l1-eastus2-dev/.default`
     (the pipeline's smoke check, signed in as the deploy app, uses
     `az account get-access-token --resource api://app-l1-eastus2-dev`).

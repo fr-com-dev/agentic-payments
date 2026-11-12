@@ -533,7 +533,8 @@ session). It replaces R2 and R5 for people, and the sign-in library of R10.
 3. A pop-up sign-in needs no callback page of the portal's own, so `redirect.html` and its header exception can go.
    *Read in the library's source at the pinned version (2.30.0): `loginWithPopup` asks for
    `response_mode=web_message`, so the build removed the page. Still to confirm against the tenant.*
-4. The device flow gives the native client a token that carries `permissions` for the API.
+4. ~~The device flow gives the native client a token that carries `permissions` for the API.~~ *No longer applies
+   (R20, 2026-11-11): the native client is gone.*
 5. Removing the `Portal.Access` scope from the Entra API app: Entra wants a scope disabled before it is removed, so
    this is expected to take two deployments, as adding it did.
 
@@ -543,3 +544,44 @@ session). It replaces R2 and R5 for people, and the sign-in library of R10.
 - A removed role stays in already-issued tokens until they expire; the access token lifetime bounds it.
 - The client ID in a token names the registration used, not proven client code, as before.
 - People who onboarded under Entra can't reach their earlier wallets. Test funds left there stay there.
+
+## R20. Two applications in Auth0: no client for the agent service
+
+Added 2026-11-11 (clarifications, "two applications" session). It amends R19, whose other decisions stand.
+
+**Decision.**
+- **The tenant has exactly two applications**: the portal's single-page client, for people's sign-in, and L2's
+  backchannel approval client (012). The native client of R19, which gave a person an agent token through the device
+  flow, is removed from `auth0/`, with `scripts/user-token.ts`, its test and `npm run user-token`.
+- **No person's token from the tenant starts a run.** The agent service keeps its checks on a person's token, and
+  nothing provisions a client that passes them. A deployed agent is configured without `AUTH_ISSUER`,
+  `AUTH_AUDIENCE` and `AGENT_CLIENT_IDS`, so it accepts system identities only and answers a tenant token with 401.
+  `infra/main.bicep`'s `identity` object is `issuer` and `audience`, and only the portal's module takes it.
+- **The portal's client is not put on the agent's list.** The agent still refuses to start with it there, and the
+  parameter file has no list to put it on.
+- **Locally nothing changes.** The dev issuer still issues a person's agent token from its own client
+  (`x402-agent-cli-dev`), so runs as a person, and the tests that prove a run spends that person's account under
+  that person's policies (T-AGT-03, T-AGT-06, T-AGT-07, T-E2E-12), stay as they are.
+- The Management API application that `provision-auth0.yml` signs in with is made by hand and is not one of the two:
+  it installs the tenant's configuration and takes no part in sign-in or approval.
+
+**Rationale.** The tenant is to hold one application per interactive purpose: sign-in in the front end, approval in
+the back end. Of the ways to keep runs as a person without a third application, each gives something up: the agent
+accepting the portal's token ends "each service refuses the other's token" (SEC-20), and a second API for the same
+client lets a compromised browser session obtain an agent token, which it can't today. Neither was chosen.
+
+**Consequence.** In a deployed environment a person can onboard, hold a wallet and write expense policies, and no
+run spends that wallet or meets those policies: the hosted agent runs as system identities, paid by the platform
+account as before 013. User stories 3 and 4's payment paths are demonstrated locally only. Giving people a way in
+again is a new decision, not a configuration change: T-IAC-01 rule 21 fails on a people's setting in the agent's
+app, and T-IAC-02 on a third client.
+
+**Alternatives considered.**
+- *A second API in Auth0 for the agent, requested by the portal's client.* Keeps the two services apart by audience
+  with two applications. More work (a second permission or a shared one, a way to hand the token to the caller), and
+  weaker against a compromised browser.
+- *The agent accepts the portal's token.* The smallest change. One leaked portal token could then start runs that
+  spend.
+- *Keep the native client.* What R19 built; three applications.
+
+**R19's unverified list.** Check 4 (the device flow's permissions) no longer applies. Checks 1, 2, 3 and 5 stand.

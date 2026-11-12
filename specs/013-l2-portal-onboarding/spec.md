@@ -52,6 +52,14 @@ with Auth0 as the identity provider for people.
   a role and carried in their sign-in. The single-permission rule stays: whoever may start agent
   runs may onboard, and nobody else.
 
+### Session 2026-11-11 (two applications)
+
+- Q: The Auth0 tenant had three applications: the portal's, L2's approval client, and a native client that gave a
+  person a token for the agent service from a terminal. It must have two. Without the third, how does a person get
+  a token that starts hosted agent runs? → A: They don't. Only system identities call the hosted agent service
+  where it is deployed, and a system identity never names a user. Runs as a person stay a local capability, with
+  the dev issuer, until a later change gives people a way in.
+
 ## User Scenarios & Testing *(mandatory)*
 
 Terms used below:
@@ -816,7 +824,10 @@ version, and the policy's whole history can be rebuilt from the ledger alone.
   portal, and no separate portal permission.
 - **One identity for the portal and for agent runs** (clarified 2026-11-10). People sign in with
   Auth0, the identity provider for people, at the portal and at the hosted agent (011, amended by
-  this feature), so a run's verified requester names the user. System identities keep the
+  this feature), so a run's verified requester names the user. Since 2026-11-11 the identity
+  provider has no application for the hosted agent, so where the system is deployed no person's
+  token starts a run: a person's wallet and policies are set up and shown in the portal, and are
+  spent and enforced only in local runs (the dev issuer). System identities keep the
   organization's directory and never name a user. Locally, the existing dev issuer stands in. The
   plan chooses the sign-in mechanics.
 - **People who onboarded under the earlier sign-in start again** (clarified 2026-11-10). A user's

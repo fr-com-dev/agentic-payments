@@ -216,6 +216,9 @@ const STANDARD: Record<string, { type: string; app?: string; compact?: boolean; 
 const APPS = ["l1", "l2", "l3", "op", "portal", "seller", "seller-alias", "x402", "deploy", "tfstate"];
 /** Payment key material (INV-2): each reaches only L2's control app (container l2), from the l2 vault (rule 2). */
 const PAYMENT_KEYS = ["PAYER_PRIVATE_KEY", "USER_WALLET_MNEMONIC"];
+/** The hosted agent's settings for people's tokens. In Azure it gets none: the sign-in tenant has no client for it (013 research R20). */
+const PEOPLE_SETTINGS = /^(AUTH_ISSUER|AUTH_AUDIENCE|AGENT_CLIENT_IDS|PORTAL_CLIENT_ID|AUTH_JWKS_FILE|AUTH_TIME_CLAIM)$/;
+const IDENTITY_CHECK = "rule 21: main must refuse (fail()) user accounts turned on without an identity.issuer of the form https://…/ and an identity.audience";
 /** The x402 environment's NFS storages, and the one app key (names.apps.<key>) that may mount each (rule 4). */
 const STORAGE_OWNER: Record<string, "l2" | "portal"> = { ledger: "l2", profiles: "portal" };
 /** The resource types whose names come from `names` (rule 15). */
@@ -498,8 +501,8 @@ export function violations(arms: Templates, params: Params, infraFiles: Record<s
 
   // Rule 11: the agent's SERVICE_AUDIENCE, the audience of system identities' tokens, is the Entra API app's client
   // ID, a required 36-character parameter. Entra v2.0 tokens carry it as `aud`; a default such as the api:// URI
-  // would refuse every real token. Since 013 (research R19) AUTH_AUDIENCE is Auth0's, for people (rule 21); the
-  // Entra tenant stays the agent's AUTH_TENANT_ID.
+  // would refuse every real token. Since 013 (research R19) AUTH_AUDIENCE is Auth0's, for people at the portal
+  // (rule 21); the Entra tenant stays the agent's AUTH_TENANT_ID.
   const audience = ((arms.main.parameters as Json)?.authAudience ?? {}) as Json;
   if ("defaultValue" in audience || audience.minLength !== 36 || audience.maxLength !== 36) {
     v.push("rule 11: authAudience must be a required 36-character parameter (the API app's client ID)");
@@ -851,10 +854,11 @@ export function violations(arms: Templates, params: Params, infraFiles: Record<s
   // but PORTAL_TOKEN, which only it and L2 hold, and the card vault key, which only it holds. Its other values come
   // from parameters, it calls L2 only, and nothing in infra/ turns API docs on. main passes userAccounts whole to
   // the three modules that read it, and refuses (fail()) one it can't use.
-  // People's sign-in (research R19): the identity parameter, Terraform's output, is Auth0's issuer, the API's
-  // identifier and the clients the agent service accepts. The agent and the portal take AUTH_ISSUER and AUTH_AUDIENCE
-  // from it, and the agent AGENT_CLIENT_IDS; nothing of Entra reaches the portal, which accepts no Entra token. main
-  // passes identity whole to those two modules, and refuses (fail()) user accounts turned on without a usable one.
+  // People's sign-in (research R19 and R20): the identity parameter, Terraform's output, is Auth0's issuer and the
+  // API's identifier. The portal takes AUTH_ISSUER and AUTH_AUDIENCE from it; nothing of Entra reaches the portal,
+  // which accepts no Entra token. The agent gets none of it: the tenant has no client for the agent service, so in
+  // Azure it accepts system identities only. main passes identity whole to the portal's module, and refuses (fail())
+  // user accounts turned on without a usable one.
   const UA = "parameters('userAccounts')";
   const ID = "parameters('identity')";
   const L2_USER_SECRETS: Record<string, string> = { PORTAL_TOKEN: "portal-token", USER_WALLET_MNEMONIC: "user-wallet-mnemonic" };
@@ -928,16 +932,18 @@ export function violations(arms: Templates, params: Params, infraFiles: Record<s
     if (JSON.stringify(control) !== JSON.stringify([`http://${MN.apps.l2}.internal.*`])) v.push("rule 21: the portal's CONTROL_URL must be L2's internal address");
     if (env.some((e) => /^(SETTLEMENT_URL|SELLER_URL|SELLER_ALIAS_URL)$/.test(e.name))) v.push("rule 21: the portal calls L2 only");
   }
-  if (agentEnv.find((e) => e.name === "PORTAL_CLIENT_ID")?.value !== `[${UA}.portalClientId]`) v.push("rule 21: the agent's PORTAL_CLIENT_ID (the client it refuses) must come from the userAccounts parameter");
-  const AGENT_FROM_IDENTITY: Record<string, string> = { AUTH_ISSUER: `[${ID}.issuer]`, AUTH_AUDIENCE: `[${ID}.audience]`, AGENT_CLIENT_IDS: `[join(${ID}.agentClientIds, ',')]` };
-  for (const [name, want] of Object.entries(AGENT_FROM_IDENTITY)) {
-    const got = agentEnv.filter((e) => e.name === name);
-    if (got.length !== 1 || got[0]!.value !== want || got[0]!.secretRef !== undefined) v.push(`rule 21: the agent's ${name} must come from the identity parameter`);
+  // The agent accepts system identities only: no setting of people's sign-in reaches it, in any container of L1's.
+  for (const a of [...apps(main).filter((x) => namesOf(x).includes(MN.apps.l1)), ...(regression ? [regression] : [])]) {
+    for (const c of containersOf(a)) {
+      for (const e of c.env ?? []) if (PEOPLE_SETTINGS.test(e.name)) v.push(`rule 21: ${e.name} in ${label(a)}/${c.name}: in Azure the agent service accepts system identities only`);
+    }
   }
-  for (const module of ["l1-apps", "l2-apps", "portal-apps"]) {
+  const agentParams = (((deployment(main, "l1-apps")?.properties.template ?? {}) as Json).parameters ?? {}) as Json;
+  for (const param of ["identity", "userAccounts"]) if (param in agentParams) v.push(`rule 21: l1-apps must take no ${param} parameter: the agent service accepts no person's token in Azure`);
+  for (const module of ["l2-apps", "portal-apps"]) {
     if (deploymentParam(main, module, "userAccounts") !== JSON.stringify({ value: `[${UA}]` })) v.push(`rule 21: main must pass the userAccounts parameter to ${module} whole`);
   }
-  for (const module of ["l1-apps", "portal-apps"]) {
+  for (const module of ["portal-apps"]) {
     if (deploymentParam(main, module, "identity") !== JSON.stringify({ value: `[${ID}]` })) v.push(`rule 21: main must pass the identity parameter to ${module} whole`);
   }
   const userAccountsChecked = String(((arms.main.variables ?? {}) as Json).userAccountsChecked ?? "");
@@ -948,20 +954,17 @@ export function violations(arms: Templates, params: Params, infraFiles: Record<s
     }
   }
   const identityChecked = String(((arms.main.variables ?? {}) as Json).identityChecked ?? "");
-  if (!identityChecked.startsWith(`[if(or(not(${UA}.enabled), and(and(and(startsWith(${ID}.issuer, 'https://'), endsWith(${ID}.issuer, '/')), not(empty(${ID}.audience))), not(contains(${ID}.agentClientIds, ${UA}.portalClientId)))), ${UA}.enabled, fail(`)) {
-    v.push("rule 21: main must refuse (fail()) user accounts turned on without an identity.issuer of the form https://…/, an identity.audience, or with the portal's client among identity.agentClientIds");
+  if (!identityChecked.startsWith(`[if(or(not(${UA}.enabled), and(and(startsWith(${ID}.issuer, 'https://'), endsWith(${ID}.issuer, '/')), not(empty(${ID}.audience)))), ${UA}.enabled, fail(`)) {
+    v.push(IDENTITY_CHECK);
   }
-  // Each environment's parameter file: the identity object has exactly the keys the templates read, the portal's
-  // client is never on the agent's allow-list, and user accounts are on only with a usable identity (what main's
+  // Each environment's parameter file: the identity object has exactly the keys the templates read (no list of
+  // clients for the agent service: none exists), and user accounts are on only with a usable identity (what main's
   // fail() would refuse at deployment, found here first).
   for (const [file, p] of Object.entries(params).filter(([f]) => /^main\.[a-z0-9]+\.bicepparam$/.test(f))) {
     const id = (p.identity ?? {}) as Json;
     const accounts = (p.userAccounts ?? {}) as Json;
-    const clients = id.agentClientIds;
-    if (JSON.stringify(Object.keys(id).sort()) !== '["agentClientIds","audience","issuer"]' || typeof id.issuer !== "string" || typeof id.audience !== "string" || !Array.isArray(clients) || clients.some((c) => typeof c !== "string" || c === "")) {
-      v.push(`rule 21: ${file}'s identity must be exactly issuer, audience and agentClientIds (a list of client IDs)`);
-    } else if (clients.includes(accounts.portalClientId)) {
-      v.push(`rule 21: ${file}'s identity.agentClientIds holds the portal's client ID: the agent service must refuse the portal's tokens`);
+    if (JSON.stringify(Object.keys(id).sort()) !== '["audience","issuer"]' || typeof id.issuer !== "string" || typeof id.audience !== "string") {
+      v.push(`rule 21: ${file}'s identity must be exactly issuer and audience`);
     } else if (accounts.enabled === true && (!/^https:\/\/[^/]+\/$/.test(id.issuer) || id.audience === "")) {
       v.push(`rule 21: ${file} turns user accounts on without an identity.issuer of the form https://<domain>/ and an identity.audience`);
     }
@@ -1152,7 +1155,7 @@ resource extraRead 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   }, 60_000);
 
   it("T-IAC-01 must-fail rule 11: system identities checked against Auth0's audience, or against a tenant written in the template, are reported", async () => {
-    const audience = await mutant("modules/l1-apps.bicep", "{ name: 'SERVICE_AUDIENCE', value: authAudience }", "{ name: 'SERVICE_AUDIENCE', value: identity.audience }");
+    const audience = await mutant("modules/l1-apps.bicep", "{ name: 'SERVICE_AUDIENCE', value: authAudience }", "{ name: 'SERVICE_AUDIENCE', value: 'https://x402-api/dev' }");
     expect(audience).toContain("rule 11: the agent's SERVICE_AUDIENCE must come from the authAudience parameter");
     const tenant = await mutant("modules/l1-apps.bicep", "{ name: 'AUTH_TENANT_ID', value: authTenantId }", "{ name: 'AUTH_TENANT_ID', value: 'common' }");
     expect(tenant).toContain("rule 11: the agent's AUTH_TENANT_ID must be the parameter file's tenant");
@@ -1392,8 +1395,8 @@ resource extraRead 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   it("T-IAC-01 must-fail rule 21: a client ID written in a template, a portal secret behind a flag, userAccounts passed in part, or main without its check, is reported", async () => {
     const written = await mutant("modules/portal-apps.bicep", "{ name: 'PORTAL_CLIENT_ID', value: userAccounts.portalClientId }", "{ name: 'PORTAL_CLIENT_ID', value: '00000000-0000-4000-8000-000000000000' }");
     expect(written).toContain("rule 21: the portal's PORTAL_CLIENT_ID must come from its parameter");
-    const agent = await mutant("modules/l1-apps.bicep", "            { name: 'PORTAL_CLIENT_ID', value: userAccounts.portalClientId }\n", "");
-    expect(agent).toContain("rule 21: the agent's PORTAL_CLIENT_ID (the client it refuses) must come from the userAccounts parameter");
+    const agent = await mutant("modules/l1-apps.bicep", "            { name: 'AUTH_TENANT_ID', value: authTenantId }\n", "            { name: 'AUTH_TENANT_ID', value: authTenantId }\n            { name: 'PORTAL_CLIENT_ID', value: 'web' }\n");
+    expect(agent).toContain(`rule 21: PORTAL_CLIENT_ID in ${N.main.apps.l1}/agent: in Azure the agent service accepts system identities only`);
     const flagged = await mutant(
       "modules/portal-apps.bicep",
       "      secrets: [\n        { name: 'portal-token', keyVaultUrl: '${vaultPortal}secrets/portal-token', identity: idPortal.id }\n        { name: 'card-vault-key', keyVaultUrl: '${vaultPortal}secrets/card-vault-key', identity: idPortal.id }\n      ]",
@@ -1413,49 +1416,49 @@ resource extraRead 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
     expect(guid).toContain(CHECK);
   }, 300_000);
 
-  it("T-IAC-01 must-fail rule 21: people's sign-in taken from Entra, written in a template, or without the agent's allow-list, is reported", async () => {
+  it("T-IAC-01 must-fail rule 21: people's sign-in taken from Entra, written in a template, or given to the agent, is reported", async () => {
     const entraAudience = await mutant("modules/portal-apps.bicep", "{ name: 'AUTH_AUDIENCE', value: identity.audience }", "{ name: 'AUTH_AUDIENCE', value: userAccounts.portalClientId }");
     expect(entraAudience).toContain("rule 21: the portal's AUTH_AUDIENCE must come from its parameter");
     const issuer = await mutant("modules/portal-apps.bicep", "{ name: 'AUTH_ISSUER', value: identity.issuer }", "{ name: 'AUTH_ISSUER', value: 'https://tenant.example/' }");
     expect(issuer).toContain("rule 21: the portal's AUTH_ISSUER must come from its parameter");
     const tenant = await mutant("modules/portal-apps.bicep", "            { name: 'AUTH_ISSUER', value: identity.issuer }\n", "            { name: 'AUTH_ISSUER', value: identity.issuer }\n            { name: 'AUTH_TENANT_ID', value: tenant().tenantId }\n");
     expect(tenant).toContain(`rule 21: AUTH_TENANT_ID in ${N.main.apps.portal}/portal: the portal accepts no Entra token and no agent client`);
-    const agentAudience = await mutant("modules/l1-apps.bicep", "{ name: 'AUTH_AUDIENCE', value: identity.audience }", "{ name: 'AUTH_AUDIENCE', value: authAudience }");
-    expect(agentAudience).toContain("rule 21: the agent's AUTH_AUDIENCE must come from the identity parameter");
-    const noList = await mutant("modules/l1-apps.bicep", "            { name: 'AGENT_CLIENT_IDS', value: join(identity.agentClientIds, ',') }\n", "");
-    expect(noList).toContain("rule 21: the agent's AGENT_CLIENT_IDS must come from the identity parameter");
-    const withPortal = await mutant("modules/l1-apps.bicep", "join(identity.agentClientIds, ',')", "join(concat(identity.agentClientIds, [userAccounts.portalClientId]), ',')");
-    expect(withPortal).toContain("rule 21: the agent's AGENT_CLIENT_IDS must come from the identity parameter");
+    // The agent accepts system identities only: a tenant for people, or a client list, on it is reported.
+    const SYSTEM = "            { name: 'AUTH_TENANT_ID', value: authTenantId }\n";
+    const agentPeople = await mutant("modules/l1-apps.bicep", SYSTEM, `${SYSTEM}            { name: 'AUTH_ISSUER', value: 'https://tenant.example/' }\n            { name: 'AUTH_AUDIENCE', value: 'https://x402-api/dev' }\n            { name: 'AGENT_CLIENT_IDS', value: 'cli' }\n`);
+    for (const name of ["AUTH_ISSUER", "AUTH_AUDIENCE", "AGENT_CLIENT_IDS"]) {
+      expect(agentPeople).toContain(`rule 21: ${name} in ${N.main.apps.l1}/agent: in Azure the agent service accepts system identities only`);
+    }
+    const agentIdentity = await mutant("modules/l1-apps.bicep", "param agentStableRevision string = ''\n", "param agentStableRevision string = ''\n#disable-next-line no-unused-params\nparam identity object = {}\n");
+    expect(agentIdentity).toContain("rule 21: l1-apps must take no identity parameter: the agent service accepts no person's token in Azure");
   }, 360_000);
 
   it("T-IAC-01 must-fail rule 21: identity passed in part, the portal given the Entra API app, or main without its identity check, is reported", async () => {
-    const part = await mutant("main.bicep", "    userAccounts: userAccounts\n    identity: identity\n  }\n  dependsOn: [ids, registry, vaults, envs, foundry]", "    userAccounts: userAccounts\n    identity: { issuer: identity.issuer, audience: identity.audience, agentClientIds: [] }\n  }\n  dependsOn: [ids, registry, vaults, envs, foundry]");
-    expect(part).toContain("rule 21: main must pass the identity parameter to l1-apps whole");
+    const part = await mutant("main.bicep", "    userAccounts: userAccounts\n    identity: identity\n  }\n  dependsOn: [ids, registry, vaults, envs]", "    userAccounts: userAccounts\n    identity: { issuer: identity.issuer, audience: identity.audience }\n  }\n  dependsOn: [ids, registry, vaults, envs]");
+    expect(part).toContain("rule 21: main must pass the identity parameter to portal-apps whole");
     const entra = await mutant("modules/portal-apps.bicep", "param identity object\n", "param identity object\n#disable-next-line no-unused-params\nparam authAudience string = ''\n");
     expect(entra).toContain("rule 21: portal-apps must take no authAudience parameter: the portal accepts no Entra token");
-    const IDENTITY = "rule 21: main must refuse (fail()) user accounts turned on without an identity.issuer of the form https://…/, an identity.audience, or with the portal's client among identity.agentClientIds";
+    const IDENTITY = IDENTITY_CHECK;
     const noSlash = await mutant("main.bicep", " && endsWith(identity.issuer, '/')", "");
     expect(noSlash).toContain(IDENTITY);
-    const portalAllowed = await mutant("main.bicep", " && !contains(identity.agentClientIds, userAccounts.portalClientId)", "");
-    expect(portalAllowed).toContain(IDENTITY);
+    const noAudience = await mutant("main.bicep", " && !empty(identity.audience)", "");
+    expect(noAudience).toContain(IDENTITY);
     const never = await mutant("main.bicep", "var identityChecked = !userAccounts.enabled || (", "var identityChecked = true || (");
     expect(never).toContain(IDENTITY);
   }, 360_000);
 
-  it("T-IAC-01 must-fail rule 21: a parameter file whose identity has other keys, lists the portal's client for the agent, or turns user accounts on without an issuer, is reported", async () => {
-    const keys = await mutant("main.dev.bicepparam", "  audience: ''\n  agentClientIds: []\n", "  apiAudience: ''\n  agentClientIds: []\n");
-    expect(keys).toContain("rule 21: main.dev.bicepparam's identity must be exactly issuer, audience and agentClientIds (a list of client IDs)");
-    const empty = await mutant("main.dev.bicepparam", "  agentClientIds: []\n", "  agentClientIds: ['']\n");
-    expect(empty).toContain("rule 21: main.dev.bicepparam's identity must be exactly issuer, audience and agentClientIds (a list of client IDs)");
-    // Not vacuous: a client of its own on the list is fine; the portal's is not, also while user accounts are off.
-    expect(await mutant("main.dev.bicepparam", "  agentClientIds: []\n", "  agentClientIds: ['cli']\n", [["  portalClientId: ''", "  portalClientId: 'web'"]])).toEqual([]);
-    const listed = await mutant("main.dev.bicepparam", "  agentClientIds: []\n", "  agentClientIds: ['cli', 'web']\n", [["  portalClientId: ''", "  portalClientId: 'web'"]]);
-    expect(listed).toEqual(["rule 21: main.dev.bicepparam's identity.agentClientIds holds the portal's client ID: the agent service must refuse the portal's tokens"]);
+  it("T-IAC-01 must-fail rule 21: a parameter file whose identity has other keys, lists clients for the agent, or turns user accounts on without an issuer, is reported", async () => {
+    const KEYS = "rule 21: main.dev.bicepparam's identity must be exactly issuer and audience";
+    const keys = await mutant("main.dev.bicepparam", "  issuer: ''\n  audience: ''\n}", "  issuer: ''\n  apiAudience: ''\n}");
+    expect(keys).toContain(KEYS);
+    // The tenant has no client for the agent service, so a parameter file lists none.
+    const clients = await mutant("main.dev.bicepparam", "  issuer: ''\n  audience: ''\n}", "  issuer: ''\n  audience: ''\n  agentClientIds: ['cli']\n}");
+    expect(clients).toContain(KEYS);
     const on = await mutant("main.dev.bicepparam", "param userAccounts = {\n  enabled: false\n  portalClientId: ''", "param userAccounts = {\n  enabled: true\n  portalClientId: 'web'");
     expect(on).toEqual(["rule 21: main.dev.bicepparam turns user accounts on without an identity.issuer of the form https://<domain>/ and an identity.audience"]);
     // Not vacuous: with the tenant's values, user accounts may be on. An issuer without its trailing slash is not one.
-    const identity = "param identity = {\n  issuer: ''\n  audience: ''\n  agentClientIds: []\n}";
-    const tenant = (issuer: string) => `param identity = {\n  issuer: '${issuer}'\n  audience: 'https://x402-api/dev'\n  agentClientIds: ['cli']\n}`;
+    const identity = "param identity = {\n  issuer: ''\n  audience: ''\n}";
+    const tenant = (issuer: string) => `param identity = {\n  issuer: '${issuer}'\n  audience: 'https://x402-api/dev'\n}`;
     const enabled: [string, string][] = [["  enabled: false\n  portalClientId: ''", "  enabled: true\n  portalClientId: 'web'"]];
     expect(await mutant("main.dev.bicepparam", identity, tenant("https://x402-dev.us.auth0.com/"), enabled)).toEqual([]);
     expect(await mutant("main.dev.bicepparam", identity, tenant("https://x402-dev.us.auth0.com"), enabled)).toEqual(["rule 21: main.dev.bicepparam turns user accounts on without an identity.issuer of the form https://<domain>/ and an identity.audience"]);

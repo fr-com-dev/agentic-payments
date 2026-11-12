@@ -1,8 +1,9 @@
 # The values L2 needs, never a secret. bicepparam_ciba goes into infra/main.<environment>.bicepparam as param ciba;
 # l2_env into a local env/l2-control.env. T-IAC-02 checks that bicepparam_ciba has exactly the keys main.bicep reads.
 # For people's sign-in (specs/013), further down: bicepparam_identity goes there as param identity, and
-# bicepparam_portal_client_id as userAccounts.portalClientId; agent_env and portal_env go into a local
-# env/l1-hosted.env and env/portal.env. Both clients are public, so none of this is a secret either.
+# bicepparam_portal_client_id as userAccounts.portalClientId; portal_env goes into a local env/portal.env. The
+# portal's client is public, so none of this is a secret either. Nothing here is for the hosted agent service: the
+# tenant has no client for it (specs/013 research R20).
 
 output "bicepparam_ciba" {
   description = "The ciba object for infra/main.<environment>.bicepparam. Set enabled to true there only once the l2 vault's ciba-client-credential holds the real credential (specs/012 quickstart §6)."
@@ -34,28 +35,16 @@ output "credential_key_id" {
 }
 
 output "bicepparam_identity" {
-  description = "The identity object for infra/main.<environment>.bicepparam: people's sign-in, for the portal and the agent service. The agent service accepts the agent CLI's client only, never the portal's."
+  description = "The identity object for infra/main.<environment>.bicepparam: people's sign-in at the portal. It names no client: the hosted agent service accepts no person's token from the tenant."
   value = {
-    issuer         = local.issuer
-    audience       = auth0_resource_server.identity.identifier
-    agentClientIds = [auth0_client.agent_cli.client_id]
+    issuer   = local.issuer
+    audience = auth0_resource_server.identity.identifier
   }
 }
 
 output "bicepparam_portal_client_id" {
   description = "userAccounts.portalClientId for infra/main.<environment>.bicepparam: the portal web app's client ID."
   value       = auth0_client.portal.client_id
-}
-
-output "agent_env" {
-  description = "The lines of people's sign-in for a local env/l1-hosted.env. AGENT_CLI_CLIENT_ID is the client `npm run user-token` signs in with; the agent service reads only AGENT_CLIENT_IDS."
-  value = join("\n", [
-    "AUTH_ISSUER=${local.issuer}",
-    "AUTH_AUDIENCE=${auth0_resource_server.identity.identifier}",
-    "AGENT_CLIENT_IDS=${auth0_client.agent_cli.client_id}",
-    "PORTAL_CLIENT_ID=${auth0_client.portal.client_id}",
-    "AGENT_CLI_CLIENT_ID=${auth0_client.agent_cli.client_id}",
-  ])
 }
 
 output "portal_env" {

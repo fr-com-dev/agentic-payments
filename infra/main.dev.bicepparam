@@ -91,15 +91,14 @@ param userAccounts = {
   cardVaultPublishableKey: ''
 }
 
-// 013 people's sign-in (specs/013 research R19): people sign in with Auth0, at the portal and at the agent service.
-// The three values are Terraform's output bicepparam_identity (auth0/; the same summary): the tenant's issuer
-// (https://<domain>/), the API's identifier, and the clients the agent service accepts (the agent CLI's, never the
-// portal's). Empty in dev until provision-auth0.yml has applied 013's additions; main.bicep refuses
-// userAccounts.enabled without them. System identities stay on Entra (tenantId and authAudience above).
+// 013 people's sign-in (specs/013 research R19 and R20): people sign in with Auth0, at the portal only. The two
+// values are Terraform's output bicepparam_identity (auth0/; the same summary): the tenant's issuer
+// (https://<domain>/) and the API's identifier. Empty in dev until provision-auth0.yml has applied 013's additions;
+// main.bicep refuses userAccounts.enabled without them. The agent service accepts system identities only, which
+// stay on Entra (tenantId and authAudience above): the tenant has no client for it.
 param identity = {
   issuer: ''
   audience: ''
-  agentClientIds: []
 }
 
 // Declared to Anthropic with the Claude deployment, which accepts its Azure Marketplace terms (owner's consent,

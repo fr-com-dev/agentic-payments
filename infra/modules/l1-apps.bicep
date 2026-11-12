@@ -8,9 +8,9 @@
 // - identity lifecycle is Main only for the agent (Foundry tokens), None for the regression job;
 // - the agent's SERVICE_AUDIENCE, the audience of system identities' Entra tokens, comes from the authAudience
 //   parameter (rule 11);
-// - 013 (rule 21): people sign in with Auth0, so the agent's AUTH_ISSUER, AUTH_AUDIENCE and AGENT_CLIENT_IDS (the
-//   clients it accepts) come from the identity parameter, and its PORTAL_CLIENT_ID, the client it refuses, from the
-//   userAccounts parameter.
+// - 013 (rule 21, research R20): the Auth0 tenant has no client for the agent service, so in Azure it accepts system
+//   identities only: it gets none of the people's settings (AUTH_ISSUER, AUTH_AUDIENCE, AGENT_CLIENT_IDS,
+//   PORTAL_CLIENT_ID) and takes neither the identity nor the userAccounts parameter.
 param location string
 @description('Every resource name (main.<environment>.bicepparam).')
 param names object
@@ -26,10 +26,6 @@ param authAudience string
 param modelDeployment string
 @description('The agent revision that keeps serving until the new one passes the regression (empty on the first deployment).')
 param agentStableRevision string = ''
-@description('013 user accounts (SPEC L2-8): the non-secret settings from the parameter file. The agent reads portalClientId only.')
-param userAccounts object
-@description('013 people\'s sign-in with Auth0: { issuer, audience, agentClientIds }, from the parameter file.')
-param identity object
 
 resource idL1 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' existing = { name: names.identities.l1 }
 resource mainEnv 'Microsoft.App/managedEnvironments@2025-01-01' existing = { name: names.environments.x402 }
@@ -88,13 +84,8 @@ resource agent 'Microsoft.App/containerApps@2025-01-01' = {
             { name: 'ANTHROPIC_MODEL', value: modelDeployment }
             { name: 'FOUNDRY_BASE_URL', value: 'https://${ais.properties.customSubDomainName}.services.ai.azure.com/anthropic/v1' }
             { name: 'AZURE_CLIENT_ID', value: idL1.properties.clientId }
-            // People (Auth0): the tenant's issuer, the API's identifier, the clients accepted, and the portal's
-            // client, which is refused.
-            { name: 'AUTH_ISSUER', value: identity.issuer }
-            { name: 'AUTH_AUDIENCE', value: identity.audience }
-            { name: 'AGENT_CLIENT_IDS', value: join(identity.agentClientIds, ',') }
-            { name: 'PORTAL_CLIENT_ID', value: userAccounts.portalClientId }
-            // System identities (Entra, app-only tokens): the tenant and the API app's client ID.
+            // System identities only (Entra, app-only tokens): the tenant and the API app's client ID. No person's
+            // token is accepted here: the sign-in tenant has no client for this service (research R20).
             { name: 'AUTH_TENANT_ID', value: authTenantId }
             { name: 'SERVICE_AUDIENCE', value: authAudience }
             { name: 'AGENT_BIND_HOST', value: '0.0.0.0' }

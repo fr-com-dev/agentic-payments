@@ -1,6 +1,6 @@
 # Specs index: x402 three-layer agent payments
 
-These spec-kit feature specs decompose `SPEC.md` (v1.0 for 001–008, amended through v1.12 by 009, 010,
+These spec-kit feature specs decompose `SPEC.md` (v1.0 for 001–008, amended through v1.13 by 009, 010,
 011, 012 and 013; v1.4 added the L2 API docs without a feature spec), which remains normative. Project principles
 live in `.specify/memory/constitution.md` (v1.6.0).
 It covers INV-1..13, the definition of done and the governance rules.
@@ -34,7 +34,7 @@ It covers INV-1..13, the definition of done and the governance rules.
 | INV-13 | 007 (owner), 003, 004, 005, 013 (the fifth role, `portal-control`) |
 | L1-1..L1-3, L1-5 | 001 (L1-5 extended by 011: a second entry point) |
 | L1-4 | 001, 008 (seller alias and `--check-baseline` by 011) |
-| L1-6 | 011 (the user on intents by 013; since v1.12, also by 013: people sign in with Auth0, the client allow-list, and Entra for system identities only) |
+| L1-6 | 011 (the user on intents by 013; since v1.12, also by 013: people sign in with Auth0, the client allow-list, and Entra for system identities only; v1.13: no client of the tenant for the agent) |
 | L2-1, L2-2, L2-3 | 002 (R14 also in 004; R15 in 010; the effective mandate, R16, R17, the user daily ceiling and the keyring in 013) |
 | L2-4, L2-4.1 | 003 (entry types added by 010, 012 and 013; owner filters by 013) |
 | L2-4.2 | 004 (amended by 010) |

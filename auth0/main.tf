@@ -4,8 +4,9 @@
 # machine token can request the payment details. Users, passwords and private keys are never managed here.
 #
 # And what people's sign-in needs (SPEC L2-8 and L1-6, specs/013 research R19), further down: one API with one
-# permission, the role that holds it, two public clients (the portal's web app and the agent CLI) and the post-login
-# Action that dates the sign-in. No user is created and no role is assigned here: an administrator does that in Auth0.
+# permission, the role that holds it, the portal's public client and the post-login Action that dates the sign-in.
+# The tenant has two applications, L2's and the portal's: none for the hosted agent service (research R20). No user
+# is created and no role is assigned here: an administrator does that in Auth0.
 
 locals {
   # Must equal DETAILS_TYPE in src/layer2-control/payment-details.ts (T-IAC-02): Auth0's Guardian schema, the only
@@ -13,7 +14,7 @@ locals {
   details_type = "urn:auth0:schemas:authorization-details:v1:x402-payment"
   issuer       = "https://${var.tenant_domain}/"
 
-  # People's sign-in. The API's identifier is AUTH_AUDIENCE for the portal and the agent service; it can't change
+  # People's sign-in. The API's identifier is the portal's AUTH_AUDIENCE; it can't change
   # once created. The claim is the services' default AUTH_TIME_CLAIM, and the one sign-in-time.js writes (T-IAC-02).
   identity_audience = "https://x402-api/${var.environment}"
   permission        = "agent:run"
@@ -129,9 +130,9 @@ resource "auth0_guardian" "this" {
 
 # ---- People's sign-in (specs/013 research R19) ---------------------------------------------------------------------
 
-# People's API: its identifier is AUTH_AUDIENCE, for the portal and for the agent service. RBAC is enforced and the
-# permissions go into the access token (the default token profile, which names the client as azp), so a token says
-# what its person may do, and both services verify it offline. Refresh tokens are allowed, for the web app's rotation.
+# People's API: its identifier is the portal's AUTH_AUDIENCE. RBAC is enforced and the permissions go into the access
+# token (the default token profile, which names the client as azp), so a token says what its person may do, and the
+# portal verifies it offline. Refresh tokens are allowed, for the web app's rotation.
 # Tokens live an hour: a role taken from a person stays in their tokens no longer than that.
 resource "auth0_resource_server" "identity" {
   name                                            = "api-x402-${var.environment}"
@@ -159,7 +160,7 @@ resource "auth0_resource_server_scopes" "identity" {
 
   scopes {
     name        = local.permission
-    description = "Use the x402 portal and run the purchasing agent, as oneself"
+    description = "Use the x402 portal, as oneself"
   }
 }
 
@@ -167,7 +168,7 @@ resource "auth0_resource_server_scopes" "identity" {
 # here, and no user is created.
 resource "auth0_role" "user" {
   name        = "x402-user"
-  description = "May onboard at the x402 portal and run the purchasing agent (${var.environment})."
+  description = "May onboard at the x402 portal and use it (${var.environment})."
 }
 
 resource "auth0_role_permissions" "user" {
@@ -183,7 +184,8 @@ resource "auth0_role_permissions" "user" {
 
 # The portal's web app: a public single-page client. Authorization code with PKCE (a public client has no other way
 # to use the code), and the refresh_token grant only because its refresh tokens rotate. Its client ID is
-# PORTAL_CLIENT_ID: the only client whose tokens the portal accepts, and one the agent service refuses.
+# PORTAL_CLIENT_ID: the only client whose tokens the portal accepts. It is the only client for people: none exists for
+# the hosted agent service, so no person's token from this tenant starts a run there (specs/013 research R20).
 resource "auth0_client" "portal" {
   name            = "app-portal-${var.environment}"
   description     = "x402 portal (${var.environment}): people sign in to it to see and change their own profile, account and expense policy."
@@ -216,26 +218,6 @@ resource "auth0_client" "portal" {
 # No secret and no key: a browser can't keep one.
 resource "auth0_client_credentials" "portal" {
   client_id             = auth0_client.portal.client_id
-  authentication_method = "none"
-}
-
-# The agent CLI: a public native client with the device authorization grant only, for `npm run user-token`. Its
-# client ID is on the agent service's allow-list (AGENT_CLIENT_IDS), and the portal refuses it.
-resource "auth0_client" "agent_cli" {
-  name            = "app-agent-cli-${var.environment}"
-  description     = "x402 agent CLI (${var.environment}): a person gets a token for the hosted agent service from a terminal, with the device flow."
-  app_type        = "native"
-  is_first_party  = true
-  oidc_conformant = true
-  grant_types     = ["urn:ietf:params:oauth:grant-type:device_code"]
-
-  jwt_configuration {
-    alg = "RS256"
-  }
-}
-
-resource "auth0_client_credentials" "agent_cli" {
-  client_id             = auth0_client.agent_cli.client_id
   authentication_method = "none"
 }
 
