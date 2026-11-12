@@ -192,6 +192,11 @@ GitHub. `private_key_jwt` needs Auth0's Enterprise plan; on a lower plan the pip
   one hour at most.
 - **Offline checks on your machine.** `terraform -chdir=auth0 fmt -check` needs nothing. `validate` needs the
   provider: run `terraform -chdir=auth0 init -backend=false` first. Neither reads the state.
+- **The lock file.** `.terraform.lock.hcl` must hold the provider's `h1` checksum for the pipeline's Linux runner
+  as well as your machine's: the pipeline's `init -lockfile=readonly` adds none, and `validate` then refuses the
+  provider ("does not match any of the checksums recorded in the dependency lock file"). After changing the
+  provider's version, run `terraform -chdir=auth0 providers lock -platform=linux_amd64 -platform=darwin_arm64`
+  and commit the file. T-IAC-02 fails on a lock file with one platform's checksum.
 - **The state and `infra/cleanup.sh`.** The clean-up deletes the resource group, and the state with it, but nothing
   in Auth0. Before the next apply for that tenant, delete the Auth0 objects by hand or import them
   (`terraform import`), or the apply fails on objects that already exist.
