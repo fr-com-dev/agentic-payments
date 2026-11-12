@@ -20,6 +20,8 @@ The feature is proven against the stand-in approval service (`test/helpers/ciba-
 |---|---|
 | §1.2, §1.3 | A person approves their own agent's escalated payments from their own phone. "Per-user approvers" leaves the out-of-scope list. Approving in the portal as a user, and people's runs in a deployed environment, stay out. |
 | L2-7 | "One approver per L2 (`CIBA_APPROVER`)" goes: each request is addressed to the escalation's owner. |
+| §7 | `PaymentIntent.approvalSubject?`: the person's subject at the approval service, sent by the hosted agent for a person's run and kept nowhere by L2. `ApprovalRequestMark` gains `no_owner`, `no_identity` and `identity_mismatch`; `ApprovalRequestState` gains `unanswered`; new `WaitingPayment` and `WAITING_REASONS`; `PlatformView.phoneApproval`. `AuthorizationDecision` and `BudgetStatus` are unchanged. |
+| L2-5 | `POST /v1/authorize` accepts `approvalSubject` and answers 400 for a malformed one or one without `userId`. `GET /v1/platform` says whether phone approval is on. |
 | §11 | The v1.15 residual risk "an escalation of a user's payment still goes to the operator and the one configured approver" is removed; four residual risks are added for v1.16. |
 
 ## Changes in 1.15
@@ -700,6 +702,9 @@ export interface PaymentIntent {
   operatorApprovalOnly?: boolean; // v1.8 (L2-7): true removes the backchannel approval path; never adds one
   userId?: string;             // v1.10 (L2-8): ^usr_[0-9a-f]{32}$, the verified person who started the run. Set by the
                                // hosted agent service only, never from model text or a tool input. Absent: the platform account
+  approvalSubject?: string;    // v1.16 (L2-7): the person's subject at the approval service, from the sign-in token the
+                               // hosted agent verified; 1-255 characters, no whitespace or control character, and only
+                               // together with userId. L2 addresses one approval request with it and keeps it nowhere
 }
 
 // L2 -> L1
@@ -758,7 +763,18 @@ export interface UserView { userId: string; registered: boolean; enabled: boolea
              spent24hAtomic: string; dailyCeilingAtomic: string; dailyRemainingAtomic: string };
   cards: string[]; policies: PolicyView[] }
 export interface PlatformView { platformId: string; digest: string; limits: PlatformLimits;
-  sellers: { host: string; name: string; payees: string[] }[]; network: string; asset: string; decimals: number }
+  sellers: { host: string; name: string; payees: string[] }[]; network: string; asset: string; decimals: number;
+  phoneApproval: boolean }     // v1.16: true when backchannel approval is on in this L2
+
+// v1.16 (L2-7, specs/015): who an escalation asks, and what a person may see of their own pending payments
+export type ApprovalRequestMark = "requested" | "capped" | "operator_only" | "reevaluation"
+  | "no_owner" | "no_identity" | "identity_mismatch";            // the last three (v1.16) ask nobody
+export type ApprovalRequestState = ApprovalRequestMark | "failed" | "verification_failed" | "lapsed" | "answered"
+  | "abandoned" | "unanswered";                                  // unanswered (v1.16): expired with its request never ended
+export const WAITING_REASONS = ["limit_reached", "sign_in_not_supported", "phone_unreachable", "service_unavailable",
+  "request_expired", "answer_not_accepted"] as const;
+export interface WaitingPayment { authorizationId: string; referenceCode: string; resourceKey: string; payTo: string;
+  amount: string; createdAt: string; expiresAt: string; waitingFor: "phone" | "operator"; reason?: WaitingReason }
 
 // v1.15 (L2-8, specs/014): the escalation views, here because the portal reads them too, and the administration shapes
 export type DecisionChannel = "operator" | "backchannel" | "portal";
@@ -1004,7 +1020,7 @@ An escalation is created by its `ESCALATED` entry at `createdMs = Date.parse(ts)
 
 | Method & path | Auth | Request | 200 response | Errors |
 |---|---|---|---|---|
-| `POST /v1/authorize` | `CONTROL_TOKEN` | `PaymentIntent` | `AuthorizationDecision`. v1.8: with backchannel approval on, a call that creates an eligible escalation may take up to 120 s and return the re-evaluated decision (L2-7) | 400 malformed (missing ids, `accepts` not an array, non-http(s) URL, a non-boolean `operatorApprovalOnly`; v1.10: a `userId` that does not match `^usr_[0-9a-f]{32}$`, whether user accounts are on or off), 401 |
+| `POST /v1/authorize` | `CONTROL_TOKEN` | `PaymentIntent` | `AuthorizationDecision`. v1.8: with backchannel approval on, a call that creates an eligible escalation may take up to 120 s and return the re-evaluated decision (L2-7) | 400 malformed (missing ids, `accepts` not an array, non-http(s) URL, a non-boolean `operatorApprovalOnly`; v1.10: a `userId` that does not match `^usr_[0-9a-f]{32}$`, whether user accounts are on or off; v1.16: an `approvalSubject` that is not a string of 1 to 255 characters with no whitespace and no control character, or one sent without `userId`, whether backchannel approval is on or off; the answer never repeats the value), 401 |
 | `GET /v1/budget/:sessionId` | `CONTROL_TOKEN` | v1.10: optional query `userId` | `BudgetStatus` (`perPaymentCapAtomic` = auto-approve limit). An unknown session returns 200 with zero spend. `remainingAtomic` is never below 0. v1.10: with `userId` and user accounts on, the user's view (`scope: "user_daily"`): the cap is the user daily ceiling, the spend is the user's committed spend over 24 h, and `perPaymentCapAtomic` is the highest auto-approve limit among the user's active policies, bounded by the platform cap; zeros for a user who is not onboarded or is disabled | 400 malformed `userId`, 401 |
 | `POST /v1/reconcile` | `SETTLEMENT_TOKEN` | `SettlementReport` | `{ ok, anomaly }` | 400 malformed report (missing `authorizationId` or `verified`), 404 unknown authorizationId, 401 |
 | `POST /v1/approvals/:authorizationId` | `OPERATOR_TOKEN` | `{ approver? = "operator", ttlSeconds? = 600 }` | Pending: `{ ok, approvalId, expiresAt }` and one `HUMAN_APPROVAL`. Already approved: the existing approval plus `alreadyApproved: true`; nothing is appended and the request's `ttlSeconds`/`approver` are ignored (v1.3). | 400 `ttlSeconds` not a positive integer, 404 no ESCALATED entry, 409 `{ error, state: "denied", rejectionId }` or `{ error, state: "expired", expiresAt }`, 401 |
@@ -1012,7 +1028,7 @@ An escalation is created by its `ESCALATED` entry at `createdMs = Date.parse(ts)
 | `GET /v1/escalations` | `OPERATOR_TOKEN` | — | `{ pending: [{ authorizationId, sessionId, resourceKey, payTo, amount, createdAt, expiresAt, referenceCode, approvalRequest? }], cursor }`, oldest first; `cursor` is the last ledger `seq` (-1 when empty). v1.8: `referenceCode` (8 hex characters of the ID) always; `approvalRequest` (`requested`, `capped`, `operator_only`, `reevaluation`, `failed`, `verification_failed` or `lapsed`) when backchannel approval is on | 401 |
 | `GET /v1/escalations/events?after=<seq>` | `OPERATOR_TOKEN` | `after`: integer ≥ -1, default -1 | `{ events, cursor }`: one event per lifecycle entry with `seq > after` (`escalated`, `approved`, `denied`, `expired`, `approval_lapsed`; v1.8 adds `approval_requested`, `approval_request_failed`, `approval_request_lapsed`, `approval_verification_failed`, and `channel`, `decidedBy`, `referenceCode` where they apply), built from a field whitelist; never tokens, request handles, payment headers, `accepts`, `purpose`, `details` or the approval service's text | 400 bad `after`, 401 |
 | `GET /v1/ledger/verify` | `OPERATOR_TOKEN` | — | `{ entries, ok, brokenAt? }` | 401 |
-| `GET /v1/platform` (v1.10) | `PORTAL_TOKEN` | — | `PlatformView` | 401 |
+| `GET /v1/platform` (v1.10) | `PORTAL_TOKEN` | — | `PlatformView`. v1.16: with `phoneApproval` | 401 |
 | `GET /v1/users/:userId` | `PORTAL_TOKEN` | — | `UserView`. An unknown user: `registered: false` and empty lists, never 404 | 400, 401 |
 | `PUT /v1/users/:userId/registration` | `PORTAL_TOKEN` | `{ acknowledgedTestFunds: true }` | `UserView`. The first call appends `USER_REGISTERED`; later calls append nothing | 400 (the flag is not `true`, or any other field), 401 |
 | `PUT /v1/users/:userId/wallet` | `PORTAL_TOKEN` | — | `UserView`. The first call appends `WALLET_CREATED`; later calls append nothing and return the same address | 401, 409 `not_registered`, 409 `account_disabled` |

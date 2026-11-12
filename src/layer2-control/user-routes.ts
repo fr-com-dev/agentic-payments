@@ -7,7 +7,7 @@ import { randomUUID } from "node:crypto";
 import express, { type Express, type Request, type RequestHandler, type Response } from "express";
 import { requireRole } from "../shared/auth.js";
 import type { NetworkProfile } from "../shared/config.js";
-import type { PolicyValues } from "../shared/contracts.js";
+import type { PlatformView, PolicyValues } from "../shared/contracts.js";
 import { USER_ID_RE } from "../shared/user-id.js";
 import type { AuditLedger, LedgerEntry } from "./ledger.js";
 import type { Serialize } from "./ledger-routes.js";
@@ -116,7 +116,9 @@ export function mountUserRoutes(app: Express, deps: UserRoutesDeps): void {
   const notFound = (res: Response) => refuse(res, 404, "not found");
 
   app.get("/v1/platform", guard, (_req, res) => {
-    res.json(platformView(users.platform, net));
+    // 015: false until the waiting-payments read lands (specs/015 tasks T034 sets it from the backchannel deps).
+    const view: PlatformView = { ...platformView(users.platform, net), phoneApproval: false };
+    res.json(view);
   });
 
   app.get(

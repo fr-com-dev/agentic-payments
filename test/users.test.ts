@@ -617,12 +617,94 @@ describe("T-USR-06 off by default (FR-001)", () => {
   });
 });
 
+describe("015 authorize approvalSubject (L2-5, L2-7, FR-009)", () => {
+  const SUBJECT = "auth0|planted-subject-4be1";
+
+  it.each<[string, unknown]>([
+    ["a number", 42],
+    ["an object", { sub: SUBJECT }],
+    ["an empty string", ""],
+    ["256 characters", "a".repeat(256)],
+    ["a space", "auth0|a b"],
+    ["a tab", "auth0|a\tb"],
+    ["a line break", "auth0|a\nb"],
+    ["a control character", "auth0|a\u0000b"],
+    ["a non-breaking space", "auth0|a\u00a0b"],
+  ])("015 authorize approvalSubject that is %s is 400, with user accounts on or off, and nothing is recorded", async (_label, value) => {
+    for (const o of [{}, { off: true }]) {
+      const l2 = await start(o);
+      const before = l2.entries().length;
+      const res = await l2.authorize({ ...l2.intentFor("/api/weather", "1000", { userId: ALICE }), approvalSubject: value });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe("malformed PaymentIntent");
+      expect(JSON.stringify(res.body)).not.toContain("auth0|a");
+      expect(l2.entries().length).toBe(before);
+    }
+  });
+
+  it("015 authorize approvalSubject is never without userId: present with no userId is 400", async () => {
+    for (const o of [{}, { off: true }]) {
+      const l2 = await start(o);
+      const before = l2.entries().length;
+      const res = await l2.authorize({ ...l2.intentFor("/api/weather", "1000"), approvalSubject: SUBJECT });
+      expect(res.status).toBe(400);
+      expect(JSON.stringify(res.body)).not.toContain(SUBJECT);
+      expect(l2.entries().length).toBe(before);
+    }
+  });
+
+  it("015 authorize approvalSubject: 401 precedes 400", async () => {
+    const l2 = await start();
+    const bad = { ...l2.intentFor("/api/weather", "1000", { userId: ALICE }), approvalSubject: "" };
+    for (const token of [null, TOKENS.portal, TOKENS.operator]) {
+      expect((await l2.call("POST", "/v1/authorize", { token, body: bad })).status).toBe(401);
+    }
+  });
+
+  it("015 authorize approvalSubject of 1 and of 255 characters is accepted", async () => {
+    const l2 = await start();
+    await l2.onboard(ALICE);
+    for (const value of ["a", "a".repeat(255)]) {
+      const res = await l2.authorize({ ...l2.intentFor("/api/weather", "1000", { userId: ALICE }), approvalSubject: value });
+      expect(res.status).toBe(200);
+    }
+  });
+
+  it("015 authorize approvalSubject, valid: the same decisions and violations as without it, and it is in no entry and no response", async () => {
+    const l2 = await start();
+    await l2.onboard(ALICE);
+    const bodies: unknown[] = [];
+    const decide = async (path: string, amount: string, sessionId: string, withSubject: boolean) => {
+      const res = await l2.authorize({ ...l2.intentFor(path, amount, { userId: ALICE, sessionId }), ...(withSubject && { approvalSubject: SUBJECT }) });
+      bodies.push(res.body);
+      return [res.status, res.body.status, ((res.body as { violations?: { rule: string }[] }).violations ?? []).map((v) => v.rule)];
+    };
+    // An auto-approved payment, an escalation and a denial (above the hard cap), each without and with the field.
+    for (const [path, amount] of [["/api/weather", "1000"], ["/api/premium-report", "50000"], ["/api/too-much", "200000"]] as const) {
+      expect(await decide(path, amount, `sess_with_${amount}`, true)).toEqual(await decide(path, amount, `sess_without_${amount}`, false));
+    }
+    const keysOf = (sessionId: string) => l2.entries().filter((e) => e.sessionId === sessionId).map((e) => [e.type, Object.keys(e.data).sort()]);
+    for (const amount of ["1000", "50000", "200000"]) expect(keysOf(`sess_with_${amount}`)).toEqual(keysOf(`sess_without_${amount}`));
+    expect(readFileSync(l2.ledgerFile, "utf8")).not.toContain(SUBJECT);
+    expect(JSON.stringify(bodies)).not.toContain(SUBJECT);
+    expect(JSON.stringify(bodies)).not.toContain("approvalSubject");
+  });
+
+  it("015 authorize approvalSubject with user accounts off is ignored, as userId is: the platform payer signs and nothing names it", async () => {
+    const off = await start({ off: true });
+    const res = await off.authorize({ ...off.intentFor("/api/weather", "1000", { userId: ALICE }), approvalSubject: SUBJECT });
+    expect(res.body.status).toBe("AUTHORIZED");
+    expect((res.body as { payer: string }).payer).toBe(PLATFORM_PAYER);
+    expect(JSON.stringify(off.entries())).not.toContain(SUBJECT);
+  });
+});
+
 describe("T-USR-01 reads", () => {
   it("T-USR-01 GET /v1/platform returns the config in force, with its digest and the network", async () => {
     const l2 = await start();
     const res = await l2.portal("GET", "/v1/platform");
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ platformId: l2.platform.platformId, digest: platformDigest(l2.platform), limits: l2.platform.limits, sellers: l2.platform.sellers, network: CAIP2, asset: ASSET, decimals: 6 });
+    expect(res.body).toEqual({ platformId: l2.platform.platformId, digest: platformDigest(l2.platform), limits: l2.platform.limits, sellers: l2.platform.sellers, network: CAIP2, asset: ASSET, decimals: 6, phoneApproval: false });
   });
 
   it("T-USR-01 an unknown user is registered:false with empty lists, never 404", async () => {

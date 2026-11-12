@@ -117,6 +117,13 @@ function isHttpUrl(s: unknown): s is string {
   }
 }
 
+/**
+ * 015 (L2-7): the shape of `PaymentIntent.approvalSubject`: 1 to 255 characters, none of them whitespace or a control
+ * character (an Auth0 user ID is `<connection>|<id>`). Only the shape is checked here; whether the subject is the
+ * user's is decided with eligibility, inside the serialized section. A refusal never echoes the value.
+ */
+const APPROVAL_SUBJECT_RE = /^[^\s\u0000-\u001f\u007f-\u009f]{1,255}$/;
+
 /** 400 checks (L2-5): ids present, accepts is an array, resourceUrl is http(s). */
 function validIntent(body: unknown): body is PaymentIntent {
   if (body === null || typeof body !== "object") return false;
@@ -134,7 +141,9 @@ function validIntent(body: unknown): body is PaymentIntent {
     // 012 FR-007: optional, boolean only.
     (b.operatorApprovalOnly === undefined || typeof b.operatorApprovalOnly === "boolean") &&
     // 013 FR-033: optional; a user identifier only.
-    (b.userId === undefined || (typeof b.userId === "string" && USER_ID_RE.test(b.userId)))
+    (b.userId === undefined || (typeof b.userId === "string" && USER_ID_RE.test(b.userId))) &&
+    // 015 FR-009: optional; a subject's shape only, and never without the user it belongs to.
+    (b.approvalSubject === undefined || (typeof b.approvalSubject === "string" && APPROVAL_SUBJECT_RE.test(b.approvalSubject) && b.userId !== undefined))
   );
 }
 

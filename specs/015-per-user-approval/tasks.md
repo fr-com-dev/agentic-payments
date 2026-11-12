@@ -61,7 +61,7 @@ US1 and are independent of one another.
 **Purpose**: the contract shapes, and the scope amendments that later phases need before they build what SPEC
 v1.15 and constitution 1.7.0 still forbid. No behavior changes.
 
-- [ ] T001 [P] Extend the shapes in src/shared/contracts.ts per data-model.md and contracts/control-api.md:
+- [X] T001 [P] Extend the shapes in src/shared/contracts.ts per data-model.md and contracts/control-api.md:
   - `PaymentIntent.approvalSubject?: string`, with the doc comment of contracts/control-api.md "POST /v1/authorize";
   - `ApprovalRequestMark` gains `"no_owner" | "no_identity" | "identity_mismatch"`;
   - `ApprovalRequestState` gains `"unanswered"`;
@@ -88,7 +88,7 @@ helpers running backchannel approval with user accounts and two people.
 **⚠️ CRITICAL**: no user story work can begin until this phase is complete. L2's behavior does not change in
 this phase: T-CIBA-01..14 must pass at its end with no change of meaning (T005 says what may change).
 
-- [ ] T003 Accept `approvalSubject` in the authorize body check of src/layer2-control/service.ts (contracts/control-api.md "POST /v1/authorize"), beside the `userId` check and still after the token check:
+- [X] T003 Accept `approvalSubject` in the authorize body check of src/layer2-control/service.ts (contracts/control-api.md "POST /v1/authorize"), beside the `userId` check and still after the token check:
   - valid only as "a string of 1 to 255 characters with no whitespace and no control character";
   - "never without `userId`": present with no `userId` is 400 malformed;
   - with user accounts off or backchannel approval off it is ignored;

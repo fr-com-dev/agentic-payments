@@ -526,7 +526,8 @@ export function userView(
   };
 }
 
-export function platformView(platform: PlatformConfig, net: Pick<NetworkProfile, "caip2" | "asset" | "decimals">): PlatformView {
+/** 015: `phoneApproval` is the service's to say (whether it has backchannel deps); the route adds it. */
+export function platformView(platform: PlatformConfig, net: Pick<NetworkProfile, "caip2" | "asset" | "decimals">): Omit<PlatformView, "phoneApproval"> {
   return {
     platformId: platform.platformId,
     digest: platformDigest(platform),
