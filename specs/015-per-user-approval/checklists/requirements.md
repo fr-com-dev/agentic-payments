@@ -13,7 +13,7 @@
 
 ## Requirement Completeness
 
-- [ ] No [NEEDS CLARIFICATION] markers remain
+- [x] No [NEEDS CLARIFICATION] markers remain
 - [x] Requirements are testable and unambiguous
 - [x] Success criteria are measurable
 - [x] Success criteria are technology-agnostic (no implementation details)
@@ -62,3 +62,8 @@
 - **For the plan**: the feature reverses a stated scope line (SPEC §1.3, constitution 1.7.0: "a user approving
   their own payments stays out"), so it needs a constitution amendment (MINOR, proposed) and the SPEC.md changes
   listed at the end of Assumptions. `specs/README.md` gets its 015 row when the SPEC version is known.
+- **After `/speckit-clarify` (2026-11-12)**: the owner made all five decisions, so the notes above on open
+  decisions describe the spec as first written. Answers: D5 keep SPEC v1.13 (proven against the stand-in only),
+  D1 the owner's answer approves every escalated amount, D3 the identity travels with each payment request and
+  is not kept, D4 same tenant required, D2 enrollment optional. No marker and no "open decision" remains;
+  FR-009, FR-011, FR-014, FR-018 and FR-028 are now testable. 16/16 items pass.

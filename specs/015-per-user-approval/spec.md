@@ -11,58 +11,33 @@ cloud agent is acting for, not by one approver named in the infrastructure." The
 is wanted, the facts established on 2026-11-12, the four open decisions and the constraints) is the owner's
 request of 2026-11-12; its content is carried into the sections below.
 
-## Open decisions (for `/speckit-clarify`)
+## Clarifications
 
-The owner has not made these decisions. Nothing below decides them. Each requirement that depends on one says
-so, either with a `[NEEDS CLARIFICATION]` marker (D1, D3, D5: the three with the widest effect) or with
-"open decision Dn". D1 to D4 are the owner's own list; D5 was found while writing this spec.
+### Session 2026-11-12
 
-**D1. Self-approval.** Today the person who approves is never the person whose agent spends: the configured
-approver is someone else, and an administrator may not decide a payment of their own run (SEC-29, `own_payment`).
-With this feature the owner of a run approves their own agent's spending.
-
-| Option | Answer | What it means |
-|---|---|---|
-| A | Accepted for every escalated amount | The person's own expense policy and the platform limits are the only hard bounds. The phone confirms that the person, not only their agent, wants this exact payment. |
-| B | Accepted up to an amount; above it a second person decides | Needs a new platform limit. Above it the person's phone is not asked, or their answer is not enough, and the operator or an administrator decides. |
-| C | Never enough alone | The owner is told, but a second person always decides. The feature becomes a notification. |
-
-Whatever the answer, this spec assumes the portal's rule stays: an administrator still cannot decide their own
-payment in the portal. The owner should confirm that the two rules may differ.
-
-**D2. Enrollment.**
-
-| Option | Answer | What it means |
-|---|---|---|
-| A | Required at first sign-in | Nobody uses the portal or starts a run without an enrolled phone. People who already have an account must enroll at their next sign-in. The "no phone" case remains only for a phone that was removed or reset. |
-| B | Optional | A person who skips it gets no push; their escalations wait for the operator, and they can see why (User Story 4). |
-
-**D3. How L2 learns the person's identity at the approval service** (their Auth0 user ID). L2 holds only a
-one-way identifier of each user today.
-
-| Option | Answer | What it means |
-|---|---|---|
-| A | The hosted agent sends it with each payment request; L2 checks it against the user | A contract change between L1 and L2. L2 need not keep the ID after the request is sent: the ledger can go on naming people by their one-way identifier only. |
-| B | Recorded once, when the person onboards in the portal; L2 checks it then | No change to payment requests. The ledger then links each user's one-way identifier to their Auth0 user ID for good, and people who onboarded before this feature need it recorded at their next portal sign-in. |
-
-**D4. Same tenant.**
-
-| Option | Answer | What it means |
-|---|---|---|
-| A | Sign-in and approval must be the same tenant; otherwise per-user approval is off for that person | A person whose sign-in comes from anywhere else (the local dev issuer included) is never sent a push. The check of D3 enforces it by itself, because the one-way identifier is made from the issuer and the subject. |
-| B | They may differ | Needs a recorded link between a person's sign-in identity and their identity at the approval service, and a decision on who may create it. New machinery and a new thing to trust. |
-
-**D5. Where a person's run exists.** The description says people sign in to the hosted agent with the tenant.
-SPEC v1.13 says otherwise: the tenant has exactly two applications (the portal's and L2's), none for the agent,
-so no person's token from the tenant starts a run. A deployed agent accepts system identities only, and runs as a
-person exist only locally, with the dev issuer, whose users are not users of the tenant. As SPEC stands, no run
-anywhere has both a person behind it and a phone the approval service can reach.
-
-| Option | Answer | What it means |
-|---|---|---|
-| A | This feature also lets people start runs with a token from the tenant | Reverses the decision of 2026-11-11 (`specs/013` research R20): a third application in the tenant, new settings for the deployed agent, T-IAC-01 rule 21 and T-IAC-02 change. The feature can then be used and checked live. |
-| B | Keep v1.13 | The feature is built and proven against the stand-in approval service. In a deployed environment it has nobody to ask until people can start runs there. A live check with a real phone needs some local way to run as a real user of the tenant, which D4 must allow. |
-| C | A separate feature first | People's runs in deployed environments get their own spec; this one waits for it, or is planned to land right after it. |
+- Q: SPEC v1.13 leaves no person's run with a token from the tenant anywhere; where should people's runs come
+  from (D5)? → A: Keep v1.13. This feature is built and proven against the stand-in approval service only. It
+  adds no application to the tenant and changes nothing about who may start a run; giving people a way to start
+  runs in a deployed environment is a later decision of its own. Rejected: adding people's runs in this feature
+  (reverses `specs/013` research R20), and waiting for a separate feature first.
+- Q: When is the owner's own verified answer enough to approve their agent's escalated payment (D1)? → A: For
+  every escalated amount. The person's own expense policy, their budgets and the platform limits stay the hard
+  bounds and are checked again when the payment is signed. No new limit and no second person. Rejected: a
+  platform limit above which a second person decides, and an answer that only notifies.
+- Q: How should L2 learn the owner's identity at the approval service, their Auth0 user ID (D3)? → A: The hosted
+  agent sends it with each payment request, taken from the verified sign-in token. L2 checks it against the user
+  by recomputing the one-way identifier, uses it to address the approval request and keeps nothing: the ledger
+  goes on naming people by their one-way identifier only. Rejected: recording it once at portal onboarding,
+  which would link each user's identifier to their Auth0 user ID in the ledger for good.
+- Q: Must a person's sign-in and their phone approval always come from the same Auth0 tenant (D4)? → A: Yes. A
+  person whose sign-in issuer is not the approval service's is never asked by phone; their escalations wait for
+  the operator and the portal's administrators. The identity check enforces it, because the one-way identifier
+  is made from the issuer and the subject. Local runs with the dev issuer therefore never send a request.
+  Rejected: a recorded link between two identities, which is new machinery and a new thing to trust.
+- Q: Must everyone enroll a phone at first sign-in (D2)? → A: No, enrollment is optional. A person who skips it
+  gets no push; their escalations wait for the operator and the portal's administrators, and they can see why.
+  They can set their phone up themselves at any time. Nothing changes at sign-in for people who already have an
+  account. Rejected: enrollment required at first sign-in.
 
 ## Where approval stands today
 
@@ -73,11 +48,15 @@ anywhere has both a person behind it and a phone the approval service can reach.
 | The one configured approver, by phone (012) | every eligible escalation, whoever started the run | removed: no approver is configured anywhere |
 | The person the run is for, by phone | nobody | their own escalations only (User Story 1) |
 
-One consequence follows from the last two rows and from D5. In a deployed environment every run is a system
-identity's today, and a run with no person behind it stays on the operator path. So once the configured approver
-is gone, a deployed environment sends no approval request to any phone until people can start runs there. The
-platform account's escalations are decided by the operator and the administrators. What was checked live on
-2026-11-12 (the platform's escalation approved and refused from one phone) no longer happens.
+One consequence follows from the last two rows and from SPEC v1.13, which this feature keeps (FR-028): the
+tenant has two applications, none for the agent, so no person's token from the tenant starts a run. A deployed
+agent accepts system identities only, and runs as a person exist only locally, with the dev issuer, whose users
+are not users of the tenant. A run with no person behind it stays on the operator path. So once the configured
+approver is gone, a deployed environment sends no approval request to any phone until a later feature lets people
+start runs there. The platform account's escalations are decided by the operator and the administrators. What
+was checked live on 2026-11-12 (the platform's escalation approved and refused from one phone) no longer
+happens, and this feature has no live check with a real phone: it is proven against the stand-in approval
+service.
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -283,13 +262,16 @@ text from the approval service, a name or an email.
   They are two users, each with their own account, policies, phone and limit. An answer from one never decides
   the other's escalation.
 - **An identity whose form carries personal data.** Some sign-in methods build the identifier from an email
-  address. The plan must say which forms may be stored or shown, if D3 stores one at all (FR-020).
-- **A compromised hosted agent names another user.** That user receives a request about a payment from their own
-  account that they did not start. Only their own tap approves it, and their own limit bounds how often.
+  address. It is never stored or shown: it travels from the hosted agent to L2 and from L2 to the approval
+  service, and nowhere else (FR-020).
+- **A compromised hosted agent names another user.** To have a request sent it must also give that user's
+  identity at the approval service, which the one-way identifier does not reveal. If it has both, that user
+  receives a request about a payment from their own account that they did not start. Only their own tap
+  approves it, and their own limit bounds how often.
 - **An administrator and the owner decide at the same moment.** Both are recorded inside the serialized section;
   the first decides and the second changes nothing (010, 014).
-- **An administrator's own run.** They may not decide it in the portal (SEC-29). Whether their phone answer
-  decides it is the same question as for everyone else (open decision D1).
+- **An administrator's own run.** They may not decide it in the portal (SEC-29). Their own phone answer decides
+  it, as it does for every other person (FR-014): L2 verifies that answer itself.
 - **The owner answers after the escalation expired.** Nothing changes. The expiry is final.
 - **L2 restarts with requests open for several people.** Each is resumed for its own owner, from the ledger,
   without a new request and without any setting that names a person.
@@ -324,37 +306,47 @@ text from the approval service, a name or an email.
 - **FR-006**: When L2 records a new escalation whose owner is a person, and the escalation is eligible, L2 MUST
   send exactly one approval request, addressed to that owner and to nobody else. Eligible means, in addition to
   today's conditions (not a repeat of a pending purchase, not operator-only), that the owner's limit has room
-  (FR-015) and that L2 holds a checked identity for the owner (FR-009). *(SPEC: L2-7 eligibility, L2-4.3)*
+  (FR-015) and that the payment request carries an identity for the owner that passed the check of FR-009. *(SPEC:
+  L2-7 eligibility, L2-4.3)*
 - **FR-007**: An escalation that records no user MUST never produce an approval request. This covers the
   scripted regression, a run started by a system identity and the local command-line agent. No setting, request
   field or default MAY route such an escalation to a person. *(SPEC: L1-4, L1-6, L2-7, SEC-18)*
 - **FR-008**: There MUST be no fallback approver. When the owner cannot be asked, for any reason, nobody is
   asked by phone and the escalation waits for the operator path and the portal's administrators. *(SPEC: L2-7)*
-- **FR-009**: L2 MUST learn the owner's identity at the approval service only from
-  [NEEDS CLARIFICATION: D3. Sent by the hosted agent with each payment request, or recorded once when the person
-  onboards in the portal?]. Either way L2 MUST check it against the user it already trusts, by recomputing that
-  user's one-way identifier from the issuer and the identity. An identity that does not match MUST be refused:
-  no approval request is sent on it, and it is not kept. *(SPEC: L1-6 the user, L2-8, §7)*
-- **FR-010**: The identity in FR-009 MUST come from a verified sign-in token, fixed before the run or the portal
-  action begins. No goal text, model output or tool input can set or change it, and the agent's tools MUST stay
-  `fetch_resource` and `check_budget` with no input for it. *(SPEC: L1-3, L1-6, Constitution I)*
-- **FR-011**: Whether a person whose sign-in comes from another issuer than the approval service can be asked at
-  all is open decision D4. Until it is answered, this spec assumes they cannot, and that their escalations
-  follow FR-008. *(SPEC: L1-6 auth, L2-7)*
+- **FR-009**: L2 MUST learn the owner's identity at the approval service only from the payment request: the
+  hosted agent sends it with each payment request of a person's run, beside the user it already names. L2 MUST
+  check it against that user, by recomputing the user's one-way identifier from the approval service's issuer
+  and the identity. An identity that does not match MUST be refused: no approval request is sent on it, and
+  the escalation is recorded as one that asks nobody. A payment request that names a user and carries no
+  identity is not an error: nobody is asked by phone. In both cases the payment itself is decided as it would
+  be without the identity, and the escalation follows FR-008.
+  L2 MUST use the identity only to address the approval request and MUST NOT keep it (FR-020). *(SPEC: L1-6 the
+  user, L2-5 authorize, §7)*
+- **FR-010**: The identity in FR-009 MUST come from a verified sign-in token, fixed before the run begins. No goal
+  text, model output or tool input can set or change it, and the agent's tools MUST stay `fetch_resource` and
+  `check_budget` with no input for it. *(SPEC: L1-3, L1-6, Constitution I)*
+- **FR-011**: A person can be asked by phone only when their sign-in comes from the approval service's own
+  issuer. A person who signed in anywhere else, the local dev issuer included, MUST never be sent an approval
+  request: their escalations follow FR-008. The check of FR-009 MUST enforce this by itself, with no list of
+  issuers and no recorded link between two identities. *(SPEC: L1-6 auth, L2-7)*
 
 **Whose answer counts**
 
 - **FR-012**: Before recording an approval, L2 MUST verify everything it verifies today: the issuer through its
   published signing keys, the audience, L2's client, the validity time with 60 seconds of tolerance, the open
   request, the payment details field for field, and single use. *(SPEC: L2-7 outcomes, SEC-17)*
-- **FR-013**: The "approver" check MUST become an owner check: the answer's verified identity MUST be the owner
-  of the escalation it answers. A genuine, signed answer from any other person MUST approve nothing; L2 records
-  one verification failure naming the check, and the escalation stays pending. *(SPEC: L2-7, SEC-17, SEC-19)*
-- **FR-014**: A verified answer from the owner MUST be enough to approve the escalation
-  [NEEDS CLARIFICATION: D1. For every escalated amount within the person's policy and the platform limits, or
-  only up to an amount above which a second person must decide?]. It lifts only the approval requirement, once,
-  for one exact purchase: the policy, the budgets and every DENY rule still apply when the payment is signed.
-  *(SPEC: INV-12, L2-4.2, SEC-29)*
+- **FR-013**: The "approver" check MUST become an owner check: the answer's verified identity MUST be the owner of
+  the escalation it answers. L2 decides that from the signed answer alone, by recomputing the one-way identifier
+  from the answer's issuer and subject and comparing it with the escalation's user, so the check needs no stored
+  identity and works the same after a restart. A genuine, signed answer from any other person MUST approve
+  nothing; L2 records one verification failure naming the check, and the escalation stays pending. *(SPEC: L2-7,
+  SEC-17, SEC-19)*
+- **FR-014**: A verified answer from the owner MUST be enough to approve the escalation, for every escalated
+  amount: no amount needs a second person, and this feature adds no limit of its own. The answer lifts only the
+  approval requirement, once, for one exact purchase: the person's expense policy, their budgets, the platform
+  limits and every DENY rule still apply when the payment is signed. The portal's rule is unchanged: an
+  administrator still cannot decide a payment of their own run there (`own_payment`). *(SPEC: INV-12, L2-4.2,
+  SEC-29)*
 
 **The limit**
 
@@ -369,22 +361,29 @@ text from the approval service, a name or an email.
 
 - **FR-017**: When the approval service refuses a request because the owner has no enrolled phone, L2 MUST
   record a permanent failure, send no retry and leave the escalation pending. *(SPEC: L2-7 start)*
-- **FR-018**: A person MUST be able to set up their own phone for approvals themselves, with their own sign-in,
-  with no administrator's help. Whether they must do so before using the system is open decision D2.
-  *(SPEC: L2-8, `auth0/`)*
+- **FR-018**: Setting up a phone for approvals is optional. Nobody MUST be made to do it to sign in, to use the
+  portal or to start a run, and this feature MUST NOT change sign-in for people who already have an account. A
+  person MUST be able to set up their own phone themselves, at any time, with their own sign-in and with no
+  administrator's help. A person who has not done so is in a normal state, not an error: FR-017 and FR-019
+  apply. *(SPEC: L2-8, `auth0/`)*
 - **FR-019**: A person MUST be able to see, for their own pending payments only, that a payment is waiting for
   the operator and why. The reason MUST come from a fixed list written by this system (no phone set up, the
-  hourly limit reached, the approval service could not be reached, the request went unanswered), never from the
+  hourly limit reached, the approval service could not be reached, the request went unanswered, phone approval
+  is not available for this sign-in), never from the
   approval service's text. The route MUST take no user identifier: the person comes from the verified token.
   *(SPEC: L2-8, SEC-19, SEC-12)*
 
 **What is recorded**
 
 - **FR-020**: The ledger MUST name the person an approval request was addressed to, and the person who approved
-  or refused, by the identifier it already uses for users. The person's identity at the approval service is an
-  identifier taken from a verified token, not text a person typed; it MAY be stored only if the answer to D3
-  needs it, in one place, for the stated reason that L2 must address requests to it. A name or an email MUST
-  never be stored. *(SPEC: L2-4, L2-8 three stores, hard rule 11)*
+  or refused, by the one-way identifier it already uses for users, and by nothing else. The person's identity at
+  the approval service is an identifier taken from a verified token, not text a person typed, and some sign-in
+  methods build it from an email address. L2 MUST NOT store it: it MUST NOT appear in the ledger, logs, events
+  or responses. It exists in the payment request, in L2's memory while the approval request is sent, and in the
+  request to the approval service, which already knows it. This changes what a backchannel decision records:
+  today the evidence and the decider name the configured approver by their subject at the approval service;
+  from this feature on they name the owner by the one-way identifier. A name or an email MUST never be stored.
+  *(SPEC: L2-4, L2-8 three stores, hard rule 11)*
 - **FR-021**: Credentials, tokens, request handles (other than sealed, as today) and the approval service's free
   text MUST never appear in the ledger, logs, events, responses, L1 or L3. *(SPEC: L2-7 never stored, SEC-16)*
 - **FR-022**: Entries written before this feature MUST stay as they are and MUST still verify and read
@@ -409,11 +408,11 @@ text from the approval service, a name or an email.
   L2-5, L2-8)*
 - **FR-027**: The policy engine MUST stay unchanged and pure. An owner's approval or refusal feeds it exactly as
   an operator's does. *(SPEC: INV-5, L2-2)*
-- **FR-028**: Where people's runs exist is
-  [NEEDS CLARIFICATION: D5. Does this feature also let people start hosted runs with a token from the tenant in a
-  deployed environment, keep SPEC v1.13 and stay proven against the stand-in only, or wait for a separate
-  feature?]. Until it is answered, this spec changes nothing about who may start a run. *(SPEC: v1.13, L1-6,
-  T-IAC-01 rule 21, T-IAC-02)*
+- **FR-028**: This feature MUST NOT change who may start a run. SPEC v1.13 stays: the tenant keeps exactly two
+  applications, none for the agent, and a deployed agent accepts system identities only. The feature MUST add no
+  application to the tenant and no people's setting to the deployed agent. It MUST be proven against the
+  stand-in approval service; a check with a real phone is not part of it. *(SPEC: v1.13, L1-6, T-IAC-01
+  rule 21, T-IAC-02)*
 
 ### Non-Functional Requirements
 
@@ -446,13 +445,14 @@ text from the approval service, a name or an email.
 
 - **Owner**: the person a run acts for; the user recorded on its payment requests and escalations. The only
   person who can be asked about, and can answer for, those escalations by phone.
-- **Identity at the approval service**: the identifier the sign-in tenant gives a person. L2 needs it to address
-  a request, and checks it against the user's one-way identifier. Where it comes from and whether it is stored
-  is open decision D3.
+- **Identity at the approval service**: the identifier the sign-in tenant gives a person. It arrives with each
+  payment request of a person's run, from the hosted agent's verified token. L2 checks it against the user's
+  one-way identifier, addresses the approval request to it and does not keep it.
 - **Approval request** (changed): addressed to the escalation's owner instead of a configured approver. Counted
   against that owner's hourly limit.
-- **Verified approval evidence** (changed): says that the answer came from the escalation's owner, with the
-  issuer, the answer's identifier and its issue time. Never the answer itself.
+- **Verified approval evidence** (changed): says that the answer came from the escalation's owner, named by the
+  one-way identifier, with the issuer, the answer's identifier and its issue time. Never the answer itself, and
+  no longer the subject at the approval service.
 - **Approval-request state for the owner**: what a person sees about their own waiting payment: waiting, and a
   reason from a fixed list.
 - **Enrollment**: a person's phone set up to receive approval requests. Held by the approval service, never by
@@ -487,15 +487,17 @@ text from the approval service, a name or an email.
 
 ## Assumptions
 
-- **The five open decisions are not assumed.** Where a requirement needs a working reading until
-  `/speckit-clarify`, it says so (FR-011, FR-028). No plan should be made before D1 to D5 are answered.
+- **The five open decisions (D1 to D5) were made by the owner on 2026-11-12** and are recorded under
+  Clarifications, each with what was rejected. The requirements carry them: self-approval in FR-014, enrollment
+  in FR-018, the identity in FR-009 and FR-020, the same tenant in FR-011, and SPEC v1.13 in FR-028.
 - **Reverses stated scope, on purpose.** SPEC §1.3 lists "per-user approvers" as out of scope, 013 called "a
   user approving their own payments, in the portal or by phone" a later feature, and the constitution (1.7.0)
   says "a user approving their own payments stays out". This feature is that later feature, for the phone only.
   Approving one's own payment in the portal stays out.
-- **The portal's rule stays** (see D1): an administrator cannot decide a payment of their own run there
-  (SEC-29). The two paths differ in what L2 can check: it trusts the portal to name who decided, and it verifies
-  a phone answer itself.
+- **The portal's rule stays** (FR-014): an administrator cannot decide a payment of their own run there
+  (SEC-29), although their phone answer can. The two paths differ in what L2 can check: it trusts the portal to
+  name who decided, and it verifies a phone answer itself. Taken as an assumption when self-approval was
+  decided; the owner was not asked it as a separate question.
 - **Where a person sees why** (FR-019): in the portal, among their own things. The agent's result stays as it
   is today (ESCALATED, with the reference code), so the agent learns nothing new about its owner. This is a
   small read of one's own pending payments, not the payment history that stays out of scope.
@@ -504,6 +506,10 @@ text from the approval service, a name or an email.
   after a first escalation was refused. The 2026-11-12 run showed that refusal as a permanent failure with the
   error code `invalid_request`; if that code alone cannot tell "no phone" from other refusals, the reason shown
   is the wider "could not send a request to your phone".
+- **An identity that does not match is not an error of the payment** (FR-009): the request is decided as usual
+  and nobody is asked by phone. A reading taken while writing the answers in, not asked: it is what makes a
+  local run with the dev issuer keep working (FR-011), and it fails closed. In tests, people's tokens are issued
+  under the stand-in approval service's own issuer, so the check passes there.
 - **How a person enrolls** is for the plan to research, within FR-005 and FR-018: through the sign-in tenant's
   own enrollment, reached with the person's own sign-in.
 - **No overall limit.** Only the per-person limit applies. The number of people who can be asked in an hour is
@@ -516,8 +522,11 @@ text from the approval service, a name or an email.
   unanswered request probably ends with `ESCALATION_EXPIRED` alone in a clean timeout as well. The plan confirms
   it with a test and then changes either the behavior or SPEC L2-7's sentence.
 - **A deployed environment asks nobody by phone until people can start runs there** (see "Where approval stands
-  today" and D5). The owner accepts that by removing the configured approver with no fallback.
-- **Out of scope**: organizations or teams, approval by someone other than the run's owner (a delegate, a
+  today" and FR-028). The owner accepted that on 2026-11-12, by keeping SPEC v1.13 and removing the configured
+  approver with no fallback. The live check of 012 (its quickstart §5) can no longer be repeated as written; the
+  plan says what becomes of that section.
+- **Out of scope**: people starting runs in a deployed environment with a token from the tenant (FR-028),
+  organizations or teams, approval by someone other than the run's owner (a delegate, a
   manager, a second approver chosen by the user), card payments, approving in the portal as a user, and
   notifying a person by any channel other than the approval service's push.
 - **Constitution amendment (MINOR, proposed)**: the scope sentence "a user approving their own payments stays
@@ -529,14 +538,18 @@ text from the approval service, a name or an email.
   - **§2:** glossary: owner; "approver" no longer means a configured person.
   - **L2-7:** "one approver per L2" goes; eligibility gains the owner conditions and the per-person limit; the
     approver check becomes the owner check; the sentence on unanswered requests (FR-023).
-  - **§7:** whatever D3 needs on the payment request or on registration; the views of FR-019 and FR-024.
-  - **L2-4:** the entries that name an approver; what is stored of a person's identity (FR-020).
-  - **L2-8:** the person's view of their own waiting payments; enrollment (D2).
-  - **CFG-2 and §3.1 Azure profile:** the approver setting is removed everywhere; T-IAC-01 rule 19 no longer
-    asks for one; T-IAC-02's variable list loses it. L1-6 and rule 21 change only under D5 option A.
-  - **§11:** SEC-17 says "the escalation's owner" where it says "approver"; SEC-18 says "per person"; the
-    residual risk "an escalation of a user's payment still goes to the operator and the one configured
-    approver, not to the user" is removed. New residual risks: a person approves their own agent's spending
-    (per D1); a compromised hosted agent can cause a request to another user's phone; a deployed environment
-    asks nobody by phone until people can start runs there (per D5).
+  - **§7:** the owner's identity at the approval service on the payment request (FR-009); the views of FR-019
+    and FR-024.
+  - **L2-4:** the entries that name an approver now name the owner by the one-way identifier; nothing new is
+    stored of a person's identity (FR-020).
+  - **L2-5:** the authorize request's new field, with `docs/l2-control.openapi.yaml`.
+  - **L2-8:** the person's view of their own waiting payments; optional enrollment (FR-018).
+  - **CFG-2 and §3.1 Azure profile:** the approver setting is removed everywhere; T-IAC-01 rule 19 no longer asks
+    for one; T-IAC-02's variable list loses it. Rule 21 and T-IAC-02's two-application rule stay as they are
+    (FR-028).
+  - **§11:** SEC-17 says "the escalation's owner" where it says "approver"; SEC-18 says "per person"; the residual
+    risk "an escalation of a user's payment still goes to the operator and the one configured approver, not to the
+    user" is removed. New residual risks: a person approves their own agent's spending, for every amount their
+    policy and the platform limits allow (FR-014); a compromised hosted agent can cause a request to another
+    user's phone; a deployed environment asks nobody by phone until people can start runs there (FR-028).
   - **§12:** new tests for NFR-007 (proposed T-CIBA-15 onward) and for FR-003, FR-019 and FR-023.
