@@ -242,7 +242,7 @@ this is about never leaving a request polled with no possible outcome.
 | `no_identity`, `identity_mismatch` | `operator` | `sign_in_not_supported` |
 | `failed`, a permanent refusal at start | `operator` | `phone_unreachable` (R12) |
 | `failed`, anything else | `operator` | `service_unavailable` |
-| `lapsed` | `operator` | `unanswered` |
+| `lapsed` | `operator` | `request_expired` |
 | `verification_failed` | `operator` | `answer_not_accepted` |
 | `operator_only`, `reevaluation`, or no mark (feature off) | `operator` | none |
 
@@ -277,9 +277,9 @@ the request is started. The spec's Assumptions allowed this wider wording.
 enrolls the push factor during that sign-in. Nothing in this system holds the enrollment.
 
 - **The web app.** "Set up your phone" in the Account screen opens the existing step-up pop-up (`prompt=login`,
-  `max_age=0`, so credentials are entered again) with one more parameter, `acr_values` set to a fixed URN of
-  this project. The button is shown only when `phoneApproval` is true (R11) and the person signed in with the
-  tenant. It sits behind a click, as every pop-up does.
+  `max_age=0`, so credentials are entered again) with one more parameter, `acr_values` set to
+  `urn:x402:acr:enroll-phone`. The button is shown only when `phoneApproval` is true (R11) and the person signed
+  in with the tenant. It sits behind a click, as every pop-up does.
 - **The tenant.** A second post-login Action, `auth0/enroll-phone.js`. It does something only when all three
   hold: the request carries that `acr_values` entry, the person has no push factor in
   `event.user.enrolledFactors`, and the latest entry of `event.authentication.methods` is at most 5 minutes
@@ -387,7 +387,8 @@ SEC-17 and SEC-18 are reworded.
 - **The portal and the web app.** In-process portal against a fake control port; components in jsdom.
 - **Static.** T-IAC-01 rule 19, T-IAC-02 (variables, no `auth0_user`, the Action run with fake `event` and
   `api`), T-API-01..04 and 12..15 for the changed documents.
-- **Must-fail switches** are test-only deps, never environment variables ([plan.md](plan.md#proofs-constitution-viii)).
+- **Must-fail switches** are test-only deps, never environment variables
+  ([plan.md](plan.md#proofs-constitution-viii)).
 - **No live check with a real phone** (FR-028). Enrollment can be tried by hand in the tenant (quickstart §7);
   it is not a gate.
 
@@ -396,16 +397,19 @@ SEC-17 and SEC-18 are reworded.
 **Decision.** Five slices. Each leaves `npm run check` green and is safe to merge alone, because backchannel
 approval is off unless configured and dev runs with `ciba.enabled: false`.
 
-1. **L2 and its deployment settings**: the contract field, R2 to R10, and the Bicep and env-template side of
-   R15. Holds four of the six proofs.
-2. **The hosted agent**: R14, T-AGT-08, T-E2E-15.
+1. **L2 and its deployment settings**: the scope amendments of R16 first (SPEC §1.2, §1.3, L2-7's one
+   approver, §11, and the constitution, in one task); the contract field in L2 and in the orchestrator that
+   sends it; R2 to R10; and the Bicep and env-template side of R15. T-E2E-10's approved purchase becomes a
+   person's here, because the platform account can no longer be asked. Holds four of the six proofs.
+2. **The hosted agent**: R14's pass-through in the service, T-AGT-08, T-E2E-15.
 3. **A person's view**: R11 and R12 in L2, the portal and the web app.
 4. **The tenant**: the approver out of `auth0/`, the pipeline and `github-setup.sh`; enrollment (R13).
 5. **Documents**: what is left of SPEC 1.16, the constitution, `specs/README.md`, the 012 notes (R19), `README.md`,
    `CLAUDE.md`.
 
-Each slice updates the SPEC sections its behavior changes; the version line and the "Changes in 1.16" table land
-with slice 1.
+Each slice updates the SPEC sections its behavior changes; the version line, the "Changes in 1.16" table and
+the scope amendments land first, in slice 1 (Governance: SPEC.md and the constitution change together, in the
+same change as the behavior).
 
 ## R19. What becomes of 012's live check
 

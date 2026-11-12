@@ -39,7 +39,7 @@ Shown when `phoneApproval` is true and the list is not empty. Polled every 5 s w
 | `operator` | `sign_in_not_supported` | "Phone approval is not available for the way you signed in. An operator will decide this one." |
 | `operator` | `phone_unreachable` | "We could not send a request to your phone. If you have not set up a phone for approvals, you can do it under Account. An operator will decide this one." |
 | `operator` | `service_unavailable` | "The approval service could not be reached. An operator will decide this one." |
-| `operator` | `unanswered` | "The request on your phone was not answered in time. An operator will decide this one." |
+| `operator` | `request_expired` | "The request on your phone was not answered in time. An operator will decide this one." |
 | `operator` | `answer_not_accepted` | "The answer from your phone could not be accepted. An operator will decide this one." |
 | `operator` | none | "Waiting for an operator." |
 
@@ -53,7 +53,7 @@ Shown when `phoneApproval` is true and the person signed in with the tenant (not
 
 - One paragraph: what the phone is asked, and that setting it up is optional.
 - A button, "Set up your phone". It opens the sign-in pop-up of step-up (`prompt=login`, `max_age=0`) with
-  `acr_values` set to the project's enrollment value
+  `acr_values` set to `urn:x402:acr:enroll-phone`
   ([research R13](../research.md#r13-enrollment-the-tenants-own-asked-for-by-the-portals-sign-in)). The
   tenant shows its own enrollment pages inside that pop-up.
 - A closed or failed pop-up leaves the current session as it is and shows "Nothing was changed."

@@ -46,9 +46,10 @@ owner's** signed answer verifies. Rule A9 is unchanged.
 | applications | unchanged: exactly two (T-IAC-02 still fails on a third) |
 | roles and permissions | unchanged |
 
-**`auth0/enroll-phone.js`.** It enrolls the push factor only when all three hold, and otherwise does nothing:
-the sign-in asked for it (`acr_values`), the person has no push factor, and their latest authentication is at
-most 5 minutes old. It sets no claim, reads no secret and never fails a sign-in by itself.
+**`auth0/enroll-phone.js`.** It enrolls the push factor only when all three hold, and otherwise does nothing: the
+sign-in asked for it (`acr_values` holds `urn:x402:acr:enroll-phone`, the same constant as the web app's), the
+person has no push factor, and their latest authentication is at most 5 minutes old. It sets no claim, reads no
+secret and never fails a sign-in by itself.
 
 **The pipeline (`provision-auth0.yml`).** `VAR_approver_user_id`, its `required` entry and its name in the
 export loop are removed. No secret and no variable is added.

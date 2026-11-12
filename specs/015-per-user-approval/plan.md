@@ -20,8 +20,9 @@ for, and nobody else, and removes the approver from every place a deployment is 
   serialized section. A match addresses one request to that person. Anything else asks nobody
   ([R2](research.md#r2-the-identity-check-recompute-the-one-way-identifier),
   [R4](research.md#r4-eligibility-three-new-marks-decided-in-the-same-place)).
-- **The approver check becomes an owner check**, made from the signed answer alone, so it needs nothing stored
-  and works the same after a restart ([R3](research.md#r3-the-approver-check-becomes-an-owner-check-from-the-signed-answer-alone)).
+- **The approver check becomes an owner check**, made from the signed answer alone, so it needs nothing stored and
+  works the same after a restart
+  ([R3](research.md#r3-the-approver-check-becomes-an-owner-check-from-the-signed-answer-alone)).
 - **The ledger names people by `usr_…` only.** The subject is never written, logged or returned. A backchannel
   decision now records the owner's identifier where it recorded the approver's subject
   ([R6](research.md#r6-what-the-ledger-writes-the-owners-one-way-identifier-where-the-approvers-subject-was),
@@ -32,13 +33,15 @@ for, and nobody else, and removes the approver from every place a deployment is 
   user accounts ([R8](research.md#r8-configuration-the-approver-goes-and-the-feature-needs-user-accounts),
   [R15](research.md#r15-the-approver-leaves-the-infrastructure)).
 - **A person sees why a payment of theirs waits**: one read route in L2, one in the portal, one card in the web
-  app, with a reason from a fixed list ([R11](research.md#r11-what-a-person-sees-their-own-waiting-payments-with-a-reason-from-a-fixed-list)).
+  app, with a reason from a fixed list
+  ([R11](research.md#r11-what-a-person-sees-their-own-waiting-payments-with-a-reason-from-a-fixed-list)).
 - **A person sets up their own phone** through a sign-in pop-up; a second post-login Action in the tenant
   enrolls the push factor. No credential is added
   ([R13](research.md#r13-enrollment-the-tenants-own-asked-for-by-the-portals-sign-in)).
 - **The 2026-11-12 finding is explained and closed**: an unanswered request normally ends with
   `ESCALATION_EXPIRED` alone, in a clean timeout too. A derived state, `unanswered`, names it, and SPEC L2-7's
-  sentence is corrected ([R9](research.md#r9-the-2026-11-12-finding-an-unanswered-request-usually-ends-with-escalation_expired-alone)).
+  sentence is corrected
+  ([R9](research.md#r9-the-2026-11-12-finding-an-unanswered-request-usually-ends-with-escalation_expired-alone)).
 
 Off by default, as before (`CIBA_APPROVAL=1` turns it on). The local demo and the scripted baseline are
 unchanged. No new process, image, pipeline, application in the tenant, credential or ledger entry type.
@@ -76,8 +79,8 @@ and the tenant's configuration in `auth0/`.
 - a person finds out why a payment waits in under 30 s (SC-007): the card is polled every 5 s.
 
 **Constraints**:
-- L2 gains no inbound route open to anyone new and no new outbound destination (NFR-005); it still binds
-  127.0.0.1 only;
+- L2 gains no route for the approval service or a new caller, and no new outbound destination (NFR-005): the
+  one new read is a user-account route for the portal's existing role; L2 still binds 127.0.0.1 only;
 - the identity check, the limit and every check-then-append stay inside the serialized section, with no network
   call inside it;
 - `policy.ts` is not edited; an owner's approval lifts only the approval requirement, once, for one exact
@@ -114,7 +117,9 @@ points, checked by hand in [quickstart §7](quickstart.md)). Nothing on the paym
 | VIII. Proven safety | Six must-fail proofs ([Proofs](#proofs-constitution-viii)). Every new field, route, mark and rule has a test. | PASS | PASS |
 | Quality gates | typecheck, the full suite, an unchanged demo summary, SPEC v1.16 in the same change, requirement IDs in test names. | PASS | PASS |
 
-**Amendments made in the same change, not violations** (the spec's Assumptions asked for them):
+**Amendments made in the same change, not violations** (the spec's Assumptions asked for them). They are the
+first task of the first slice (tasks.md T002), so no code is written against a SPEC or a constitution that still
+forbids it:
 
 - **Constitution 1.7.0 → 1.8.0 (MINOR).** No principle or invariant is removed or redefined.
   - Technology & Scope Constraints: "a user approving their own payments stays out" becomes: a user approves
@@ -158,6 +163,7 @@ src/
 │   └── contracts.ts             # CHANGED  PaymentIntent.approvalSubject; ApprovalRequestMark + no_owner,
 │                                #          no_identity, identity_mismatch; ApprovalRequestState + unanswered;
 │                                #          WaitingPayment, WAITING_REASONS; PlatformView.phoneApproval
+├── shared/auth.ts               # CHANGED  ENDPOINT_ROLES gains the waiting-payments route
 ├── layer1-intent/
 │   ├── orchestrator.ts          # CHANGED  deps.approvalSubject copied to the intent, beside userId
 │   └── hosted/server.ts, agent.ts   # CHANGED  the verified requester's subject passed down for a person's run
@@ -195,7 +201,9 @@ infra/
 └── github-setup.sh              # CHANGED  five variables
 .github/workflows/provision-auth0.yml   # CHANGED  no approver variable
 env/l2-control.env.example       # CHANGED
+scripts/escalations.ts           # CHANGED  prints the new request states
 docs/l2-control.openapi.yaml, docs/portal.openapi.yaml   # CHANGED
+docs/diagrams/x402-approval.json, x402-architecture.json   # CHANGED  the phone path asks the run's owner
 
 test/
 ├── backchannel-owner.test.ts    # NEW      T-CIBA-15..20, 22, 23
@@ -206,7 +214,8 @@ test/
 ├── portal.test.ts               # CHANGED  T-PRT-15
 ├── hosted-access.test.ts        # CHANGED  T-AGT-08
 ├── e2e.local.test.ts            # CHANGED  T-E2E-15
-└── infra, auth0-iac, github-setup, openapi, openapi-portal   # CHANGED
+├── architecture.test.ts         # CHANGED  SEC_ROWS to 31; the l2-control env template's names
+└── infra, auth0-iac, github-setup, openapi, openapi-portal, escalations   # CHANGED
 ```
 
 **Structure Decision**: no new process, folder or image. The feature lives where 012 put backchannel approval
@@ -258,8 +267,9 @@ request.
   ([data-model.md](data-model.md#the-approval-requests-state-derived-approvalrequeststateentries-escalationid-nowms)).
   Every caller already has a clock value.
 - `waitingPayments(entries, userId, nowMs)`: the pending escalations of one owner, each with `waitingFor` and
-  `reason` from the table of [R11](research.md#r11-what-a-person-sees-their-own-waiting-payments-with-a-reason-from-a-fixed-list).
-  Pure, built field by field.
+  `reason` from the table of
+  [R11](research.md#r11-what-a-person-sees-their-own-waiting-payments-with-a-reason-from-a-fixed-list). Pure,
+  built field by field.
 
 ### The hosted agent (`src/layer1-intent/hosted/`)
 
@@ -331,7 +341,7 @@ Per [config-and-secrets.md](contracts/config-and-secrets.md#azure-infra): three 
 | NFR-002 fail closed | every refusal leaves the escalation pending | T-CIBA-16, 17, 21 |
 | NFR-003 isolation between people | owner on every step; the route's filter | T-CIBA-15, T-CIBA-19, T-USR-13, T-PRT-15 |
 | NFR-004 secrets and personal data | the scan | T-CIBA-20 |
-| NFR-005 network exposure | no new listener or destination | T-CIBA-20 (the stand-in is the only peer), T-ARCH unchanged |
+| NFR-005 network exposure | one read for the existing portal role; the client's three fixed paths unchanged | T-USR-13 (the token matrix), T-CIBA-02 unchanged |
 | NFR-006 availability | nothing new on the path of a payment that needs no human | T-E2E-01 unchanged |
 | NFR-007 proven safety | [Proofs](#proofs-constitution-viii) | the must-fail tests |
 | NFR-008 regression | feature off by default | T-E2E-01, `demo:local` |
@@ -389,15 +399,16 @@ Also in the same change:
 - `specs/013` contracts/control-api.md and portal-api.md: a line pointing here for the new route.
 - `CLAUDE.md`: the CIBA and Auth0 gotchas (no approver; the Action; five variables), the user-account route
   note, and the new must-fail switches.
-- `README.md`, `auth0/README.md`, `docs/diagrams/x402-architecture.json`: the phone path asks the run's owner.
+- `README.md`, `auth0/README.md`, `docs/diagrams/x402-approval.json` and `x402-architecture.json`: the phone path
+  asks the run's owner.
 
 ## Delivery
 
 Five slices, each mergeable alone and each leaving `npm run check` green
-([R18](research.md#r18-delivery-in-slices)): L2 with its deployment settings; the hosted agent; a person's
-view; the tenant; documents. `/speckit-tasks` orders the tasks along them. Slice 1 holds every authority check
-and four of the six proofs. The L2 change and the Bicep change that drops `CIBA_APPROVER` are in the same slice,
-so a deployed L2 never starts with a leftover setting.
+([R18](research.md#r18-delivery-in-slices)): L2 with its deployment settings, the scope amendments and the
+orchestrator's field; the hosted agent; a person's view; the tenant; documents. `/speckit-tasks` orders the tasks
+along them. Slice 1 holds every authority check and four of the six proofs. The L2 change and the Bicep change
+that drops `CIBA_APPROVER` are in the same slice, so a deployed L2 never starts with a leftover setting.
 
 ## Risks
 

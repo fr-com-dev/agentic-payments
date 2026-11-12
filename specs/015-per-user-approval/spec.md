@@ -426,8 +426,10 @@ text from the approval service, a name or an email.
   payment through this feature: not a push, not a waiting payment, not a count against their limit.
   *(SPEC: SEC-19)*
 - **NFR-004 (Secrets and personal data)**: A known-value scan over test output MUST find no credential, token or
-  request handle, and no name or email, in the ledger, logs, events or responses. *(SPEC: SEC-16, hard rule 11)*
-- **NFR-005 (Network exposure)**: L2 MUST gain no inbound route and no new outbound destination. *(SPEC: L2-5,
+  request handle, and no name or email, in the ledger, logs, events or responses. It is the proof of FR-020 and
+  FR-021, not a second rule. *(SPEC: SEC-16, hard rule 11)*
+- **NFR-005 (Network exposure)**: L2 MUST gain no route for the approval service or for any new caller, and no
+  new outbound destination. The one new read (FR-019) is for the portal's existing role, on loopback. *(SPEC: L2-5,
   Constitution V)*
 - **NFR-006 (Availability)**: Payments that need no human MUST NOT wait on the approval service, as today.
   *(SPEC: L2-5)*
@@ -480,7 +482,7 @@ text from the approval service, a name or an email.
 - **SC-008**: For 100% of approval requests, an auditor can tell from the ledger alone who was asked, how the
   request ended and who decided, including requests that ended unanswered after a restart.
 - **SC-009**: A known-value scan finds 0 credentials, tokens, request handles, names or emails in the ledger,
-  logs, events or responses.
+  logs, events or responses. (the scan of NFR-004)
 - **SC-010**: The `npm run demo:local` summary is unchanged (`spent on-chain: 0.006 USDC`, `hash chain
   ok=true`), and the existing approval, rejection, expiry and administration tests pass.
 - **SC-011**: When the owner approves within 120 seconds, 100% of those purchases complete in the agent's same

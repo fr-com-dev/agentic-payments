@@ -123,8 +123,10 @@ One pending escalation of the user, built field by field:
 | `reason?` | `WaitingReason` | only with `operator` |
 
 `WAITING_REASONS` (a constant in `src/shared/contracts.ts`): `limit_reached`, `sign_in_not_supported`,
-`phone_unreachable`, `service_unavailable`, `unanswered`, `answer_not_accepted`. The mapping from the request's
-state is in [research R11](research.md#r11-what-a-person-sees-their-own-waiting-payments-with-a-reason-from-a-fixed-list).
+`phone_unreachable`, `service_unavailable`, `request_expired`, `answer_not_accepted`. `request_expired` is the
+reason for a `lapsed` request, whose escalation is still pending; the state `unanswered` belongs to an expired
+escalation, which is no longer in the list. The mapping from the request's state is in [research
+R11](research.md#r11-what-a-person-sees-their-own-waiting-payments-with-a-reason-from-a-fixed-list).
 
 ## Settings
 
