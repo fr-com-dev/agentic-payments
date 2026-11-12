@@ -3,10 +3,12 @@
 # and Guardian push. Least privilege throughout: the client can do CIBA and nothing else, and no other client and no
 # machine token can request the payment details. Users, passwords and private keys are never managed here.
 #
-# And what people's sign-in needs (SPEC L2-8 and L1-6, specs/013 research R19), further down: one API with one
-# permission, the role that holds it, the portal's public client and the post-login Action that dates the sign-in.
-# The tenant has two applications, L2's and the portal's: none for the hosted agent service (research R20). No user
-# is created and no role is assigned here: an administrator does that in Auth0.
+# And what people's sign-in needs (SPEC L2-8, specs/013 research R19), further down: one API, the portal's public
+# client and the post-login Action that dates the sign-in. The tenant has two applications, L2's and the portal's:
+# none for the hosted agent service (research R20). There is no permission and no role (research R21): the portal
+# asks for none, so whoever signs in through the portal's client may use it, for their own account only. No user
+# is created here. To keep one person out, block that user in Auth0; to keep strangers out, turn sign-ups off on
+# the tenant's connection.
 
 locals {
   # Must equal DETAILS_TYPE in src/layer2-control/payment-details.ts (T-IAC-02): Auth0's Guardian schema, the only
@@ -17,7 +19,6 @@ locals {
   # People's sign-in. The API's identifier is the portal's AUTH_AUDIENCE; it can't change
   # once created. The claim is the services' default AUTH_TIME_CLAIM, and the one sign-in-time.js writes (T-IAC-02).
   identity_audience = "https://x402-api/${var.environment}"
-  permission        = "agent:run"
   auth_time_claim   = "https://x402.dev/auth_time"
   # The local portal (its default port), and the deployed one once var.portal_origin is set.
   portal_origins = concat(["http://localhost:4025"], var.portal_origin == "" ? [] : [var.portal_origin])
@@ -130,10 +131,10 @@ resource "auth0_guardian" "this" {
 
 # ---- People's sign-in (specs/013 research R19) ---------------------------------------------------------------------
 
-# People's API: its identifier is the portal's AUTH_AUDIENCE. RBAC is enforced and the permissions go into the access
-# token (the default token profile, which names the client as azp), so a token says what its person may do, and the
-# portal verifies it offline. Refresh tokens are allowed, for the web app's rotation.
-# Tokens live an hour: a role taken from a person stays in their tokens no longer than that.
+# People's API: its identifier is the portal's AUTH_AUDIENCE. The token profile is the one the sign-in was verified
+# with (it names the client as azp, and carries an empty permissions list: RBAC stays enforced with no permission
+# defined, so no token can be given one). The portal verifies the token offline. Refresh tokens are allowed, for
+# the web app's rotation. Tokens live an hour.
 resource "auth0_resource_server" "identity" {
   name                                            = "api-x402-${var.environment}"
   identifier                                      = local.identity_audience
@@ -151,35 +152,6 @@ resource "auth0_resource_server" "identity" {
       error_message = "api_identifier is the approval API's: it can't be people's API identifier too."
     }
   }
-}
-
-# Its one permission: the same grant opens the portal and starts runs. The two services tell their clients apart by
-# client ID, never by permission.
-resource "auth0_resource_server_scopes" "identity" {
-  resource_server_identifier = auth0_resource_server.identity.identifier
-
-  scopes {
-    name        = local.permission
-    description = "Use the x402 portal, as oneself"
-  }
-}
-
-# The one role, with exactly that permission. An administrator assigns it per person, in Auth0: nobody is assigned
-# here, and no user is created.
-resource "auth0_role" "user" {
-  name        = "x402-user"
-  description = "May onboard at the x402 portal and use it (${var.environment})."
-}
-
-resource "auth0_role_permissions" "user" {
-  role_id = auth0_role.user.id
-
-  permissions {
-    name                       = local.permission
-    resource_server_identifier = auth0_resource_server.identity.identifier
-  }
-
-  depends_on = [auth0_resource_server_scopes.identity]
 }
 
 # The portal's web app: a public single-page client. Authorization code with PKCE (a public client has no other way

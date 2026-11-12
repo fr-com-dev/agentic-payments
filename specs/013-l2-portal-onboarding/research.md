@@ -541,7 +541,8 @@ session). It replaces R2 and R5 for people, and the sign-in library of R10.
 **Residual.**
 - One provider now stands behind sign-in and approvals (spec, Assumptions). Their clients, credentials and
   permissions are separate.
-- A removed role stays in already-issued tokens until they expire; the access token lifetime bounds it.
+- A removed role stays in already-issued tokens until they expire; the access token lifetime bounds it. *(R21: the
+  portal reads no role any more. The same holds for a blocked user's token.)*
 - The client ID in a token names the registration used, not proven client code, as before.
 - People who onboarded under Entra can't reach their earlier wallets. Test funds left there stay there.
 
@@ -585,3 +586,46 @@ app, and T-IAC-02 on a third client.
 - *Keep the native client.* What R19 built; three applications.
 
 **R19's unverified list.** Check 4 (the device flow's permissions) no longer applies. Checks 1, 2, 3 and 5 stand.
+
+## R21. No role for the portal
+
+Added 2026-11-12 (clarifications, "who may use the portal" session), after the first real sign-in against the
+tenant: a new person was refused until an administrator assigned the role by hand. It amends R19.
+
+**Decision.**
+- **The portal asks for no role and no permission.** Its access list is: a valid token of the tenant for the API,
+  not a machine token, issued to the portal's own client, with a sign-in time. `permissions` is not read.
+- **`auth0/` defines no role and no permission.** `auth0_role.user`, `auth0_role_permissions.user` and
+  `auth0_resource_server_scopes.identity` are removed. People's API keeps RBAC enforced and its token profile, so a
+  token has the shape the first sign-in was verified with, with an empty `permissions` list.
+- **The agent service is unchanged.** It still requires `agent:run`, which only the local dev issuer gives (R20).
+- **Who gets in is the tenant's setting.** With sign-ups on, anyone who creates an account can onboard. An
+  administrator turns sign-ups off on the connection to choose the people, and blocks a user to keep one out.
+  Neither is in `auth0/`: the connection is the tenant's own.
+
+**Rationale.** The request was a default role for new sign-ups. Auth0 has none. A sign-in Action can assign one
+only by calling the Management API, which needs a machine-to-machine application for the Action (a third
+application, against R20) and its secret stored in the Action and in Terraform's state (against the rule that the
+Action holds no secret and the state none). The token of that first sign-in would still lack the role, so the
+portal would have to fetch a second one. A role that everyone gets on arrival gates nothing: dropping the check
+gives the same access with none of that.
+
+**What it gives up.** Per-person access as a role in the token. Keeping one person out is now a block in Auth0,
+which also ends their sign-in everywhere in the tenant. There is no step in the portal that approves a person
+(there was none before either: the role was assigned in Auth0).
+
+**Risk accepted.** SPEC SEC-26: with sign-ups on, a stranger can onboard and take a wallet address and ledger
+entries. They reach only their own account, fund it themselves, and no deployed run spends it (R20). The request
+limits bound the rate, not the number of users.
+
+**Alternatives considered.**
+- *A post-login Action that assigns the role on a first sign-in.* What was asked, literally. A third application,
+  a stored secret, and a second token on the first sign-in.
+- *Keep the manual assignment.* What R19 built; the step the request was about.
+- *A claim set by the Action instead of a role.* The Action would decide access from the sign-in alone, which is
+  the same as no check, with more code.
+
+**R19's unverified list.** Check 1 changes: `permissions` is no longer expected to hold `agent:run`; the client as
+`azp` or `client_id` and the machine-token marks still matter. On 2026-11-12 a real sign-in passed the portal's
+signature, issuer, audience and client checks and was refused only for the missing permission, which is what this
+decision removes; the sign-in time checks (2) are still to be recorded.

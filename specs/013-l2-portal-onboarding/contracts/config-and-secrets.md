@@ -231,8 +231,8 @@ The tenant already holds the approval set-up of 012. This feature adds, in the s
 
 | Resource | Settings |
 |---|---|
-| API (resource server) | identifier = `identity.audience`; RS256; RBAC enforced; permissions added to the access token; one permission, `agent:run`; offline access allowed (refresh-token rotation for the web app) |
-| Role `x402-user` | exactly the permission `agent:run` on that API. No user is assigned in code |
+| API (resource server) | identifier = `identity.audience`; RS256; RBAC enforced with no permission defined since 2026-11-12 (R21; until then one permission, `agent:run`), so a token's `permissions` is empty; offline access allowed (refresh-token rotation for the web app) |
+| ~~Role `x402-user`~~ | removed 2026-11-12 (R21): the portal asks for no role. No user is created or assigned in code |
 | Client: portal (single-page application) | authorization code with PKCE, no secret; allowed callbacks, web origins and logout URLs = `http://localhost:4025` and the `portal_origin` variable when set; refresh-token rotation; no other grant |
 | ~~Client: agent CLI (native)~~ | removed 2026-11-11 (R20): the tenant has exactly two applications, the portal's and L2's |
 | Action, post-login | sets `AUTH_TIME_CLAIM` on the access token to the time of the most recent authentication; sets nothing else |
@@ -243,7 +243,7 @@ Outputs, named as the existing `bicepparam_ciba` is: `bicepparam_identity` (the 
 `AUTH0_PORTAL_ORIGIN`, set by hand after the portal's first deployment (a GitHub variable can't be empty, so
 `github-setup.sh` does not create it). No secret is created: the portal's client is public.
 
-T-IAC-02 gains: the API's RBAC flags and its single permission; the role holds exactly that permission; the portal's
+T-IAC-02 gains: the API's RBAC flags; no role and no permission (R21; until then one of each); the portal's
 client is public and has only its own grant, and the clients are exactly the portal's and L2's (R20); the portal client's URLs are exactly the local one and the variable;
 the Action writes one namespaced claim; no user, role assignment or connection password in code. Must-fail mutants
 for each.

@@ -37,9 +37,7 @@ For people's sign-in:
 
 | Resource | What it is | Becomes |
 |---|---|---|
-| `auth0_resource_server.identity` | People's API, `https://x402-api/<environment>`. It uses RS256, enforces RBAC and puts the permissions in the access token. Tokens live one hour. Refresh tokens are allowed. | `AUTH_AUDIENCE`, `identity.audience` |
-| `auth0_resource_server_scopes.identity` | Its one permission, `agent:run`. It opens the portal. The agent service checks the same permission, but no client of the tenant reaches it. | — |
-| `auth0_role.user`, `auth0_role_permissions.user` | The role `x402-user`, which holds exactly `agent:run`. Nobody is assigned here. | — |
+| `auth0_resource_server.identity` | People's API, `https://x402-api/<environment>`. It uses RS256 and defines no permission, so a token's `permissions` list is empty. Tokens live one hour. Refresh tokens are allowed. | `AUTH_AUDIENCE`, `identity.audience` |
 | `auth0_client.portal`, `auth0_client_credentials.portal` | The portal's web app: a public single-page client with no secret. It uses the authorization code with PKCE, and the `refresh_token` grant because its refresh tokens rotate. Its callbacks, web origins and logout URLs are `http://localhost:4025` and `portal_origin` when set. | `PORTAL_CLIENT_ID`, `userAccounts.portalClientId` |
 | `auth0_action.sign_in_time`, `auth0_trigger_action.sign_in_time` | The post-login Action in `sign-in-time.js`. It writes one claim on the access token, `https://x402.dev/auth_time`: the time of the person's most recent authentication, in seconds. It is appended to the tenant's post-login flow and replaces nothing there. | `AUTH_TIME_CLAIM` |
 
@@ -54,9 +52,11 @@ The portal accepts only its own client. The agent service accepts no client of t
 - **L2's private key** (or the secret): it goes into the l2 vault (`ciba-client-credential`) or a local
   `env/l2-control.env`, never into this folder, GitHub or the state.
 - **The live check**, in `specs/012` quickstart §5.
-- **People.** Creating a user, and assigning the role `x402-user` to a person, are done in Auth0 by an
-  administrator. Terraform creates no user and assigns no role. Which connections people sign in through is the
-  tenant's own setting.
+- **People.** There is no role to assign (SPEC v1.14, `specs/013` research R21): whoever signs in through the
+  portal's application may use the portal, for their own account. Terraform creates no user. Who can sign up is
+  the tenant's own setting: to keep strangers out, turn sign-ups off on the connection (**Authentication →
+  Database → the connection → Disable Sign Ups**) and create users yourself; to keep one person out, block that
+  user (**User Management → Users → the user → Block**).
 - **The checks of people's sign-in against the tenant**, in `specs/013` research R19 ("Unverified").
 
 ## Set it up, once per environment
@@ -78,8 +78,10 @@ The portal accepts only its own client. The agent service accepts no client of t
    - `read:client_grants`, `create:client_grants`, `update:client_grants`, `delete:client_grants`;
    - `read:guardian_factors`, `update:guardian_factors`, `read:mfa_policies`, `update:mfa_policies`;
    - `read:tenant_settings`, `read:users`;
-   - for people's sign-in: `read:roles`, `create:roles`, `update:roles`, `delete:roles`, `read:actions`,
-     `create:actions`, `update:actions`, `delete:actions`, `read:triggers`, `update:triggers`.
+   - for people's sign-in: `read:actions`, `create:actions`, `update:actions`, `delete:actions`, `read:triggers`,
+     `update:triggers`;
+   - only for the one apply that takes out the role of v1.12 from a tenant that has it: `read:roles` and
+     `delete:roles`. Untick them afterwards.
 
    Store its credential as the environment's secrets. Each command asks for the value, so it stays out of your
    shell history:
@@ -171,7 +173,8 @@ The portal accepts only its own client. The agent service accepts no client of t
      `portalClientId` in its `userAccounts` object. Then run `deploy-portal.yml`.
    - **Locally**: an administrator with a role on the state's container reads the lines for `env/portal.env` with
      `terraform -chdir=auth0 output -raw portal_env`. They hold the same values as the summary.
-6. **Assign the role `x402-user`** in Auth0 to each person who may onboard.
+6. **Decide who can sign up.** Nobody needs a role. With sign-ups on, anyone who creates an account in the tenant
+   can onboard; turn them off on the connection to choose the people yourself ("What stays by hand", People).
 
 **Key only.** The pipeline provisions `credential = "key"` and nothing else, so GitHub holds only the public half
 of L2's key. L2's credential is held by L2 only (Constitution V), which rules out sending a client secret through
@@ -191,8 +194,8 @@ GitHub. `private_key_jwt` needs Auth0's Enterprise plan; on a lower plan the pip
 - **The Action.** Its code is `sign-in-time.js`, so that T-IAC-02 can run it. It writes the claim only when the
   sign-in has a time. It never writes the current time, which would make a renewed token look like a new sign-in.
   It runs after every sign-in of the tenant, so it must never throw.
-- **The role and the token.** A role taken from a person stays in the tokens they already hold until those expire,
-  one hour at most.
+- **Blocking a person.** A blocked user can't sign in or renew, but the access token they already hold stays
+  valid until it expires, one hour at most.
 - **Offline checks on your machine.** `terraform -chdir=auth0 fmt -check` needs nothing. `validate` needs the
   provider: run `terraform -chdir=auth0 init -backend=false` first. Neither reads the state.
 - **The lock file.** `.terraform.lock.hcl` must hold the provider's `h1` checksum for the pipeline's Linux runner

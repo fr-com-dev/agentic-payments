@@ -551,7 +551,7 @@ token is refused by both.
 - [X] T137 Run the chain suites with the new tokens: test/helpers/harness.ts and test/e2e.local.test.ts (`T-E2E-09`, `T-E2E-12`, `T-E2E-13`) use the dev issuer's new shape, and a person's run is still paid from that person's account per US4/AC1, US4/AC4 *(Done 2026-11-10. Added a T-E2E-12 case through the hosted agent service: a person's token pays from their own account, a system identity's from the platform's, and the portal's token is 403.)*
 - [X] T138 [P] Update the normative documents: SPEC.md to v1.12 ("Changes in 1.12"; §2 glossary "user"; §3.1 Azure profile; §3.3 the requester and portal token rows; §5 the sign-in library; §6 files; L1-6 auth; L2-8 access and web app; CFG-2; §11 SEC-14, SEC-19, SEC-20 and SEC-21 with the residual risk of one provider for sign-in and approvals; §12 test rows; §13 `user-token`), .specify/memory/constitution.md to 1.6.0 (Principle V's requester credential), specs/README.md, specs/007-process-isolation-security/contracts/threat-matrix.md, specs/011-l1-hosted-agent-azure/contracts/cloud-topology.md and quickstart.md, CLAUDE.md and README.md per plan.md "Change of identity provider"
 - [X] T139 Run the definition of done: `npm run typecheck`, `BICEP_PATH=~/.azure/bin/bicep npm test`, `npm run build && npm run build:web`, `npm run demo:local` (summary unchanged), and a local walk of quickstart.md §2 with the dev issuer; record it in the "Validation log"
-- [ ] T140 Manual, needs the Auth0 tenant: run `provision-auth0.yml`, assign `x402-user` to a test person, walk quickstart.md §5 and record each of research R19's unverified items as held or not (four since Phase 15: check 4, the device flow, no longer applies). If a sign-in time check fails, stop before `userAccounts.enabled` is true anywhere. This replaces the Entra tenant half of T114
+- [ ] T140 Manual, needs the Auth0 tenant: run `provision-auth0.yml`, walk quickstart.md §5 (no role to assign since Phase 16) and record each of research R19's unverified items as held or not (four since Phase 15: check 4, the device flow, no longer applies). If a sign-in time check fails, stop before `userAccounts.enabled` is true anywhere. This replaces the Entra tenant half of T114
 
 ## Phase 15: Two applications in Auth0
 
@@ -567,3 +567,18 @@ person's run is still paid from that person's account.
 - [X] T143 [P] Remove scripts/user-token.ts, test/user-token.test.ts and the `user-token` script in package.json; drop `AGENT_CLI_CLIENT_ID` from env/l1-hosted.env.example and T-ARCH-ENV in test/architecture.test.ts per research R20
 - [X] T144 [P] Update the normative documents: SPEC.md to v1.13 ("Changes in 1.13", §3.1, L1-6, CFG-2, SEC-20, T-IAC-02), docs/l1-hosted.openapi.yaml, specs/011 (quickstart.md and contracts/access-and-sessions.md, cloud-topology.md, hosted-agent-api.md), this feature's spec.md, plan.md, research.md (R20), quickstart.md and contracts, README.md and CLAUDE.md
 - [X] T145 Run `npm run typecheck` and `BICEP_PATH=~/.azure/bin/bicep npm test`; record the result in quickstart.md "Validation log"
+
+## Phase 16: No role for the portal
+
+**Goal**: a person who signs up at the portal gets in without an administrator's step: the portal asks for no role
+and no permission (spec.md Clarifications "who may use the portal", research R21, SPEC v1.14).
+
+**Independent test**: with the dev issuer, a portal token with no permission opens the portal and onboards under
+its own identifier; an agent client's token is refused with the permission or not; T-IAC-02 fails on a role or a
+permission in auth0/.
+
+- [X] T146 In test/portal.test.ts (`T-PRT-01`) expect a token with no permission, no `permissions` claim or another permission to get in and onboard, and another client's token to be refused with `agent:run` or without; then drop the permission check from src/portal/access.ts per research R21, FR-003
+- [X] T147 [P] Reword the 403 text in web/portal/src/screens/SignedOut.tsx and web/portal/src/messages.ts ("This sign-in can't be used for the portal. Sign in again from this page.") with `T-WEB-01` in web/portal/test/onboarding.test.tsx and contracts/portal-ui.md
+- [X] T148 Remove `auth0_role.user`, `auth0_role_permissions.user`, `auth0_resource_server_scopes.identity` and `local.permission` from auth0/main.tf; in test/auth0-iac.test.ts expect no role and no permission, with must-fail mutants; update auth0/README.md (who can sign up, blocking a user, the Management API scopes) per research R21
+- [X] T149 [P] Update the normative documents: SPEC.md to v1.14 ("Changes in 1.14", §2 "user", L2-8 access, SEC-26 and its residual risks, T-PRT-01, T-IAC-02), specs/007 contracts/threat-matrix.md with `T-ARCH-TRACE`, docs/portal.openapi.yaml, this feature's spec.md, plan.md, research.md (R21), quickstart.md and contracts, CLAUDE.md
+- [X] T150 Run `npm run typecheck` and `BICEP_PATH=~/.azure/bin/bicep npm test`; record the result in quickstart.md "Validation log"

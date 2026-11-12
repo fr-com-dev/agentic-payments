@@ -178,10 +178,6 @@ describe("T-PRT-01 access (FR-003, FR-005, SEC-19, SEC-20)", () => {
       ["another client", { azp: "some-other-client" }, 403],
       ["no client", { azp: null }, 403],
       ["two client claims that disagree", { claims: { client_id: DEV_AGENT_CLIENT } }, 403],
-      ["no permission", { permissions: [] }, 403],
-      ["no permissions claim", { permissions: null }, 403],
-      ["another permission", { permissions: ["agent:read"] }, 403],
-      ["the directory's role instead of the permission", { permissions: null, claims: { roles: ["Agent.Run"] } }, 403],
       // 401, checked last: the portal's own token, without a usable sign-in time.
       ["a sign-in time in the future", { authTime: nowSec + 600 }, 401],
       ["a sign-in time that is not a whole number", { authTime: nowSec + 0.5 }, 401],
@@ -293,12 +289,21 @@ describe("T-PRT-01 access (FR-003, FR-005, SEC-19, SEC-20)", () => {
     expect(await id({ sub: "dev|a|b" })).toBe(userIdFor("urn:x402:dev-issuer", "dev|a|b"));
   });
 
-  it("T-PRT-01 a person without the permission to start agent runs is refused, and no profile exists afterwards (US1 scenario 4)", async () => {
+  it("T-PRT-01 the portal needs no permission and no role: whoever signs in through its client gets in, as themselves (research R21, US1 scenario 4)", async () => {
     const p = await start();
+    const cases: Array<[string, Parameters<typeof p.token>[1]]> = [
+      ["no permission", { permissions: [] }],
+      ["no permissions claim", { permissions: null }],
+      ["another permission", { permissions: ["agent:read"] }],
+      ["the directory's role and no permission", { permissions: null, claims: { roles: ["Agent.Run"] } }],
+    ];
+    for (const [name, o] of cases) expect((await p.call("GET", "/api/me", { token: await p.token("alice", o) })).status, name).toBe(200);
+    // A new person without any permission onboards, under their own identifier.
     const res = await p.call("PUT", "/api/profile", { token: await p.token("mallory", { permissions: [] }), body: PROFILE });
-    expect(res.status).toBe(403);
-    expect(existsSync(p.profilesDir)).toBe(false);
-    expect(p.l2.entries("USER_REGISTERED")).toEqual([]);
+    expect(res.status).toBe(200);
+    expect(p.l2.entries("USER_REGISTERED")).toHaveLength(1);
+    // Holding no permission opens nothing else: another client's token is still refused, with the permission or not.
+    expect((await p.call("GET", "/api/me", { token: await p.token("mallory", { azp: DEV_AGENT_CLIENT, permissions: ["agent:run"] }) })).status).toBe(403);
   });
 
   it("T-PRT-01 must-fail: with the test-only bypassAuth hook, an agent-service token reaches a route", async () => {

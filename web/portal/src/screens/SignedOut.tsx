@@ -1,10 +1,14 @@
-// Before sign-in, and when access is refused (specs/013 US1 scenario 4, FR-003). No profile is created for a person
-// who is refused: nothing is even asked of the portal for them.
+// Before sign-in, and when a sign-in is refused (specs/013 US1 scenario 4, FR-003). No profile is created for a
+// refused sign-in: nothing is even asked of the portal for it.
 import { useState } from "react";
 import { Banner, ScreenHeading } from "../components/ui.js";
 import type { Auth } from "../auth/types.js";
 
-export const REFUSED_TEXT = "Your organization has not given you access to start agent runs.";
+/**
+ * A 403 from the portal: a valid sign-in that is not the portal's own (another application's token, or a machine's).
+ * The portal asks for no role, so this is never about a missing permission (specs/013 research R21).
+ */
+export const REFUSED_TEXT = "This sign-in can't be used for the portal. Sign in again from this page.";
 
 /** What a person can do about a failed sign-in, by the code the sign-in gave. The code itself is always shown too. */
 export function signInHint(code: string | null): string {

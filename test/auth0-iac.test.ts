@@ -8,7 +8,7 @@
 // Terraform and the locked provider (its lock file holds the Linux runner's checksum too), the state in Azure with
 // OIDC and no key, and an apply of exactly the plan shown.
 // 013 (specs/013 contracts/config-and-secrets.md "auth0/", research R19): people's sign-in. The API with RBAC and its
-// one permission, the role that holds exactly it, the portal's public client (the only one for people: the tenant has
+// no permission and no role (research R21), the portal's public client (the only one for people: the tenant has
 // two applications, L2's and the portal's, research R20) with its own grant, the portal client's
 // URLs, and the post-login Action, whose code is also run here against a stand-in for Auth0's `api`.
 import { spawnSync } from "node:child_process";
@@ -40,9 +40,9 @@ const VARIABLES: Record<string, string> = {
  * once the portal is deployed), and a GitHub variable can't be empty. Unset, Terraform's default holds.
  */
 const SET_LATER = ["AUTH0_PORTAL_ORIGIN"];
-/** 013: the one permission of people's API, the role that holds it, and the portal's local origin (its default port). */
-const PERMISSION = "agent:run";
-const ROLE = "x402-user";
+/** 013 research R21: the portal asks for no permission, so people's API defines none and the tenant has no role. */
+const NO_ROLE = "people's API must define no permission and the tenant no role: the portal asks for none (research R21)";
+const NOBODY_ASSIGNED = "no role or permission is assigned to a person here";
 const LOCAL_PORTAL = "http://localhost:4025";
 /** The access-token claim the Action sets: the services' default AUTH_TIME_CLAIM (contracts/config-and-secrets.md). */
 const AUTH_TIME_CLAIM = "https://x402.dev/auth_time";
@@ -199,33 +199,13 @@ export function auth0Problems(s: Sources): string[] {
   }
   if (count("auth0_resource_server") !== 2) p.push("the APIs must be exactly the approval API and people's API");
 
-  // Its one permission, and the one role, which holds exactly that permission.
-  const permission = /^\s*permission\s*=\s*"([^"]+)"/m.exec(tf)?.[1];
-  const scopes = block(tf, /resource\s+"auth0_resource_server_scopes"\s+"identity"\s*\{/);
-  const scopeBlocks = blocks(scopes, /\bscopes\s*\{/g);
+  // No permission and no role (research R21): whoever signs in through the portal's client may use the portal, so
+  // nothing here defines a permission, a role, or what a role holds.
   if (
-    permission !== PERMISSION ||
-    !has(scopes, /resource_server_identifier\s*=\s*auth0_resource_server\.identity\.identifier/) ||
-    scopeBlocks.length !== 1 ||
-    !/name\s*=\s*local\.permission\b/.test(scopeBlocks[0]!) ||
-    count("auth0_resource_server_scopes") !== 1 ||
-    count("auth0_resource_server_scope") !== 0
+    /^\s*permission\s*=/m.test(tf) ||
+    ["auth0_resource_server_scopes", "auth0_resource_server_scope", "auth0_role", "auth0_role_permissions", "auth0_role_permission"].some((type) => count(type) !== 0)
   ) {
-    p.push(`people's API must have exactly one permission, ${PERMISSION}`);
-  }
-  const role = block(tf, /resource\s+"auth0_role"\s+"user"\s*\{/);
-  if (!has(role, new RegExp(`name\\s*=\\s*"${ROLE}"`)) || count("auth0_role") !== 1) p.push(`the one role must be ${ROLE}`);
-  const rolePermissions = block(tf, /resource\s+"auth0_role_permissions"\s+"user"\s*\{/);
-  const held = blocks(rolePermissions, /\bpermissions\s*\{/g);
-  if (
-    !has(rolePermissions, /role_id\s*=\s*auth0_role\.user\.id/) ||
-    held.length !== 1 ||
-    !/name\s*=\s*local\.permission\b/.test(held[0]!) ||
-    !/resource_server_identifier\s*=\s*auth0_resource_server\.identity\.identifier/.test(held[0]!) ||
-    count("auth0_role_permissions") !== 1 ||
-    count("auth0_role_permission") !== 0
-  ) {
-    p.push(`the role ${ROLE} must hold exactly the permission ${PERMISSION} on people's API`);
+    p.push(NO_ROLE);
   }
 
   // The portal's public client: no secret, no key, and only its own grant. It is the only client for people.
@@ -302,7 +282,7 @@ export function auth0Problems(s: Sources): string[] {
 
   // Nothing here manages users, assigns a role or holds secrets.
   if (/resource\s+"auth0_user"/.test(tf) || /\bpassword\s*=/.test(tf)) p.push("users and passwords are never managed here");
-  if (/resource\s+"auth0_(user_roles?|user_permissions?|organization_member\w*)"/.test(tf)) p.push(`no role or permission is assigned to a person here: an administrator assigns ${ROLE} in Auth0`);
+  if (/resource\s+"auth0_(user_roles?|user_permissions?|organization_member\w*)"/.test(tf)) p.push(NOBODY_ASSIGNED);
   for (const [f, text] of Object.entries(s.all)) {
     if (/-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(text)) p.push(`${f} holds a private key`);
     if (/eyJ[\w-]+\.eyJ[\w-]+\.[\w-]+/.test(text)) p.push(`${f} holds a JWT`);
@@ -561,26 +541,20 @@ describe("T-IAC-02 Auth0 tenant as code (auth0/)", () => {
   });
 
   // 013: people's sign-in. One mutant, at least, for each rule of contracts/config-and-secrets.md "auth0/".
-  const ONE_PERMISSION = `people's API must have exactly one permission, ${PERMISSION}`;
-  const ROLE_HOLDS = `the role ${ROLE} must hold exactly the permission ${PERMISSION} on people's API`;
   const PORTAL_PUBLIC = "the portal's client must be a public spa client: authentication_method none, no secret and no key";
   const PORTAL_GRANT = "the portal's client must have only its own grant (authorization_code, refresh_token)";
   const PORTAL_URLS = `the portal client's callbacks, web origins and logout URLs must be exactly ${LOCAL_PORTAL} and var.portal_origin when set`;
   const ONE_ACTION = `the one Action must be the post-login sign-in time Action (${ACTION_FILE}, no secret, no package), appended to the flow (auth0_trigger_action), never replacing it`;
   const ONE_CLAIM = `the Action must write one namespaced claim, ${AUTH_TIME_CLAIM}, on the access token, and do nothing else`;
-  const NOBODY_ASSIGNED = `no role or permission is assigned to a person here: an administrator assigns ${ROLE} in Auth0`;
   it.each<[string, string, string | RegExp, string, string]>([
     ["an API without RBAC", "main.tf", /enforce_policies(\s*)= true/, "enforce_policies$1= false", "people's API must enforce RBAC (enforce_policies = true)"],
     ["permissions left out of the token", "main.tf", '"access_token_authz"', '"access_token"', 'people\'s API must put the permissions in the access token (token_dialect = "access_token_authz")'],
     ["an API without refresh tokens", "main.tf", /(resource "auth0_resource_server" "identity" \{[\s\S]*?allow_offline_access\s*=\s*)true/, "$1false", "people's API must allow offline access (the web app's refresh-token rotation)"],
     ["HS256 tokens for people", "main.tf", /(resource "auth0_resource_server" "identity" \{[\s\S]*?signing_alg\s*=\s*)"RS256"/, '$1"HS256"', "people's API must sign with RS256 (the services accept RS256 only)"],
     ["the approval API reused for people", "main.tf", /identifier(\s*)= local\.identity_audience/, "identifier$1= var.api_identifier", "people's API must have an identifier of its own (local.identity_audience), never the approval API's"],
-    ["another permission name", "main.tf", new RegExp(`permission(\\s*)= "${PERMISSION}"`), 'permission$1= "agent:admin"', ONE_PERMISSION],
-    ["a second permission", "main.tf", /(\n  scopes \{\n[^}]*\})/, '$1\n  scopes {\n    name = "portal:admin"\n  }', ONE_PERMISSION],
-    ["a role under another name", "main.tf", `"${ROLE}"`, '"x402-admin"', `the one role must be ${ROLE}`],
-    ["a second role", "main.tf", 'resource "auth0_role" "user" {', 'resource "auth0_role" "admin" {\n  name = "x402-admin"\n}\n\nresource "auth0_role" "user" {', `the one role must be ${ROLE}`],
-    ["a role with a second permission", "main.tf", /(\n  permissions \{\n[^}]*\})/, '$1\n  permissions {\n    name                       = "read:users"\n    resource_server_identifier = "https://x402-dev.us.auth0.com/api/v2/"\n  }', ROLE_HOLDS],
-    ["a role holding a permission of another API", "main.tf", /(permissions \{\n\s+name\s*= local\.permission\n\s+resource_server_identifier\s*= )auth0_resource_server\.identity\.identifier/, "$1auth0_resource_server.payments.identifier", ROLE_HOLDS],
+    ["a permission on people's API", "main.tf", 'resource "auth0_client" "portal" {', 'resource "auth0_resource_server_scopes" "identity" {\n  resource_server_identifier = auth0_resource_server.identity.identifier\n\n  scopes {\n    name = "agent:run"\n  }\n}\n\nresource "auth0_client" "portal" {', NO_ROLE],
+    ["a role", "main.tf", 'resource "auth0_client" "portal" {', 'resource "auth0_role" "user" {\n  name = "x402-user"\n}\n\nresource "auth0_client" "portal" {', NO_ROLE],
+    ["a role that holds a permission", "main.tf", 'resource "auth0_client" "portal" {', 'resource "auth0_role_permissions" "user" {\n  role_id = "rol_x"\n\n  permissions {\n    name                       = "read:users"\n    resource_server_identifier = "https://x402-dev.us.auth0.com/api/v2/"\n  }\n}\n\nresource "auth0_client" "portal" {', NO_ROLE],
     ["a portal client with a secret", "main.tf", /(resource "auth0_client_credentials" "portal" \{[\s\S]*?authentication_method\s*=\s*)"none"/, '$1"client_secret_post"', PORTAL_PUBLIC],
     ["a confidential portal client", "main.tf", 'app_type        = "spa"', 'app_type        = "regular_web"', PORTAL_PUBLIC],
     ["a portal client with the implicit grant", "main.tf", '["authorization_code", "refresh_token"]', '["authorization_code", "refresh_token", "implicit"]', PORTAL_GRANT],
@@ -603,8 +577,8 @@ describe("T-IAC-02 Auth0 tenant as code (auth0/)", () => {
     ["an Action that writes a second claim", ACTION_FILE, /(\n\s+api\.accessToken\.setCustomClaim\(CLAIM, [^\n]+)/, '$1\n    api.accessToken.setCustomClaim("https://x402.dev/roles", []);', ONE_CLAIM],
     ["an Action that writes a claim without a namespace", ACTION_FILE, `"${AUTH_TIME_CLAIM}"`, '"auth_time"', ONE_CLAIM],
     ["an Action that refuses sign-ins", ACTION_FILE, /(\n\s+api\.accessToken\.setCustomClaim\(CLAIM, [^\n]+)/, '$1\n    api.access.deny("no");', ONE_CLAIM],
-    ["a role assigned to a person", "main.tf", 'resource "auth0_role_permissions" "user" {', 'resource "auth0_user_roles" "someone" {\n  user_id = var.approver_user_id\n  roles   = [auth0_role.user.id]\n}\n\nresource "auth0_role_permissions" "user" {', NOBODY_ASSIGNED],
-    ["a connection with a password in code", "main.tf", 'resource "auth0_role" "user" {', 'resource "auth0_connection" "db" {\n  name     = "db"\n  strategy = "auth0"\n  options {\n    password = "x"\n  }\n}\n\nresource "auth0_role" "user" {', "users and passwords are never managed here"],
+    ["a role assigned to a person", "main.tf", 'resource "auth0_client" "portal" {', 'resource "auth0_user_roles" "someone" {\n  user_id = var.approver_user_id\n  roles   = ["rol_x"]\n}\n\nresource "auth0_client" "portal" {', NOBODY_ASSIGNED],
+    ["a connection with a password in code", "main.tf", 'resource "auth0_client" "portal" {', 'resource "auth0_connection" "db" {\n  name     = "db"\n  strategy = "auth0"\n  options {\n    password = "x"\n  }\n}\n\nresource "auth0_client" "portal" {', "users and passwords are never managed here"],
     ["a client the agent service would accept", "outputs.tf", /(output "bicepparam_identity" \{[\s\S]*?audience\s*= auth0_resource_server\.identity\.identifier)/, "$1\n    agentClientIds = [auth0_client.portal.client_id]", IDENTITY_OUTPUT],
     ["an identity output for the approval API", "outputs.tf", /(output "bicepparam_identity" \{[\s\S]*?audience\s*= )auth0_resource_server\.identity\.identifier/, "$1auth0_resource_server.payments.identifier", IDENTITY_OUTPUT],
     ["an identity output missing the audience", "outputs.tf", /(output "bicepparam_identity" \{[\s\S]*?)\n\s+audience\s*= auth0_resource_server\.identity\.identifier/, "$1", "output bicepparam_identity must have exactly the identity keys of the parameter file (audience, issuer), got issuer"],

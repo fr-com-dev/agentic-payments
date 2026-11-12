@@ -2,13 +2,12 @@
 // Verifies the person's access token before the body is read, then deletes it from the request so nothing downstream
 // can forward it (the person's token authenticates to the portal only). People sign in with the Auth0 tenant
 // (research R19); the basic checks are shared with the hosted agent (src/shared/identity-token.ts). The portal adds
-// its own: a token issued to the portal's client, not to an agent client; the one permission, `agent:run`; and a
-// sign-in time. A token of any other issuer, the organization's directory included, is not valid here at all.
+// its own: a token issued to the portal's client, not to an agent client, and a sign-in time. It asks for no
+// permission and no role (research R21): whoever signs in through the portal's client may use the portal, for their
+// own account only. A token of any other issuer, the organization's directory included, is not valid here at all.
 import type { RequestHandler } from "express";
-import { AGENT_RUN_PERMISSION, bearerToken, signInTimeOf, verifyPersonToken, type TokenKeys } from "../shared/identity-token.js";
+import { bearerToken, signInTimeOf, verifyPersonToken, type TokenKeys } from "../shared/identity-token.js";
 import { userIdFor } from "../shared/user-id.js";
-
-export const REQUIRED_PERMISSION = AGENT_RUN_PERMISSION;
 
 /** The signed-in person, as the rest of the portal sees them. No name, no email, no token. */
 export interface Person {
@@ -29,8 +28,8 @@ export interface AccessOptions {
   authTimeClaim?: string;
   now?: () => number;
   /**
-   * Test hook (T-PRT-01 must-fail): keep the basic token checks but skip the portal's own (client, permission,
-   * sign-in time), so a token issued for the agent service gets in. Never set by the entry point.
+   * Test hook (T-PRT-01 must-fail): keep the basic token checks but skip the portal's own (client, sign-in time),
+   * so a token issued for the agent service gets in. Never set by the entry point.
    */
   bypassAuth?: boolean;
 }
@@ -62,9 +61,9 @@ export function portalAccess(o: AccessOptions): RequestHandler {
       next();
       return;
     }
-    // 403: a valid token that is not allowed here. In order: a token another client obtained (an agent client's, so
-    // a token meant for the agent service); a person without the permission to start agent runs.
-    if (person.client !== o.clientId || !person.permissions.includes(REQUIRED_PERMISSION)) return refuse(403);
+    // 403: a valid token that is not allowed here: one another client obtained (an agent client's, so a token meant
+    // for the agent service). The permissions in the token are not read: the portal needs none (research R21).
+    if (person.client !== o.clientId) return refuse(403);
     // Last: a portal token with no usable sign-in time can't back a loosening change, so it is not accepted at all.
     const signedInAt = signInTimeOf(person, now());
     if (signedInAt === null) return refuse(401);

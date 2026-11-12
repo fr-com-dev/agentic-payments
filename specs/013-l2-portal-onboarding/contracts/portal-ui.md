@@ -18,7 +18,7 @@ credential except the person's own sign-in. Tests: T-WEB-01..08 (component tests
 | `/policies/new`, `/policies/:id` | Policy editor | account exists | FR-024..FR-027, FR-035 |
 | `/policies/:id/history` | Policy history | policy exists | FR-047 |
 | `/account` | Account | profile done | disable and enable (FR-037..FR-039) |
-| any | Signed-out / refused | no sign-in, or 403 | "Sign in"; for 403: "Your organization has not given you access to start agent runs." No profile is created (FR-003). |
+| any | Signed-out / refused | no sign-in, or 403 | "Sign in"; for 403 (a sign-in that is not the portal's own; since 2026-11-12 never a missing permission, research R21): "This sign-in can't be used for the portal. Sign in again from this page." No profile is created (FR-003). |
 
 Deep links to a step that is not available redirect to the first step not done. A screen never shows another
 person's data: every identifier in a URL is resolved by the portal API for the signed-in user only, and a 404 shows
