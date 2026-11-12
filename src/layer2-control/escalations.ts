@@ -197,7 +197,7 @@ export function pendingEscalations(entries: Entries, nowMs: number): EscalationV
       createdAt: e.ts,
       expiresAt: iso(expiresAtMsOf(e)),
       referenceCode: referenceCode(e.authorizationId!),
-      ...(typeof e.data.approvalRequest === "string" && { approvalRequest: approvalRequestState(entries, e.authorizationId!)! }),
+      ...(typeof e.data.approvalRequest === "string" && { approvalRequest: approvalRequestState(entries, e.authorizationId!, nowMs)! }),
       ...(typeof e.data.userId === "string" && { userId: e.data.userId }),
     }))
     .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
@@ -294,8 +294,8 @@ export function decisionOf(e: LedgerEntry): EscalationDecision {
   };
 }
 
-/** The escalation as its ESCALATED entry describes it, whatever became of it. */
-function viewOf(entries: Entries, e: LedgerEntry): EscalationView {
+/** The escalation as its ESCALATED entry describes it, whatever became of it. `nowMs` is for the request's state. */
+function viewOf(entries: Entries, e: LedgerEntry, nowMs: number): EscalationView {
   return {
     authorizationId: e.authorizationId!,
     sessionId: String(e.sessionId ?? ""),
@@ -305,7 +305,7 @@ function viewOf(entries: Entries, e: LedgerEntry): EscalationView {
     createdAt: e.ts,
     expiresAt: iso(expiresAtMsOf(e)),
     referenceCode: referenceCode(e.authorizationId!),
-    ...(typeof e.data.approvalRequest === "string" && { approvalRequest: approvalRequestState(entries, e.authorizationId!)! }),
+    ...(typeof e.data.approvalRequest === "string" && { approvalRequest: approvalRequestState(entries, e.authorizationId!, nowMs)! }),
     ...(typeof e.data.userId === "string" && { userId: e.data.userId }),
   };
 }
@@ -317,7 +317,7 @@ export function escalationDetail(entries: Entries, escalationId: string, nowMs: 
   if (!escalated || state === "not_found") return undefined;
   const decision = decisionEntry(entries, escalationId);
   const byPerson = decision !== undefined && decision.type !== "ESCALATION_EXPIRED" && state !== "expired" && state !== "pending";
-  return { ...viewOf(entries, escalated), state, ...(byPerson && { decision: decisionOf(decision) }) };
+  return { ...viewOf(entries, escalated, nowMs), state, ...(byPerson && { decision: decisionOf(decision) }) };
 }
 
 // ---------------------------------------------------------------------------
@@ -394,20 +394,28 @@ function requestEnding(entries: Entries, escalationId: string): LedgerEntry | un
   return entries.find((e) => REQUEST_ENDINGS.has(e.type) && e.data.escalationId === escalationId);
 }
 
-/** The approval request's state, or undefined when the escalation carries no mark (feature off, or before 012). */
-export function approvalRequestState(entries: Entries, escalationId: string): ApprovalRequestState | undefined {
+/**
+ * The approval request's state, or undefined when the escalation carries no mark (feature off, or before 012).
+ * 015 (specs/015 research R9): it takes the clock. A request that lives as long as its escalation is never recorded
+ * as lapsed: the escalation expires first, by the clock and then by `ESCALATION_EXPIRED`, and nothing is appended
+ * after a final state. That reads as `unanswered`, swept or not, with L2 running throughout or restarted.
+ * `abandoned` is only a person's decision on another path while the request was open.
+ */
+export function approvalRequestState(entries: Entries, escalationId: string, nowMs: number): ApprovalRequestState | undefined {
   const mark = findEscalation(entries, escalationId)?.data.approvalRequest;
   if (typeof mark !== "string") return undefined;
   if (mark !== "requested") return mark as ApprovalRequestMark;
   const decision = decisionEntry(entries, escalationId);
-  if (decision && decision.type !== "ESCALATION_EXPIRED" && channelOf(decision) === "backchannel") return "answered";
+  const byPerson = decision !== undefined && decision.type !== "ESCALATION_EXPIRED";
+  if (byPerson && channelOf(decision) === "backchannel") return "answered";
   const ending = requestEnding(entries, escalationId);
   if (ending) {
     if (ending.type === "APPROVAL_REQUEST_FAILED") return "failed";
     if (ending.type === "APPROVAL_REQUEST_LAPSED") return "lapsed";
     return "verification_failed";
   }
-  return decision ? "abandoned" : "requested";
+  if (byPerson) return "abandoned";
+  return escalationState(entries, escalationId, nowMs) === "expired" ? "unanswered" : "requested";
 }
 
 /** The escalation's APPROVAL_REQUESTED with no ending entry, whatever the time (lapse and failure recording). */

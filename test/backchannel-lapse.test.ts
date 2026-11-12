@@ -2,9 +2,10 @@
 // and expiry), the operator path during a request, T-CIBA-10 (serialized outcome recording, with its must-fail
 // proof) and T-CIBA-11 (restart).
 // 015: T-CIBA-22 (a request open at deployment for an escalation with no user is not resumed; two people's
-// requests are each resumed from their own handle).
+// requests are each resumed from their own handle) and T-CIBA-21 (a request nobody answered reads `unanswered`,
+// with L2 running throughout and after a restart: the 2026-11-12 finding, research R9).
 import { afterEach, describe, expect, it } from "vitest";
-import { approvalRequestCount } from "../src/layer2-control/escalations.js";
+import { approvalRequestCount, approvalRequestState } from "../src/layer2-control/escalations.js";
 import { AuditLedger } from "../src/layer2-control/ledger.js";
 import { testRsaKeyPair } from "./helpers/ciba-stub.js";
 import { PAY_TO, SELLER, startBackchannelL2, TestClock, type BackchannelL2 } from "./helpers/backchannel-l2.js";
@@ -335,5 +336,87 @@ describe("T-CIBA-22 a request open when v1.16 is deployed (015 US3, research R10
     expect(ofType(b, "HUMAN_APPROVAL").map((e) => [e.data.escalationId, e.data.approver])).toEqual([[escalations[0]!.authorizationId, alice.userId]]);
     expect(ofType(b, "HUMAN_REJECTION").map((e) => [e.data.escalationId, e.data.approver])).toEqual([[escalations[1]!.authorizationId, bob.userId]]);
     expect(ofType(b, "APPROVAL_REQUEST_FAILED")).toHaveLength(0);
+  });
+});
+
+describe("T-CIBA-21 a request nobody answered (015 US7, FR-023, research R9)", () => {
+  const stateOf = (l2: BackchannelL2) => approvalRequestState(l2.ledger.entries(), escalationOf(l2).authorizationId!, l2.clock.now());
+  const trailOf = (l2: BackchannelL2) => l2.trail({ escalationId: escalationOf(l2).authorizationId! }).map((e) => e.type);
+  /** An escalation of alice's whose request the service accepted for its full requested lifetime, as Auth0 does, and nobody answers. */
+  async function askedAndSilent(o: Parameters<typeof startBackchannelL2>[0] = {}) {
+    const l2 = await start({ backchannel: { waitMs: 80 }, ...o });
+    l2.stub.setStart({ expiresIn: "as_requested" });
+    l2.stub.setAnswers("pending");
+    const res = await l2.authorize(l2.intentFor(PREMIUM, "50000"));
+    expect(res.body.status).toBe("ESCALATE");
+    const req = ofType(l2, "APPROVAL_REQUESTED")[0]!;
+    // The request lives exactly as long as its escalation: it asked for the escalation's remaining window.
+    const escalationExpiresAt = Date.parse(escalationOf(l2).ts) + 300_000;
+    expect(req.data.requestExpiresAtMs as number).toBeGreaterThan(escalationExpiresAt - 2_000);
+    expect(req.data.requestExpiresAtMs as number).toBeLessThanOrEqual(escalationExpiresAt);
+    expect(stateOf(l2)).toBe("requested");
+    return l2;
+  }
+
+  it("T-CIBA-21 with L2 running throughout: APPROVAL_REQUESTED, then ESCALATION_EXPIRED, no APPROVAL_REQUEST_LAPSED; the state is unanswered, before the sweep and after it", async () => {
+    const l2 = await askedAndSilent();
+    l2.clock.advance(300_001);
+    // Before any sweep: the clock alone says the window has passed.
+    expect(ofType(l2, "ESCALATION_EXPIRED")).toHaveLength(0);
+    expect(stateOf(l2)).toBe("unanswered");
+    await new Promise((r) => setTimeout(r, 120)); // the poll loop wakes (20 ms), finds the escalation over and stops
+    const polls = l2.stub.requests.filter((r) => r.path === "/oauth/token").length;
+    await l2.service.sweep();
+    await l2.service.sweep();
+    await new Promise((r) => setTimeout(r, 80));
+    expect(trailOf(l2)).toEqual(["ESCALATED", "APPROVAL_REQUESTED", "ESCALATION_EXPIRED"]);
+    expect(ofType(l2, "APPROVAL_REQUEST_LAPSED")).toHaveLength(0);
+    expect(stateOf(l2)).toBe("unanswered");
+    expect(l2.stub.requests.filter((r) => r.path === "/oauth/token")).toHaveLength(polls); // polling stopped
+    // Every view names it the same way: the administrators' detail, read by the escalation's ID.
+    const admin = await start({ stub: l2.stub, ledgerFile: l2.ledgerFile, clock: l2.clock, admin: true });
+    const detail = await admin.admin("GET", `/v1/admin/escalations/${escalationOf(l2).authorizationId!}`);
+    expect(detail.body).toMatchObject({ state: "expired", approvalRequest: "unanswered", userId: l2.people.alice.userId });
+  });
+
+  it("T-CIBA-21 with L2 closed while the request is open and a new instance started after the window: unanswered, and nothing is appended but the expiry", async () => {
+    const a = await askedAndSilent();
+    await a.close({ keepLedger: true });
+    const before = new AuditLedger(a.ledgerFile).entries().length;
+    const clock = new TestClock();
+    clock.offsetMs = a.clock.offsetMs + 301_000;
+    const b = await start({ stub: a.stub, ledgerFile: a.ledgerFile, clock });
+    const polledBefore = b.stub.requests.length;
+    expect(stateOf(b)).toBe("unanswered"); // from the ledger alone, before resume and before any sweep
+    b.service.backchannel!.resume();
+    await b.service.sweep();
+    await new Promise((r) => setTimeout(r, 100));
+    expect(b.stub.requests).toHaveLength(polledBefore);
+    expect(b.ledger.entries().slice(before).map((e) => e.type)).toEqual(["ESCALATION_EXPIRED"]);
+    expect(trailOf(b)).toEqual(["ESCALATED", "APPROVAL_REQUESTED", "ESCALATION_EXPIRED"]);
+    expect(stateOf(b)).toBe("unanswered");
+  });
+
+  it("T-CIBA-21 an operator approval while the request is open is abandoned, not unanswered, also once the window has passed", async () => {
+    const l2 = await askedAndSilent();
+    expect((await l2.approve(escalationOf(l2).authorizationId!)).status).toBe(200);
+    expect(stateOf(l2)).toBe("abandoned");
+    l2.clock.advance(301_000);
+    await l2.service.sweep();
+    expect(stateOf(l2)).toBe("abandoned");
+    expect(ofType(l2, "ESCALATION_EXPIRED")).toHaveLength(0);
+  });
+
+  it("T-CIBA-21 a request that ends before its escalation is still APPROVAL_REQUEST_LAPSED and reads lapsed, also after the escalation expires", async () => {
+    const l2 = await start({ backchannel: { waitMs: 3000 } });
+    l2.stub.setStart({ expiresIn: 1 }); // the service grants less than the window
+    l2.stub.setAnswers("pending");
+    await l2.authorize(l2.intentFor(PREMIUM, "50000"));
+    expect(ofType(l2, "APPROVAL_REQUEST_LAPSED")).toHaveLength(1);
+    expect(stateOf(l2)).toBe("lapsed");
+    l2.clock.advance(300_000);
+    await l2.service.sweep();
+    expect(trailOf(l2)).toEqual(["ESCALATED", "APPROVAL_REQUESTED", "APPROVAL_REQUEST_LAPSED", "ESCALATION_EXPIRED"]);
+    expect(stateOf(l2)).toBe("lapsed");
   });
 });

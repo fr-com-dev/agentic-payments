@@ -204,7 +204,7 @@ export class Backchannel {
       const entries = this.d.ledger.entries();
       const state = escalationState(entries, escalationId, this.d.now());
       if (state === "approved" || state === "denied" || state === "expired") return finish(state);
-      const req = approvalRequestState(entries, escalationId);
+      const req = approvalRequestState(entries, escalationId, this.d.now());
       if (req === "failed" || req === "lapsed" || req === "verification_failed") finish("ended");
     });
   }
@@ -351,7 +351,7 @@ export class Backchannel {
       const t = this.d.now();
       const entries = this.d.ledger.entries();
       const esc = findEscalation(entries, id);
-      if (!esc || escalationState(entries, id, t) !== "pending" || approvalRequestState(entries, id) !== "requested") return;
+      if (!esc || escalationState(entries, id, t) !== "pending" || approvalRequestState(entries, id, t) !== "requested") return;
       this.d.ledger.append(
         {
           type: "APPROVAL_REQUEST_FAILED",
@@ -550,7 +550,7 @@ export class Backchannel {
       const t = this.d.now();
       const entries = this.d.ledger.entries();
       if (escalationState(entries, c.escalationId, t) !== "pending") return;
-      if (requestId !== undefined ? activeApprovalRequest(entries, c.escalationId)?.data.requestId !== requestId : approvalRequestState(entries, c.escalationId) !== "requested") return;
+      if (requestId !== undefined ? activeApprovalRequest(entries, c.escalationId)?.data.requestId !== requestId : approvalRequestState(entries, c.escalationId, t) !== "requested") return;
       this.d.ledger.append(
         {
           type: "APPROVAL_REQUEST_FAILED",

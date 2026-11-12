@@ -35,7 +35,8 @@ export type StartMode =
   | "unreachable"
   | "not_json"
   | { permanent: string }
-  | { expiresIn?: number; interval?: number };
+  /** `expiresIn: "as_requested"` grants exactly the lifetime the request asked for (`requested_expiry`), as Auth0 does. */
+  | { expiresIn?: number | "as_requested"; interval?: number };
 
 export type Forgery =
   | "issuer"
@@ -248,7 +249,8 @@ export async function startCibaStub(opts: CibaStubOptions): Promise<CibaStub> {
     pending.set(authReqId, { authReqId, form, details, polls: 0, exchanged: false });
     authReqIds.push(authReqId);
     const o = typeof mode === "object" ? mode : {};
-    send(res, 200, { auth_req_id: authReqId, expires_in: o.expiresIn ?? 300, interval: o.interval ?? 1 });
+    const expiresIn = o.expiresIn === "as_requested" ? Number(form.requested_expiry) : (o.expiresIn ?? 300);
+    send(res, 200, { auth_req_id: authReqId, expires_in: expiresIn, interval: o.interval ?? 1 });
   }
 
   async function onToken(res: ServerResponse, form: Record<string, string>) {

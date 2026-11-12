@@ -615,7 +615,7 @@ describe("T-ADM-07 one final state, whatever the path (US2, FR-017, FR-018, FR-0
       expect((await bcApprove(id)).body).toMatchObject({ state: "approved", already: false, channel: "portal" });
       expect((await call).body.status).toBe("AUTHORIZED");
       const { approvalRequestState } = await import("../src/layer2-control/escalations.js");
-      expect(approvalRequestState(bc.ledger.entries(), id)).toBe("abandoned");
+      expect(approvalRequestState(bc.ledger.entries(), id, bc.clock.now())).toBe("abandoned");
       expect(bc.ledger.entries().filter((e) => e.type === "HUMAN_APPROVAL").map((e) => e.data.channel)).toEqual(["portal"]);
     });
 
