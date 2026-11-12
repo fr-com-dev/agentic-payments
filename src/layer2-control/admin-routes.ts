@@ -8,6 +8,7 @@
 // this path has: nobody decides their own payment, and an approval needs a fresh identity confirmation.
 // No request carries text typed by a person: bodies hold an identifier, a time and a code from a fixed list.
 import express, { type Express, type RequestHandler, type Response } from "express";
+import { addressLimit } from "../shared/address-limit.js";
 import { requireRole } from "../shared/auth.js";
 import { ESCALATION_ID_RE, REJECTION_REASON_CODES, type BudgetLine, type DecisionOutcome, type EscalationBudget, type RejectionReasonCode } from "../shared/contracts.js";
 import { USER_ID_RE } from "../shared/user-id.js";
@@ -30,7 +31,17 @@ export interface AdminDeps {
   skipPendingCheck?: boolean;
   /** T-ADM-02: with one portal role for both halves, the user-account token approves. */
   singlePortalRole?: boolean;
+  /** Test hook: a lower limit for the ledger check, so its refusal is reached in a few requests. */
+  maxLedgerChecksPerMinute?: number;
+  /** T-ADM-01 must-fail: without the limit, the ledger is re-read as often as the caller asks. */
+  skipLedgerCheckLimit?: boolean;
 }
+
+/**
+ * How many ledger checks one caller's address may ask L2 for in a minute. A check re-reads the whole ledger file on
+ * L2's single thread, so it is bounded here too, not only by the portal's 10 s cache (which allows six a minute).
+ */
+export const MAX_LEDGER_CHECKS_PER_MINUTE = 30;
 
 export interface AdminRoutesDeps {
   ledger: AuditLedger;
@@ -138,6 +149,9 @@ export function mountAdminRoutes(app: Express, deps: AdminRoutesDeps): void {
   app.use("/v1/admin", guard);
   const { ledger, admin } = deps;
   const json = express.json({ limit: BODY_LIMIT });
+  // The ledger check's own limit, after the guard: a caller without the token is refused before it counts. The
+  // must-fail switch lifts the bound and leaves the route's shape as it is.
+  const ledgerCheckLimit = addressLimit({ max: admin.skipLedgerCheckLimit ? Number.MAX_SAFE_INTEGER : (admin.maxLedgerChecksPerMinute ?? MAX_LEDGER_CHECKS_PER_MINUTE) });
   const ctx: DecisionCtx = { ledger, now: deps.now };
   const refuse = (res: Response, status: number, error: string) => res.status(status).json({ error });
 
@@ -201,8 +215,8 @@ export function mountAdminRoutes(app: Express, deps: AdminRoutesDeps): void {
   });
 
   // The ledger check (FR-025, FR-026): what the operator's route answers. It re-reads the file and verifies the
-  // chain; it repairs nothing and appends nothing.
-  app.get("/v1/admin/ledger/verify", guard, (_req, res) => {
+  // chain; it repairs nothing and appends nothing. At most MAX_LEDGER_CHECKS_PER_MINUTE a minute (NFR-004): 429 beyond.
+  app.get("/v1/admin/ledger/verify", guard, ledgerCheckLimit, (_req, res) => {
     res.json(ledger.verifyChain());
   });
 

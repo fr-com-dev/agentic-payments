@@ -529,7 +529,9 @@ paths:
       tags: [admin]
       operationId: adminVerifyLedger
       summary: Re-read the ledger file and verify its hash chain, for the portal's administration area
-      description: What `GET /v1/ledger/verify` answers, for the administration role. Read-only; it repairs nothing.
+      description: >-
+        What `GET /v1/ledger/verify` answers, for the administration role. Read-only; it repairs nothing. A check
+        re-reads the whole ledger, so one caller's address gets at most 30 a minute; the portal asks at most six.
       security:
         - portalAdminToken: []
       responses:
@@ -541,6 +543,17 @@ paths:
                 $ref: "#/components/schemas/ChainCheck"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "429":
+          description: More than 30 checks in a minute from one address. `Retry-After` says when to ask again. Nothing was read.
+          headers:
+            Retry-After:
+              description: Seconds until the next check is accepted.
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /v1/ledger/verify:
     get:

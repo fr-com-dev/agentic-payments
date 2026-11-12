@@ -940,6 +940,28 @@ describe("T-ADM-01 the ledger check (US5, FR-025, FR-026, INV-9)", () => {
     expect(l2.ledger.entries()).toHaveLength(before);
   });
 
+  it("T-ADM-01 the check is bounded: beyond the limit it is 429 with Retry-After, and the ledger is not read (NFR-004)", async () => {
+    const l2 = await start({ admin: { maxLedgerChecksPerMinute: 3 } });
+    // A caller without the token is refused before it counts: it can't use up the portal's checks.
+    for (let i = 0; i < 5; i++) expect((await l2.call("GET", VERIFY, { token: TOKENS.portal })).status).toBe(401);
+    for (let i = 0; i < 3; i++) expect((await l2.admin("GET", VERIFY)).status, String(i)).toBe(200);
+    const before = l2.ledger.entries().length;
+    const res = await fetch(`${l2.url}${VERIFY}`, { headers: { authorization: `Bearer ${TOKENS.portalAdmin}` } });
+    expect(res.status).toBe(429);
+    expect(await res.json()).toEqual({ error: "too many requests" });
+    expect(Number(res.headers.get("retry-after"))).toBeGreaterThanOrEqual(1);
+    expect(l2.ledger.entries()).toHaveLength(before);
+    // The limit is the check's own: every other administration route, and the operator's check, answer as before.
+    expect((await l2.admin("GET", "/v1/admin/escalations")).status).toBe(200);
+    expect((await l2.admin("GET", "/v1/admin/escalations/events")).status).toBe(200);
+    expect((await l2.operator("GET", "/v1/ledger/verify")).status).toBe(200);
+  });
+
+  it("T-ADM-01 must-fail: with skipLedgerCheckLimit, the ledger is re-read as often as it is asked", async () => {
+    const l2 = await start({ admin: { maxLedgerChecksPerMinute: 3, skipLedgerCheckLimit: true } });
+    for (let i = 0; i < 8; i++) expect((await l2.admin("GET", VERIFY)).status, String(i)).toBe(200);
+  });
+
   it("T-ADM-01 an altered entry: where the chain breaks, and nothing is repaired or written", async () => {
     const l2 = await start({ admin: true });
     await l2.onboard(ALICE);
