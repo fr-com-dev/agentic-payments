@@ -95,7 +95,7 @@ this phase: T-CIBA-01..14 must pass at its end with no change of meaning (T005 s
   - it is not copied to `INTENT` or to any other entry, and it is not used yet.
 
   Add cases to test/users.test.ts (`015 authorize approvalSubject`): each malformed value is 400, 401 precedes 400, a valid value changes no decision and appears in no entry. Update `PaymentIntent` in docs/l2-control.openapi.yaml, the `POST /v1/authorize` row of SPEC L2-5 (the new 400 cases) and SPEC §7.
-- [ ] T004 [P] Let the stand-in answer as a person in test/helpers/ciba-stub.ts:
+- [X] T004 [P] Let the stand-in answer as a person in test/helpers/ciba-stub.ts:
   - an approval's token and ID token take their `sub` from the `sub` of the request's `login_hint` (parse the JSON `{ format, iss, sub }`), no longer from `opts.approver`;
   - `Answer` `approve` gains `as?: string`: sign the answer with that subject instead (another person's genuine answer);
   - the forgery `"subject"` keeps its meaning (a subject that is nobody's);
