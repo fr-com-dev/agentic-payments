@@ -41,7 +41,7 @@ afterEach(async () => {
   stubs = [];
 });
 
-/** v1.14: the administration operations (tag `administration`), mounted only with `PORTAL_ADMIN=1`. */
+/** v1.15: the administration operations (tag `administration`), mounted only with `PORTAL_ADMIN=1`. */
 const isAdminRoute = (op: { tags?: string[] }) => op.tags?.includes("administration") === true;
 
 /** The full surface: the administration area is on here unless a test says `admin: false`. */
@@ -80,7 +80,7 @@ describe("T-API-12 every portal route is documented, and every documented route 
     expect(routeDiff(documentedRoutes(loadDoc(), (op) => !isDocsRoute(op)), mountedRoutes(p.app))).toEqual({ undocumented: [], unmounted: [] });
   });
 
-  it("T-API-12 without PORTAL_ADMIN, the administration operations are not mounted and everything else is (v1.14)", async () => {
+  it("T-API-12 without PORTAL_ADMIN, the administration operations are not mounted and everything else is (v1.15)", async () => {
     const p = await start({ admin: false });
     const doc = loadDoc();
     expect(routeDiff(documentedRoutes(doc, (op) => !isDocsRoute(op) && !isAdminRoute(op)), mountedRoutes(p.app))).toEqual({ undocumented: [], unmounted: [] });
@@ -131,7 +131,7 @@ describe("T-API-13 the person's token is the only credential, exactly where docu
       const concrete = path.replace(/\{\w+\}/g, "x");
       const none = (await send(p.base, method, concrete)).status;
       const agent = (await send(p.base, method, concrete, agentToken)).status;
-      // v1.14: an administration operation needs the administrator's token; a user's own token is 403 there.
+      // v1.15: an administration operation needs the administrator's token; a user's own token is 403 there.
       const person = (await send(p.base, method, concrete, isAdminRoute(op) ? adminToken : portalToken)).status;
       if (isAdminRoute(op)) {
         const user = (await send(p.base, method, concrete, portalToken)).status;
@@ -174,10 +174,10 @@ describe("T-API-14 live responses match the documented status and schema", () =>
       bob: await p.token("bob"),
       carol: await p.token("carol"),
       agent: await p.agentToken("alice"),
-      // v1.14: an administrator who is also a user, and one who is only an administrator
+      // v1.15: an administrator who is also a user, and one who is only an administrator
       admin: await p.adminToken("dana"),
       adminStale: await p.adminToken("dana", { authTime: Math.floor(T0 / 1000) - STEP_UP_AGE - 1 }),
-      adminOnly: await p.adminToken("erin", { user: false }),
+      adminOnly: await p.adminToken("erin"),
     };
     const call = async (method: string, path: string, o: { as?: keyof typeof tokens | null; params?: Record<string, string>; query?: string; body?: unknown } = {}) => {
       const concrete = path.replace(/\{(\w+)\}/g, (_, k: string) => o.params?.[k] ?? "x") + (o.query ?? "");
@@ -289,7 +289,7 @@ describe("T-API-14 live responses match the documented status and schema", () =>
     expect((await call("POST", "/api/account/enable")).enabled).toBe(true);
     expect((await act("remove", p2)).state).toBe("removed");
 
-    // v1.14 the administration area: who the administrator is, then every operation and each of its statuses
+    // v1.15 the administration area: who the administrator is, then every operation and each of its statuses
     await call("GET", "/api/me", { as: "adminOnly" });
     await call("GET", "/api/admin/escalations", { as: "admin" });
     await call("GET", "/api/admin/escalations");
@@ -385,7 +385,7 @@ describe("T-API-14 live responses match the documented status and schema", () =>
   it("T-API-14 must-fail: an undocumented field, a missing field and a wrong type are reported", () => {
     const doc = loadDoc();
     const me = { $ref: "#/components/schemas/Me" };
-    const ok = { userId: "usr_deeee4478bc01dab1b0afa3fbe31f010", enabled: true, onboarding: { profile: true, wallet: false, policy: false }, user: true, admin: false };
+    const ok = { userId: "usr_deeee4478bc01dab1b0afa3fbe31f010", enabled: true, onboarding: { profile: true, wallet: false, policy: false }, admin: false };
     expect(conformance(doc, me, ok)).toEqual([]);
     const { enabled: _, ...missing } = ok;
     expect(conformance(doc, me, { ...missing, userId: 7, displayName: "Ana" })).toEqual(["$.enabled: missing", "$.userId: expected string", "$.displayName: not documented"]);

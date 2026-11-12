@@ -137,7 +137,7 @@ People sign in to the portal with Auth0 where it is deployed (SPEC v1.12); local
 
 ### Portal administration (optional)
 
-With `PORTAL_ADMIN=1` in L2 and in the portal as well (SPEC L2-8, `specs/014`), a person the organization names an administrator (the permission `portal:admin` of the sign-in tenant, held by the role `x402-admin` and separate from the permission to start agent runs) gets an administration area in the portal:
+With `PORTAL_ADMIN=1` in L2 and in the portal as well (SPEC L2-8, `specs/014`), a person the organization names an administrator (the permission `portal:admin` of the sign-in tenant, held by the role `x402-admin` and given to a person by hand; using the portal itself needs no permission) gets an administration area in the portal:
 
 - **Waiting.** Every payment that is waiting for a person, for every user and for the platform account, with a countdown. Users are shown by identifier only.
 - **One payment.** What would be approved, the budget it counts against, and two buttons. An approval lets the agent make that one payment once, if it still fits the rules; it needs a sign-in at most 15 minutes old. A rejection takes one of five fixed reasons. Nobody can decide a payment of their own agent run.
@@ -147,7 +147,7 @@ The operator's command line (`npm run approve`, `npm run reject`, `npm run escal
 
 ```bash
 npm run stack:local -- --users --admin     # the stack, with user accounts and the administration routes on in L2
-npm run -s dev-token -- --subject carol --portal --admin --no-role   # an administrator's sign-in token
+npm run -s dev-token -- --subject carol --portal --admin   # an administrator's sign-in token
 PORTAL_ADMIN=1 npm run portal              # the portal with its administration area, on http://127.0.0.1:4025/admin
 ```
 

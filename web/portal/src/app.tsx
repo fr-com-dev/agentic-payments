@@ -55,8 +55,8 @@ function NotFound({ to }: { to: string }) {
  * 014: the administration area. Only an administrator ever gets a screen here; for anyone else the path is simply
  * not found, and nothing is asked of the portal (FR-004).
  */
-function AdminScreen({ screen, administrator, home }: { screen: ReturnType<typeof matchRoute>; administrator: boolean; home: string }) {
-  if (!administrator) return <NotFound to={home} />;
+function AdminScreen({ screen, administrator }: { screen: ReturnType<typeof matchRoute>; administrator: boolean }) {
+  if (!administrator) return <NotFound to="/" />;
   const body =
     screen.name === "admin-waiting" ? (
       <Waiting />
@@ -76,14 +76,14 @@ function AdminScreen({ screen, administrator, home }: { screen: ReturnType<typeo
   );
 }
 
-function Screen({ path, cardFields, onSignOut, administrator, home }: { path: string; cardFields?: CardFieldsFactory; onSignOut(): void; administrator: boolean; home: string }) {
+function Screen({ path, cardFields, onSignOut, administrator }: { path: string; cardFields?: CardFieldsFactory; onSignOut(): void; administrator: boolean }) {
   const screen = matchRoute(path);
   switch (screen.name) {
     case "admin-waiting":
     case "admin-payment":
     case "admin-activity":
     case "admin-ledger":
-      return <AdminScreen screen={screen} administrator={administrator} home={home} />;
+      return <AdminScreen screen={screen} administrator={administrator} />;
     case "home":
       return <Home />;
     case "profile-step":
@@ -107,7 +107,7 @@ function Screen({ path, cardFields, onSignOut, administrator, home }: { path: st
     case "account":
       return <Account onSignOut={onSignOut} />;
     default:
-      return <NotFound to={home} />;
+      return <NotFound to="/" />;
   }
 }
 
@@ -159,7 +159,7 @@ export function App({ api, auth, config, cardFields }: AppProps) {
   }, []);
 
   const me = phase.name === "ready" ? phase.me : null;
-  const shown = me ? resolveRoute(path, me.onboarding, me) : path;
+  const shown = me ? resolveRoute(path, me.onboarding) : path;
   useEffect(() => {
     // A deep link to a step that is not available lands on the first step not done; the address bar follows.
     if (me && shown !== window.location.pathname) window.history.replaceState(null, "", shown);
@@ -201,7 +201,7 @@ export function App({ api, auth, config, cardFields }: AppProps) {
     );
   }
 
-  const onboarded = me.user && firstStepNotDone(me.onboarding) === null;
+  const onboarded = firstStepNotDone(me.onboarding) === null;
   // 014: the administration area exists for an administrator, in a deployment where it is on.
   const administrator = me.admin && config.admin.available;
   const adminLink = administrator ? <Link to={ADMIN_HOME}>Administration</Link> : null;
@@ -223,7 +223,7 @@ export function App({ api, auth, config, cardFields }: AppProps) {
           </nav>
         ) : (
           <>
-            {/* Not onboarded, or an administrator only: the administration area (if theirs) and the way out. */}
+            {/* Not onboarded yet: the administration area (if theirs) and the way out. */}
             {adminLink ? <nav aria-label="Main">{adminLink}</nav> : null}
             <button type="button" className="link" onClick={signOut}>
               Sign out
@@ -232,13 +232,13 @@ export function App({ api, auth, config, cardFields }: AppProps) {
         )}
       </header>
       <main id="main">
-        {me.enabled || !me.user ? null : (
+        {me.enabled ? null : (
           <Banner kind="warning">
             {DISABLED_TEXT}. Your agent can't pay and nothing can be created or changed. {matchRoute(shown).name === "account" ? null : <Link to="/account">Go to your account</Link>}
           </Banner>
         )}
         {/* Keyed by path, so each screen starts fresh and its heading takes focus. */}
-        <Screen key={shown} path={shown} onSignOut={signOut} administrator={administrator} home={me.user ? "/" : ADMIN_HOME} {...(cardFields && { cardFields })} />
+        <Screen key={shown} path={shown} onSignOut={signOut} administrator={administrator} {...(cardFields && { cardFields })} />
       </main>
       {confirming ? (
         <DevConfirm

@@ -6,6 +6,14 @@
 session 2026-11-10 (everything a person reads or decides, never the two machine capabilities; administrators
 only, through a separate permission).
 
+> **Amended at the merge of main, 2026-11-12** ([research R20](research.md#r20-after-the-merge-of-main-the-administrator-is-a-permission-of-the-sign-in-tenant)).
+> This plan was written against SPEC v1.10. Where it says the administrator is the app role `Portal.Admin` of the
+> organization's directory, assigned through `pre-deploy.bicep` (`portalAdmins`) and checked by T-IAC-01 rule 16,
+> read: the permission `portal:admin` of the Auth0 tenant, held by the role `x402-admin`, defined in `auth0/` and
+> checked by T-IAC-02. Where it describes a person who is an administrator and not a user, read: there is none,
+> since every signed-in person is a user. `auth_time` is the tenant's sign-in time claim, and 013's task T114 is
+> its T140. The feature is SPEC v1.15, constitution 1.7.0 and SEC-27..SEC-29. Everything about L2 stands as written.
+
 ## Summary
 
 The portal already reaches every user-account route of L2 (013). This feature gives it the rest of what a person
@@ -102,7 +110,7 @@ approvals now also rely on ([R6](research.md#r6-identity-confirmation-for-approv
 | VI. Exact money arithmetic | Budget lines are atomic strings computed with `BigInt` by the decision's own function; the browser formats them with the existing `money.ts`. | PASS | PASS |
 | VII. Protocol fidelity | x402 handling is not touched. | PASS | PASS |
 | VIII. Proven safety | Five must-fail proofs ([Proofs](#proofs-constitution-viii)). Every new route, field and rule has a test. | PASS | PASS |
-| Quality gates | typecheck, the full suite, an unchanged demo summary, SPEC v1.14 in the same change, requirement IDs in test names. | PASS | PASS |
+| Quality gates | typecheck, the full suite, an unchanged demo summary, SPEC v1.15 in the same change, requirement IDs in test names. | PASS | PASS |
 
 **Amendments made in the same change, not violations** (the spec's Assumptions asked for them):
 
@@ -323,7 +331,7 @@ token.
 
 ## SPEC and governance changes (same change)
 
-SPEC.md v1.10 → **v1.14**, with a "Changes in 1.14" table:
+SPEC.md v1.10 → **v1.15**, with a "Changes in 1.15" table:
 
 | Section | Change |
 |---|---|
@@ -338,7 +346,7 @@ SPEC.md v1.10 → **v1.14**, with a "Changes in 1.14" table:
 | L2-5 | the six administration routes and their token; the note on the operator's reads |
 | L2-8 | the administration area: access by role, the portal's six routes, the changed `/api/me` and `/api/config` |
 | CFG-2 | `PORTAL_ADMIN` and `PORTAL_ADMIN_TOKEN` in both env files |
-| §11 | SEC-8 amended; SEC-25 a person who is not an administrator, or a stolen administrator sign-in, decides an escalation; SEC-26 a compromised portal approves in an administrator's name; SEC-27 an administrator approves their own payment. New residual risks |
+| §11 | SEC-8 amended; SEC-25 a person who is not an administrator, or a stolen administrator sign-in, decides an escalation; SEC-27 a compromised portal approves in an administrator's name; SEC-28 an administrator approves their own payment. New residual risks |
 | §12, §13 | the tests above; `stack:local -- --users --admin`, `dev-token -- --portal --admin` |
 
 Also in the same change:

@@ -1,6 +1,6 @@
 # Specs index: x402 three-layer agent payments
 
-These spec-kit feature specs decompose `SPEC.md` (v1.0 for 001–008, amended through v1.14 by 009, 010,
+These spec-kit feature specs decompose `SPEC.md` (v1.0 for 001–008, amended through v1.15 by 009, 010,
 011, 012, 013 and 014; v1.4 added the L2 API docs without a feature spec), which remains normative. Project
 principles live in `.specify/memory/constitution.md` (v1.7.0).
 It covers INV-1..13, the definition of done and the governance rules.
@@ -20,7 +20,7 @@ It covers INV-1..13, the definition of done and the governance rules.
 | 011 | [l1-hosted-agent-azure](011-l1-hosted-agent-azure/spec.md) | L1 + cloud | L1-6 hosted agent service (Mastra on Azure), §3.1 cloud profile, §3.3 requester and cloud model credentials, CFG-2 agent-service rows | Same two tools and no new authority (SEC-1/2/8), requester authentication and session binding (SEC-14/15), L2/L3 private in Azure, telemetry without secrets (SEC-16). One ledger writer (L2-6). In SPEC v1.5 |
 | 012 | [ciba-escalation-approval](012-ciba-escalation-approval/spec.md) | L2 (+ L1-4 flag) | L2-7 backchannel approval through OpenID CIBA with Auth0: one approval request per eligible escalation, verified answers recorded with a channel, a bounded 120 s wait in the authorize call; L2-4 entry types, L2-5 authorize algorithm and escalation reads, §7 `operatorApprovalOnly`, CFG-2 `CIBA_*`, §3.3 and rule A9; the Auth0 tenant as Terraform in `auth0/` | Fail closed on any approval-service failure; verification of issuer, signature, approver and exact payment (SEC-17); push fatigue capped (SEC-18); no credential, token or handle in the ledger, logs or responses. In SPEC v1.8 |
 | 013 | [l2-portal-onboarding](013-l2-portal-onboarding/spec.md) | L2 + portal (+ L1-6) | L2-8 user accounts and the L2 web portal: self-service onboarding, a profile, one crypto account per user signed by L2 only, registered cards that never pay, and expense policies per seller bounded by platform limits; L2-1 effective mandate, L2-2 R16/R17 and the user daily ceiling, L2-3 keyring, L2-4 entry types and owner filters, L2-5 portal routes, CFG-4, L1-6 user on intents | Off by default; one user never reaches another's data or budget (SEC-19), token separation between the two public services (SEC-20), step-up for loosening (SEC-21), no card data and no key outside their one place (SEC-22, SEC-24), no personal data in the ledger. In SPEC v1.10 |
-| 014 | [portal-l2-control-api](014-portal-l2-control-api/spec.md) | L2 + portal | L2-8 the portal's administration area: the rest of the control API that a person uses, for administrators with a separate permission: the pending escalations, approving and rejecting, the events in pages, the budget behind an escalation and the ledger check; L2-4 the `portal` channel on approvals and rejections, L2-4.3 three decision paths over one decision core, L2-5 six administration routes for a sixth role, CFG-2 `PORTAL_ADMIN` | Off by default; authorize and reconcile stay with the agent and L3; L2 checks who may decide (never one's own payment, a fresh identity confirmation for an approval) (SEC-25, SEC-27); a separate credential confined to one module (SEC-26, rule A13); reads write nothing; no typed text reaches L2. In SPEC v1.14 |
+| 014 | [portal-l2-control-api](014-portal-l2-control-api/spec.md) | L2 + portal | L2-8 the portal's administration area: the rest of the control API that a person uses, for administrators with a separate permission: the pending escalations, approving and rejecting, the events in pages, the budget behind an escalation and the ledger check; L2-4 the `portal` channel on approvals and rejections, L2-4.3 three decision paths over one decision core, L2-5 six administration routes for a sixth role, CFG-2 `PORTAL_ADMIN` | Off by default; authorize and reconcile stay with the agent and L3; L2 checks who may decide (never one's own payment, a fresh identity confirmation for an approval) (SEC-25, SEC-28); a separate credential confined to one module (SEC-27, rule A13); reads write nothing; no typed text reaches L2. In SPEC v1.15 |
 
 ## Traceability (SPEC.md ID → feature)
 
@@ -56,7 +56,7 @@ It covers INV-1..13, the definition of done and the governance rules.
 | SEC-14, SEC-15, SEC-16 | 011 (with 007 for the threat matrix) |
 | SEC-17, SEC-18 | 012 (with 007 for the threat matrix) |
 | SEC-19..SEC-24 | 013 (with 007 for the threat matrix and rules A10–A12, 011 for SEC-20 and SEC-23 on the agent) |
-| SEC-26..SEC-28, SEC-8 as amended | 014 (with 007 for the threat matrix and rule A13) |
+| SEC-27..SEC-29, SEC-8 as amended | 014 (with 007 for the threat matrix and rule A13) |
 | T-ADM-01..10, T-LED-07, T-PRT-10..14, T-WEB-09..12, T-ARCH-A13, T-E2E-14, T-IAC-01 rule 22 | 014 |
 | §3.1 Azure profile, §3.3 requester and Foundry rows, CFG-2 `l1-hosted.env` | 011 |
 | CFG-2 seller.env, §3.3 CDP row, §4.1 A8 | 009, 007 |

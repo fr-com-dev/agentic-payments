@@ -1,7 +1,7 @@
 // Screens and their paths (specs/013 contracts/portal-ui.md "Screens"). A small route table over the History API:
 // no router package. `resolveRoute` is pure, so the redirect rules are tested without a browser.
 // 014: the administration area lives under /admin (specs/014 contracts/portal-ui.md "Screens"). Its paths never go
-// through the onboarding rules, and a person who is only an administrator has no other screen.
+// through the onboarding rules: an administrator who has not onboarded can still decide.
 import type { Onboarding } from "./types.js";
 
 export type Screen =
@@ -63,13 +63,11 @@ export function firstStepNotDone(o: Onboarding): string | null {
  * Where a person actually lands for a path. A step that is already done, or a screen whose step is not done yet,
  * goes to the first step not done; a finished onboarding step goes home.
  *
- * 014: `who` says what the person may use (default: a user who is not an administrator, as before). An /admin path
- * is never redirected: an administrator who has not onboarded can still decide, and anyone else gets "Not found"
- * from the screen itself. A person who is only an administrator has nothing but the administration area.
+ * 014: an /admin path is never redirected: an administrator who has not onboarded can still decide, and anyone
+ * else gets "Not found" from the screen itself.
  */
-export function resolveRoute(path: string, o: Onboarding, who: { user: boolean; admin: boolean } = { user: true, admin: false }): string {
+export function resolveRoute(path: string, o: Onboarding): string {
   if (isAdminPath(path)) return path;
-  if (!who.user) return who.admin ? ADMIN_HOME : path;
   const screen = matchRoute(path);
   const next = firstStepNotDone(o);
   const needs: Record<string, keyof Onboarding | "all" | "none"> = {

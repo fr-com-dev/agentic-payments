@@ -420,7 +420,7 @@ Where this section and an earlier one disagree, this one holds. Tasks: Phase 14.
 | Area | First build | Now |
 |---|---|---|
 | People's sign-in | Entra, one API app, scopes `user_impersonation` and `Portal.Access` | Auth0, one API, permission `agent:run` in the token, client allow-lists per service |
-| Who may onboard | the Entra app role `Agent.Run`, assigned in `pre-deploy.bicep` | the Auth0 role `x402-user`, assigned per person by an administrator |
+| Who may onboard | the Entra app role `Agent.Run`, assigned in `pre-deploy.bicep` | the Auth0 role `x402-user`, assigned per person by an administrator. Removed 2026-11-12 ([R21](research.md#r21-no-role-for-the-portal)): whoever signs in through the portal's application |
 | System identities | Entra app tokens | unchanged, agent service only; never at the portal |
 | Shared verifier | `src/shared/entra-token.ts` | `src/shared/identity-token.ts`: the Auth0 checks for people, the Entra checks for app tokens |
 | User identifier | `x402-user-v1`, tenant and object ID | `x402-user-v2`, issuer host and `sub`; everyone onboards again |

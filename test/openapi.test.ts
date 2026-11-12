@@ -50,7 +50,7 @@ const SCHEME_TOKENS: Record<string, string> = {
 };
 /** The v1.10 user-account operations (tag `portal`), mounted only with user accounts on. */
 const isUserRoute = (op: { tags?: string[] }) => op.tags?.includes("portal") === true;
-/** The v1.14 administration operations (tag `admin`), mounted only with user accounts and administration on. */
+/** The v1.15 administration operations (tag `admin`), mounted only with user accounts and administration on. */
 const isAdminRoute = (op: { tags?: string[] }) => op.tags?.includes("admin") === true;
 const loadDoc = () => loadDocFile(DOC_FILE);
 
@@ -74,7 +74,7 @@ afterEach(async () => {
  * T-API-01..03 describe the full surface, so API docs are on by default here. `startService({})` leaves
  * `apiDocs` unset, which is what main() passes without API_DOCS, so it tests the service's own default.
  * User accounts (v1.10) are on unless `users: false`, which is main() without USER_ACCOUNTS=1; the administration
- * routes (v1.14) are on with them unless `admin: false`, which is main() without PORTAL_ADMIN=1.
+ * routes (v1.15) are on with them unless `admin: false`, which is main() without PORTAL_ADMIN=1.
  */
 async function startService(opts: { apiDocs?: boolean; users?: boolean; admin?: boolean } = { apiDocs: true }) {
   let t = NOW;
@@ -179,7 +179,7 @@ describe("T-API-01 every L2 route is documented, and every documented route is m
     }
   });
 
-  it("T-API-01 without PORTAL_ADMIN, the administration operations are not mounted and everything else is (v1.14)", async () => {
+  it("T-API-01 without PORTAL_ADMIN, the administration operations are not mounted and everything else is (v1.15)", async () => {
     const { app, base } = await startService({ apiDocs: true, admin: false });
     const doc = loadDoc();
     expect(routeDiff(documentedRoutes(doc, (op) => !isAdminRoute(op)), mountedRoutes(app))).toEqual({ undocumented: [], unmounted: [] });
@@ -372,7 +372,7 @@ describe("T-API-03 live responses match the documented status and schema", () =>
 
     await call("GET", "/v1/ledger/verify", O);
 
-    // v1.14 portal administration: every admin operation and each of its statuses
+    // v1.15 portal administration: every admin operation and each of its statuses
     const A = { token: TOKENS.portalAdmin };
     await call("GET", "/v1/admin/escalations", A);
     const escalationOf = async (sessionId: string, userId?: string) =>

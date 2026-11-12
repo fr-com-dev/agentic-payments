@@ -58,6 +58,10 @@ word. It also gives the off switch a hard edge: without the token, L2 has nothin
 
 ## R3: Who an administrator is
 
+> **Superseded in its mechanism by [R20](#r20-after-the-merge-of-main-the-administrator-is-a-permission-of-the-sign-in-tenant)** (2026-11-12).
+> The decision that stands: a separate permission, assigned by the organization, read from the verified token. What
+> follows describes it as an app role of the organization's directory, which is how it was first built.
+
 **Decision**: a second app role on the existing API app registration, `Portal.Admin`, assigned to people by
 `pre-deploy.bicep` from a new parameter `portalAdmins` (user principal names), exactly as `agentUsers` assigns
 `Agent.Run`. The portal reads it from the verified token's `roles` claim.
@@ -73,7 +77,7 @@ word. It also gives the off switch a hard edge: without the token, L2 has nothin
   directory call. The person's next token no longer carries it and every `/api/admin` route refuses them (T-PRT-10).
   A token issued before keeps working until it expires, about an hour with Entra's default lifetime. In that time
   a rejection is possible, and an approval only with a sign-in under 15 minutes old. Revoking the person's sessions
-  in Entra, or turning the area off, ends it at once. SPEC §11 records this as a residual risk of v1.14.
+  in Entra, or turning the area off, ends it at once. SPEC §11 records this as a residual risk of v1.15.
 
 **Rationale**: one sign-in, one token, one place where the organization grants access. An app role reaches the
 portal in the same `roles` claim it already reads, so no directory lookup and no new package. FR-003's "holding
@@ -129,6 +133,8 @@ SC-007, which path and who, is answered by two fields.
 second case, for no gain an extra field doesn't give.
 
 ## R6: Identity confirmation for approvals
+
+> The claim is no longer the directory's `auth_time`: see [R20](#r20-after-the-merge-of-main-the-administrator-is-a-permission-of-the-sign-in-tenant). The decision stands.
 
 **Decision**: the portal passes the token's `auth_time` as `identityConfirmedAtMs` on an approval, and L2 judges
 it with the existing `stepUpFresh` (15 minutes, 60 s tolerance). A stale or missing value is 403
@@ -361,6 +367,55 @@ Five must-fail switches, all test-only deps ([plan.md](plan.md#proofs-constituti
    check and four of the five proofs.
 2. **Portal backend**: access by role, `admin-client.ts`, `/api/admin/*`, rule A13, T-PRT-10..14, T-E2E-14.
 3. **Web app**: the four screens, T-WEB-09..12.
-4. **Azure and docs**: the app role, the secret, the parameter, T-IAC-01, SPEC v1.14, the constitution, `CLAUDE.md`.
+4. **Azure and docs**: the app role, the secret, the parameter, T-IAC-01, SPEC v1.15, the constitution, `CLAUDE.md`.
 
 **Rationale**: the same order as 013: authority first and without a screen, the public surface second.
+
+## R20: After the merge of main, the administrator is a permission of the sign-in tenant
+
+**Context**: 014 was built against SPEC v1.10, where people signed in with the organization's directory (Microsoft
+Entra ID) and a user was whoever held its app role `Agent.Run`. Before 014 merged, 013 changed that twice on main:
+
+1. v1.12 and v1.13: people sign in with Auth0, and the portal accepts no token of the directory.
+2. v1.14 (013 research R21): the portal asks for no role and no permission. Whoever signs in through the portal's
+   client is a user, and the tenant had no role and no permission left.
+
+**Decision** (2026-11-12, at the merge):
+
+- An administrator is a person whose portal token carries `portal:admin`, a permission of people's API in the
+  Auth0 tenant. It is the only permission that API defines, and it is held by the only role, `x402-admin`, which
+  holds nothing else. `auth0/main.tf` defines both and assigns nobody; an administrator of the tenant gives the role
+  to a person by hand. T-IAC-02 checks all of it.
+- Every signed-in person is a user, so an administrator is one too. The `user` flag, the "administrator who is not
+  a user" branches of the portal and the web app, and the `/api/me` answer for such a person are removed. `/api/me`
+  gains `admin` only.
+- Nothing of 014 is in Entra: no app role, no `portalAdmins` parameter, no change to T-IAC-01 rule 16. Rule 22 (the
+  administration token and switch in Azure) is unchanged.
+- The time of the identity confirmation comes from the tenant's sign-in time claim (`AUTH_TIME_CLAIM`, set by a
+  post-login Action), as for 013's step-up since v1.12. L2's check (R6) is unchanged.
+- The numbers 014 first used were taken on main meanwhile: it is SPEC v1.15, constitution 1.7.0 and SEC-27..SEC-29.
+
+**Rationale**: 013's reason for dropping the user role was that a new sign-up should get in without a manual step,
+and Auth0 has no default role. That reason doesn't apply to administrators: they are few, and giving someone the
+power to release other people's payments should be a deliberate act by whoever runs the tenant. A permission in
+the token keeps the portal's check offline, as R3 wanted, and keeps 014 out of the directory, which the portal no
+longer trusts for people.
+
+**Consequences**:
+
+- FR-003 is amended (spec.md, session 2026-11-12): signing in gives no administrator permission, and an
+  administrator is always a user.
+- A role taken away takes effect when the person's access token expires, an hour at most (`token_lifetime` in
+  `auth0/`); revoking their sessions or blocking the user in the tenant is immediate (SPEC §11, T-PRT-10).
+- In a deployed environment no person's token starts an agent run (v1.13). Administrators there see the platform
+  account's escalations only; the rule against deciding one's own payment and the per-user budget line are
+  exercised locally.
+- The gate for turning the area on is 013's check of the tenant's sign-in time claim (its task T140), no longer T114.
+
+**Alternatives considered**:
+- *A list of administrators' identifiers in the portal's configuration.* No tenant change, but a second place to
+  manage people, and a redeployment to add or remove one (rejected in R3 already).
+- *Keeping the directory's app role for administrators only.* The portal would have to accept two issuers for
+  people again, which v1.12 removed on purpose.
+- *A custom claim set by a sign-in Action from the user's metadata.* It needs the Action to read who is an
+  administrator from somewhere, which is the role assignment under another name, with more code in the tenant.

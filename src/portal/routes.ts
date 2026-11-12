@@ -2,8 +2,8 @@
 // signed-in person only: the user is `res.locals.person.userId`, set by the access check from the verified token, and
 // no route reads a user identifier from a path, a query or a body (FR-004). Writes go to L2 first and to the portal's
 // own store second, so a failure in between never grants anything.
-// 014: every route here except /api/me is for a person who may start agent runs (`requireUser`, applied in
-// server.ts); /api/me also answers an administrator, with nothing but who they are.
+// 014: /api/me also says whether the person is an administrator (`admin`). Every signed-in person is a user, an
+// administrator included, so nothing else here changes for them.
 import express, { type Express, type Request, type Response } from "express";
 import { parseUsdc } from "../shared/config.js";
 import type { PlatformView, PolicyIssue, PolicyValues, PolicyView, UserView } from "../shared/contracts.js";
@@ -145,7 +145,7 @@ export function mountPortalRoutes(r: Express, d: RoutesDeps): void {
       }
     };
 
-  /** The body of /api/me for a person who may start agent runs. 014: `user` and `admin` say what they may use. */
+  /** The body of /api/me. 014: `admin` says whether the administration area is theirs to use. */
   const me = (res: Response, user: UserView) => {
     const { userId, admin } = person(res);
     const profile = d.profiles.get(userId);
@@ -154,7 +154,6 @@ export function mountPortalRoutes(r: Express, d: RoutesDeps): void {
       enabled: user.enabled,
       onboarding: user.onboarding,
       ...(profile && { profile: { displayName: profile.displayName, contactEmail: profile.contactEmail } }),
-      user: true,
       admin,
     };
   };
@@ -164,13 +163,7 @@ export function mountPortalRoutes(r: Express, d: RoutesDeps): void {
   r.get(
     "/api/me",
     handle(async (_req, res) => {
-      const { userId, user, admin } = person(res);
-      // 014: an administrator who may not start agent runs has no profile, wallet or policy: L2 is not asked.
-      if (!user) {
-        res.json({ userId, user: false, admin });
-        return;
-      }
-      res.json(me(res, await d.control.user(userId)));
+      res.json(me(res, await d.control.user(person(res).userId)));
     }),
   );
 

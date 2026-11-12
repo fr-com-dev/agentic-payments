@@ -6,7 +6,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import express, { type Express, type NextFunction, type Request, type Response } from "express";
 import type { TokenKeys } from "../shared/identity-token.js";
-import { portalAccess, requireAdmin, requireUser, type Person } from "./access.js";
+import { portalAccess, requireAdmin, type Person } from "./access.js";
 import type { AdminPort } from "./admin-client.js";
 import { mountPortalAdminRoutes } from "./admin-routes.js";
 import { mountPortalApiDocs } from "./api-docs.js";
@@ -178,11 +178,6 @@ export function createPortalApp(deps: PortalDeps): PortalApp {
     app.use("/api/admin", requireAdmin({ ...(deps.skipAdminCheck && { skip: true }) }));
     mountPortalAdminRoutes(app, { admin: deps.admin, now });
   }
-  // Everything else under /api, except "who am I", is for a person who may start agent runs.
-  app.use("/api", (req, res, next) => {
-    if (req.path === "/me" || req.path === "/admin" || req.path.startsWith("/admin/")) next();
-    else requireUser(req, res, next);
-  });
   mountPortalRoutes(app, { control: deps.control, profiles: deps.profiles, balance: deps.balance, ...(cards && { cards }), now });
   app.use("/api", (_req, res) => {
     res.status(404).json({ error: "not found" });

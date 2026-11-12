@@ -30,6 +30,16 @@
   app reads them to hide the area; FR-001 and SC-011 now allow additive fields that only say the
   area is unavailable. Nothing else differs from 013 when the area is off.
 
+### Session 2026-11-12
+
+- Q: While this feature was being built, 013 moved people's sign-in to another provider and then
+  dropped the permission a person needed to use the portal: whoever signs in is a user. What
+  becomes of "the administrator permission is separate from portal access, and holding one does
+  not give the other"? → A: Half of it stands. Signing in gives no administrator permission; that
+  one is still assigned by the organization, by hand. The other half has nothing left to protect:
+  there is no user permission to withhold, so an administrator is always a user too, and "an
+  administrator who is not a user" no longer exists. FR-003 says so now.
+
 ## Where the portal stands today
 
 Feature 013 wired the portal to every user-account capability of the control layer (L2). The rest
@@ -276,10 +286,11 @@ Requirement tags name the SPEC.md section each one amends or relies on.
 - **FR-002**: Only a signed-in person who holds the portal's administrator permission MAY use the
   administration area. A user without it gets nothing new from this feature, for their own
   payments included (clarified 2026-11-10). *(SPEC: L1-6 auth, SEC-14, SEC-19)*
-- **FR-003**: The administrator permission MUST be separate from portal access (the permission to
-  start agent runs). Holding one MUST NOT give the other. The organization assigns it through its
-  sign-in; the portal offers no way to grant it, request it or take it. A system identity can't
-  hold it. *(SPEC: L1-6 auth, L2-8)*
+- **FR-003**: The administrator permission MUST be separate from portal access: being able to
+  sign in and use the portal MUST NOT give it. The organization assigns it through its sign-in;
+  the portal offers no way to grant it, request it or take it. A system identity can't hold it.
+  An administrator is also a user of the portal, like everyone who signs in (clarified
+  2026-11-12). *(SPEC: L1-6 auth, L2-8)*
 - **FR-004**: A request for any part of the administration area by anyone else MUST be refused
   before the control layer is called, MUST reveal nothing about any escalation, budget or the
   ledger, and MUST record nothing. This covers a user without the permission, a sign-in issued

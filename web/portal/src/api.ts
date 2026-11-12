@@ -62,20 +62,9 @@ export interface Api {
   adminLedgerCheck(): Promise<ApiResult<AdminLedgerCheck>>;
 }
 
-/**
- * 014: /api/me as the app uses it. A person who is only an administrator has no account state and no onboarding;
- * the two fields are filled with neutral values so no screen has to ask. An answer without the two flags (a portal
- * older than this web app) is a user and not an administrator.
- */
-export function normalizeMe(raw: Partial<Me> & { userId: string }): Me {
-  const user = raw.user ?? true;
-  return {
-    ...raw,
-    user,
-    admin: raw.admin ?? false,
-    enabled: raw.enabled ?? true,
-    onboarding: raw.onboarding ?? { profile: false, wallet: false, policy: false },
-  };
+/** 014: /api/me as the app uses it. An answer without `admin` (a portal older than this web app) is not an administrator's. */
+export function normalizeMe(raw: Omit<Me, "admin"> & { admin?: boolean }): Me {
+  return { ...raw, admin: raw.admin ?? false };
 }
 
 export function createApi(token: () => Promise<string | null>, fetchImpl: typeof fetch = fetch, base = ""): Api {

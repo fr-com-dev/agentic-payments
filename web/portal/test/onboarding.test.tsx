@@ -156,7 +156,7 @@ describe("T-WEB-01: signed out and refused", () => {
     api.me.mockResolvedValue(refuse(403, "forbidden"));
     renderApp("/", w, { api });
     expect(await screen.findByText(REFUSED_TEXT)).toBeTruthy();
-    expect(REFUSED_TEXT).toBe("Your organization has not given you access to start agent runs.");
+    expect(REFUSED_TEXT).toBe("This sign-in can't be used for the portal. Sign in again from this page.");
     expect(screen.queryByRole("textbox")).toBeNull();
     expect(screen.queryByRole("checkbox")).toBeNull();
     expect(api.saveProfile).not.toHaveBeenCalled();

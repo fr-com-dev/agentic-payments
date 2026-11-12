@@ -90,7 +90,7 @@ export interface World {
   platform: Platform;
 }
 
-const ME_NEW: Me = { userId: "usr_deeee4478bc01dab1b0afa3fbe31f010", user: true, admin: false, enabled: true, onboarding: { profile: false, wallet: false, policy: false } };
+const ME_NEW: Me = { userId: "usr_deeee4478bc01dab1b0afa3fbe31f010", admin: false, enabled: true, onboarding: { profile: false, wallet: false, policy: false } };
 
 /** A person at a stage of onboarding: `new`, `profile` (profile saved), `wallet` (account created) or `done`. */
 export function world(stage: "new" | "profile" | "wallet" | "done" = "done", over: Partial<World> = {}): World {

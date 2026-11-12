@@ -1,4 +1,4 @@
-// 014 portal administration, portal side (SPEC.md v1.14 L2-8; specs/014 contracts/portal-api.md "Tests").
+// 014 portal administration, portal side (SPEC.md v1.15 L2-8; specs/014 contracts/portal-api.md "Tests").
 // T-PRT-10..14: who may use the administration area (the portal:admin permission of the sign-in tenant, checked before L2 is called), what the
 // portal takes from the verified token only (the decider and the time of their identity confirmation), how each L2
 // answer is mapped, the log, and the switch. In-process portal against an in-process L2 and the local dev issuer.
@@ -31,19 +31,7 @@ const ADMIN_WRITES: Array<[string, unknown]> = [
 ];
 
 const FORBIDDEN = { error: "forbidden" };
-/** Every route of 013 that is about the signed-in user's own data: an administrator alone reaches none of them. */
-const USER_ROUTES: Array<[string, string, unknown?]> = [
-  ["PUT", "/api/profile", { displayName: "Carol", contactEmail: "carol@example.com", acknowledgedTestFunds: true }],
-  ["GET", "/api/platform"],
-  ["GET", "/api/wallet"],
-  ["PUT", "/api/wallet/account"],
-  ["POST", "/api/cards/setup"],
-  ["GET", "/api/policies"],
-  ["POST", "/api/account/disable", { confirm: true }],
-  ["POST", "/api/account/enable"],
-];
-
-describe("T-PRT-10 access by role (FR-002, FR-003, FR-004, FR-006)", () => {
+describe("T-PRT-10 access by permission (FR-002, FR-003, FR-004, FR-006)", () => {
   it("T-PRT-10 a user without portal:admin is refused on the administration routes, and L2 is not called", async () => {
     const p = await start({ admin: true });
     const before = p.l2Calls();
@@ -55,56 +43,53 @@ describe("T-PRT-10 access by role (FR-002, FR-003, FR-004, FR-006)", () => {
     expect(p.l2Calls()).toBe(before);
   });
 
-  it("T-PRT-10 a person with portal:admin only: who they are, and none of a user's own routes (FR-003, FR-006)", async () => {
+  it("T-PRT-10 an administrator is a user like any other: /api/me says so, and their own routes are theirs (SPEC v1.14)", async () => {
     const p = await start({ admin: true });
-    const carol = p.adminAs("carol", { user: false });
-    const before = p.l2Calls();
+    const carol = p.adminAs("carol");
     const me = await carol("GET", "/api/me");
     expect(me.status).toBe(200);
-    expect(me.body).toEqual({ userId: p.userId("carol"), user: false, admin: true });
-    for (const [method, path, body] of USER_ROUTES) {
-      expect(await carol(method, path, body), `${method} ${path}`).toMatchObject({ status: 403, body: FORBIDDEN });
-    }
-    // Nothing was asked of L2, and no profile exists for them.
-    expect(p.l2Calls()).toBe(before);
-    expect(p.profiles.get(p.userId("carol"))).toBeUndefined();
+    expect(me.body).toEqual({ userId: p.userId("carol"), enabled: true, onboarding: { profile: false, wallet: false, policy: false }, admin: true });
+    expect((await carol("GET", "/api/platform")).status).toBe(200);
+    expect((await carol("GET", "/api/policies")).status).toBe(200);
+    expect((await carol("GET", "/api/admin/escalations")).status).toBe(200);
+    // Being an administrator gives nothing of anyone else's: every route of 013 still acts for the signed-in person only.
+    expect(p.profiles.get(p.userId("alice"))).toBeUndefined();
   });
 
-  it("T-PRT-10 a person with both permissions has both halves; a person with neither has none", async () => {
+  it("T-PRT-10 no permission but the administrator's counts: the agent service's, or any other, opens nothing of the area", async () => {
     const p = await start({ admin: true });
-    const dana = p.adminAs("dana");
-    const me = await dana("GET", "/api/me");
-    expect(me.body).toMatchObject({ userId: p.userId("dana"), user: true, admin: true, enabled: true, onboarding: { profile: false, wallet: false, policy: false } });
-    expect((await dana("GET", "/api/platform")).status).toBe(200);
-    // The administration half is open to them: the route itself answers (or 404 until it exists), never 403.
-    expect((await dana("GET", "/api/admin/escalations")).status).not.toBe(403);
-
-    const none = await p.token("erin", { permissions: [] });
-    expect(await p.call("GET", "/api/me", { token: none })).toMatchObject({ status: 403, body: FORBIDDEN });
-    expect(await p.call("GET", "/api/admin/escalations", { token: none })).toMatchObject({ status: 403, body: FORBIDDEN });
+    for (const permissions of [[], ["agent:run"], ["portal:administrator"], ["Portal.Admin"], ["admin"]]) {
+      const token = await p.token("erin", { permissions });
+      expect((await p.call<{ admin: boolean }>("GET", "/api/me", { token })).body.admin, JSON.stringify(permissions)).toBe(false);
+      expect(await p.call("GET", "/api/admin/escalations", { token }), JSON.stringify(permissions)).toMatchObject({ status: 403, body: FORBIDDEN });
+    }
+    // A token without the claim at all is a user's too (the portal asks for no permission), and not an administrator's.
+    const bare = await p.token("erin", { permissions: null });
+    expect((await p.call("GET", "/api/me", { token: bare })).status).toBe(200);
+    expect((await p.call("GET", "/api/admin/escalations", { token: bare })).status).toBe(403);
   });
 
   it("T-PRT-10 a user's /api/me says admin: false, and is otherwise what it was", async () => {
     const p = await start({ admin: true });
     const me = await p.as("alice")("GET", "/api/me");
-    expect(me.body).toEqual({ userId: p.userId("alice"), enabled: true, onboarding: { profile: false, wallet: false, policy: false }, user: true, admin: false });
+    expect(me.body).toEqual({ userId: p.userId("alice"), enabled: true, onboarding: { profile: false, wallet: false, policy: false }, admin: false });
   });
 
   it("T-PRT-10 the permission taken away: the person's next token is refused on every administration route; a token issued before holds until it expires", async () => {
     const p = await start({ admin: true });
     // The permission is read from the token and nowhere else: the portal asks the sign-in tenant nothing per request (research R3).
-    const issuedBefore = await p.adminToken("carol", { user: false });
+    const issuedBefore = await p.adminToken("carol");
     const issuedAfter = await p.token("carol", { permissions: ["agent:run"] });
     const before = p.l2Calls();
     for (const path of ADMIN_READS) expect(await p.call("GET", path, { token: issuedAfter }), path).toMatchObject({ status: 403, body: FORBIDDEN });
     for (const [path, body] of ADMIN_WRITES) expect(await p.call("POST", path, { token: issuedAfter, body }), path).toMatchObject({ status: 403, body: FORBIDDEN });
     expect(p.l2Calls()).toBe(before);
     expect((await p.call<{ admin: boolean }>("GET", "/api/me", { token: issuedAfter })).body.admin).toBe(false);
-    // With no role left at all, the next token opens nothing.
-    expect(await p.call("GET", "/api/me", { token: await p.token("carol", { permissions: [] }) })).toMatchObject({ status: 403, body: FORBIDDEN });
+    // They are still a user, as everyone who signs in is: only the administration area is gone.
+    expect((await p.call("GET", "/api/me", { token: await p.token("carol", { permissions: [] }) })).status).toBe(200);
     // The bound: the earlier token still carries the role, so it works until its own expiry and not a request longer.
     expect((await p.call("GET", "/api/admin/escalations", { token: issuedBefore })).status).toBe(200);
-    const expired = await p.adminToken("carol", { user: false, exp: Math.floor(Date.now() / 1000) - 120 });
+    const expired = await p.adminToken("carol", { exp: Math.floor(Date.now() / 1000) - 120 });
     for (const path of ADMIN_READS) expect(await p.call("GET", path, { token: expired }), path).toMatchObject({ status: 401, body: { error: "unauthorized" } });
     for (const [path, body] of ADMIN_WRITES) expect(await p.call("POST", path, { token: expired, body }), path).toMatchObject({ status: 401, body: { error: "unauthorized" } });
   });
@@ -130,12 +115,8 @@ describe("T-PRT-10 access by role (FR-002, FR-003, FR-004, FR-006)", () => {
     const p = await start();
     expect(await p.as("alice")("GET", "/api/admin/escalations")).toMatchObject({ status: 404, body: { error: "not found" } });
     expect(await p.adminAs("dana")("GET", "/api/admin/escalations")).toMatchObject({ status: 404, body: { error: "not found" } });
-    // A person with only portal:admin is refused everywhere, exactly as before this feature.
-    const carol = p.adminAs("carol", { user: false });
-    expect(await carol("GET", "/api/me")).toMatchObject({ status: 403, body: FORBIDDEN });
-    expect(await carol("GET", "/api/admin/escalations")).toMatchObject({ status: 403, body: FORBIDDEN });
-    // A person with both permissions is a user and nothing more.
-    expect((await p.adminAs("dana")("GET", "/api/me")).body).toMatchObject({ user: true, admin: false });
+    // A person whose token carries portal:admin is a user and nothing more: the permission is not even read.
+    expect((await p.adminAs("carol")("GET", "/api/me")).body).toMatchObject({ admin: false });
     expect(await p.call("GET", "/api/admin/escalations")).toMatchObject({ status: 401 });
   });
 
@@ -195,7 +176,7 @@ describe("T-PRT-14 configuration and the flags (FR-001, CFG-2)", () => {
   it("T-PRT-14 with the area off, a user's answers are what they were, plus the two flags on /api/me", async () => {
     const p = await start();
     const alice = p.as("alice");
-    expect((await alice("GET", "/api/me")).body).toEqual({ userId: p.userId("alice"), enabled: true, onboarding: { profile: false, wallet: false, policy: false }, user: true, admin: false });
+    expect((await alice("GET", "/api/me")).body).toEqual({ userId: p.userId("alice"), enabled: true, onboarding: { profile: false, wallet: false, policy: false }, admin: false });
     expect((await alice("GET", "/api/platform")).status).toBe(200);
     expect((await alice("GET", "/api/policies")).status).toBe(200);
   });
@@ -258,19 +239,19 @@ describe("T-PRT-11 the waiting list through the portal (US1, FR-007..FR-010)", (
   it("T-PRT-11 an administrator who is not a user sees every payment and owns none", async () => {
     const p = await start({ admin: true });
     await escalate(p, { subject: "alice" });
-    const r = await p.adminAs("carol", { user: false })<Listed>("GET", "/api/admin/escalations");
+    const r = await p.adminAs("carol")<Listed>("GET", "/api/admin/escalations");
     expect(r.body.pending.map((e) => e.mine)).toEqual([false]);
   });
 
   it("T-PRT-11 nothing pending: an empty list with the time it was read", async () => {
     const p = await start({ admin: true });
-    const r = await p.adminAs("carol", { user: false })<Listed>("GET", "/api/admin/escalations");
+    const r = await p.adminAs("carol")<Listed>("GET", "/api/admin/escalations");
     expect(r.body).toEqual({ pending: [], readAt: new Date(p.l2.clock.now()).toISOString() });
   });
 
   it("T-PRT-11 L2 unreachable: 502, and nothing else", async () => {
     const p = await start({ admin: true, controlDown: true });
-    const r = await p.adminAs("carol", { user: false })("GET", "/api/admin/escalations");
+    const r = await p.adminAs("carol")("GET", "/api/admin/escalations");
     expect(r).toMatchObject({ status: 502, body: { error: "control_unavailable" } });
     expect(r.text).toBe(JSON.stringify({ error: "control_unavailable" }));
   });
@@ -288,7 +269,7 @@ describe("T-PRT-13 the log and the headers of the administration routes (FR-034,
   it("T-PRT-13 the list: the route template, the status, the administrator's identifier and no secret", async () => {
     const p = await start({ admin: true });
     await escalate(p, { subject: "alice" });
-    const token = await p.adminToken("carol", { user: false });
+    const token = await p.adminToken("carol");
     const r = await p.call("GET", "/api/admin/escalations", { token });
     expect(r.headers.get("cache-control")).toBe("no-store");
     expect(r.headers.get("content-security-policy")).toContain("default-src 'none'");
@@ -318,7 +299,7 @@ describe("T-PRT-12 deciding through the portal (US2, FR-011..FR-017, FR-030)", (
     const p = await start({ admin: true });
     const id = await escalate(p, { subject: "alice" });
     const authTime = Math.floor(p.l2.clock.now() / 1000) - 120;
-    const r = await p.adminAs("carol", { user: false, authTime })("POST", approvePath(id), {});
+    const r = await p.adminAs("carol", { authTime })("POST", approvePath(id), {});
     expect(r.status).toBe(200);
     const entry = p.l2.entries("HUMAN_APPROVAL")[0]!;
     expect(entry.data).toMatchObject({ channel: "portal", approver: p.userId("carol"), identityConfirmedAtMs: authTime * 1000, escalationId: id });
@@ -339,14 +320,14 @@ describe("T-PRT-12 deciding through the portal (US2, FR-011..FR-017, FR-030)", (
   it("T-PRT-12 an approval with no body at all works too", async () => {
     const p = await start({ admin: true });
     const id = await escalate(p);
-    const r = await p.call("POST", approvePath(id), { token: await p.adminToken("carol", { user: false }) });
+    const r = await p.call("POST", approvePath(id), { token: await p.adminToken("carol") });
     expect(r.body).toMatchObject({ state: "approved", already: false });
   });
 
   it("T-PRT-12 a rejection: one of the five reasons, and the decider from the token", async () => {
     const p = await start({ admin: true });
     const id = await escalate(p, { subject: "alice" });
-    const r = await p.adminAs("carol", { user: false })("POST", rejectPath(id), { reasonCode: "duplicate" });
+    const r = await p.adminAs("carol")("POST", rejectPath(id), { reasonCode: "duplicate" });
     const entry = p.l2.entries("HUMAN_REJECTION")[0]!;
     expect(entry.data).toMatchObject({ channel: "portal", approver: p.userId("carol"), reasonCode: "duplicate" });
     expect(Object.keys(entry.data)).not.toContain("reason");
@@ -356,7 +337,7 @@ describe("T-PRT-12 deciding through the portal (US2, FR-011..FR-017, FR-030)", (
   it("T-PRT-12 anything in the body that could name the decider, the time or free text is refused before L2 is called", async () => {
     const p = await start({ admin: true });
     const id = await escalate(p);
-    const carol = p.adminAs("carol", { user: false });
+    const carol = p.adminAs("carol");
     const before = p.l2Calls();
     const bob = p.userId("bob");
     for (const body of [{ decidedBy: bob }, { identityConfirmedAtMs: 4_102_444_800_000 }, { ttlSeconds: 86_400 }, { approver: "ops" }, { reasonCode: "other" }, { userId: bob }, [bob]]) {
@@ -389,7 +370,7 @@ describe("T-PRT-12 deciding through the portal (US2, FR-011..FR-017, FR-030)", (
     expect(await p.adminAs("dana")("POST", rejectPath(own), { reasonCode: "other" })).toMatchObject({ status: 403, body: { error: "own_payment" } });
     // An old sign-in: an approval is refused, a rejection is not.
     const stale = Math.floor(p.l2.clock.now() / 1000) - 901;
-    const old = p.adminAs("carol", { user: false, authTime: stale });
+    const old = p.adminAs("carol", { authTime: stale });
     const r = await old("POST", approvePath(own), {});
     expect(r).toMatchObject({ status: 403, body: { error: "step_up_required", maxAgeSec: 900 } });
     expect(r.text).toBe(JSON.stringify({ error: "step_up_required", maxAgeSec: 900 }));
@@ -397,7 +378,7 @@ describe("T-PRT-12 deciding through the portal (US2, FR-011..FR-017, FR-030)", (
     expect(await old("POST", approvePath(UNKNOWN), {})).toMatchObject({ status: 404, body: { error: "not found" } });
     expect((await old("POST", rejectPath(own), { reasonCode: "not_expected" })).status).toBe(200);
     // No longer pending: how it ended, on which path and by whom.
-    const carol = p.adminAs("carol", { user: false });
+    const carol = p.adminAs("carol");
     expect(await carol("POST", approvePath(own), {})).toEqual(
       expect.objectContaining({ status: 409, body: { error: "not_pending", state: "denied", channel: "portal", decidedBy: p.userId("carol"), rejectionId: p.l2.entries("HUMAN_REJECTION")[0]!.data.rejectionId } }),
     );
@@ -408,15 +389,15 @@ describe("T-PRT-12 deciding through the portal (US2, FR-011..FR-017, FR-030)", (
 
   it("T-PRT-12 a repeat returns the first outcome; an expired payment says so", async () => {
     const p = await start({ admin: true });
-    const carol = p.adminAs("carol", { user: false });
+    const carol = p.adminAs("carol");
     const id = await escalate(p, { sessionId: "s1" });
     const first = await carol("POST", approvePath(id), {});
-    const again = await p.adminAs("erin", { user: false })("POST", approvePath(id), {});
+    const again = await p.adminAs("erin")("POST", approvePath(id), {});
     expect(again.body).toEqual({ ...first.body, already: true });
     expect(decisionEntries(p)).toHaveLength(1);
     const late = await escalate(p, { sessionId: "s2" });
     p.l2.clock.advance(300_000);
-    const expired = await p.adminAs("carol", { user: false })("POST", approvePath(late), {});
+    const expired = await p.adminAs("carol")("POST", approvePath(late), {});
     expect(expired.status).toBe(409);
     expect(expired.body).toMatchObject({ error: "not_pending", state: "expired" });
     expect(Object.keys(expired.body)).not.toContain("channel");
@@ -424,7 +405,7 @@ describe("T-PRT-12 deciding through the portal (US2, FR-011..FR-017, FR-030)", (
 
   it("T-PRT-12 L2 unreachable: 502, and nothing is decided", async () => {
     const p = await start({ admin: true, controlDown: true });
-    const carol = p.adminAs("carol", { user: false });
+    const carol = p.adminAs("carol");
     expect(await carol("POST", approvePath(UNKNOWN), {})).toMatchObject({ status: 502, body: { error: "control_unavailable" } });
     expect(await carol("POST", rejectPath(UNKNOWN), { reasonCode: "other" })).toMatchObject({ status: 502, body: { error: "control_unavailable" } });
   });
@@ -450,7 +431,7 @@ describe("T-PRT-12 deciding through the portal (US2, FR-011..FR-017, FR-030)", (
 describe("T-PRT-13 the log of a decision (FR-034, NFR-003)", () => {
   it("T-PRT-13 each outcome has its fixed label, the route template and the administrator; never the escalation's ID or a secret", async () => {
     const p = await start({ admin: true });
-    const token = await p.adminToken("carol", { user: false });
+    const token = await p.adminToken("carol");
     const post = (path: string, body?: unknown, t = token) => p.call("POST", path, { token: t, ...(body !== undefined && { body }) });
     const label = () => p.logs.at(-1)!;
     const a = await escalate(p, { sessionId: "s_a" });
@@ -468,7 +449,7 @@ describe("T-PRT-13 the log of a decision (FR-034, NFR-003)", () => {
     await run(rejectPath(a), { reasonCode: "other" }, { route: rejectRoute, status: 409, event: "admin_not_pending" });
     await run(rejectPath(b), { reasonCode: "duplicate" }, { route: rejectRoute, status: 200, event: "admin_rejected" });
     await run(rejectPath(b), { reasonCode: "duplicate" }, { route: rejectRoute, status: 200, event: "admin_already_decided" });
-    const stale = await p.adminToken("carol", { user: false, authTime: Math.floor(p.l2.clock.now() / 1000) - 5_000 });
+    const stale = await p.adminToken("carol", { authTime: Math.floor(p.l2.clock.now() / 1000) - 5_000 });
     await run(approvePath(own), {}, { route: approveRoute, status: 403, event: "admin_step_up_required" }, stale);
     responses.push((await post(approvePath(own), {}, await p.adminToken("dana"))).text);
     expect(label()).toMatchObject({ route: approveRoute, status: 403, event: "admin_own_payment", userId: p.userId("dana") });
@@ -502,7 +483,7 @@ describe("T-PRT-11 the trail through the portal (US3, FR-020, FR-021)", () => {
     const p = await start({ admin: true });
     const own = await escalate(p, { subject: "dana" });
     const other = await escalate(p, { subject: "alice" });
-    await p.adminAs("carol", { user: false })("POST", rejectPath(other), { reasonCode: "wrong_seller" });
+    await p.adminAs("carol")("POST", rejectPath(other), { reasonCode: "wrong_seller" });
     const r = await p.adminAs("dana")<Trail>("GET", EVENTS);
     expect(r.status).toBe(200);
     const mine = r.body.events.filter((e) => e.authorizationId === own || e.authorizationId === other);
@@ -520,7 +501,7 @@ describe("T-PRT-11 the trail through the portal (US3, FR-020, FR-021)", () => {
   it("T-PRT-11 the three query values are passed on; anything else is refused before L2 is called", async () => {
     const p = await start({ admin: true });
     for (let i = 0; i < 6; i++) await escalate(p, { sessionId: `s_${String(i)}` });
-    const carol = p.adminAs("carol", { user: false });
+    const carol = p.adminAs("carol");
     const latest = await carol<Trail>("GET", `${EVENTS}?limit=2`);
     expect([latest.body.events.length, latest.body.more]).toEqual([2, true]);
     const earlier = await carol<Trail>("GET", `${EVENTS}?before=${String(latest.body.first)}&limit=2`);
@@ -539,7 +520,7 @@ describe("T-PRT-11 the trail through the portal (US3, FR-020, FR-021)", () => {
     const id = await escalate(p);
     const typed = '<script>alert("x")</script> & more';
     await p.l2.operator("POST", `/v1/rejections/${id}`, { operator: "<b>ops</b>", reason: typed });
-    const r = await p.adminAs("carol", { user: false })<Trail>("GET", EVENTS);
+    const r = await p.adminAs("carol")<Trail>("GET", EVENTS);
     const denied = r.body.events.find((e) => e.kind === "denied")!;
     expect([denied.reason, denied.operator, denied.decidedBy, denied.channel]).toEqual([typed, "<b>ops</b>", "<b>ops</b>", "operator"]);
     expect(r.headers.get("content-type")).toContain("application/json");
@@ -548,7 +529,7 @@ describe("T-PRT-11 the trail through the portal (US3, FR-020, FR-021)", () => {
 
   it("T-PRT-11 L2 unreachable: 502", async () => {
     const p = await start({ admin: true, controlDown: true });
-    expect(await p.adminAs("carol", { user: false })("GET", EVENTS)).toMatchObject({ status: 502, body: { error: "control_unavailable" } });
+    expect(await p.adminAs("carol")("GET", EVENTS)).toMatchObject({ status: 502, body: { error: "control_unavailable" } });
   });
 });
 
@@ -563,7 +544,7 @@ describe("T-PRT-11 one payment through the portal (US4, FR-022..FR-024)", () => 
     const p = await start({ admin: true });
     const id = await escalate(p, { subject: "alice" });
     const fromL2 = (await p.l2.admin<{ budget: Record<string, unknown> }>("GET", `/v1/admin/escalations/${id}`)).body;
-    const r = await p.adminAs("carol", { user: false })<Record<string, unknown>>("GET", one(id));
+    const r = await p.adminAs("carol")<Record<string, unknown>>("GET", one(id));
     expect(r.status).toBe(200);
     expect(r.body).toEqual({
       authorizationId: id,
@@ -581,7 +562,7 @@ describe("T-PRT-11 one payment through the portal (US4, FR-022..FR-024)", () => 
       readAt: new Date(p.l2.clock.now()).toISOString(),
     });
     p.l2.clock.advance(7_000);
-    expect((await p.adminAs("carol", { user: false })<{ readAt: string }>("GET", one(id))).body.readAt).toBe(new Date(p.l2.clock.now()).toISOString());
+    expect((await p.adminAs("carol")<{ readAt: string }>("GET", one(id))).body.readAt).toBe(new Date(p.l2.clock.now()).toISOString());
     expect(fromL2.budget).toMatchObject({ applies: true, fits: true, run: { capAtomic: "100000", spentAtomic: "0", remainingAtomic: "100000" } });
     expect(r.text).not.toContain("sessionId");
   });
@@ -590,7 +571,7 @@ describe("T-PRT-11 one payment through the portal (US4, FR-022..FR-024)", () => 
     const p = await start({ admin: true });
     const own = await escalate(p, { subject: "dana" });
     const other = await escalate(p);
-    await p.adminAs("carol", { user: false })("POST", rejectPath(other), { reasonCode: "not_expected" });
+    await p.adminAs("carol")("POST", rejectPath(other), { reasonCode: "not_expected" });
     const dana = p.adminAs("dana");
     expect((await dana<{ mine: boolean; state: string }>("GET", one(own))).body).toMatchObject({ mine: true, state: "pending", owner: { userId: p.userId("dana") } });
     const decided = (await dana<Record<string, unknown>>("GET", one(other))).body;
@@ -599,13 +580,13 @@ describe("T-PRT-11 one payment through the portal (US4, FR-022..FR-024)", () => 
 
   it("T-PRT-11 a malformed ID is refused before L2 is called; an unknown one is 404; L2 down is 502", async () => {
     const p = await start({ admin: true });
-    const carol = p.adminAs("carol", { user: false });
+    const carol = p.adminAs("carol");
     const before = p.l2Calls();
     for (const bad of ["auth_nope", "events2", p.userId("alice"), "sess_alice"]) expect(await carol("GET", one(bad)), bad).toMatchObject({ status: 400, body: { error: "malformed request" } });
     expect(p.l2Calls()).toBe(before);
     expect(await carol("GET", one(UNKNOWN))).toMatchObject({ status: 404, body: { error: "not found" } });
     const down = await start({ admin: true, controlDown: true });
-    expect(await down.adminAs("carol", { user: false })("GET", one(UNKNOWN))).toMatchObject({ status: 502, body: { error: "control_unavailable" } });
+    expect(await down.adminAs("carol")("GET", one(UNKNOWN))).toMatchObject({ status: 502, body: { error: "control_unavailable" } });
   });
 });
 
@@ -625,14 +606,14 @@ describe("T-PRT-11 the ledger check through the portal (US5, FR-025, FR-026, NFR
   it("T-PRT-11 the count, that it verifies, and when it was checked", async () => {
     const p = await start({ admin: true });
     await escalate(p, { subject: "alice" });
-    const r = await p.adminAs("carol", { user: false })<Check>("GET", VERIFY);
+    const r = await p.adminAs("carol")<Check>("GET", VERIFY);
     expect(r).toMatchObject({ status: 200, body: { entries: p.l2.ledger.entries().length, ok: true, checkedAt: new Date(p.l2.clock.now()).toISOString() } });
     expect(Object.keys(r.body).sort()).toEqual(["checkedAt", "entries", "ok"]);
   });
 
   it("T-PRT-11 one check answers for 10 s, whoever asks; then it runs again", async () => {
     const p = await start({ admin: true });
-    const carol = p.adminAs("carol", { user: false });
+    const carol = p.adminAs("carol");
     const dana = p.adminAs("dana");
     const t0 = p.l2.clock.now();
     const before = p.l2Calls();
@@ -653,7 +634,7 @@ describe("T-PRT-11 the ledger check through the portal (US5, FR-025, FR-026, NFR
 
   it("T-PRT-11 a failure is not kept: 502 while L2 is down, and the next request asks again", async () => {
     const p = await start({ admin: true, controlDown: true });
-    const carol = p.adminAs("carol", { user: false });
+    const carol = p.adminAs("carol");
     expect(await carol("GET", VERIFY)).toMatchObject({ status: 502, body: { error: "control_unavailable" } });
     expect(await carol("GET", VERIFY)).toMatchObject({ status: 502, body: { error: "control_unavailable" } });
   });

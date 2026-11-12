@@ -6,11 +6,11 @@ Sync Impact Report
   unchanged word for word, and stays true: that credential still can't approve or reject). No principle is
   redefined or removed.
 - Modified sections: Technology & Scope Constraints (scope: administrators decide escalations in the portal, a user
-  approving their own payments stays out; residual risks for v1.14). No new technology: who is an administrator is
+  approving their own payments stays out; residual risks for v1.15). No new technology: who is an administrator is
   a second permission of the sign-in tenant, in the same Terraform.
 - Templates reviewed: plan-template.md, spec-template.md, tasks-template.md (no change)
-- Source: SPEC.md v1.14 (Changes in 1.14, §3.3, §4 INV-13, §4.1 A12 and A13, L2-4.3, L2-5, L2-8, §11 SEC-8 and
-  SEC-26..SEC-28)
+- Source: SPEC.md v1.15 (Changes in 1.15, §3.3, §4 INV-13, §4.1 A12 and A13, L2-4.3, L2-5, L2-8, §11 SEC-8 and
+  SEC-27..SEC-29)
 - Deferred TODOs: none. The first design kept a "seen" marker in the browser's localStorage; it was dropped during
   implementation because the web app's standing safety test forbids it. The feature was first written as 1.5.0
   against SPEC v1.11, with the administrator as an app role of the organization's directory; main took those

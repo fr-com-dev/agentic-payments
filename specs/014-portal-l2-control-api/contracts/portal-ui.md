@@ -19,9 +19,8 @@ safety, accessibility and layout apply unchanged. Tests: T-WEB-09..12 (jsdom) an
   area, a second row links the three top-level screens.
 - **A person who is not an administrator** never sees the link. A deep link to `/admin…` shows the existing "Not
   found" screen, and the web app makes no `/api/admin` request (FR-004).
-- **A person who is only an administrator** (`me.user` false) sees "Administration" and "Sign out" and nothing
-  else: no onboarding, no Home, Wallet, Policies, Profile or Account. Every other path goes to `/admin`.
-- **An administrator who is also a user** keeps the 013 screens unchanged. The onboarding redirects of 013 never
+- **An administrator** is a user like any other (SPEC v1.14: every signed-in person is one) and keeps the 013
+  screens unchanged. The onboarding redirects of 013 never
   apply to `/admin…`: an administrator who has not onboarded can still decide.
 - With `config.admin.available` false, none of this exists.
 
@@ -135,7 +134,7 @@ heading focused on arrival, dialogs that trap and restore focus. Added here:
 
 | ID | Covers |
 |---|---|
-| T-WEB-09 | navigation by role: the link only for `admin`; an administrator-only person sees only the area and is sent to `/admin`; a non-administrator's deep link shows "Not found" and makes no `/api/admin` request; onboarding redirects don't apply to `/admin…`; nothing with `config.admin.available` false |
+| T-WEB-09 | navigation by role: the link only for `admin`; an administrator who has not onboarded reaches the area while their own screens stay behind onboarding; a non-administrator's deep link shows "Not found" and makes no `/api/admin` request; onboarding redirects don't apply to `/admin…`; nothing with `config.admin.available` false |
 | T-WEB-10 | the list: columns, the "Your payment" tag, the empty state, the countdown from `readAt` with a skewed local clock, a failed refresh keeps the last list, polling stops when the tab is hidden, the live region speaks only on a new payment, a refresh never moves focus |
 | T-WEB-11 | deciding: the confirm dialog's content; the time left on the portal's clock with a skewed local clock; approve with the step-up replay from a click (the prompt reads "Confirm it's you to approve."); reject needs a reason and no confirmation of identity; no buttons when `mine` or not pending; the messages for `not_pending`, `own_payment`, expired and 502; the `fits` and `applies` warnings |
 | T-WEB-12 | activity and ledger: paging by `before`, new events by `after`, the "New" mark on what arrives while the screen is open, nothing stored in the browser, an operator's reason containing markup shown as text; the ledger check's two results; `axe-core` finds no violation on the four screens |

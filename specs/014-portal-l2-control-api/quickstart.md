@@ -13,7 +13,7 @@ npm install
 npm run typecheck
 npm test                   # every suite; the administration area is off by default
 npm run demo:local         # expect "spent on-chain: 0.006 USDC" and "hash chain ok=true", unchanged
-BICEP_PATH=~/.azure/bin/bicep npm test   # adds T-IAC-01 (rule 16 changed, rule 22 new)
+BICEP_PATH=~/.azure/bin/bicep npm test   # adds T-IAC-01 (rule 22 new); T-IAC-02 (the permission and role) runs without it
 ```
 
 Single areas:
@@ -31,7 +31,7 @@ Expected: all green, and the demo summary unchanged (NFR-006, SC-011).
 
 ## 2. Local walk-through
 
-Four terminals. `alice` is the user from 013's walk-through; `carol` is an administrator who is not a user.
+Four terminals. `alice` is the user from 013's walk-through; `carol` is an administrator who has not onboarded.
 
 ```bash
 # 1: the stack with user accounts and the administration routes on (--admin is new)
@@ -42,9 +42,9 @@ npm run build:web
 PORTAL_ADMIN=1 npm run portal             # http://127.0.0.1:4025
 
 # 3: sign-ins from the local dev issuer (--admin is new)
-npm run -s dev-token -- --subject carol --portal --admin --no-role   # an administrator only
-npm run -s dev-token -- --subject alice --portal                     # a user only
-npm run -s dev-token -- --subject alice --portal --admin             # both, for step 9
+npm run -s dev-token -- --subject carol --portal --admin             # an administrator (the permission portal:admin)
+npm run -s dev-token -- --subject alice --portal                     # a user without it
+npm run -s dev-token -- --subject alice --portal --admin             # alice as an administrator, for step 9
 
 # 4: the hosted agent, and a run by alice that needs approval (the premium report costs 0.05 USDC,
 #    above her 0.02 auto-approve limit)
@@ -61,7 +61,7 @@ In the browser, paste carol's token.
 
 | Step | Do | Expect | Proves |
 |---|---|---|---|
-| 1 | Open the portal as carol | only "Administration" and "Sign out"; no onboarding | portal-ui "administrator only", FR-003 |
+| 1 | Open the portal as carol, at `/admin` | the waiting list, with "Administration" and "Sign out" in the header; her own screens still lead to onboarding | portal-ui "Navigation", FR-003 |
 | 2 | Start alice's run (terminal 4), watch `/admin` | the payment appears within 5 s: reference code, alice's identifier, the seller, 0.05 USDC, a countdown from 5 min | US1 scenarios 1, 2, SC-002 |
 | 3 | `npm run escalations` in a fifth terminal | the same payment, with the same reference code | the operator's path is unchanged, FR-019 |
 | 4 | "Review" | the payment, and the budget: this run, the last 24 hours of the policy, the last 24 hours of the user | US4 scenario 1 |
@@ -82,7 +82,7 @@ a run, and open the payment as carol. Expect the warning "Approving this will no
 
 ## 3. Access checks
 
-With `ALICE` a user-only portal token, `CAROL` an administrator's, `AGENT` an agent-service token:
+With `ALICE` a portal token without the permission, `CAROL` an administrator's, `AGENT` an agent-service token:
 
 ```bash
 code() { curl -s -o /dev/null -w '%{http_code}\n' "$@"; }
@@ -91,7 +91,7 @@ P=http://127.0.0.1:4025
 code $P/api/admin/escalations -H "authorization: Bearer $ALICE"     # 403: a user is not an administrator
 code $P/api/admin/escalations -H "authorization: Bearer $AGENT"     # 403: a token for the agent service
 code $P/api/admin/escalations                                       # 401: no token
-code $P/api/wallet -H "authorization: Bearer $CAROL"                # 403: an administrator is not a user
+code $P/api/platform -H "authorization: Bearer $CAROL"              # 200: an administrator is a user like any other
 code $P/api/admin/escalations -H "authorization: Bearer $CAROL"     # 200
 ```
 
@@ -127,7 +127,7 @@ npm run portal                        # no PORTAL_ADMIN
 | Check | Expect | Proves |
 |---|---|---|
 | `GET /api/config` | `admin: { available: false }` | FR-001 |
-| carol's administrator-only token on `/api/me` | 403 | 013's access rule is back |
+| carol's token on `/api/me` | 200 with `admin: false`: the permission is not read | FR-001 |
 | alice's token on `/api/me` | as before, with `admin: false` | SC-011 |
 | `GET /api/admin/escalations` with any valid portal token | 404 | not mounted |
 | `GET /v1/admin/escalations` at L2 with `dev-portal-admin-token` | 404 | not mounted |
@@ -148,8 +148,9 @@ T-E2E-14 covers the first two rows with the stand-in approval service, so this s
 
 ## 6. Azure
 
-Prerequisite: 013 is deployed with `userAccounts.enabled: true`, and its sign-in check of `auth_time` (013
-quickstart §5, task T114) has passed. Approvals rely on the same claim
+Prerequisite: 013 is deployed with `userAccounts.enabled: true`, `provision-auth0.yml` has applied `auth0/` with the
+role `x402-admin` in it, and 013's check of the tenant's sign-in time claim (013 quickstart §5, task T140) has
+passed. Approvals rely on the same claim
 ([research R6](research.md#r6-identity-confirmation-for-approvals)); don't turn this area on before that.
 
 1. **Seed the secret as `off`** in both vaults, before the first L2 and portal deployments that contain 014
@@ -159,20 +160,21 @@ quickstart §5, task T114) has passed. Approvals rely on the same claim
    anyone: the area is off.
 3. **Turn it on**:
    - put one new random value in `portal-admin-token` in both vaults (different from `portal-token`);
-   - add the administrators to `portalAdmins` in `infra/pre-deploy.<env>.bicepparam` and apply
-     `pre-deploy.bicep` (an administrator, by hand);
+   - assign the role `x402-admin` to each administrator in Auth0, by hand (**User Management → Users → the user →
+     Roles**); they sign in again to get it;
    - set `userAccounts.administration: true` in `infra/main.<env>.bicepparam`;
    - run `deploy-l2.yml`, then `deploy-portal.yml`.
 4. Check, signed in as an administrator: `/api/config` says `admin.available: true`; the "Administration" link
    is there; a person without the role doesn't see it and gets 403 on `/api/admin/escalations`.
-5. Trigger an escalation with a run of your own user, and have **another** administrator approve it. Confirm
+5. Trigger an escalation of the platform account with a system identity's run (a deployed agent accepts no
+   person's token, SPEC v1.13, so no user's escalation exists there), and have an administrator approve it. Confirm
    the `HUMAN_APPROVAL` entry with the operator job (`ledger-verify` as its own command; an operator overrides the
    command to read escalation events, as in 011 quickstart §5).
 6. **Turning it off again**: `userAccounts.administration: false`, deploy L2 and the portal. The secret can stay.
 
 ## 7. What is not covered here
 
-- A browser-driven test against real Entra: sign-in, the `roles` claim with `Portal.Admin`, and the forced
+- A browser-driven test against the real Auth0 tenant: sign-in, the `permissions` claim with `portal:admin`, and the forced
   sign-in for an approval are checked by hand in §6 steps 4 and 5.
 - Load: the list is polled every 3 s per open administrator tab; the suite doesn't simulate many tabs.
 
@@ -184,5 +186,6 @@ quickstart §5, task T114) has passed. Approvals rely on the same claim
 | 2026-11-11 | same | §2, in a real browser, partly | Pass for steps 1, 2, 4, 5, 6, 7, 13 and 14, as an administrator who is not a user, on the local stack with escalations of the platform account created through L2's authorize route: the list with its countdown, the payment with its budget, approve (the agent's retry was then AUTHORIZED and the ledger's `HUMAN_APPROVAL` has `channel: "portal"`), reject with a reason, the activity trail, the ledger check; no console error. Phone width (375 px) checked on the list and the payment screen. Two layout defects found and fixed there: the reject reasons shared a line, and a table caption collapsed at phone width. |
 | 2026-11-11 | same | §3 access, partly | Pass: `/api/admin/escalations` is 401 without a token and 200 with an administrator's; `/api/config` reports `admin.available: true`. The rest is covered by T-ADM-02, T-PRT-10 and T-PRT-12. |
 | — | — | §2 steps 3, 8 to 12; §4; a keyboard-only pass | Not walked by hand. Their behavior is covered by the automated tests (T-ADM-05..07, T-PRT-10, T-PRT-14, T-WEB-09, T-WEB-11); a user's own escalation (`mine`) was not seen in a real browser. |
-| — | — | §5 (Auth0), §6 (Azure) | Not run: they need outside accounts. §6 is gated on 013's task T114. |
+| — | — | §5 (Auth0), §6 (Azure) | Not run: they need outside accounts. §6 is gated on 013's task T140 (T114 when this was written). |
 | 2026-11-11 | same, after the convergence tasks (T074 to T086) | §1 offline | Pass: `npm run check` (1269 tests in 56 files, demo summary `spent on-chain: 0.006 USDC`, `hash chain ok=true`). `BICEP_PATH=… npm test`: 1317 tests pass in 56 files, T-IAC-01 and the cleanup and github-setup suites included; its other three files (`cdp-auth`, `cdp-isolation`, `counterparty`) failed to start with `EADDRINUSE` on port 8545, taken during the run by a local stack of another worktree. Those three had passed in `npm run check` minutes before, on the same code, so every suite passed in one of the two runs; no single run with the Bicep CLI was all green. |
+| 2026-11-12 | the merge of main (SPEC v1.14) into 014 | §1 offline | see the row below this one, added when the merge was verified. The rows above were recorded before the merge, when an administrator was a role of the organization's directory and "an administrator who is not a user" existed. |

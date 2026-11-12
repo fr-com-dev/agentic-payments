@@ -2,24 +2,23 @@
 // Verifies the person's access token before the body is read, then deletes it from the request so nothing downstream
 // can forward it (the person's token authenticates to the portal only). People sign in with the Auth0 tenant
 // (research R19); the basic checks are shared with the hosted agent (src/shared/identity-token.ts). The portal adds
-// its own: a token issued to the portal's client, not to an agent client; a permission (`agent:run` for a user and,
-// with the administration area on, `portal:admin` for an administrator: 014); and a sign-in time. A token of any
-// other issuer, the organization's directory included, is not valid here at all.
+// its own: a token issued to the portal's client, not to an agent client, and a sign-in time. It asks for no
+// permission and no role (research R21): whoever signs in through the portal's client may use the portal, for their
+// own account only. A token of any other issuer, the organization's directory included, is not valid here at all.
+// 014: the administration area is the one thing that needs a permission, `portal:admin`, which an administrator of
+// the tenant gives to a person by hand; it is read here and nowhere else.
 import type { RequestHandler } from "express";
-import { AGENT_RUN_PERMISSION, bearerToken, PORTAL_ADMIN_PERMISSION, signInTimeOf, verifyPersonToken, type TokenKeys } from "../shared/identity-token.js";
-import { userIdFor } from "../shared/user-id.js";
+import { bearerToken, PORTAL_ADMIN_PERMISSION, signInTimeOf, verifyPersonToken, type TokenKeys } from "../shared/identity-token.js";
 
-export const REQUIRED_PERMISSION = AGENT_RUN_PERMISSION;
-/** 014: the permission that opens the administration area. Separate from a user's: holding one never gives the other. */
+/** 014: the permission that opens the administration area. The only permission the portal reads. */
 export const ADMIN_PERMISSION = PORTAL_ADMIN_PERMISSION;
+import { userIdFor } from "../shared/user-id.js";
 
 /** The signed-in person, as the rest of the portal sees them. No name, no email, no token. */
 export interface Person {
   userId: string;
   /** When they last signed in interactively (the token's sign-in time claim, in ms). L2 judges whether it is fresh enough. */
   identityConfirmedAtMs: number;
-  /** 014: holds `agent:run`. The routes of 013 require it. */
-  user: boolean;
   /** 014: holds `portal:admin` and the administration area is on. The /api/admin routes require it. */
   admin: boolean;
 }
@@ -35,11 +34,11 @@ export interface AccessOptions {
   /** The access-token claim that holds the time of the person's last sign-in. */
   authTimeClaim?: string;
   now?: () => number;
-  /** 014: the administration area is on, so `portal:admin` counts. Off: only `agent:run` admits, as in 013. */
+  /** 014: the administration area is on, so `portal:admin` counts. Off: no permission is read at all, as in 013. */
   adminEnabled?: boolean;
   /**
-   * Test hook (T-PRT-01 must-fail): keep the basic token checks but skip the portal's own (client, permission,
-   * sign-in time), so a token issued for the agent service gets in. Never set by the entry point.
+   * Test hook (T-PRT-01 must-fail): keep the basic token checks but skip the portal's own (client, sign-in time),
+   * so a token issued for the agent service gets in. Never set by the entry point.
    */
   bypassAuth?: boolean;
 }
@@ -66,33 +65,24 @@ export function portalAccess(o: AccessOptions): RequestHandler {
     const person = checked.token;
     const userId = userIdFor(person.issuer, person.subject);
     if (o.bypassAuth) {
-      res.locals.person = { userId, identityConfirmedAtMs: now(), user: true, admin: false } satisfies Person;
+      res.locals.person = { userId, identityConfirmedAtMs: now(), admin: false } satisfies Person;
       delete req.headers.authorization;
       next();
       return;
     }
-    // 403: a valid token that is not allowed here. In order: a token another client obtained (an agent client's, so
-    // a token meant for the agent service); a person with neither permission (014: to start agent runs, or, with the
-    // administration area on, to administer).
-    const user = person.permissions.includes(REQUIRED_PERMISSION);
-    const admin = o.adminEnabled === true && person.permissions.includes(ADMIN_PERMISSION);
-    if (person.client !== o.clientId || (!user && !admin)) return refuse(403);
+    // 403: a valid token that is not allowed here: one another client obtained (an agent client's, so a token meant
+    // for the agent service). The permissions in the token are not read: the portal needs none (research R21).
+    if (person.client !== o.clientId) return refuse(403);
     // Last: a portal token with no usable sign-in time can't back a loosening change, so it is not accepted at all.
     const signedInAt = signInTimeOf(person, now());
     if (signedInAt === null) return refuse(401);
-    res.locals.person = { userId, identityConfirmedAtMs: signedInAt * 1000, user, admin } satisfies Person;
+    // 014: every signed-in person is a user. An administrator is one whose token also carries the permission.
+    const admin = o.adminEnabled === true && person.permissions.includes(ADMIN_PERMISSION);
+    res.locals.person = { userId, identityConfirmedAtMs: signedInAt * 1000, admin } satisfies Person;
     delete req.headers.authorization;
     next();
   };
 }
-
-const personOf = (res: { locals: Record<string, unknown> }) => res.locals.person as Person | undefined;
-
-/** 014: the routes of 013 are for people who may start agent runs. An administrator is not thereby a user (FR-006). */
-export const requireUser: RequestHandler = (_req, res, next) => {
-  if (personOf(res)?.user === true) next();
-  else res.status(403).json(forbidden);
-};
 
 /**
  * 014: the administration routes are for administrators only (FR-002). The refusal is the same body as any other,
@@ -101,7 +91,7 @@ export const requireUser: RequestHandler = (_req, res, next) => {
  */
 export function requireAdmin(o: { skip?: boolean } = {}): RequestHandler {
   return (_req, res, next) => {
-    if (o.skip === true || personOf(res)?.admin === true) next();
+    if (o.skip === true || (res.locals.person as Person | undefined)?.admin === true) next();
     else res.status(403).json(forbidden);
   };
 }

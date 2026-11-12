@@ -1,6 +1,6 @@
 # Contract: the portal API (browser → portal)
 
-> **Since 014 (SPEC v1.14).** With the administration area on, the `roles` row of the access table accepts
+> **Since 014 (SPEC v1.15).** With the administration area on, the `roles` row of the access table accepts
 > `Agent.Run` or `Portal.Admin`, each route requires one of them, and `/api/me` and `/api/config` gain additive
 > fields. The administration routes are defined in
 > [specs/014 contracts/portal-api.md](../../014-portal-l2-control-api/contracts/portal-api.md).
@@ -27,7 +27,7 @@ The checks, in this order:
 | `exp`, `nbf` | 60 s tolerance | 401 |
 | not a machine token | no `gty: client-credentials`, and `sub` does not end in `@clients` (a system identity is refused, FR-003) | 403 |
 | client | `azp` (or `client_id`, whichever the tenant's token dialect uses) equals `PORTAL_CLIENT_ID` | 403 |
-| `permissions` | contains `agent:run`: the one permission (clarified 2026-11-10) | 403 |
+| ~~`permissions`~~ | not read since 2026-11-12 ([R21](../research.md#r21-no-role-for-the-portal)): the portal asks for no role or permission. Until then: contains `agent:run` | — |
 | sign-in time | the claim named by `AUTH_TIME_CLAIM`: present, an integer, not in the future beyond 60 s. Checked last: a token that is valid but not the portal's is 403 whether or not it carries the claim | 401 |
 
 - A token issued for the agent service comes from another client, so the portal refuses it with 403 (FR-005). The

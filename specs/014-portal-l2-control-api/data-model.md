@@ -10,7 +10,7 @@ them are in [contracts/control-api.md](contracts/control-api.md) and
 | Store | Owner | Change |
 |---|---|---|
 | The hash-chained JSONL ledger | L2 | new field values on `HUMAN_APPROVAL` and `HUMAN_REJECTION`; no new type |
-| The profile store (one file per user) | portal | none. An administrator who is not a user has no file |
+| The profile store (one file per user) | portal | none. An administrator has a file only if they set up a profile, like any user |
 | The browser | web app | none. The web app stores nothing of its own (T-WEB-07 forbids `localStorage`); the trail's "New" mark lives in memory while the screen is open |
 
 Nothing an administrator types is stored anywhere, because the administration area has no text field
@@ -18,26 +18,25 @@ Nothing an administrator types is stored anywhere, because the administration ar
 
 ## People and permissions
 
-A person is identified, as in 013, by `userIdFor(tid, oid)` (`^usr_[0-9a-f]{32}$`), derived from the verified
+A person is identified, as in 013, by `userIdFor(issuer, sub)` (`^usr_[0-9a-f]{32}$`), derived from the verified
 token and never read from a request.
 
-| `roles` claim holds | `user` | `admin` (feature on) | Can use |
-|---|---|---|---|
-| `Agent.Run` | true | false | everything of 013; no administration area |
-| `Portal.Admin` | false | true | the administration area only; no profile, wallet or policy |
-| both | true | true | both; can't decide their own payments |
-| neither | — | — | refused (403), as today |
+Every person who signs in through the portal's client is a user (SPEC v1.14: the portal asks for no permission).
+An administrator is a user whose token also carries the one permission there is.
 
-With the feature off, `admin` is always false and a person with only `Portal.Admin` is refused.
+| `permissions` claim | `admin` (feature on) | Can use |
+|---|---|---|
+| empty, absent, or anything but `portal:admin` | false | everything of 013; no administration area |
+| contains `portal:admin` | true | everything of 013 for their own account, and the administration area; can't decide their own payments |
+
+With the feature off, `admin` is always false and the claim is not read.
 
 ```ts
 // src/portal/access.ts
 export interface Person {
   userId: string;
   identityConfirmedAtMs: number;
-  /** 014: holds Agent.Run. The 013 routes require it. */
-  user: boolean;
-  /** 014: holds Portal.Admin and the administration area is on. The /api/admin routes require it. */
+  /** 014: holds portal:admin and the administration area is on. The /api/admin routes require it. */
   admin: boolean;
 }
 ```

@@ -3,10 +3,12 @@
 # and Guardian push. Least privilege throughout: the client can do CIBA and nothing else, and no other client and no
 # machine token can request the payment details. Users, passwords and private keys are never managed here.
 #
-# And what people's sign-in needs (SPEC L2-8 and L1-6, specs/013 research R19), further down: one API with one
-# permission, the role that holds it, the portal's public client and the post-login Action that dates the sign-in.
-# The tenant has two applications, L2's and the portal's: none for the hosted agent service (research R20). No user
-# is created and no role is assigned here: an administrator does that in Auth0.
+# And what people's sign-in needs (SPEC L2-8, specs/013 research R19), further down: one API, the portal's public
+# client and the post-login Action that dates the sign-in. The tenant has two applications, L2's and the portal's:
+# none for the hosted agent service (research R20). There is no permission and no role (research R21): the portal
+# asks for none, so whoever signs in through the portal's client may use it, for their own account only. No user
+# is created here. To keep one person out, block that user in Auth0; to keep strangers out, turn sign-ups off on
+# the tenant's connection.
 
 locals {
   # Must equal DETAILS_TYPE in src/layer2-control/payment-details.ts (T-IAC-02): Auth0's Guardian schema, the only
@@ -16,10 +18,7 @@ locals {
 
   # People's sign-in. The API's identifier is the portal's AUTH_AUDIENCE; it can't change
   # once created. The claim is the services' default AUTH_TIME_CLAIM, and the one sign-in-time.js writes (T-IAC-02).
-  # admin_permission (014) is the administrator's, for the portal's administration area: a permission of its own,
-  # held by a role of its own, so holding one never gives the other.
   identity_audience = "https://x402-api/${var.environment}"
-  permission        = "agent:run"
   admin_permission  = "portal:admin"
   auth_time_claim   = "https://x402.dev/auth_time"
   # The local portal (its default port), and the deployed one once var.portal_origin is set.
@@ -133,10 +132,10 @@ resource "auth0_guardian" "this" {
 
 # ---- People's sign-in (specs/013 research R19) ---------------------------------------------------------------------
 
-# People's API: its identifier is the portal's AUTH_AUDIENCE. RBAC is enforced and the permissions go into the access
-# token (the default token profile, which names the client as azp), so a token says what its person may do, and the
-# portal verifies it offline. Refresh tokens are allowed, for the web app's rotation.
-# Tokens live an hour: a role taken from a person stays in their tokens no longer than that.
+# People's API: its identifier is the portal's AUTH_AUDIENCE. The token profile is the one the sign-in was verified
+# with (it names the client as azp, and carries an empty permissions list: RBAC stays enforced with no permission
+# defined, so no token can be given one). The portal verifies the token offline. Refresh tokens are allowed, for
+# the web app's rotation. Tokens live an hour.
 resource "auth0_resource_server" "identity" {
   name                                            = "api-x402-${var.environment}"
   identifier                                      = local.identity_audience
@@ -156,16 +155,13 @@ resource "auth0_resource_server" "identity" {
   }
 }
 
-# Its two permissions. The first opens the portal as a user and starts runs: the two services tell their clients
-# apart by client ID, never by permission. The second (014) opens the portal's administration area only: the agent
-# service never reads it, so it starts no run.
+# 014: the one permission of people's API, and the one role, which holds exactly it. Using the portal needs neither
+# (research R21): they are for the portal's administration area only, where a person decides other people's escalated
+# payments. An administrator of the tenant assigns the role per person, by hand, in Auth0: nobody is assigned here.
+# Taking it away takes effect when the person's access token expires (an hour at most, above). The hosted agent
+# service never reads this permission, so it starts no run.
 resource "auth0_resource_server_scopes" "identity" {
   resource_server_identifier = auth0_resource_server.identity.identifier
-
-  scopes {
-    name        = local.permission
-    description = "Use the x402 portal, as oneself"
-  }
 
   scopes {
     name        = local.admin_permission
@@ -173,27 +169,6 @@ resource "auth0_resource_server_scopes" "identity" {
   }
 }
 
-# The user's role, with exactly the first permission. An administrator of the tenant assigns it per person, in
-# Auth0: nobody is assigned here, and no user is created.
-resource "auth0_role" "user" {
-  name        = "x402-user"
-  description = "May onboard at the x402 portal and use it (${var.environment})."
-}
-
-resource "auth0_role_permissions" "user" {
-  role_id = auth0_role.user.id
-
-  permissions {
-    name                       = local.permission
-    resource_server_identifier = auth0_resource_server.identity.identifier
-  }
-
-  depends_on = [auth0_resource_server_scopes.identity]
-}
-
-# 014: the administrator's role, with exactly the second permission and never the first, so being an administrator
-# does not make a person a user, nor the reverse. Assigned per person in Auth0, like x402-user: nobody is assigned
-# here. Taking it away takes effect when the person's access token expires (an hour at most, above).
 resource "auth0_role" "admin" {
   name        = "x402-admin"
   description = "May use the x402 portal's administration area (${var.environment})."

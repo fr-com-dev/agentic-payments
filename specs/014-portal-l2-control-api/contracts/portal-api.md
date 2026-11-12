@@ -7,42 +7,43 @@ format and the 013 routes.
 
 ## Access (FR-002 to FR-004, FR-006)
 
-The token checks of 013 run as they do today, in the same order, with one change: the `roles` row.
+The token checks of 013 run as they do today, in the same order, and none is added for using the portal: since
+SPEC v1.14 the portal asks for no permission, so every person who signs in through its client is a user. With the
+administration area on, the access check reads one thing more from the verified token:
 
-| Check | Value | Failure |
-|---|---|---|
-| `roles` (administration **off**) | contains `Agent.Run` | 403 |
-| `roles` (administration **on**) | contains `Agent.Run` or `Portal.Admin` | 403 |
+- `admin = administration is on and permissions contains portal:admin`
 
-The access check then sets, on the signed-in person:
-
-- `user = roles contains Agent.Run`
-- `admin = administration is on and roles contains Portal.Admin`
-
-and each route requires one of them:
+`portal:admin` is the only permission of people's API and is held by the tenant's only role, `x402-admin`, which an
+administrator of the tenant gives to a person by hand ([config-and-secrets.md](config-and-secrets.md#the-sign-in-tenant-auth0)).
+A `roles` claim, a token of the organization's directory, a machine token and a token of another client never make an
+administrator. With the area off, `permissions` is not read at all.
 
 | Routes | Requires | Otherwise |
 |---|---|---|
-| `GET /api/me` | `user` or `admin` | — |
-| every other 013 route (`/api/profile`, `/api/platform`, `/api/wallet*`, `/api/cards*`, `/api/policies*`, `/api/account/*`) | `user` | 403 `{ "error": "forbidden" }` |
+| every route of 013 | a valid portal token (as in 013) | as in 013 |
 | `/api/admin/*` | `admin` | 403 `{ "error": "forbidden" }` |
 | `/api/admin/*` with administration off | — | 404 `{ "error": "not found" }` (not mounted) |
 
+- An administrator is a user like any other: their own routes work as for anyone, and being an administrator opens
+  nothing of another person's (FR-006).
 - A refusal reveals nothing, makes **no call to L2** and writes nothing (FR-004, T-PRT-10). The body is the same
   for a person without the permission as for any other forbidden request.
 - A request without a valid token is 401 before any route is matched, with administration on or off.
-- An agent-service token is refused as in 013 (its scope and client), whatever its roles.
-- **The decider** is `userIdFor(tid, oid)` of the verified token. No administration route reads a person from the
-  path, the query or the body, and none takes a user identifier at all (FR-023): a user is reached only through
-  an escalation.
-- **Identity confirmed at** is `auth_time × 1000`, passed to L2 on an approval. L2 decides whether it is fresh.
+- A token issued to an agent client is refused as in 013, whatever its permissions.
+- **The decider** is `userIdFor(issuer, sub)` of the verified token. No administration route reads a person from
+  the path, the query or the body, and none takes a user identifier at all (FR-023): a user is reached only
+  through an escalation.
+- **Identity confirmed at** is the token's sign-in time claim (`AUTH_TIME_CLAIM`) × 1000, passed to L2 on an
+  approval. L2 decides whether it is fresh.
+- **A permission taken away** takes effect at the person's next token; a token issued before works until it
+  expires, an hour at most ([research R20](../research.md#r20-after-the-merge-of-main-the-administrator-is-a-permission-of-the-sign-in-tenant)).
 
 ## Changed routes
 
 | Method & path | Change |
 |---|---|
 | `GET /api/config` (no token) | adds `admin: { available: boolean }`: whether the administration area is on. Public, like the rest |
-| `GET /api/me` | adds `user: boolean` and `admin: boolean`. For a person with `Portal.Admin` only: `{ userId, user: false, admin: true }`, with no `enabled`, `onboarding` or `profile`, and no call to L2 |
+| `GET /api/me` | adds `admin: boolean`: the token carries `portal:admin` and the area is on |
 
 Both are additive. With administration off, `admin` is `false` everywhere and every existing answer is otherwise
 byte-for-byte what it was.
@@ -106,7 +107,7 @@ recorded the decision, the retry returns it with `already: true`.
 | ID | Covers |
 |---|---|
 | T-API-12..15 | `docs/portal.openapi.yaml` matches the new routes, statuses and schemas and the changed `/api/config` and `/api/me` |
-| T-PRT-10 | access by role: a user without `Portal.Admin` is 403 on every `/api/admin` route with 0 calls to L2; an agent-service token is refused whatever its roles; a person with `Portal.Admin` only reaches the administration routes and `/api/me` and is 403 on every other 013 route; administration off: 404, and that person is 403 on `/api/me`. **Must fail** with `skipAdminCheck`: an ordinary user approves |
+| T-PRT-10 | access by permission: a user without `portal:admin` is 403 on every `/api/admin` route with 0 calls to L2; an administrator is a user like any other and `/api/me` says `admin: true`; no other permission, `roles` claim, machine token, agent client's token or directory token counts; a permission taken away is refused at the next token; administration off: 404, and the permission is not read. **Must fail** with `skipAdminCheck`: an ordinary user approves |
 | T-PRT-11 | reads: each L2 answer mapped as listed; `mine`; `sessionId` absent; query whitelist and bounds; L2 down gives 502 on every route; the ledger check runs at most once in 10 s |
 | T-PRT-12 | decisions: `decidedBy` and `identityConfirmedAtMs` come from the token only; any extra body field is 400 and makes no call; the reason-code list; `own_payment`, `step_up_required` and `not_pending` relayed with their fields |
 | T-PRT-13 | the log lines and labels for the new routes; headers on every answer; a known-value scan of responses and logs for both portal tokens and the person's token |

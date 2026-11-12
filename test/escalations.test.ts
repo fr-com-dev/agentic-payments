@@ -489,7 +489,7 @@ describe("012 approval request derivations", () => {
   });
 });
 
-// 014 (SPEC v1.14 L2-4, L2-4.3): a decision can also come from the portal. Same entry types, a third channel.
+// 014 (SPEC v1.15 L2-4, L2-4.3): a decision can also come from the portal. Same entry types, a third channel.
 describe("T-LED-07 the portal channel in the derivations (014)", () => {
   const ADMIN = "usr_0123456789abcdef0123456789abcdef";
   const portalApproval = (l: AuditLedger, id: string, at = T0 + 1) =>

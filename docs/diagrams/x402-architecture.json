@@ -44,7 +44,7 @@
           "ledger",
           "agent"
         ],
-        "note": "Payments above 0.02 USDC escalate; an operator approves once per session and resource."
+        "note": "Payments above 0.02 USDC escalate; an operator, or an administrator in the portal, approves once."
       },
       {
         "id": "local-network",
@@ -273,7 +273,7 @@
       "id": "portal",
       "type": "frontend",
       "label": "Portal :4025",
-      "sublabel": "user accounts · no keys",
+      "sublabel": "accounts · admin · no keys",
       "pos": [
         40,
         200
@@ -415,7 +415,7 @@
       "id": "portal-l2",
       "from": "portal",
       "to": "l2",
-      "label": "user-account routes",
+      "label": "user-account + admin routes",
       "variant": "security"
     }
   ],
@@ -427,7 +427,7 @@
         "L1 holds no keys; L2 is the only signer",
         "Budgets come from the hash-chained ledger",
         "L3 is read-only and verifies every settlement",
-        "The portal holds no key and decides nothing"
+        "The portal holds no key; L2 records an administrator's decision"
       ]
     },
     {

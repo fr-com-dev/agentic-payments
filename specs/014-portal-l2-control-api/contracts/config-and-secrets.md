@@ -19,7 +19,7 @@ value.
 
 | Variable | Required | Notes |
 |---|---|---|
-| `PORTAL_ADMIN` | no | `1` turns the administration area on: the `/api/admin` routes are mounted and `Portal.Admin` is honored |
+| `PORTAL_ADMIN` | no | `1` turns the administration area on: the `/api/admin` routes are mounted and the permission `portal:admin` is read from the person's token |
 | `PORTAL_ADMIN_TOKEN` | with `PORTAL_ADMIN=1`, off `local` | the same value L2 verifies; empty in the template |
 
 `src/portal-main.ts` still exits 1 if `PAYER_PRIVATE_KEY` or `USER_WALLET_MNEMONIC` is visible. With the area on in
@@ -58,7 +58,7 @@ dev default in `l2-control.env.example` and empty or the dev default in `portal.
 | `src/shared/config.ts` | `Role` gains `portal-admin`; `ROLE_TOKEN_VAR` and `DEV_TOKENS` gain `PORTAL_ADMIN_TOKEN` |
 | `src/shared/auth.ts` | `ENDPOINT_ROLES` gains the six routes |
 | `scripts/demo-lib.ts`, `scripts/stack-local.ts` | `--admin` (with `--users`): L2's child env gets `PORTAL_ADMIN=1`. `demo:local` never passes it |
-| `scripts/dev-issuer-lib.ts`, `scripts/dev-token.ts` | `--admin` adds `Portal.Admin` to `roles`; with `--no-role` the token carries only `Portal.Admin` |
+| `scripts/dev-issuer-lib.ts`, `scripts/dev-token.ts` | `--admin` (with `--portal`) adds `portal:admin` to the token's `permissions` |
 | `scripts/escalations.ts` (operator CLI) | prints `channel: portal`, the decider's identifier and the reason code |
 | `scripts/vscode-local.ts`, `.vscode/` | unchanged; the area stays off there ([research R17](../research.md#r17-local-development)) |
 | `package.json` | no new script and no new dependency |
@@ -82,17 +82,24 @@ param userAccounts = {
 
 `main.bicep` fails validation (`fail()`) when `administration` is true and `enabled` is false.
 
-`pre-deploy.<env>.bicepparam` gains `portalAdmins` (an array of user principal names, `[]` by default): the
-people assigned `Portal.Admin`.
+Nothing changes in `pre-deploy.bicep` or its parameter file: who is an administrator is not an Azure or Entra
+object.
 
-### `infra/pre-deploy.bicep`
+### The sign-in tenant (`auth0/`)
 
-- API app: a second app role, `Portal.Admin` (`allowedMemberTypes: ['User']`, a new fixed GUID, description "Lets
-  a person use the portal's administration area"). `Agent.Run` keeps its ID.
-- One app role assignment per entry of `portalAdmins`, on the API app's service principal, as `agentUsers` has
-  for `Agent.Run`.
-- Nothing else: the same scopes, pre-authorized clients, optional claims and web app registration.
-- what-if can't preview Graph resources, as today.
+People sign in with Auth0 (013, SPEC v1.12), and using the portal needs no permission (v1.14). 014 adds the only
+permission and the only role there are, in `auth0/main.tf`:
+
+- `auth0_resource_server_scopes.identity`: one permission on people's API, `portal:admin`.
+- `auth0_role.admin`, named `x402-admin`, and `auth0_role_permissions.admin`: the role holds exactly that
+  permission.
+- Nobody is assigned in code. An administrator of the tenant gives the role to a person by hand (**User Management
+  → Users → the user → Roles**), and takes it away the same way. Signing up gives it to nobody.
+- RBAC was already enforced with the permissions in the access token, so the portal reads `permissions` offline.
+  The hosted agent service never reads this permission.
+
+T-IAC-02 fails on a second permission, a second role, a role that holds anything else, a permission for using the
+portal, and a role assigned to a person in code.
 
 ### `infra/modules/l2-apps.bicep` and `portal-apps.bicep`
 
@@ -110,7 +117,7 @@ kv-portal:  portal-admin-token = off
 
 # to turn the administration area on:
 kv-l2 and kv-portal: portal-admin-token = <one new random value, the same in both, different from portal-token>
-pre-deploy.<env>.bicepparam: portalAdmins = [ … ]      then apply pre-deploy.bicep
+Auth0: the role x402-admin assigned to each administrator, by hand
 main.<env>.bicepparam: userAccounts.administration: true      then deploy-l2, deploy-portal
 ```
 
@@ -122,7 +129,7 @@ back, as for `portal-token` and `ciba-client-credential`. Values are piped into 
 | Rule | Change |
 |---|---|
 | 8 | unchanged pattern (`…_TOKEN` is already covered): `PORTAL_ADMIN_TOKEN` is never a literal |
-| 16 | the API app has exactly two roles, `Agent.Run` (users and applications) and `Portal.Admin` (users only), each with its fixed ID; the web app still has no credential and no role |
+| 16 | unchanged: 014 adds nothing to Entra |
 | 21 | unchanged |
 | 22 (new) | administration: L2 and the portal each always reference `portal-admin-token`, from their own vault only; `PORTAL_ADMIN` in both comes from `userAccounts.administration`; the portal app gets no token other than `PORTAL_TOKEN` and `PORTAL_ADMIN_TOKEN`; no other app gets `PORTAL_ADMIN_TOKEN`; `main.bicep` refuses `administration` without `enabled` |
 
@@ -143,4 +150,5 @@ unchanged.
 | T-PRT-14 | portal config and the flags ([portal-api.md](portal-api.md#tests)) |
 | T-ARCH-A12, A13 | A12 with the new name in the three layers; A13 with its fixture, clean walk and not-vacuous check |
 | T-ARCH-ENV | the two templates' new names |
-| T-IAC-01 | rule 16 changed, rule 22 new, each with a mutant |
+| T-IAC-01 | rule 22 new, with its mutants |
+| T-IAC-02 | the one permission and the one role, with their mutants |

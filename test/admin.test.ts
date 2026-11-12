@@ -1,4 +1,4 @@
-// 014 portal administration, L2 side (SPEC.md v1.14 L2-5, L2-8; specs/014 contracts/control-api.md "Tests").
+// 014 portal administration, L2 side (SPEC.md v1.15 L2-5, L2-8; specs/014 contracts/control-api.md "Tests").
 // T-ADM-01..10: the six routes under /v1/admin, their own role and token, the two decisions with the checks L2
 // keeps (pending only, never one's own payment, a fresh identity confirmation for an approval), the reads that
 // write nothing, and the switch. Every must-fail switch is a test-only dep (AdminDeps), never an environment value.

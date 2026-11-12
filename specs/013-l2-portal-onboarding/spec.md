@@ -60,6 +60,14 @@ with Auth0 as the identity provider for people.
   where it is deployed, and a system identity never names a user. Runs as a person stay a local capability, with
   the dev issuer, until a later change gives people a way in.
 
+### Session 2026-11-12 (who may use the portal)
+
+- Q: A person who signed up at the portal was refused until an administrator gave them a role in
+  Auth0. Should a new sign-up get in by default, and how? → A: Yes. The portal asks for no role
+  and no permission: whoever signs in through the portal's own application may use it, for their
+  own account. The role is removed. To keep one person out, the administrator blocks that user in
+  Auth0; to keep strangers out, the administrator turns sign-ups off there.
+
 ## User Scenarios & Testing *(mandatory)*
 
 Terms used below:
@@ -98,8 +106,9 @@ first impression: a person must be able to start without an operator.
 
 **Independent Test**: Sign in as a person who has portal access and has never used it. Complete
 the profile step, sign out, and sign in again. The profile shows the saved values, and the
-onboarding status shows the profile as done and the wallet as the next step. Sign in as a person
-without portal access: they are refused and no profile exists for them.
+onboarding status shows the profile as done and the wallet as the next step. Present a sign-in
+that is not the portal's own (another application's, or a machine's): it is refused and no profile
+exists for it. *(Until 2026-11-12: a person without portal access.)*
 
 **Acceptance Scenarios**:
 
@@ -111,8 +120,11 @@ without portal access: they are refused and no profile exists for them.
    step is offered next.
 3. **Given** a user who left onboarding after the profile step, **When** they sign in again,
    **Then** the portal opens on the wallet step, with the profile shown as done.
-4. **Given** a person who is not allowed to start agent runs, **When** they try to sign in,
-   **Then** they are refused, and no profile, wallet or policy is created for them.
+4. **Given** a sign-in that did not come through the portal's own application (another
+   application's token, or a machine's), **When** it is presented to the portal, **Then** it is
+   refused, and no profile, wallet or policy is created. A person who signs in through the portal
+   needs no role or permission (clarified 2026-11-12; before, a person not allowed to start agent
+   runs was refused).
 5. **Given** an onboarded user, **When** they change their name or email, **Then** the new values
    show at once and nothing about their wallet or policies changes.
 
@@ -420,9 +432,10 @@ version, and the policy's whole history can be rebuilt from the ledger alone.
 - **The portal is down.** Payments continue under the policies last recorded. No decision waits
   on the portal.
 - **The card vault is down or slow.** Only adding and removing cards is affected.
-- **The user's organization account is disabled, or they lose the permission to start runs.**
-  They can't sign in to the portal or start agent runs, so nothing is spent. Their profile,
-  policies and funds stay as they are, and are theirs again if the permission returns.
+- **The user is blocked at the identity provider.** They can't sign in to the portal, so nothing
+  changes. Their profile, policies and funds stay as they are, and are theirs again if the block
+  is lifted. (Until 2026-11-12 this was also the loss of the permission to start runs; the portal
+  now asks for none.)
 - **A run with no user.** Runs started by a system identity, the scripted regression and the
   local demo carry no user. They are decided against the platform account, exactly as today.
 - **A person who has not onboarded starts a run.** Their payments are denied as incomplete setup.
@@ -463,9 +476,10 @@ version, and the policy's whole history can be rebuilt from the ledger alone.
 
 - **FR-003**: A person MUST sign in to the portal with the same identity they use to start agent
   runs, at the deployment's identity provider for people (Auth0, clarified 2026-11-10). Everyone
-  who is allowed to start agent runs MAY sign in and onboard, and nobody else: one permission at
-  the identity provider gives both, and there is no separate portal permission. A system identity
-  can't sign in. A refused sign-in MUST create no record. *(SPEC: L1-6 auth, SEC-14, proposed L2-8)*
+  who signs in through the portal's own application MAY onboard, with no role or permission
+  (clarified 2026-11-12; before, only whoever held the one permission to start agent runs). Who
+  can sign up is the identity provider's setting. A system identity can't sign in, and neither can
+  a sign-in made for another application. A refused sign-in MUST create no record. *(SPEC: L1-6 auth, SEC-14, proposed L2-8)*
 - **FR-004**: A signed-in user MUST be able to read and change only their own profile, wallet,
   cards and policies. A request for anything that belongs to another user MUST get "not found",
   with nothing revealed. *(SPEC: SEC-15, proposed L2-8)*
@@ -821,7 +835,9 @@ version, and the policy's whole history can be rebuilt from the ledger alone.
   organization's permission to start agent runs, so nobody can start runs without being able to
   set up payment. The permission is granted in the identity provider for people, per person, as
   one permission (clarified 2026-11-10). There is no invitation or operator approval step in the
-  portal, and no separate portal permission.
+  portal, and no separate portal permission. Since 2026-11-12 the portal asks for no permission at
+  all: whoever can sign up at the identity provider can onboard, and the provider's sign-up
+  setting and blocking a user are the only gates.
 - **One identity for the portal and for agent runs** (clarified 2026-11-10). People sign in with
   Auth0, the identity provider for people, at the portal and at the hosted agent (011, amended by
   this feature), so a run's verified requester names the user. Since 2026-11-11 the identity

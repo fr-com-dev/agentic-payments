@@ -871,8 +871,8 @@ describe("T-ARCH-TRACE threat matrix → test titles (007 T051)", () => {
   // SEC-10 and SEC-11 were added by 009 (SPEC v1.2), SEC-12 by 010 (v1.3), SEC-13 by the API docs (v1.4),
   // SEC-14..16 by 011 (v1.5, hosted agent service), SEC-17..18 by 012 (v1.8, backchannel approval),
   // SEC-19..24 by 013 (v1.10, user accounts and the portal), SEC-25 by 012's convergence (v1.11, the Auth0 pipeline),
-  // SEC-26..28 by 014 (v1.14, the portal's administration area).
-  const SEC_ROWS = Array.from({ length: 28 }, (_, i) => `SEC-${i + 1}`);
+  // SEC-26 by 013 (v1.14, a portal that asks for no role), SEC-27..29 by 014 (v1.15, the portal's administration area).
+  const SEC_ROWS = Array.from({ length: 29 }, (_, i) => `SEC-${i + 1}`);
   it(`every ${SEC_ROWS[0]}..${SEC_ROWS.at(-1)} row names at least one test, and each named ID is a test title`, () => {
     const rows = matrixRows(readFileSync(THREAT_MATRIX, "utf8"));
     expect(rows.map((r) => r.sec)).toEqual(SEC_ROWS);

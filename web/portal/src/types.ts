@@ -23,12 +23,7 @@ export interface Onboarding {
 
 export interface Me {
   userId: string;
-  /**
-   * 014: may start agent runs, and so has a profile, a wallet and policies. For a person who is only an administrator
-   * it is false, and `enabled` and `onboarding` below are placeholders filled in by the API client (nothing shows them).
-   */
-  user: boolean;
-  /** 014: may use the administration area. */
+  /** 014: may use the administration area. Every signed-in person is a user; an administrator is one of them. */
   admin: boolean;
   enabled: boolean;
   onboarding: Onboarding;

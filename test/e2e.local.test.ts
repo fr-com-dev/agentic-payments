@@ -1016,7 +1016,7 @@ describe("014 portal administration end to end", () => {
       userId: ERIN,
       ...(!o.phone && { operatorApprovalOnly: true }),
     });
-  const carol = () => portal.adminAs("carol", { user: false });
+  const carol = () => portal.adminAs("carol");
   let erinAddress: `0x${string}`;
 
   it("T-E2E-14 an administrator approves in the portal: the agent's retry pays from the user's own account, and L3 confirms it", async () => {
@@ -1103,7 +1103,7 @@ describe("014 portal administration end to end", () => {
   }, 60_000);
 
   it("T-E2E-14 no token, key or sign-in reaches the ledger, the portal's log or its answers (NFR-003)", async () => {
-    const token = await portal.adminToken("carol", { user: false });
+    const token = await portal.adminToken("carol");
     const answer = await portal.call("GET", "/api/admin/escalations", { token });
     const everything = [readFileSync(h.ledgerPath, "utf8"), portal.rawLogs.join("\n"), answer.text].join("\n");
     for (const secret of [...Object.values(h.tokens), token, ...HARNESS_USER_MNEMONIC.split(" ").filter((w) => w.length > 5)]) {

@@ -109,7 +109,7 @@ export function errorMessage(e: ApiError): string {
     case "unauthorized":
       return "Your sign-in has ended. Sign in again.";
     case "forbidden":
-      return "Your organization has not given you access to start agent runs.";
+      return "This sign-in can't be used for the portal. Sign in again from this page.";
     // 014 the administration area
     case "own_payment":
       return "You can't decide your own payment.";

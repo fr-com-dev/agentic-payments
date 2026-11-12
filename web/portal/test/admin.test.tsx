@@ -33,9 +33,9 @@ const ADMIN_CONFIG: Config = { ...CONFIG, admin: { available: true } };
 const all = { profile: true, wallet: true, policy: true };
 const none = { profile: false, wallet: false, policy: false };
 
-/** An administrator who is also an onboarded user, one who is only an administrator, and an ordinary user. */
-const BOTH: Me = { userId: DANA, user: true, admin: true, enabled: true, onboarding: all };
-const ADMIN_ONLY: Me = { userId: "usr_cccccccccccccccccccccccc55556666", user: false, admin: true, enabled: true, onboarding: none };
+/** An administrator who has onboarded, and one who has not (every signed-in person is a user: SPEC v1.14). */
+const BOTH: Me = { userId: DANA, admin: true, enabled: true, onboarding: all };
+const ADMIN_ONLY: Me = { userId: "usr_cccccccccccccccccccccccc55556666", admin: true, enabled: true, onboarding: none };
 
 let n = 0;
 function escalation(over: Partial<AdminEscalation> = {}): AdminEscalation {
@@ -175,17 +175,19 @@ describe("T-WEB-09 who sees the administration area (FR-002..FR-006)", () => {
     expect(within(await screen.findByRole("navigation", { name: "Main" })).queryByRole("link", { name: "Administration" })).toBeNull();
   });
 
-  it("T-WEB-09 a person who is only an administrator sees the area and the way out, and nothing else", async () => {
-    for (const path of ["/", "/wallet", "/policies", "/onboarding/profile", "/account"]) {
-      const view = renderAdmin(path, ADMIN_ONLY);
-      expect(await screen.findByRole("heading", { level: 1, name: "Waiting for approval" }), path).toBeTruthy();
-      expect(window.location.pathname, path).toBe("/admin");
-      const nav = screen.getByRole("navigation", { name: "Main" });
-      expect(within(nav).getAllByRole("link").map((a) => a.textContent)).toEqual(["Administration"]);
-      expect(screen.getByRole("button", { name: "Sign out" })).toBeTruthy();
-      // Nothing of a user's own: no onboarding, no wallet, no policies, no disabled banner.
-      for (const call of [view.api.wallet, view.api.policies, view.api.platform]) expect(call).not.toHaveBeenCalled();
-      expect(screen.queryByText(/Your account is disabled/)).toBeNull();
+  it("T-WEB-09 an administrator who has not onboarded: the area is theirs, and every other path is still onboarding's", async () => {
+    const view = renderAdmin("/admin", ADMIN_ONLY);
+    expect(await screen.findByRole("heading", { level: 1, name: "Waiting for approval" })).toBeTruthy();
+    expect(within(screen.getByRole("navigation", { name: "Main" })).getAllByRole("link").map((a) => a.textContent)).toEqual(["Administration"]);
+    expect(screen.getByRole("button", { name: "Sign out" })).toBeTruthy();
+    // Nothing of their own account is asked for by the administration area.
+    for (const call of [view.api.wallet, view.api.policies]) expect(call).not.toHaveBeenCalled();
+    cleanup();
+    // An administrator is a user like any other: their own screens follow 013's onboarding rules.
+    for (const path of ["/", "/wallet", "/policies", "/account"]) {
+      renderAdmin(path, ADMIN_ONLY);
+      await screen.findByRole("heading", { level: 1 });
+      expect(window.location.pathname, path).toBe("/onboarding/profile");
       cleanup();
     }
   });
@@ -214,18 +216,13 @@ describe("T-WEB-09 who sees the administration area (FR-002..FR-006)", () => {
     expect(adminCalls(view.api)).toBe(0);
   });
 
-  it("T-WEB-09 resolveRoute (pure): /admin paths are never redirected; an administrator-only person has only /admin", () => {
-    const user = { user: true, admin: false };
-    const both = { user: true, admin: true };
-    const adminOnly = { user: false, admin: true };
+  it("T-WEB-09 resolveRoute (pure): /admin paths are never redirected, and every other rule of 013 stands", () => {
     for (const path of ["/admin", "/admin/", "/admin/activity", "/admin/ledger", "/admin/escalations/auth_x"]) {
-      for (const who of [user, both, adminOnly]) expect(resolveRoute(path, none, who), path).toBe(path);
+      for (const o of [none, all]) expect(resolveRoute(path, o), path).toBe(path);
     }
-    for (const path of ["/", "/wallet", "/policies/new", "/onboarding/profile", "/nowhere"]) expect(resolveRoute(path, none, adminOnly), path).toBe("/admin");
-    // A user, administrator or not, keeps every rule of 013; the two-argument form is unchanged.
-    expect(resolveRoute("/wallet", none, both)).toBe("/onboarding/profile");
     expect(resolveRoute("/wallet", none)).toBe("/onboarding/profile");
-    expect(resolveRoute("/administrator", all, both)).toBe("/administrator");
+    expect(resolveRoute("/", none)).toBe("/onboarding/profile");
+    expect(resolveRoute("/administrator", all)).toBe("/administrator");
   });
 });
 

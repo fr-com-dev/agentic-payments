@@ -131,14 +131,13 @@ test mode (do not try a real card; ask Stripe support or rely on the documentati
 
 People sign in with Auth0 since 2026-11-10 ([R19](research.md#r19-auth0-as-the-identity-provider-for-people)). After
 `provision-auth0.yml` has applied the additions of
-[config-and-secrets.md](contracts/config-and-secrets.md#auth0-terraform-applied-by-provision-auth0yml), give a test
-person the role `x402-user` in Auth0, then run the portal locally with `AUTH_ISSUER`, `AUTH_AUDIENCE` and
+[config-and-secrets.md](contracts/config-and-secrets.md#auth0-terraform-applied-by-provision-auth0yml), run the portal locally with `AUTH_ISSUER`, `AUTH_AUDIENCE` and
 `PORTAL_CLIENT_ID` set and no `AUTH_JWKS_FILE`.
 
 | Check | Expect |
 |---|---|
-| Sign in as a person with the role | the portal opens; the access token (decode it locally) has `iss` = the tenant, `aud` containing the API, `permissions: ["agent:run"]`, the portal's client as `azp` (or `client_id`), and the sign-in time claim (R19, checks 1 and 3) |
-| Sign in as a person without the role | the portal answers 403 and shows the refusal; no profile file is created |
+| Sign in as any person of the tenant (no role is needed, [R21](research.md#r21-no-role-for-the-portal)) | the portal opens; the access token (decode it locally) has `iss` = the tenant, `aud` containing the API, an empty `permissions`, the portal's client as `azp` (or `client_id`), and the sign-in time claim (R19, checks 1 and 3) |
+| Sign in as a user who is blocked in Auth0 | Auth0 refuses the sign-in; the portal is never reached and no profile file is created |
 | The portal's token sent to a deployed agent service | 401: it accepts no token of the tenant ([R20](research.md#r20-two-applications-in-auth0-no-client-for-the-agent-service)). Sent to a local one configured for the tenant, 403: the portal's client is never on its list |
 | The tenant's applications, in the Auth0 dashboard | two made by `auth0/`: `app-portal-<env>` and `app-l2-ciba-<env>`. None for the agent service |
 | An Entra token of a person (`az account get-access-token …`) sent to either service | 401 at the portal, 403 at the agent service |
@@ -158,9 +157,9 @@ Follows `specs/011` quickstart §4, with the additions of
 [config-and-secrets.md](contracts/config-and-secrets.md#azure).
 
 1. **Identity, by an administrator.**
-   - Auth0: run `provision-auth0.yml` (plan, then apply). It adds the API with its `agent:run` permission, the
-     role `x402-user`, the portal's client and the sign-in time Action. Paste its `identity`
-     output and `portalClientId` into `infra/main.<env>.bicepparam`. Assign the role to each person in Auth0.
+   - Auth0: run `provision-auth0.yml` (plan, then apply). It adds people's API, the portal's client and the sign-in time Action (no role and no permission, R21). Paste its `identity`
+     output and `portalClientId` into `infra/main.<env>.bicepparam`. Decide who can sign up: turn sign-ups off on the
+     tenant's connection unless anyone may onboard.
    - Entra: apply `infra/pre-deploy.bicep` to take out what this feature first added (the `Portal.Access` scope,
      the web app registration). Expect two deployments, the first only disabling the scope
      ([config-and-secrets.md](contracts/config-and-secrets.md#infrapre-deploybicep)).
@@ -277,3 +276,12 @@ out), and the two deployments of `pre-deploy.bicep` that retire the Entra scope.
 `scripts/user-token.ts` and `npm run user-token` are removed, and the agent's Azure app gets no setting of people's
 sign-in. Checked offline only: `terraform validate`, T-IAC-02 and T-IAC-01 (with their must-fail mutants), the
 typecheck and the other suites that need no local chain. Nothing was applied to the tenant or deployed.
+
+**2026-11-12, against the dev tenant, and no role for the portal (R21).** `provision-auth0.yml` applied `auth0/`
+(13 resources, two applications). A real sign-in through the portal's client reached the local portal, and its
+token passed the signature, issuer, audience and client checks (R19 check 1, in part; check 3: the pop-up needed
+no page of the portal's own). It was refused with 403 only because the person had no role. The role and the
+permission were then taken out: the portal asks for none. Checked offline: the typecheck, and every suite that
+needs no local chain (49 files, 1,193 tests, with Bicep), including T-PRT-01, T-IAC-02 and T-ARCH-TRACE. Not run:
+the six chain suites, and the sign-in time checks (R19 check 2). The removal is not yet applied to the tenant.
+
