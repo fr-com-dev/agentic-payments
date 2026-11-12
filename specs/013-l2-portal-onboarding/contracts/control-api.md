@@ -1,6 +1,6 @@
 # Contract: L2-5 delta (control API) and §7 contracts
 
-> **Since 014 (SPEC v1.11).** L2 also serves six administration routes under `/v1/admin/` to a sixth role,
+> **Since 014 (SPEC v1.14).** L2 also serves six administration routes under `/v1/admin/` to a sixth role,
 > `portal-admin` (`PORTAL_ADMIN_TOKEN`). They are defined in
 > [specs/014 contracts/control-api.md](../../014-portal-l2-control-api/contracts/control-api.md). `PORTAL_TOKEN` is
 > refused on all of them, and everything below is unchanged.
@@ -34,7 +34,7 @@ export interface AuthorizationGatePort {
 `AuthorizationDecision` is unchanged. For a user payment, `remainingSessionBudgetAtomic` is the smallest of what
 remains of the policy's session budget, the policy's daily budget and the user daily ceiling, after this payment.
 
-New shared, pure helpers (no layer code): `src/shared/user-id.ts` (`userIdFor(tid, oid)`, `USER_ID_RE`) and
+New shared, pure helpers (no layer code): `src/shared/user-id.ts` (`userIdFor(issuer, subject)`, `USER_ID_RE`) and
 `parseUsdc(text, decimals)` beside `formatAtomic` in `src/shared/config.ts`. The portal's request and response
 shapes for L2 (`UserView`, `PolicyView`, `PolicyValues`, `PolicyIssue`, `PlatformView`) are added to
 `src/shared/contracts.ts`, because they cross the portal/L2 boundary.

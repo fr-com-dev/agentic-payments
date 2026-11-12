@@ -10,8 +10,8 @@ import type { LanguageModelV3GenerateResult } from "@ai-sdk/provider";
 import type { Express } from "express";
 import { MockLanguageModelV3 } from "ai/test";
 import { createLocalJWKSet } from "jose";
-import { loadOrCreateDevIssuer, signDevToken, type DevTokenOptions } from "../../scripts/dev-issuer-lib.js";
-import { loadHostedConfig, type HostedConfig } from "../../src/layer1-intent/hosted/config.js";
+import { DEV_AGENT_CLIENT, DEV_AUDIENCE, DEV_SERVICE_AUDIENCE, loadOrCreateDevIssuer, signDevToken, type DevTokenOptions } from "../../scripts/dev-issuer-lib.js";
+import { DEV_ISSUER, DEV_TENANT, loadHostedConfig, type HostedConfig } from "../../src/layer1-intent/hosted/config.js";
 import { createHostedApp, type HostedDeps } from "../../src/layer1-intent/hosted/server.js";
 import { HttpAuthorizationGate, HttpSettlementVerifier } from "../../src/layer1-intent/ports-http.js";
 import type {
@@ -112,12 +112,14 @@ export interface HostedTestApp {
   app: Express;
   config: HostedConfig;
   markReady(): void;
-  /** A dev-issuer token for `subject` (role Agent.Run unless `roles` is given). */
+  /** A dev-issuer token for `subject`: a person's with `agent:run` from the agent client, or with `service: true` a system identity's. */
   token(subject: string, o?: Omit<DevTokenOptions, "subject">): Promise<string>;
   /** POST /v1/runs with a token for `subject` (or no token when subject is null). */
   run(subject: string | null, body: unknown, o?: Omit<DevTokenOptions, "subject">): Promise<{ status: number; body: Record<string, unknown>; headers: Headers }>;
   close(): Promise<void>;
 }
+
+const devKeys = (jwks: Parameters<typeof createLocalJWKSet>[0]) => ({ keys: createLocalJWKSet(jwks), algorithms: ["ES256"] });
 
 export async function startHostedApp(opts: StartHostedOptions = {}): Promise<HostedTestApp> {
   const { env: envOver, ready, harness, ...deps } = opts;
@@ -127,8 +129,11 @@ export async function startHostedApp(opts: StartHostedOptions = {}): Promise<Hos
     NETWORK: "local",
     MODEL_PROVIDER: "anthropic",
     ANTHROPIC_API_KEY: "test-key-not-used",
-    AUTH_TENANT_ID: "dev",
-    AUTH_AUDIENCE: "api://x402-l1-agent",
+    AUTH_ISSUER: DEV_ISSUER,
+    AUTH_AUDIENCE: DEV_AUDIENCE,
+    AGENT_CLIENT_IDS: DEV_AGENT_CLIENT,
+    AUTH_TENANT_ID: DEV_TENANT,
+    SERVICE_AUDIENCE: DEV_SERVICE_AUDIENCE,
     AUTH_JWKS_FILE: issuer.jwksPath,
     SESSION_REF_SECRET: randomBytes(32).toString("hex"),
     ...(harness && {
@@ -145,7 +150,8 @@ export async function startHostedApp(opts: StartHostedOptions = {}): Promise<Hos
     : fakePorts();
   const hosted = createHostedApp({
     config,
-    keys: createLocalJWKSet(issuer.jwks),
+    // One local key signs both kinds of token; which checks run is chosen by the issuer each token names.
+    keys: { ...(config.auth.person && { person: devKeys(issuer.jwks) }), ...(config.auth.service && { service: devKeys(issuer.jwks) }) },
     model: mockModel(),
     log: () => undefined,
     ...ports,

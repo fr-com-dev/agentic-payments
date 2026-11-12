@@ -6,6 +6,7 @@ import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import { STEP_UP_FAILED_TEXT, STEP_UP_TEXT } from "../src/components/StepUp.js";
+import { describeChanges } from "../src/changes.js";
 import { CONFLICT_TEXT, NO_SELLERS_TEXT } from "../src/screens/PolicyEditor.js";
 import { summarizePolicy } from "../src/summary.js";
 import { EXAMPLE_VALUES, SELLER, SELLER_2, fakeApi, platform, policy, refuse, renderApp, world } from "./helpers.js";
@@ -420,12 +421,80 @@ describe("T-WEB-05: the policy list and history", () => {
     });
     renderApp("/policies/pol_1/history", w);
     expect(await screen.findByRole("heading", { level: 1, name: "Policy history" })).toBeTruthy();
-    const entries = await screen.findAllByRole("listitem");
+    await screen.findByRole("heading", { name: "Created · version 1" });
+    const entries = Array.from(document.querySelectorAll<HTMLElement>(".history > li"));
     expect(entries.map((e) => within(e).getByRole("heading").textContent)).toEqual(["Created · version 1", "Changed · version 2", "Paused when the account was enabled again · version 2"]);
+    // FR-047: a changed version says what changed, against the version before it; the others have nothing to compare.
+    expect(within(within(entries[1]!).getByRole("list", { name: "What changed in version 2" })).getAllByRole("listitem").map((li) => li.textContent)).toEqual(["Per payment: was 0.05 USDC, now 0.10 USDC."]);
+    expect(within(entries[0]!).queryByRole("list")).toBeNull();
+    expect(within(entries[2]!).queryByRole("list")).toBeNull();
     expect(entries[0]!.textContent).toContain("2026-11-01 10:00:00 UTC");
     expect(entries[0]!.textContent).toContain("Above 0.05 USDC it is refused.");
     expect(entries[1]!.textContent).toContain("Above 0.10 USDC it is refused.");
     expect(screen.queryByRole("textbox")).toBeNull();
+  });
+});
+
+describe("013 FR-047: what changed between two versions", () => {
+  it("names each value that differs, sellers added and removed, in the editor's order", () => {
+    const after = { ...EXAMPLE_VALUES, sellers: [SELLER_2.host, "new.example.test"], autoApproveMaxAtomic: "0", dailyBudgetAtomic: "400001", maxAuthorizationsPerMinute: 5, expiresAt: "2028-01-31T23:59:59.999Z" };
+    expect(describeChanges(EXAMPLE_VALUES, after, SELLERS, 6)).toEqual([
+      "Seller added: Example data (api.example.test).",
+      "Seller added: new.example.test.",
+      "Seller removed: Local demo seller (127.0.0.1:4021).",
+      "Without asking: was 0.02 USDC, now 0.00 USDC.",
+      "Per day: was 0.50 USDC, now 0.400001 USDC.",
+      "Payments per minute: was 10, now 5.",
+      "End date: was 31 Dec 2027, now 31 Jan 2028.",
+    ]);
+  });
+
+  it("says nothing when the values are the same", () => {
+    expect(describeChanges(EXAMPLE_VALUES, { ...EXAMPLE_VALUES, sellers: [...EXAMPLE_VALUES.sellers] }, SELLERS, 6)).toEqual([]);
+  });
+});
+
+describe("013 US5 scenario 7: an expired policy can be extended", () => {
+  const expired = () =>
+    world("done", {
+      policies: [
+        policy("pol_x", { name: "Last year", displayState: "expired", expired: true, values: { ...EXAMPLE_VALUES, expiresAt: "2025-12-31T23:59:59.999Z" } }),
+        policy("pol_r", { name: "Gone", state: "removed", displayState: "removed", expired: true, values: { ...EXAMPLE_VALUES, sellers: [SELLER_2.host], expiresAt: "2025-12-31T23:59:59.999Z" } }),
+        policy("pol_a", { name: "Current", values: { ...EXAMPLE_VALUES, sellers: [SELLER_2.host] } }),
+      ],
+    });
+
+  it("the list offers Extend for an expired policy only, and it opens the editor on that policy", async () => {
+    const user = userEvent.setup();
+    renderApp("/policies", expired());
+    const extend = await screen.findByRole("link", { name: "Extend Last year" });
+    expect(screen.queryByRole("link", { name: "Extend Gone" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Extend Current" })).toBeNull();
+    await user.click(extend);
+    expect(await screen.findByText(/This policy ended on 31 Dec 2025, so your agent can't pay under it\. To extend it, choose a later/)).toBeTruthy();
+    expect(screen.getByRole("link", { name: "end date" }).getAttribute("href")).toBe("#policy-endsOn");
+    expect(document.getElementById("policy-endsOn")).not.toBeNull();
+  });
+
+  it("extending is a save with a later end date", async () => {
+    const user = userEvent.setup();
+    const view = renderApp("/policies/pol_x", expired());
+    fireEvent.change(await screen.findByLabelText(/^End date/), { target: { value: "2027-06-30" } });
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(view.api.changePolicy).toHaveBeenCalledTimes(1));
+    expect(view.api.changePolicy.mock.calls[0]![1].endsOn).toBe("2027-06-30");
+  });
+
+  it("a policy that has not expired shows no such notice, and a disabled account is offered no Extend", async () => {
+    const first = renderApp("/policies/pol_a", expired());
+    await screen.findByLabelText(/^End date/);
+    expect(screen.queryByText(/This policy ended on/)).toBeNull();
+    first.unmount();
+    const w = expired();
+    w.me = { ...w.me, enabled: false };
+    renderApp("/policies", w);
+    await screen.findByRole("link", { name: "Last year" });
+    expect(screen.queryByRole("link", { name: /^Extend/ })).toBeNull();
   });
 });
 

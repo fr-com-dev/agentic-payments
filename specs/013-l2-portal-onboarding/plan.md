@@ -45,8 +45,9 @@ with JSX, compiled for browsers by Vite.
 - Server, nothing new at run time: `express`, `jose` (already pinned; token verification moves to `src/shared/`),
   `viem` (`mnemonicToAccount` in the signer; a read-only public client in the portal), global `fetch` for the card
   vault. No Stripe or Microsoft package on the server.
-- Web app, all devDependencies (bundled at build time): React 19, `@azure/msal-browser` 5.x,
-  `@vitejs/plugin-react`; Stripe.js is loaded from Stripe at run time. No router, state or component library
+- Web app, all devDependencies (bundled at build time): React 19, `@azure/msal-browser` 5.x and Vite 8, which
+  compiles the JSX itself (as built: `@vitejs/plugin-react` was not needed and is not installed); Stripe.js is
+  loaded from Stripe at run time. No router, state or component library
   ([R10](research.md#r10-the-web-apps-stack)).
 - Tests: `jsdom`, `@testing-library/react`, `@testing-library/user-event`, `axe-core`.
 
@@ -113,7 +114,7 @@ external facts that could not be confirmed from documentation, each with a check
 
 - **Constitution 1.3.0 → 1.4.0 (MINOR).**
   - Technology & Scope: multi-tenancy leaves the out-of-scope list; "a persistent DB beyond JSONL" stays out. The
-    stack gains, for the portal only, React, Vite's React plugin and `@azure/msal-browser` (build time), and the
+    stack gains, for the portal only, React, Vite and `@azure/msal-browser` (build time), and the
     card vault (Stripe test mode) reached over HTTPS from the portal only.
   - Principle I gains one sentence: people edit policy in the portal; the agent never does.
   - Principle V gains the portal role credential, the wallet mnemonic and the card vault credential, and names the
@@ -407,6 +408,48 @@ Also in the same change:
   generate a new mnemonic), hard rule 10 (five roles), "New policy for the portal" under common changes, and the
   gotchas (always-referenced secrets, the late redirect URI, never rotate the mnemonic in place).
 - `README.md`, `docs/diagrams/x402-architecture.json`: the portal.
+
+## Change of identity provider (2026-11-10)
+
+The first build signs people in with Microsoft Entra ID. Per the clarifications of the same day, **Auth0 replaces
+it for people**, at the portal and at the hosted agent service; system identities stay on Entra. (Since 2026-11-11,
+R20, at the portal only where the system is deployed: the tenant has no application for the agent service.) The decision, its
+alternatives and the facts still to verify are in [R19](research.md#r19-auth0-as-the-identity-provider-for-people).
+Where this section and an earlier one disagree, this one holds. Tasks: Phase 14.
+
+| Area | First build | Now |
+|---|---|---|
+| People's sign-in | Entra, one API app, scopes `user_impersonation` and `Portal.Access` | Auth0, one API, permission `agent:run` in the token, client allow-lists per service |
+| Who may onboard | the Entra app role `Agent.Run`, assigned in `pre-deploy.bicep` | the Auth0 role `x402-user`, assigned per person by an administrator |
+| System identities | Entra app tokens | unchanged, agent service only; never at the portal |
+| Shared verifier | `src/shared/entra-token.ts` | `src/shared/identity-token.ts`: the Auth0 checks for people, the Entra checks for app tokens |
+| User identifier | `x402-user-v1`, tenant and object ID | `x402-user-v2`, issuer host and `sub`; everyone onboards again |
+| Step-up source | Entra's `auth_time` optional claim | a namespaced claim set by a post-login Action |
+| Web sign-in | `@azure/msal-browser`, `redirect.html` | `@auth0/auth0-spa-js` behind the same `Auth` adapter; no page of its own, if R19's third check holds |
+| Getting an agent token | Azure CLI | a native client with the device flow, `npm run user-token`. Removed 2026-11-11 ([R20](research.md#r20-two-applications-in-auth0-no-client-for-the-agent-service)): the tenant has two applications, and a deployed agent accepts system identities only |
+| Identity as code | app registrations in `infra/pre-deploy.bicep` | the API, role, clients and Action in `auth0/` (Terraform, `provision-auth0.yml`); the Entra additions of this feature are removed |
+| Parameters | `userAccounts.portalClientId` (a GUID), `portalOrigin`, `portalPreAuthorized` | an `identity` object in `main.<env>.bicepparam` from Terraform's output; the two `portal…` parameters of `pre-deploy` go |
+
+**Constitution check.** Principle V names the requester credential as an Entra ID token: it becomes "the token a
+person or a system presents", with people on Auth0 and systems on Entra, still verified by L1 and the portal only
+and never forwarded. No principle is weakened: the portal still holds no key, the two services still refuse each
+other's tokens, and L2 still decides step-up. This is a MINOR amendment (1.6.0), made with SPEC v1.12.
+
+**What does not change.** L2, the ledger, the policy engine, every portal route and screen, the card vault, the
+Azure unit's shape, and every test that uses the dev issuer's helpers rather than a claim name.
+
+## As built (2026-11-10)
+
+Where the build differs from the plan above. The contracts and SPEC.md describe the build.
+
+| Planned | As built | Why |
+|---|---|---|
+| `@vitejs/plugin-react` | not installed | Vite 8 compiles JSX for the build and for vitest; the plugin only adds dev-server fast refresh, and there is no dev server |
+| SPEC v1.9, T-IAC-01 rule 20 | SPEC v1.10, rule 21 | `main` took v1.9 and rule 20 for the Auth0 pipeline while this feature was open |
+| T-API-11..14 for the portal's document | T-API-12..15 | T-API-11 was already the seller's |
+| the web app pre-authorized for `Portal.Access` in one deployment of `pre-deploy.bicep` | two deployments, `portalPreAuthorized` false and then true | Entra refuses to pre-authorize a scope in the update that adds it ([config-and-secrets.md](contracts/config-and-secrets.md#infrapre-deploybicep)) |
+| no limit before authentication | 300 requests a minute per client address before a token is verified, on the portal and the hosted agent (`express-rate-limit`, `TRUSTED_PROXY_HOPS`) | CodeQL's missing-rate-limiting finding on both public services; the one-hop setting in Azure is not yet confirmed (task T124) |
+| one commit per slice | one commit for the implementation | the slices were built in order, then committed together |
 
 ## Delivery
 

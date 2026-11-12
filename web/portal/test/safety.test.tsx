@@ -5,8 +5,9 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { screen, waitFor } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApi } from "../src/api.js";
+import { clientOptions, createAuth0Auth, describeFailure, sessionCache, type SignInClient } from "../src/auth/auth0.js";
 import { createDevAuth } from "../src/auth/dev.js";
 import { EXAMPLE_VALUES, account, card, policy, renderApp, world } from "./helpers.js";
 
@@ -72,7 +73,7 @@ describe("T-WEB-07: the browser holds only the person's own sign-in", () => {
         expect(body.includes(banned), `${file}: ${banned}`).toBe(false);
       }
       // Session storage belongs to the sign-in library alone: the app names it only to configure that library.
-      if (body.includes("sessionStorage")) expect(file.endsWith("auth/entra.ts"), file).toBe(true);
+      if (body.includes("sessionStorage")) expect(file.endsWith("auth/auth0.ts"), file).toBe(true);
     }
   });
 
@@ -161,13 +162,145 @@ describe("T-WEB-07: the browser holds only the person's own sign-in", () => {
     const auth = createDevAuth();
     expect(auth.signedIn()).toBe(false);
     expect(await auth.signIn("not a token")).toBe(false);
-    const token = `${btoa("{}")}.${btoa(JSON.stringify({ oid: "alice" }))}.sig`;
+    const token = `${btoa("{}")}.${btoa(JSON.stringify({ sub: "dev|alice" }))}.sig`;
     expect(await auth.signIn(token)).toBe(true);
     expect(await auth.token()).toBe(token);
     expect(auth.account()).toEqual({ name: "alice" });
     expect(window.sessionStorage.length).toBe(0);
     expect(window.localStorage.length).toBe(0);
     await auth.signOut();
+    expect(await auth.token()).toBeNull();
+  });
+});
+
+describe("T-WEB-07: the Auth0 sign-in (013 research R19)", () => {
+  afterEach(() => window.sessionStorage.clear());
+
+  /** A stand-in for the sign-in library: who the tenant says signed in, and what each call was given. */
+  function library(o: { user?: Record<string, unknown> | null; token?: string | Error; popup?: Array<Record<string, unknown> | Error> } = {}) {
+    let user = o.user === undefined ? null : o.user;
+    const next = [...(o.popup ?? [])];
+    const client = {
+      loginWithPopup: vi.fn(async (_o?: { authorizationParams?: Record<string, unknown> }) => {
+        const result = next.shift() ?? { sub: "auth0|alice", name: "Alice Example", email: "alice@example.test" };
+        if (result instanceof Error) throw result;
+        user = result;
+      }),
+      getTokenSilently: vi.fn(async () => {
+        if (o.token instanceof Error) throw o.token;
+        return o.token ?? "the.access.token";
+      }),
+      getUser: vi.fn(async () => user ?? undefined),
+      logout: vi.fn(async (_o?: { openUrl?: false | ((url: string) => void) }) => {
+        user = null;
+      }),
+    };
+    return client satisfies SignInClient;
+  }
+  const settings = { domain: "tenant.example", clientId: "portal-client", audience: "https://x402.example/api" };
+  const failure = (error: string) => Object.assign(new Error("a description with https://addresses and ids"), { error, error_description: "secret detail" });
+
+  it("is set up as a public client for the portal's API, with rotating refresh tokens and no hidden frame", () => {
+    const cache = sessionCache();
+    const options = clientOptions(settings, "https://portal.example", cache);
+    expect(options).toEqual({
+      domain: "tenant.example",
+      clientId: "portal-client",
+      authorizationParams: { audience: "https://x402.example/api", redirect_uri: "https://portal.example" },
+      cache,
+      useRefreshTokens: true,
+      useRefreshTokensFallback: false,
+    });
+    // No secret, and the library's own storage choices are not used: only the cache above.
+    expect(JSON.stringify(options)).not.toMatch(/secret|localstorage/i);
+  });
+
+  it("the cache keeps the library's entries in session storage, and only lists its own keys", async () => {
+    const cache = sessionCache();
+    window.sessionStorage.setItem("something-else", "1");
+    await cache.set("@@auth0spajs@@::portal-client::aud::scope", { body: { access_token: "t" }, expiresAt: 1 });
+    expect(await cache.get("@@auth0spajs@@::portal-client::aud::scope")).toEqual({ body: { access_token: "t" }, expiresAt: 1 });
+    expect(await cache.allKeys!()).toEqual(["@@auth0spajs@@::portal-client::aud::scope"]);
+    expect(await cache.get("missing")).toBeUndefined();
+    window.sessionStorage.setItem("@@auth0spajs@@broken", "{not json");
+    expect(await cache.get("@@auth0spajs@@broken")).toBeUndefined();
+    await cache.remove("@@auth0spajs@@::portal-client::aud::scope");
+    expect(window.sessionStorage.getItem("@@auth0spajs@@::portal-client::aud::scope")).toBeNull();
+    expect(window.localStorage.length).toBe(0);
+  });
+
+  it("signs in with a pop-up, then gives the account and the token", async () => {
+    const client = library();
+    const auth = await createAuth0Auth(settings, { client });
+    expect(auth.mode).toBe("auth0");
+    expect(auth.signedIn()).toBe(false);
+    expect(await auth.token()).toBeNull();
+    expect(client.getTokenSilently).not.toHaveBeenCalled();
+    expect(await auth.signIn()).toBe(true);
+    expect(client.loginWithPopup).toHaveBeenCalledWith(undefined);
+    expect(auth.signedIn()).toBe(true);
+    expect(auth.account()).toEqual({ name: "Alice Example", email: "alice@example.test" });
+    expect(await auth.token()).toBe("the.access.token");
+    expect(auth.lastError()).toBeNull();
+  });
+
+  it("a reload keeps the person signed in, from the library's cache", async () => {
+    const auth = await createAuth0Auth(settings, { client: library({ user: { sub: "auth0|alice", name: "alice@example.test", email: "alice@example.test" } }) });
+    expect(auth.signedIn()).toBe(true);
+    // The tenant gave the email as the name: that is not offered as a display name.
+    expect(auth.account()).toEqual({ email: "alice@example.test" });
+  });
+
+  it("a failed sign-in keeps only the error code", async () => {
+    const client = library({ popup: [failure("popup_open"), failure("access_denied"), new Error("no code"), failure("has spaces and <markup>")] });
+    const auth = await createAuth0Auth(settings, { client });
+    for (const code of ["popup_open", "access_denied", "unknown_error", "unknown_error"]) {
+      expect(await auth.signIn()).toBe(false);
+      expect(auth.lastError()).toBe(code);
+      expect(auth.signedIn()).toBe(false);
+    }
+    expect(describeFailure(failure("cancelled"))).toBe("cancelled");
+    expect(describeFailure(null)).toBe("unknown_error");
+  });
+
+  it("an ended session gives no token, and the person is asked to sign in again", async () => {
+    const auth = await createAuth0Auth(settings, { client: library({ user: { sub: "auth0|alice" }, token: failure("invalid_grant") }) });
+    expect(auth.signedIn()).toBe(true);
+    expect(await auth.token()).toBeNull();
+  });
+
+  it("confirming identity forces a new sign-in, now", async () => {
+    const client = library({ user: { sub: "auth0|alice", email: "alice@example.test" } });
+    const auth = await createAuth0Auth(settings, { client });
+    expect(await auth.confirmIdentity()).toBe(true);
+    expect(client.loginWithPopup).toHaveBeenCalledWith({ authorizationParams: { prompt: "login", max_age: 0 } });
+    expect(auth.signedIn()).toBe(true);
+  });
+
+  it("another person in the confirmation window does not finish this person's change: both are signed out", async () => {
+    const client = library({ user: { sub: "auth0|alice" }, popup: [{ sub: "auth0|mallory", email: "mallory@example.test" }] });
+    const auth = await createAuth0Auth(settings, { client });
+    expect(await auth.confirmIdentity()).toBe(false);
+    expect(auth.lastError()).toBe("account_changed");
+    expect(auth.signedIn()).toBe(false);
+    expect(await auth.token()).toBeNull();
+    expect(client.logout).toHaveBeenCalledWith({ openUrl: false });
+  });
+
+  it("a closed confirmation window leaves the person signed in, unconfirmed", async () => {
+    const client = library({ user: { sub: "auth0|alice" }, popup: [failure("cancelled")] });
+    const auth = await createAuth0Auth(settings, { client });
+    expect(await auth.confirmIdentity()).toBe(false);
+    expect(auth.lastError()).toBe("cancelled");
+    expect(auth.signedIn()).toBe(true);
+  });
+
+  it("signing out clears the library's cache without leaving the portal", async () => {
+    const client = library({ user: { sub: "auth0|alice" } });
+    const auth = await createAuth0Auth(settings, { client });
+    await auth.signOut();
+    expect(client.logout).toHaveBeenCalledWith({ openUrl: false });
+    expect(auth.signedIn()).toBe(false);
     expect(await auth.token()).toBeNull();
   });
 });

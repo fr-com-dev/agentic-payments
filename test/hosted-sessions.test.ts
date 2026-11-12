@@ -1,6 +1,8 @@
 // 011 hosted agent service: session references (SPEC.md L1-6, §11 SEC-15; specs/011 contracts/access-and-sessions.md).
 // T-AGT-04: the service assigns sessions; a reference works only for the requester it was issued to.
+import { createHmac } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
+import { issueSessionRef, verifySessionRef } from "../src/layer1-intent/hosted/session-ref.js";
 import { fakePorts, mockModel, startHostedApp, text, toolCall, type HostedTestApp } from "./helpers/hosted.js";
 
 let apps: HostedTestApp[] = [];
@@ -61,6 +63,38 @@ describe("T-AGT-04 session references", () => {
     const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
     const sibling = alphabet[alphabet.indexOf(last) ^ 1]!;
     expect((await a.run("alice", { goal: "x", sessionRef: ref.slice(0, -1) + sibling })).status).toBe(404);
+  });
+
+  it("a reference is bound to the kind of requester, who vouches for it and its subject (013 research R19)", async () => {
+    const secret = Buffer.alloc(32, 9);
+    const sid = "sess_0123456789abcdef";
+    const person = { kind: "user", authority: "https://tenant.example/", subject: "auth0|abc" } as const;
+    const ref = issueSessionRef(secret, person, sid);
+    expect(verifySessionRef(secret, person, ref)).toEqual({ ok: true, sessionId: sid });
+    const others = [
+      { ...person, subject: "auth0|abd" },
+      { ...person, authority: "https://other.example/" },
+      // The same text as a system identity's tenant and object ID is another requester.
+      { ...person, kind: "service" as const },
+      // No way to move a character from one field to the next: `sub` may hold the old separator.
+      { ...person, authority: "https://tenant.example/\nauth0", subject: "abc" },
+      { ...person, authority: "https://tenant.example/|auth0", subject: "abc" },
+    ];
+    for (const other of others) expect(verifySessionRef(secret, other, ref), JSON.stringify(other)).toEqual({ ok: false, status: 404 });
+    // The earlier format (`sr1|<tid>|<oid>|<session>`) no longer verifies: people sign in elsewhere now.
+    const old = createHmac("sha256", secret).update(`sr1|dev|alice|${sid}`).digest("base64url");
+    expect(verifySessionRef(secret, { kind: "user", authority: "dev", subject: "alice" }, `sr1.${sid}.${old}`)).toEqual({ ok: false, status: 404 });
+  });
+
+  it("a system identity can't continue a person's session, nor a person a system identity's, under the same name", async () => {
+    const { a, sessionsSeen } = await start();
+    // The person's `sub` is dev|alice; a system identity whose object ID is that exact text is someone else.
+    const ref = String((await a.run("alice", { goal: "one" })).body.sessionRef);
+    expect((await a.run("dev|alice", { goal: "steal", sessionRef: ref }, { service: true })).status).toBe(404);
+    const svcRef = String((await a.run("alice", { goal: "one" }, { service: true })).body.sessionRef);
+    expect((await a.run("alice", { goal: "steal", sessionRef: svcRef })).status).toBe(404);
+    expect((await a.run("alice", { goal: "two", sessionRef: svcRef }, { service: true })).status).toBe(200);
+    expect(sessionsSeen()).toHaveLength(3);
   });
 
   it("must-fail: with the test-only skipSessionMac hook, requester B's run uses requester A's session", async () => {

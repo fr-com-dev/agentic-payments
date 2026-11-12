@@ -1,4 +1,5 @@
-# The Auth0 tenant for backchannel approval (SPEC L2-7; specs/012 research R17), as code. Applied by its pipeline,
+# The Auth0 tenant for backchannel approval (SPEC L2-7; specs/012 research R17) and for people's sign-in (specs/013
+# research R19), as code. Applied by its pipeline,
 # .github/workflows/provision-auth0.yml, by hand: a plan on every run, and that plan applied when asked. Azure stays
 # Bicep only; this folder holds only what Auth0 needs. T-IAC-02 (test/auth0-iac.test.ts) checks it.
 terraform {

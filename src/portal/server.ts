@@ -5,7 +5,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import express, { type Express, type NextFunction, type Request, type Response } from "express";
-import type { JWTVerifyGetKey } from "jose";
+import type { TokenKeys } from "../shared/identity-token.js";
 import { portalAccess, requireAdmin, requireUser, type Person } from "./access.js";
 import type { AdminPort } from "./admin-client.js";
 import { mountPortalAdminRoutes } from "./admin-routes.js";
@@ -22,11 +22,10 @@ import { mountPortalRoutes } from "./routes.js";
 
 export const MAX_REQUESTS_PER_MINUTE = 120;
 const WINDOW_MS = 60_000;
-const SIGN_IN_HOST = "https://login.microsoftonline.com";
 
 export interface PortalDeps {
   config: PortalConfig;
-  keys: JWTVerifyGetKey;
+  keys: TokenKeys;
   control: ControlPort;
   profiles: ProfileStore;
   balance: BalanceCache;
@@ -51,21 +50,31 @@ export interface PortalApp {
   markReady(): void;
 }
 
-/** The policy every page and API answer carries (contracts/portal-api.md "Limits and headers"). */
-export function contentSecurityPolicy(o: { framed?: boolean } = {}): string {
+/**
+ * The policy every page and API answer carries (contracts/portal-api.md "Limits and headers"). `signInOrigin` is the
+ * sign-in tenant's origin: the web app calls it for tokens (the code exchange and the refresh-token renewal). The
+ * tenant is never framed: sign-in is a pop-up, and there is no hidden-frame renewal. Absent with the dev issuer,
+ * where sign-in is a pasted token.
+ */
+export function contentSecurityPolicy(o: { signInOrigin?: string } = {}): string {
+  const signIn = o.signInOrigin !== undefined ? ` ${o.signInOrigin}` : "";
   return [
     "default-src 'none'",
     `script-src 'self' ${CARD_VAULT_CSP.script.join(" ")}`,
-    `frame-src ${CARD_VAULT_CSP.frame.join(" ")} ${SIGN_IN_HOST}`,
-    `connect-src 'self' ${CARD_VAULT_CSP.connect.join(" ")} ${SIGN_IN_HOST}`,
+    `frame-src ${CARD_VAULT_CSP.frame.join(" ")}`,
+    `connect-src 'self' ${CARD_VAULT_CSP.connect.join(" ")}${signIn}`,
     "style-src 'self'",
     "img-src 'self' data:",
     "font-src 'self'",
     "base-uri 'none'",
     "form-action 'none'",
-    // The sign-in redirect page is loaded by the sign-in library in a hidden frame of this same origin.
-    o.framed ? "frame-ancestors 'self'" : "frame-ancestors 'none'",
+    "frame-ancestors 'none'",
   ].join("; ");
+}
+
+/** `https://<domain>` of the sign-in tenant, for the policy. Undefined with the dev issuer. */
+export function signInOriginOf(auth: Pick<PortalConfig["auth"], "mode" | "issuer">): string | undefined {
+  return auth.mode === "auth0" ? new URL(auth.issuer).origin : undefined;
 }
 
 export function createPortalApp(deps: PortalDeps): PortalApp {
@@ -77,13 +86,14 @@ export function createPortalApp(deps: PortalDeps): PortalApp {
   trustProxies(app, deps.config.trustedProxyHops);
   let ready = false;
   const personOf = (res: Response) => res.locals.person as Person | undefined;
+  const signInOrigin = signInOriginOf(config.auth);
+  const csp = contentSecurityPolicy({ ...(signInOrigin !== undefined && { signInOrigin }) });
 
   // Headers and the request log, on everything.
   app.use((req: Request, res: Response, next: NextFunction) => {
     const started = now();
-    const redirectPage = req.path === "/redirect.html";
     const api = req.originalUrl.startsWith("/api");
-    res.set("Content-Security-Policy", contentSecurityPolicy({ framed: redirectPage }));
+    res.set("Content-Security-Policy", csp);
     res.set("X-Content-Type-Options", "nosniff");
     res.set("Referrer-Policy", "no-referrer");
     if (config.network !== "local") res.set("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
@@ -117,7 +127,13 @@ export function createPortalApp(deps: PortalDeps): PortalApp {
   // Public values the web app needs before anyone signs in. Nothing here is a secret.
   app.get("/api/config", (_req, res) => {
     res.json({
-      auth: { mode: config.auth.mode, tenantId: config.auth.tenantId, clientId: config.auth.clientId, scope: config.auth.scope },
+      auth: {
+        mode: config.auth.mode,
+        // The tenant's domain, for the sign-in library. Empty with the dev issuer, which has none.
+        domain: config.auth.mode === "auth0" ? new URL(config.auth.issuer).host : "",
+        clientId: config.auth.clientId,
+        audience: config.auth.audience,
+      },
       network: config.network,
       cards: { available: deps.vault !== undefined, ...(deps.vault && { publishableKey: deps.vault.publishableKey }) },
       // 014: whether the administration area is on. Who may use it is decided from the person's token, not here.
@@ -126,11 +142,11 @@ export function createPortalApp(deps: PortalDeps): PortalApp {
   });
 
   const access = portalAccess({
-    tenantId: config.auth.tenantId,
-    audience: config.auth.audience,
     issuer: config.auth.issuer,
+    audience: config.auth.audience,
     keys: deps.keys,
     clientId: config.auth.clientId,
+    authTimeClaim: config.auth.authTimeClaim,
     now,
     ...(deps.admin !== undefined && { adminEnabled: true }),
     ...(deps.bypassAuth && { bypassAuth: true }),

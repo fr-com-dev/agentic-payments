@@ -54,8 +54,8 @@
   },
   "devDependencies": {
     "@ai-sdk/provider": "^3.0.18",
+    "@auth0/auth0-spa-js": "2.30.0",
     "@azure/bicep-rpc-client": "^0.4.1",
-    "@azure/msal-browser": "^5.29.0",
     "@testing-library/dom": "^10.4.2",
     "@testing-library/react": "^16.3.3",
     "@testing-library/user-event": "^14.6.9",

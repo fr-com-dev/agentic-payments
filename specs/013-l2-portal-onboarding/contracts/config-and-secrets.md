@@ -25,9 +25,11 @@ value.
 | `NETWORK` | yes | `local` or `base-sepolia` |
 | `CONTROL_URL` | yes | L2's address |
 | `PORTAL_TOKEN` | yes off `local` | the same value L2 verifies |
-| `AUTH_TENANT_ID`, `AUTH_AUDIENCE` | yes | as in `env/l1-hosted.env`: the tenant, and the API app's client ID |
-| `PORTAL_CLIENT_ID` | yes | the web app's client ID; the `azp` the portal accepts |
+| `AUTH_ISSUER`, `AUTH_AUDIENCE` | yes | the Auth0 tenant's issuer (`https://<domain>/`) and the API's identifier, the same two as in `env/l1-hosted.env` |
+| `PORTAL_CLIENT_ID` | yes | the Auth0 single-page client's ID: the only client whose tokens the portal accepts |
 | `AUTH_JWKS_FILE` | no | the dev issuer's JWKS; allowed only with `NETWORK=local` |
+| `AUTH_TIME_CLAIM` | no | the access-token claim that holds the time of the person's last sign-in, set by the tenant's post-login Action; default `https://x402.dev/auth_time` |
+| `PORTAL_WEB_ROOT` | no | where the built web app is; default `dist/portal-web`. Tests point it elsewhere; without an `index.html` there the portal serves only its API |
 | `PROFILE_DIR` | no | default `.local/portal/profiles` |
 | `CARD_VAULT` | no | `stripe` turns cards on; unset: off |
 | `CARD_VAULT_KEY` | with `CARD_VAULT=stripe` | restricted test key; only `card-vault.ts` reads it (rule A10); empty in the template |
@@ -40,7 +42,15 @@ value.
 `src/portal-main.ts` loads this file and then **exits 1 if `PAYER_PRIVATE_KEY` or `USER_WALLET_MNEMONIC` is
 visible**, from the process environment or from the file, before anything else (as INV-3 does for L1).
 
-`env/l1-hosted.env` gains one optional variable, `PORTAL_CLIENT_ID`: the `azp` the agent service refuses.
+`env/l1-hosted.env` changes for people's sign-in (2026-11-10, [R19](../research.md#r19-auth0-as-the-identity-provider-for-people)):
+`AUTH_ISSUER` and `AUTH_AUDIENCE` are the Auth0 tenant's issuer and the API's identifier; `AGENT_CLIENT_IDS` is the
+comma-separated list of Auth0 clients whose tokens the agent service accepts (never the portal's client; the
+service refuses to start when `PORTAL_CLIENT_ID`, if given, is on it). As built, the three people's variables go together: all three, or none, and with none no person is accepted.
+Since 2026-11-11 ([R20](../research.md#r20-two-applications-in-auth0-no-client-for-the-agent-service)) the tenant
+has no client for the agent service, so these three are set only locally, for the dev issuer; every deployed
+environment runs system identities only, and `AGENT_CLI_CLIENT_ID` and `npm run user-token` are gone. `AUTH_TENANT_ID` and the new
+`SERVICE_AUDIENCE` (the Entra API app's client ID) now cover system identities only; without them no system
+identity is accepted.
 
 ## CFG-4: `config/platform.json`
 
@@ -55,7 +65,7 @@ A new column, **Portal**.
 |---|---|---|---|---|---|---|
 | `PORTAL_TOKEN` (portal→L2) | — | ✅ verifies | — | — | ✅ | — |
 | `USER_WALLET_MNEMONIC` | **never** | ✅ (`signer.ts` only) | — | — | **never** | — |
-| Person's portal token (browser→portal) | — | — | — | — | ✅ verifies, never forwards | — |
+| Person's portal token (browser→portal; an Auth0 access token since 2026-11-10) | — | — | — | — | ✅ verifies, never forwards | — |
 | `CARD_VAULT_KEY` (portal→card vault) | — | — | — | — | ✅ (`card-vault.ts` only) | — |
 
 - The mnemonic is payment key material, like `PAYER_PRIVATE_KEY`: INV-2 and rule A3 cover it.
@@ -85,7 +95,7 @@ names; a template key ending in `_MNEMONIC`, or named `CARD_VAULT_KEY`, must be 
 | `package.json` scripts | `portal` (`tsx src/portal-main.ts`), `build:web` (Vite build of `web/portal` to `dist/portal-web`), `fund-user` (local only), `wallet-mnemonic` (prints one new 24-word mnemonic; reads no env file and derives no account); `typecheck` also checks `web/portal/tsconfig.json` |
 | `src/shared/config.ts` | `EnvRole` gains `portal`; `Role` gains `portal-control`; `ROLE_TOKEN_VAR` and `DEV_TOKENS` gain `PORTAL_TOKEN`; `DEFAULT_PORTS` gains `portal: 4025` |
 | `scripts/demo-lib.ts` | `--users`: L2's child env gets `USER_ACCOUNTS=1` and the dev mnemonic. `demo:local` never passes it |
-| `scripts/dev-issuer-lib.ts`, `dev-token.ts` | `scp`, `azp`, `auth_time` claims; `--portal`; default tokens gain `scp: user_impersonation` and `idtyp: user` |
+| `scripts/dev-issuer-lib.ts`, `dev-token.ts` | since 2026-11-10 the dev issuer speaks the Auth0 shape: `sub` (`dev\|<subject>`), `permissions`, `azp`, the sign-in time claim; `--portal` for the portal's client; `--service` for an Entra-shaped app token (`idtyp: app`, `roles`) |
 | `scripts/vscode-local.ts`, `.vscode/launch.json` | role `portal` (not a stack service; its pre-launch task starts the stack with `--users`); T-DEV-01 and T-DEV-02 maps |
 
 ## Azure
@@ -97,9 +107,9 @@ names; a template key ending in `_MNEMONIC`, or named `CARD_VAULT_KEY`, must be 
 | `main.<env>.bicepparam` | `names.identities.portal` | `id-portal-eastus2-dev` |
 | | `names.vaults.portal` | `kv-portal-eastus2-dev` (21 characters) |
 | | `names.apps.portal` | `ca-portal-eastus2-dev` |
-| `pre-deploy.<env>.bicepparam` | `names.portalApp` | `app-portal-eastus2-dev` |
+| `pre-deploy.<env>.bicepparam` | `names.portalApp` | removed (2026-11-10): the web app is an Auth0 client, not an Entra app registration |
 
-Rule 15's `APPS` gains `portal`; `STANDARD` gains `portalApp`.
+Rule 15's `APPS` gains `portal`. `STANDARD` no longer has `portalApp`.
 
 ### Parameters
 
@@ -108,19 +118,34 @@ Rule 15's `APPS` gains `portal`; `STANDARD` gains `portalApp`.
 ```bicep
 param userAccounts = {
   enabled: false
-  portalClientId: ''            // from pre-deploy's mainParameters output
+  portalClientId: ''            // the Auth0 single-page client's ID, from Terraform's output
   sellerName: 'x402 demo seller'
   cardVault: 'off'              // 'off' or 'stripe'
   cardVaultPublishableKey: ''   // pk_test_…
 }
 ```
 
-`main.bicep` fails validation when `enabled` is true, or the unit is `portal`, without a 36-character
-`portalClientId` (the portal doesn't start without it), when `cardVault` is neither `off` nor `stripe`, or when it
+`main.bicep` fails validation when `enabled` is true, or the unit is `portal`, without a `portalClientId` (the
+portal doesn't start without it; an Auth0 client ID is not a GUID, so the check is "not empty"), when `cardVault` is neither `off` nor `stripe`, or when it
 is `stripe` without a publishable key that starts with `pk_test_`.
 
-`pre-deploy.<env>.bicepparam` gains `portalOrigin` (`''` until the platform exists; then
-`https://<ca-portal>.<environment default domain>`).
+It also gains a second plain object, `identity`, with the values of people's sign-in, taken from Terraform's output
+as `ciba` is:
+
+```bicep
+param identity = {
+  issuer: ''          // https://<auth0 domain>/
+  audience: ''        // the API's identifier
+}
+```
+
+`main.bicep` fails validation when `userAccounts.enabled` is true with an `identity.issuer` that is not `https://…/`
+or an empty `audience`. Only the portal's module takes `identity`. Until 2026-11-11 the object also had
+`agentClientIds`, the clients the agent service accepted; R20 took the agent's client out of the tenant, so the
+agent's app gets no setting of people's sign-in (T-IAC-01 rule 21).
+
+`pre-deploy.<env>.bicepparam` loses `portalOrigin` and `portalPreAuthorized` (2026-11-10): the portal's origin is now
+a Terraform variable of `auth0/`, for the client's allowed callback and web origins.
 
 ### `infra/main.bicep`
 
@@ -146,7 +171,7 @@ is `stripe` without a publishable key that starts with `pk_test_`.
 | Secrets | `portal-token`, `card-vault-key`, both from `kv-portal`, always referenced |
 
 Env: `NETWORK=base-sepolia`, `PORTAL_BIND_HOST=0.0.0.0`, `TRUSTED_PROXY_HOPS=1`, `CONTROL_URL` (L2's internal address),
-`AUTH_TENANT_ID`, `AUTH_AUDIENCE`, `PORTAL_CLIENT_ID`, `PROFILE_DIR=/app/.local/portal/profiles`,
+`AUTH_ISSUER`, `AUTH_AUDIENCE`, `PORTAL_CLIENT_ID`, `PROFILE_DIR=/app/.local/portal/profiles`,
 `CARD_VAULT` (set only when `stripe`), `CARD_VAULT_PUBLISHABLE_KEY`, and by `secretRef`: `PORTAL_TOKEN`,
 `CARD_VAULT_KEY`. Never `API_DOCS`.
 
@@ -156,7 +181,9 @@ Two more secrets from `kv-l2`, always referenced: `portal-token` → `PORTAL_TOK
 `USER_WALLET_MNEMONIC`. Env `USER_ACCOUNTS: userAccounts.enabled ? '1' : '0'` and `PLATFORM_SELLERS`: one entry
 built from the seller's host (the same expression as `ALLOWED_HOSTS`), `userAccounts.sellerName` and `sellerPayTo`.
 
-`modules/l1-apps.bicep`: env `PORTAL_CLIENT_ID` from `userAccounts.portalClientId` on the agent app.
+`modules/l1-apps.bicep`: on the agent app, `AUTH_ISSUER`, `AUTH_AUDIENCE` and `AGENT_CLIENT_IDS` from `identity`,
+`PORTAL_CLIENT_ID` from `userAccounts.portalClientId`, and `SERVICE_AUDIENCE` from `authAudience` (the Entra API
+app, for system identities).
 
 ### Secrets, seeded by hand
 
@@ -182,14 +209,44 @@ no longer match (R3). Back it up where the payer key is backed up.
 
 ### `infra/pre-deploy.bicep`
 
-- API app: a second scope `Portal.Access` (`type: 'Admin'`, a new fixed GUID); `optionalClaims.accessToken` =
-  `auth_time`, and `idtyp` with `include_user_token`; `preAuthorizedApplications` gains the web app for
-  `Portal.Access` only. The existing scope and role keep their IDs.
-- A new application `names.portalApp`: `signInAudience: 'AzureADMyOrg'`,
-  `spa.redirectUris: ['http://localhost:4025/redirect.html']` plus `'${portalOrigin}/redirect.html'` when
-  `portalOrigin` is set. No secret, no certificate, no role, no `requiredResourceAccess`.
-- `mainParameters` gains a fourth line, `param userAccounts … portalClientId`, to paste.
-- `infra/cleanup.sh` and its test delete three app registrations.
+Since 2026-11-10 this template no longer describes people's sign-in. What this feature first added to it is taken
+out again:
+
+- API app: the `Portal.Access` scope, its pre-authorization and the `portalPreAuthorized` parameter go, and so does
+  the `auth_time` optional claim. `idtyp` stays, because the agent service needs it to recognize an app-only token.
+  Entra wants a scope disabled before it is removed, so this is expected to take two deployments: one that sets
+  `isEnabled: false` and drops the pre-authorization, one that removes the scope (unverified, R19). As built: a
+  required bool parameter, `retirePortalScope`, says which of the two it is (true keeps the scope, disabled; false
+  leaves it out; a new environment starts with false). Bicep never deletes the old web app registration: that is
+  done by hand.
+- The `names.portalApp` application and the `portalOrigin` parameter go. `infra/cleanup.sh` and its test are back
+  to two app registrations.
+- `mainParameters` is back to three lines.
+- The `user_impersonation` scope, the Azure CLI's pre-authorization and the `agentUsers` assignments are left as
+  they are: unused once people sign in with Auth0, and removing them is 011's decision, not this feature's.
+
+### `auth0/` (Terraform, applied by `provision-auth0.yml`)
+
+The tenant already holds the approval set-up of 012. This feature adds, in the same root:
+
+| Resource | Settings |
+|---|---|
+| API (resource server) | identifier = `identity.audience`; RS256; RBAC enforced; permissions added to the access token; one permission, `agent:run`; offline access allowed (refresh-token rotation for the web app) |
+| Role `x402-user` | exactly the permission `agent:run` on that API. No user is assigned in code |
+| Client: portal (single-page application) | authorization code with PKCE, no secret; allowed callbacks, web origins and logout URLs = `http://localhost:4025` and the `portal_origin` variable when set; refresh-token rotation; no other grant |
+| ~~Client: agent CLI (native)~~ | removed 2026-11-11 (R20): the tenant has exactly two applications, the portal's and L2's |
+| Action, post-login | sets `AUTH_TIME_CLAIM` on the access token to the time of the most recent authentication; sets nothing else |
+
+Outputs, named as the existing `bicepparam_ciba` is: `bicepparam_identity` (the `identity` object) and
+`bicepparam_portal_client_id` (`userAccounts.portalClientId`) for `main.<env>.bicepparam`, and `portal_env`, the
+`AUTH_*` lines for `env/portal.env` (R20 removed `agent_env`). The deployed portal's origin arrives as the GitHub environment variable
+`AUTH0_PORTAL_ORIGIN`, set by hand after the portal's first deployment (a GitHub variable can't be empty, so
+`github-setup.sh` does not create it). No secret is created: the portal's client is public.
+
+T-IAC-02 gains: the API's RBAC flags and its single permission; the role holds exactly that permission; the portal's
+client is public and has only its own grant, and the clients are exactly the portal's and L2's (R20); the portal client's URLs are exactly the local one and the variable;
+the Action writes one namespaced claim; no user, role assignment or connection password in code. Must-fail mutants
+for each.
 
 ### T-IAC-01 changes
 
@@ -200,7 +257,7 @@ no longer match (R3). Back it up where the payer key is backed up.
 | 4 (extended) | the `ledger` storage is mounted by `apps.l2` only; the `profiles` storage by `apps.portal` only |
 | 8 | the secret-name pattern gains `MNEMONIC` and `CARD_VAULT_KEY`: never literals |
 | 12, 13, 15, 17, 18 | the `UNITS`, `APP_UNIT`, `APPS`, `STANDARD`, `MainNames`, `DEPLOY_UNITS` tables gain the portal |
-| 16 | the API app has exactly one role, two scopes, two pre-authorized clients (the Azure CLI for `user_impersonation`, the web app for `Portal.Access`), and the two optional claims; the web app has no credential and no role |
+| 16 | back to the 012 state for scopes and clients: one role, the `user_impersonation` scope, the Azure CLI as the only pre-authorized client; the optional claim `idtyp` only; no web app registration (2026-11-10) |
 | 21 (new) | user accounts: L2 always references both new secrets; `USER_ACCOUNTS` and `PLATFORM_SELLERS` come from `userAccounts` and the seller's own host; the portal reads only `kv-portal`; the portal app gets no `PAYER_PRIVATE_KEY`, no `USER_WALLET_MNEMONIC` and no token other than `PORTAL_TOKEN`; `main.bicep` passes `userAccounts` whole |
 
 Each changed rule keeps a must-fail mutant.
@@ -219,13 +276,13 @@ Each changed rule keeps a must-fail mutant.
   shared `deploy-azure` concurrency group.
 - `.github/workflows/deploy.yml`: step 0 gains `portal) image=portal dockerfile=docker/portal.Dockerfile`; reads
   `CA_PORTAL`; the wait step polls the portal's revision like L1 and L3; a new check step `portal-smoke` after the
-  hosted smoke (`/healthz` is 200, `/api/config` is 200 with `mode: "entra"`, `/api/me` without a token is 401),
+  hosted smoke (`/healthz` is 200, `/api/config` is 200 with `mode: "auth0"`, `/api/me` without a token is 401),
   skipped on a first deployment before the portal exists; the docker env scan (step 2b) also refuses `_MNEMONIC=`
   and `CARD_VAULT_KEY=`.
 - T-E2E-AZ: `PIPELINES`, `UNIT_IMAGES`, `ORDER`, `STEP_IF` and the folder's exact file list gain the portal.
 - **First deployment order** (quickstart §6): `pre-deploy.bicep`, `github-setup.sh`, platform with `seed-ip`, seed
   the vaults (now including `kv-portal`), platform again, seller, L3, operator, L2, **portal**, L1 last; then
-  `pre-deploy.bicep` again with `portalOrigin`.
+  `provision-auth0.yml` again with `portal_origin` set, so the portal's deployed address is an allowed origin.
 
 ## Tests
 

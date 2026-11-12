@@ -32,8 +32,10 @@ L2 polls Auth0's token endpoint, outside the serialized section, until it gets a
   marks its intents operator-only, so it never notifies anyone.
 
 - **The tenant as code.** `auth0/` holds Terraform for the Auth0 side: the API, L2's CIBA client and its
-  credential, the grant and Guardian push. A tenant administrator applies it by hand
-  ([R17](research.md#r17-the-auth0-tenant-as-code)).
+  credential, the grant and Guardian push. A tenant administrator applied it by hand
+  ([R17](research.md#r17-the-auth0-tenant-as-code)); since 2026-11-10 (SPEC v1.9 and v1.11, the owner's decision)
+  its pipeline does, `.github/workflows/provision-auth0.yml`: key credential only, variables from its GitHub
+  environment, state in Azure (`infra/modules/state-storage.bicep`).
 
 Contract change: one optional field, `PaymentIntent.operatorApprovalOnly`. The
 `AuthorizationDecision` contract is unchanged. The policy engine is unchanged (FR-032).
@@ -165,12 +167,14 @@ env/l2-control.env.example         # MOD: CIBA_* variables, empty
 docs/l2-control.openapi.yaml       # MOD: PaymentIntent field, escalation view and event fields, kinds
 infra/main.bicep, infra/modules/l2-apps.bicep, infra/main.dev.bicepparam   # MOD: ciba object; vault secret ref
 .github/workflows/deploy.yml       # MOD: step 8 (hosted smoke) fails the run if any step ESCALATED (research R14)
-auth0/                             # NEW (R17): Terraform for the Auth0 tenant, applied by an administrator by hand
+auth0/                             # NEW (R17): Terraform for the Auth0 tenant, applied by provision-auth0.yml (2026-11-10)
 ├── versions.tf                    #   Terraform >= 1.11, auth0/auth0 >= 1.60.0 < 2.0.0; credentials from the env only
 ├── variables.tf                   #   environment, tenant, API identifier, approver, credential kind, public key path
 ├── main.tf                        #   API (RAR type, access policy), L2's CIBA client, grant, credential, Guardian push
 ├── outputs.tf                     #   bicepparam_ciba (the ciba object), l2_env (local CIBA_* lines)
-├── dev.tfvars.example, README.md
+├── README.md                      #   (dev.tfvars.example removed 2026-11-10: variables come from the GitHub environment)
+.github/workflows/provision-auth0.yml  # NEW (2026-11-10): plan, and apply when asked; T-IAC-02 checks it
+infra/modules/state-storage.bicep  # NEW (2026-11-10): the Terraform state's blob storage (T-IAC-01 rule 20)
 .gitignore, .dockerignore          # MOD: auth0 state, plans and tfvars never committed or sent to a build
 test/
 ├── helpers/ciba-stub.ts           # NEW: stand-in Auth0 (bc-authorize, token, JWKS, scripted answers, forgeries)

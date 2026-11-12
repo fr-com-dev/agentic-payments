@@ -18,7 +18,7 @@ Interactive diagrams live in `docs/diagrams/`. Each is a self-contained HTML fil
 
 | Diagram | Shows |
 |---|---|
-| [Architecture](docs/diagrams/x402-architecture.html) | The three layers, the seller, the CDP facilitator on Base Sepolia, the local-network path and the payment-authority boundary. Each box links to its source files. |
+| [Architecture](docs/diagrams/x402-architecture.html) | The three layers, the seller, the portal for user accounts, the CDP facilitator on Base Sepolia, the local-network path and the payment-authority boundary. Each box links to its source files. |
 | [Paid fetch](docs/diagrams/x402-paid-fetch.html) | 402 challenge, L2 authorization, signed retry, CDP verify/settle, then L3 on-chain verification and reconcile. |
 | [Escalation and approval](docs/diagrams/x402-approval.html) | A payment above 0.02 USDC escalates, an operator approves it, and the agent retries in the same session. |
 
@@ -133,11 +133,11 @@ npm run -s dev-token -- --subject alice --portal   # a sign-in token to paste in
 npm run build:web && npm run portal   # the portal on http://127.0.0.1:4025
 ```
 
-Then follow the three steps on screen. `npm run fund-user -- <address> 1` mints 1 test USDC to the new account. To pay as that person, start `npm run agent:hosted` and send a run with an agent token (`npm run -s dev-token -- --subject alice`, without `--portal`): the two services refuse each other's tokens. The full walk-through, the isolation checks, cards and Azure are in [specs/013 quickstart](specs/013-l2-portal-onboarding/quickstart.md). It is off by default, and the local demo never uses it.
+People sign in to the portal with Auth0 where it is deployed (SPEC v1.12); locally the dev issuer stands in for it, and the "sign-in" is the pasted token. Then follow the three steps on screen. `npm run fund-user -- <address> 1` mints 1 test USDC to the new account. To pay as that person, start `npm run agent:hosted` and send a run with an agent token (`npm run -s dev-token -- --subject alice`, without `--portal`): the two services refuse each other's tokens. This part is local only: a deployed agent accepts no person's token (SPEC v1.13). The full walk-through, the isolation checks, cards and Azure are in [specs/013 quickstart](specs/013-l2-portal-onboarding/quickstart.md). It is off by default, and the local demo never uses it.
 
 ### Portal administration (optional)
 
-With `PORTAL_ADMIN=1` in L2 and in the portal as well (SPEC L2-8, `specs/014`), a person the organization names an administrator (the `Portal.Admin` role, separate from the permission to start agent runs) gets an administration area in the portal:
+With `PORTAL_ADMIN=1` in L2 and in the portal as well (SPEC L2-8, `specs/014`), a person the organization names an administrator (the permission `portal:admin` of the sign-in tenant, held by the role `x402-admin` and separate from the permission to start agent runs) gets an administration area in the portal:
 
 - **Waiting.** Every payment that is waiting for a person, for every user and for the platform account, with a countdown. Users are shown by identifier only.
 - **One payment.** What would be approved, the budget it counts against, and two buttons. An approval lets the agent make that one payment once, if it still fits the rules; it needs a sign-in at most 15 minutes old. A rejection takes one of five fixed reasons. Nobody can decide a payment of their own agent run.
@@ -238,7 +238,7 @@ A CDP JWT is valid for 120 s, so a skewed clock on the seller host shows up as `
 
 ## Hosted agent service (Azure)
 
-The agent can also run as an HTTP service (SPEC L1-6, `specs/011`): `POST /v1/runs` takes a goal from a requester with an Entra ID token that carries the `Agent.Run` role. It uses the same two tools, prompt and limits as the command-line agent, and gains no payment authority:
+The agent can also run as an HTTP service (SPEC L1-6, `specs/011`): `POST /v1/runs` takes a goal from a requester with a token: a person's from the sign-in tenant (Auth0) with the permission `agent:run`, or a system identity's from Entra ID with the `Agent.Run` role. It uses the same two tools, prompt and limits as the command-line agent, and gains no payment authority:
 - it refuses to start if it can see the payer key;
 - it never calls operator routes;
 - it never forwards the requester's token to L2 or L3.
@@ -268,7 +268,7 @@ To run the agent's container image instead, see [quickstart §3](specs/011-l1-ho
 - Every resource is named `{type}-{app}-{location}-{env}`, such as `ca-l1-eastus2-dev`; the parameter files' `names` hold them all. `infra/` has two scripts only: `infra/github-setup.sh` and `infra/cleanup.sh`, which deletes all of an environment (`--dry-run` first).
 - Azure is provisioned by Bicep only. `infra/pre-deploy.bicep` makes the resource group, the Entra app registrations, the operators' group and the deploy app's roles; an administrator deploys it by hand. `infra/main.bicep` makes everything in the resource group, the Claude model deployment included.
 - Every value is in a parameter file: `infra/pre-deploy.<env>.bicepparam` and `infra/main.<env>.bicepparam`, the tenant, subscription and resource group included. Each template refuses to run anywhere else.
-- Requesters sign in with Entra ID (the API app `app-l1-<location>-<env>`). A person assigned `Agent.Run` gets a token with `az account get-access-token --scope api://app-l1-eastus2-dev/user_impersonation`.
+- A deployed agent accepts system identities only (SPEC v1.13): the Auth0 tenant in `auth0/` has two applications, the portal's and L2's, and none that gives a person an agent token. Runs as a person work locally, with the dev issuer. System identities, the deploy pipeline included, use Entra ID (the API app `app-l1-<location>-<env>`, role `Agent.Run`); an Entra token never names a user.
 
 **Deployment**: one GitHub Actions pipeline per unit, each run by hand or on its own tag, one at a time:
 

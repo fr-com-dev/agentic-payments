@@ -8,7 +8,7 @@
     "quality_profile": "showcase",
     "repository": {
       "url": "https://github.com/fr-com-dev/agentic-payments",
-      "revision": "11c940c1904d212e8f2b7c2a65f0e6303bd3edc6"
+      "revision": "759a9bbaa85e1850b97ae4240ca66a1f228f6a5b"
     },
     "views": [
       {
@@ -63,10 +63,9 @@
           "portal",
           "l2",
           "ledger",
-          "agent",
-          "chain"
+          "agent"
         ],
-        "note": "Optional: people set up a wallet and expense policies in the portal; with PORTAL_ADMIN=1, administrators decide escalated payments there."
+        "note": "Optional: a person sets up a profile, wallet and policies in the portal; L2 records them and signs with that person's account."
       }
     ]
   },
@@ -274,7 +273,7 @@
       "id": "portal",
       "type": "frontend",
       "label": "Portal :4025",
-      "sublabel": "accounts · admin · no keys",
+      "sublabel": "user accounts · no keys",
       "pos": [
         40,
         200
@@ -288,7 +287,7 @@
           "path": "src/portal-main.ts"
         },
         {
-          "path": "src/portal/server.ts"
+          "path": "src/portal/routes.ts"
         },
         {
           "path": "web/portal/src/app.tsx"
@@ -354,7 +353,8 @@
       "from": "operator",
       "to": "l2",
       "label": "approve",
-      "variant": "security"
+      "variant": "security",
+      "labelDy": 18
     },
     {
       "id": "settle-cdp",
@@ -415,21 +415,8 @@
       "id": "portal-l2",
       "from": "portal",
       "to": "l2",
-      "label": "user-account and administration routes (two tokens)",
-      "variant": "security",
-      "fromSide": "bottom",
-      "toSide": "left"
-    },
-    {
-      "id": "portal-balance",
-      "from": "portal",
-      "to": "chain",
-      "label": "balance (read-only)",
-      "variant": "dashed",
-      "fromSide": "left",
-      "toSide": "bottom",
-      "via": [[20, 232], [20, 600], [1130, 600]],
-      "labelSegment": 2
+      "label": "user-account routes",
+      "variant": "security"
     }
   ],
   "cards": [
@@ -440,7 +427,7 @@
         "L1 holds no keys; L2 is the only signer",
         "Budgets come from the hash-chained ledger",
         "L3 is read-only and verifies every settlement",
-        "The portal holds no key and never signs; L2 checks and records an administrator's decision"
+        "The portal holds no key and decides nothing"
       ]
     },
     {

@@ -515,8 +515,23 @@ const TEMPLATES: Record<string, TemplateSpec> = {
     optional: ["ANTHROPIC_MODEL", "SESSION_ID", "SELLER_ALIAS_URL"],
   },
   "l1-hosted": {
-    required: ["NETWORK", "SELLER_URL", "CONTROL_URL", "SETTLEMENT_URL", "CONTROL_TOKEN", "VERIFIER_TOKEN", "MODEL_PROVIDER", "AUTH_TENANT_ID", "AUTH_AUDIENCE", "SESSION_REF_SECRET"],
-    optional: ["ANTHROPIC_MODEL", "ANTHROPIC_API_KEY", "FOUNDRY_BASE_URL", "AZURE_CLIENT_ID", "AUTH_JWKS_FILE", "AGENT_PORT", "AGENT_BIND_HOST", "TRUSTED_PROXY_HOPS", "API_DOCS", "PORTAL_CLIENT_ID"],
+    // 013 (research R19, R20): a person's token is checked by issuer, audience and client list. Only the local dev issuer
+    // has a client for the agent (the Auth0 tenant has none); the directory covers system identities.
+    required: ["NETWORK", "SELLER_URL", "CONTROL_URL", "SETTLEMENT_URL", "CONTROL_TOKEN", "VERIFIER_TOKEN", "MODEL_PROVIDER", "AUTH_ISSUER", "AUTH_AUDIENCE", "AGENT_CLIENT_IDS", "SESSION_REF_SECRET"],
+    optional: [
+      "ANTHROPIC_MODEL",
+      "ANTHROPIC_API_KEY",
+      "FOUNDRY_BASE_URL",
+      "AZURE_CLIENT_ID",
+      "AUTH_TENANT_ID",
+      "SERVICE_AUDIENCE",
+      "AUTH_JWKS_FILE",
+      "AGENT_PORT",
+      "AGENT_BIND_HOST",
+      "TRUSTED_PROXY_HOPS",
+      "API_DOCS",
+      "PORTAL_CLIENT_ID",
+    ],
   },
   "l2-control": {
     required: ["NETWORK", "PAYER_PRIVATE_KEY", "ALLOWED_PAYEES", "ALLOWED_HOSTS", "CONTROL_TOKEN", "SETTLEMENT_TOKEN", "OPERATOR_TOKEN"],
@@ -555,10 +570,10 @@ const TEMPLATES: Record<string, TemplateSpec> = {
   operator: { required: ["CONTROL_URL", "OPERATOR_TOKEN"], optional: [] },
   // 013: the portal. No payment key, and no other role's token.
   portal: {
-    required: ["NETWORK", "CONTROL_URL", "PORTAL_TOKEN", "AUTH_TENANT_ID", "AUTH_AUDIENCE", "PORTAL_CLIENT_ID"],
+    required: ["NETWORK", "CONTROL_URL", "PORTAL_TOKEN", "AUTH_ISSUER", "AUTH_AUDIENCE", "PORTAL_CLIENT_ID"],
     optional: [
       "AUTH_JWKS_FILE",
-      "PORTAL_SCOPE",
+      "AUTH_TIME_CLAIM",
       "PROFILE_DIR",
       "PORTAL_WEB_ROOT",
       "CARD_VAULT",
@@ -804,7 +819,7 @@ describe("T-ARCH-ENV per-process env templates (US4)", () => {
     expect(checkFile("src/portal/x.ts", 'import { requesterAuth } from "../layer1-intent/hosted/requester-auth.js";').map((v) => v.rule)).toEqual(["A1"]);
     expect(checkFile("src/layer2-control/x.ts", 'import { ProfileStore } from "../portal/profile-store.js";').map((v) => v.rule)).toEqual(["A1"]);
     expect(checkFile("src/layer1-intent/x.ts", 'import "../portal/server.js";').map((v) => v.rule)).toEqual(["A1"]);
-    expect(checkFile("src/portal/x.ts", 'import { verifyEntraToken } from "../shared/entra-token.js";\nimport { x } from "./config.js";')).toEqual([]);
+    expect(checkFile("src/portal/x.ts", 'import { verifyPersonToken } from "../shared/identity-token.js";\nimport { x } from "./config.js";')).toEqual([]);
     for (const id of ["createWalletClient", "signTypedData", "writeContract", "sendTransaction"]) {
       expect(checkFile("src/portal/x.ts", `const y = ${id}({});`).map((v) => v.rule), id).toEqual(["A4"]);
     }
@@ -855,8 +870,9 @@ function missingIds(rows: { sec: string; ids: string[] }[], titles: string[]): s
 describe("T-ARCH-TRACE threat matrix → test titles (007 T051)", () => {
   // SEC-10 and SEC-11 were added by 009 (SPEC v1.2), SEC-12 by 010 (v1.3), SEC-13 by the API docs (v1.4),
   // SEC-14..16 by 011 (v1.5, hosted agent service), SEC-17..18 by 012 (v1.8, backchannel approval),
-  // SEC-19..24 by 013 (v1.10, user accounts and the portal), SEC-25..27 by 014 (v1.11, the portal's administration area).
-  const SEC_ROWS = Array.from({ length: 27 }, (_, i) => `SEC-${i + 1}`);
+  // SEC-19..24 by 013 (v1.10, user accounts and the portal), SEC-25 by 012's convergence (v1.11, the Auth0 pipeline),
+  // SEC-26..28 by 014 (v1.14, the portal's administration area).
+  const SEC_ROWS = Array.from({ length: 28 }, (_, i) => `SEC-${i + 1}`);
   it(`every ${SEC_ROWS[0]}..${SEC_ROWS.at(-1)} row names at least one test, and each named ID is a test title`, () => {
     const rows = matrixRows(readFileSync(THREAT_MATRIX, "utf8"));
     expect(rows.map((r) => r.sec)).toEqual(SEC_ROWS);

@@ -33,8 +33,6 @@ export interface PreDeployNames {
   resourceGroup: string;
   apiApp: string;
   deployApp: string;
-  /** 013: the portal web app's registration (a public client). */
-  portalApp: string;
   operators: string;
   stateStorage: string;
 }

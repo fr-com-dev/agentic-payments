@@ -17,7 +17,7 @@ info:
       portal's own token, and an intent that names a user is decided against that user's policy and signed with
       that user's account. Off (the default), those operations are not mounted and answer 404, and
       `PaymentIntent.userId` is ignored.
-    - **Portal administration** (v1.11, L2-8). With `PORTAL_ADMIN=1` as well, L2 serves the `admin` operations
+    - **Portal administration** (v1.14, L2-8). With `PORTAL_ADMIN=1` as well, L2 serves the `admin` operations
       to the portal's second token: the pending escalations, the two decisions, the events, the budget behind an
       escalation and the ledger check. Off (the default), they are not mounted and answer 404. The operator's
       operations are separate and unchanged.
@@ -42,7 +42,7 @@ tags:
       atomic amounts.
   - name: admin
     description: >-
-      v1.11 portal administration (L2-8). Called by the portal process with `PORTAL_ADMIN_TOKEN`, for a signed-in
+      v1.14 portal administration (L2-8). Called by the portal process with `PORTAL_ADMIN_TOKEN`, for a signed-in
       administrator. Mounted only when `USER_ACCOUNTS=1` and `PORTAL_ADMIN=1`. Reads append nothing. No body
       carries text typed by a person: only an identifier, a time and a code from a fixed list.
   - name: docs
@@ -1122,7 +1122,7 @@ components:
       type: http
       scheme: bearer
       description: >-
-        `PORTAL_ADMIN_TOKEN`, held by the portal process (v1.11). It reaches the `admin` operations only: no
+        `PORTAL_ADMIN_TOKEN`, held by the portal process (v1.14). It reaches the `admin` operations only: no
         user-account operation, and never authorize, budget, reconcile or the operator's operations.
 
   parameters:
@@ -1609,12 +1609,12 @@ components:
 
     RejectionReasonCode:
       type: string
-      description: v1.11. Why an administrator rejected a payment. A fixed list; the portal sends no text.
+      description: v1.14. Why an administrator rejected a payment. A fixed list; the portal sends no text.
       enum: [not_expected, amount_too_high, wrong_seller, duplicate, other]
 
     DecisionChannel:
       type: string
-      description: Where a decision came from. `portal` is v1.11.
+      description: Where a decision came from. `portal` is v1.14.
       enum: [operator, backchannel, portal]
 
     AdminApprovalRequest:
@@ -1784,11 +1784,11 @@ components:
         channel:
           type: string
           enum: [operator, backchannel, portal]
-          description: v1.8. On `approved` and `denied` events, the path that decided. v1.11 adds `portal`.
+          description: v1.8. On `approved` and `denied` events, the path that decided. v1.14 adds `portal`.
         decidedBy:
           type: string
           description: >-
-            v1.8. The operator's label, or the approver's verified identity (`sub`). v1.11: for the portal channel,
+            v1.8. The operator's label, or the approver's verified identity (`sub`). v1.14: for the portal channel,
             the administrator's identifier (`usr_…`).
         reasonCode:
           $ref: "#/components/schemas/RejectionReasonCode"
@@ -1828,7 +1828,7 @@ components:
       type: object
       additionalProperties: false
       required: [capAtomic, spentAtomic, remainingAtomic]
-      description: v1.11. One budget a payment counts against. `remainingAtomic` is never below 0.
+      description: v1.14. One budget a payment counts against. `remainingAtomic` is never below 0.
       properties:
         capAtomic:
           $ref: "#/components/schemas/AtomicAmount"
@@ -1842,7 +1842,7 @@ components:
       additionalProperties: false
       required: [asset, decimals, applies, autoApproveMaxAtomic, hardCapPerPaymentAtomic, run, day, fits]
       description: >-
-        v1.11. The budget behind an escalation, as of the read, under the rules that apply to its owner now: the
+        v1.14. The budget behind an escalation, as of the read, under the rules that apply to its owner now: the
         same ledger-derived figures a decision uses. `fits: true` is no promise; the payment is decided again when
         the agent retries.
       properties:
@@ -1874,7 +1874,7 @@ components:
       type: object
       additionalProperties: false
       required: [at, channel, decidedBy]
-      description: v1.11. How a person ended an escalation.
+      description: v1.14. How a person ended an escalation.
       properties:
         at:
           $ref: "#/components/schemas/IsoTime"
@@ -1899,7 +1899,7 @@ components:
       type: object
       additionalProperties: false
       required: [authorizationId, sessionId, resourceKey, payTo, amount, createdAt, expiresAt, referenceCode, state, budget]
-      description: v1.11. An escalation in any state.
+      description: v1.14. An escalation in any state.
       properties:
         authorizationId:
           type: string
@@ -1936,7 +1936,7 @@ components:
       type: object
       additionalProperties: false
       required: [events, first, last, cursor, more]
-      description: v1.11. One page of escalation events, oldest first.
+      description: v1.14. One page of escalation events, oldest first.
       properties:
         events:
           type: array

@@ -13,7 +13,6 @@ param names = {
   resourceGroup: 'rg-x402-${location}-${environment}'
   apiApp: 'app-l1-${location}-${environment}'
   deployApp: 'app-deploy-${location}-${environment}'
-  portalApp: 'app-portal-${location}-${environment}'
   operators: 'grp-op-${location}-${environment}'
   stateStorage: 'sttfstate${location}${environment}'
 }
@@ -28,13 +27,19 @@ param githubEnvironment = environment
 // provision-auth0.yml's job runs in its own GitHub environment, which holds the Auth0 Management API credential.
 param githubAuth0Environment = 'auth0-${environment}'
 
-// 013: the portal's public origin, https://<names.apps.portal>.<the x402 environment's default domain> (main.bicep's
-// portalFqdn output), without a trailing slash: its /redirect.html becomes the web app's second redirect URI. Empty
-// until the portal is deployed; then set it and deploy this file again (specs/013 quickstart §6 step 4).
-param portalOrigin = ''
+// 013: people sign in with Auth0 now (auth0/, specs/013 research R19), so what 013 first added to Entra for the
+// portal is taken out. Entra refuses to remove a scope that is still enabled, so it takes two deployments of this
+// file:
+// 1. with true: the Portal.Access scope stays in the API app, disabled, and the portal web app's pre-authorization
+//    and the auth_time claim go;
+// 2. with false: the scope is left out, and Entra removes it.
+// A new environment, which never had the scope, uses false from the start.
+// Dev has the scope enabled and pre-authorized (both deployments of 2026-11-10), so it is true here until step 1 has
+// run; then set it to false and deploy again.
+// Bicep never deletes what a template no longer names: after step 1, delete the portal web app registration
+// app-portal-eastus2-dev by hand (az ad app delete --id <its client ID>). infra/cleanup.sh no longer knows it.
+param retirePortalScope = true
 
 // People: who may run the agent (Agent.Run), and who may start the operator job (the operators' group).
 param agentUsers = ['me@fabriciorojas.com']
 param operators = ['me@fabriciorojas.com']
-// 014: who may use the portal's administration area (Portal.Admin). Nobody until the area is turned on.
-param portalAdmins = []

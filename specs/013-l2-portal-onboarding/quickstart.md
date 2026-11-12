@@ -43,7 +43,7 @@ npm run build:web
 npm run portal             # http://127.0.0.1:4025
 ```
 
-In the browser at `http://127.0.0.1:4025`, paste the token (dev mode replaces the Entra sign-in), then:
+In the browser at `http://127.0.0.1:4025`, paste the token (dev mode replaces the Auth0 sign-in), then:
 
 | Step | Do | Expect | Proves |
 |---|---|---|---|
@@ -127,30 +127,43 @@ CARD_VAULT_PUBLISHABLE_KEY=pk_test_…
 restricted key can expand `payment_method` on a SetupIntent, and what the vault answers to a real card number in
 test mode (do not try a real card; ask Stripe support or rely on the documentation).
 
-## 5. Sign-in checks against a real Entra tenant (manual, once per tenant)
+## 5. Sign-in checks against the Auth0 tenant (manual, once per tenant)
 
-After `infra/pre-deploy.bicep` has been applied with the changes of
-[config-and-secrets.md](contracts/config-and-secrets.md#infrapre-deploybicep), run the portal locally with
-`AUTH_TENANT_ID`, `AUTH_AUDIENCE` and `PORTAL_CLIENT_ID` set and no `AUTH_JWKS_FILE`.
+People sign in with Auth0 since 2026-11-10 ([R19](research.md#r19-auth0-as-the-identity-provider-for-people)). After
+`provision-auth0.yml` has applied the additions of
+[config-and-secrets.md](contracts/config-and-secrets.md#auth0-terraform-applied-by-provision-auth0yml), give a test
+person the role `x402-user` in Auth0, then run the portal locally with `AUTH_ISSUER`, `AUTH_AUDIENCE` and
+`PORTAL_CLIENT_ID` set and no `AUTH_JWKS_FILE`.
 
 | Check | Expect |
 |---|---|
-| Sign in as a person in `agentUsers` | the portal opens; the access token (decode it locally) has `scp: Portal.Access`, `roles: [Agent.Run]`, `idtyp: user`, `azp` = the web app, an `auth_time` |
-| Sign in as a person not in `agentUsers` | Entra refuses (assignment required), or the portal answers 403; no profile file is created |
-| `az account get-access-token --scope api://<api app>/user_impersonation` against the portal | 403 |
-| **`auth_time` after a forced sign-in** (research R5, unverified) | after "confirm it's you", the new token's `auth_time` is within the last minute |
-| **`auth_time` across a silent renewal** | wait for a renewal (or clear the access token from session storage and reload): `auth_time` is unchanged |
+| Sign in as a person with the role | the portal opens; the access token (decode it locally) has `iss` = the tenant, `aud` containing the API, `permissions: ["agent:run"]`, the portal's client as `azp` (or `client_id`), and the sign-in time claim (R19, checks 1 and 3) |
+| Sign in as a person without the role | the portal answers 403 and shows the refusal; no profile file is created |
+| The portal's token sent to a deployed agent service | 401: it accepts no token of the tenant ([R20](research.md#r20-two-applications-in-auth0-no-client-for-the-agent-service)). Sent to a local one configured for the tenant, 403: the portal's client is never on its list |
+| The tenant's applications, in the Auth0 dashboard | two made by `auth0/`: `app-portal-<env>` and `app-l2-ciba-<env>`. None for the agent service |
+| An Entra token of a person (`az account get-access-token …`) sent to either service | 401 at the portal, 403 at the agent service |
+| The deploy app's Entra token (a system identity) sent to the agent service | a run starts with no user, paid by the platform account |
+| **Sign-in time after a forced sign-in** (R19, check 2) | after "Confirm it's you", the new token's claim is within the last minute |
+| **Sign-in time across a silent renewal** | wait for a renewal, or reload the page: the claim is unchanged |
 
-If either `auth_time` check fails, stop: loosening changes would be always refused or wrongly accepted. Record the
-result in research R5 and switch to the fallback noted there before enabling user accounts.
+If either sign-in time check fails, stop: loosening changes would be always refused or wrongly accepted. Record
+each result in research R19 before enabling user accounts.
+
+*History: on 2026-11-10 the first build was checked against the Entra tenant, where a real sign-in worked and the
+token passed the portal's checks. Those results are in the Validation log and no longer describe people's sign-in.*
 
 ## 6. Azure
 
 Follows `specs/011` quickstart §4, with the additions of
 [config-and-secrets.md](contracts/config-and-secrets.md#azure).
 
-1. **Entra, by an administrator**: what-if, then create `infra/pre-deploy.bicep` (the new scope, claims and the web
-   app's registration). Paste the new `portalClientId` into `infra/main.<env>.bicepparam` under `userAccounts`.
+1. **Identity, by an administrator.**
+   - Auth0: run `provision-auth0.yml` (plan, then apply). It adds the API with its `agent:run` permission, the
+     role `x402-user`, the portal's client and the sign-in time Action. Paste its `identity`
+     output and `portalClientId` into `infra/main.<env>.bicepparam`. Assign the role to each person in Auth0.
+   - Entra: apply `infra/pre-deploy.bicep` to take out what this feature first added (the `Portal.Access` scope,
+     the web app registration). Expect two deployments, the first only disabling the scope
+     ([config-and-secrets.md](contracts/config-and-secrets.md#infrapre-deploybicep)).
 2. **Seed placeholders** before the next L2 deployment, without printing values:
 
    ```bash
@@ -165,8 +178,8 @@ Follows `specs/011` quickstart §4, with the additions of
    run does the portal smoke). Then `deploy-l1`, and `deploy-l2` and `deploy-portal` once more without the flag, so
    each unit passes every check and records its `last-good`. Expect every existing check green and the regression
    unchanged. `main.bicep` refuses to deploy the portal without `portalClientId` from step 1.
-4. **Register the redirect**: set `portalOrigin` in `infra/pre-deploy.<env>.bicepparam` to the `portalFqdn` output
-   and apply `pre-deploy.bicep` again.
+4. **Allow the deployed origin**: set the `portal_origin` variable of `auth0/` to `https://<portalFqdn>` and run
+   `provision-auth0.yml` again, so the portal's address is an allowed callback and web origin.
 5. **Turn it on**: seed the real `portal-token` (the same value in both vaults), the mnemonic and, for cards, the
    restricted key; set `userAccounts.enabled: true`; run `deploy-l2`, `deploy-portal`, `deploy-l1`.
 
@@ -235,3 +248,32 @@ create the local dev issuer, and the order in §2 was corrected.
 
 §4 (a Stripe sandbox), §5 (the Entra tenant) and §6 (Azure) were **not** run: they need outside accounts (T114).
 
+**Later on 2026-11-10, against the Entra dev tenant** (the first build's sign-in, since replaced by Auth0, R19). After
+`infra/pre-deploy.bicep` was applied in two deployments (`portalPreAuthorized` false, then true), a real sign-in at
+`http://localhost:4025` worked: the portal accepted the Entra token (scope, client, `idtyp`, `Agent.Run`,
+`auth_time`), reached L2 and opened onboarding. Step-up after a forced sign-in was not tried. These results describe
+the Entra build only; §5 now lists the checks for Auth0, and none of them has been run.
+
+**2026-11-10, after the change of identity provider** (tasks T139; Phase 14, research R19). Offline and local only:
+nothing here ran against the Auth0 tenant, and nothing was deployed.
+
+| Check | Result |
+|---|---|
+| `npm run typecheck` | pass |
+| `BICEP_PATH=~/.azure/bin/bicep npm test` | 57 files, 1,333 tests pass. `terraform validate` ran inside T-IAC-02 against the pinned provider (after `terraform init -backend=false`) and passes |
+| `npm run build`, `npm run build:web` | pass; the web build is one page (no `redirect.html`) with the sign-in library in its own chunk |
+| `npm run demo:local` | summary unchanged: `spent on-chain: 0.006 USDC`, `hash chain ok=true` |
+| Portal, `/api/config` | `{ mode: "dev", domain: "", clientId, audience }`; the policy header has no sign-in host and `frame-ancestors 'none'` on every path |
+| Portal, access with dev issuer tokens | portal token 200; agent-client token 403; `--service` token 401; no token 401 |
+| Portal in a browser, as a new person (`dev\|frank`) | sign-in by pasted token, profile and wallet through the screens; the ledger's `USER_REGISTERED`, `WALLET_CREATED` and `POLICY_CREATED` carry `userIdFor(issuer, sub)` |
+| Step-up | a policy created with a sign-in 20 minutes old: 403 `step_up_required`; with a fresh one: 201 |
+| Hosted agent's entry point (`src/hosted-main.ts`, the template's settings, no model call) | portal token 403; a person without `agent:run` 403; a system identity without `Agent.Run` 403; a person's and a system identity's token pass access (400 for an empty goal); no token 401 |
+| A person's run paid from their own account, through the hosted agent | covered by T-E2E-12 with a scripted model, on the local chain. Not run with a model key (T123 stays open) |
+
+Not checked, and still open: research R19's items against the tenant (T140; four since R20 took the device flow
+out), and the two deployments of `pre-deploy.bicep` that retire the Entra scope.
+
+**2026-11-11, two applications (R20).** `auth0/` makes two clients, the portal's and L2's; the agent CLI's client,
+`scripts/user-token.ts` and `npm run user-token` are removed, and the agent's Azure app gets no setting of people's
+sign-in. Checked offline only: `terraform validate`, T-IAC-02 and T-IAC-01 (with their must-fail mutants), the
+typecheck and the other suites that need no local chain. Nothing was applied to the tenant or deployed.

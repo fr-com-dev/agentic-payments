@@ -11,6 +11,8 @@
 // - secrets only from the portal vault, portal-token and card-vault-key, always referenced, so every environment
 //   seeds both (the placeholder off while user accounts or cards are off); the arrays stay literal (rule 21);
 // - no payment key and no token but PORTAL_TOKEN; it calls L2 only; the API docs switch is never set (rule 21);
+// - people sign in with Auth0: AUTH_ISSUER and AUTH_AUDIENCE come from the identity parameter, and nothing of Entra
+//   reaches it, since the portal accepts no Entra token (rule 21).
 // - 014 (rule 22): one more token, PORTAL_ADMIN_TOKEN, for L2's administration routes only: a reference to this
 //   vault's portal-admin-token, always referenced. PORTAL_ADMIN comes from userAccounts.administration.
 param location string
@@ -22,11 +24,10 @@ param profilesStorageName string
 param image string
 @description('The registry\'s login server.')
 param acrServer string
-param authTenantId string
-@description('The API app\'s client ID: the audience of the person\'s token, as for the agent.')
-param authAudience string
 @description('013 user accounts (SPEC L2-8): the non-secret settings from the parameter file.')
 param userAccounts object
+@description('013 people\'s sign-in with Auth0: { issuer, audience }, from the parameter file.')
+param identity object
 
 resource idPortal 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' existing = { name: names.identities.portal }
 resource mainEnv 'Microsoft.App/managedEnvironments@2025-01-01' existing = { name: names.environments.x402 }
@@ -70,8 +71,8 @@ resource portal 'Microsoft.App/containerApps@2025-01-01' = {
             // address from X-Forwarded-For (T-IAC-01 rule 3).
             { name: 'TRUSTED_PROXY_HOPS', value: '1' }
             { name: 'CONTROL_URL', value: controlUrl }
-            { name: 'AUTH_TENANT_ID', value: authTenantId }
-            { name: 'AUTH_AUDIENCE', value: authAudience }
+            { name: 'AUTH_ISSUER', value: identity.issuer }
+            { name: 'AUTH_AUDIENCE', value: identity.audience }
             { name: 'PORTAL_CLIENT_ID', value: userAccounts.portalClientId }
             { name: 'PROFILE_DIR', value: '/app/.local/portal/profiles' }
             // Empty unless stripe: the portal reads an empty CARD_VAULT as cards off, and then ignores both keys.

@@ -190,15 +190,16 @@ Then check the platform facts the research could not confirm:
 | Key Vault references resolve through the VNet rule (firewall default Deny) | all apps start and `ledger-verify` passes | no `secret reference` errors in the revision status |
 | Exclusive create on the NFS share | during a `deploy-l2` run (step 4, the wait), the L2 log shows `ledger locked … waiting` in the revision overlap, then a clean start | one writer; the chain verifies |
 | L2/L3 are private | from your machine: `curl -m 5 https://ca-l2-eastus2-dev.<env-domain>/v1/escalations` | 404 from the environment proxy, or no route; never 401 from L2 |
-| A person can get a token and run the agent | "Calling the agent as a person" below | 200. A consent error (AADSTS65001) means the Azure CLI isn't pre-authorized; 401 means `AUTH_AUDIENCE` isn't the client ID |
+| A person's token never starts a run (SPEC v1.13) | "Calling the agent as a person" below | 401 for a token of the Auth0 tenant (the portal's included), 403 for a person's Entra token |
 
-**Calling the agent as a person** (listed in `agentUsers`, so assigned `Agent.Run`):
-
-```bash
-TOKEN=$(az account get-access-token --scope api://app-l1-eastus2-dev/user_impersonation --query accessToken -o tsv)
-curl -s -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
-  -d '{"goal":"Get the weather for Lima"}' https://<agent fqdn>/v1/runs | jq '.status, [.steps[].result.outcome]'
-```
+**Calling the agent as a person.** A deployed agent accepts system identities only. Since SPEC v1.13 the Auth0
+tenant has two applications, the portal's and L2's (`specs/013` research R20), and none that gives a person an agent
+token: `npm run user-token` and the tenant's device flow of v1.12 are gone, and the agent's app gets no
+`AUTH_ISSUER`, `AUTH_AUDIENCE` or `AGENT_CLIENT_IDS`. A token of the tenant is answered with 401, the portal's
+included. The Azure CLI token of earlier versions
+(`az account get-access-token --scope api://app-l1-eastus2-dev/user_impersonation`) is refused with 403: Entra
+tokens start runs for system identities only. Runs as a person work locally, with the dev issuer
+(`npm run -s dev-token -- --subject alice`).
 
 ## 5. Operator flow in Azure
 

@@ -6,7 +6,6 @@
 // (research R1). docs/l1-hosted.openapi.yaml describes them; test/openapi-hosted.test.ts keeps it in sync.
 import { randomUUID } from "node:crypto";
 import express, { type Express, type NextFunction, type Request, type Response } from "express";
-import type { JWTVerifyGetKey } from "jose";
 import type { MastraModelConfig } from "@mastra/core/llm";
 import { addressLimit, trustProxies } from "../../shared/address-limit.js";
 import type { AuthorizationGatePort, SettlementVerifierPort } from "../../shared/contracts.js";
@@ -14,7 +13,7 @@ import { userIdFor } from "../../shared/user-id.js";
 import { runGoal } from "./agent.js";
 import { mountHostedApiDocs } from "./api-docs.js";
 import type { HostedConfig } from "./config.js";
-import { requesterAuth, type Requester } from "./requester-auth.js";
+import { requesterAuth, type Requester, type RequesterKeys } from "./requester-auth.js";
 import { createRunLimiter } from "./run-limits.js";
 import { createRunLog, stepOutcome } from "./run-log.js";
 import { issueSessionRef, newSessionId, SESSION_REF_RE, verifySessionRef } from "./session-ref.js";
@@ -27,7 +26,7 @@ const BODY_KEYS = new Set(["goal", "sessionRef"]);
 
 export interface HostedDeps {
   config: HostedConfig;
-  keys: JWTVerifyGetKey;
+  keys: RequesterKeys;
   model: MastraModelConfig;
   gate: AuthorizationGatePort;
   settlement: SettlementVerifierPort;
@@ -39,8 +38,8 @@ export interface HostedDeps {
   now?: () => number;
   /** Test hook: accept any well-formed session reference (T-AGT-04 must-fail). Never set by the entry point. */
   skipSessionMac?: boolean;
-  /** Test hook: accept a person's token without this service's scope (T-AGT-07 must-fail). Never set by the entry point. */
-  skipScopeCheck?: boolean;
+  /** Test hook: accept a person's token from any client, the portal's included (T-AGT-07 must-fail). Never set by the entry point. */
+  skipClientCheck?: boolean;
   /** Test hooks (T-AGT-03): another limit per address, or none at all (the must-fail). Never set by the entry point. */
   maxRequestsPerAddress?: number;
   skipAddressLimit?: boolean;
@@ -53,7 +52,7 @@ export interface HostedApp {
   markReady(): void;
 }
 
-const BYPASS_REQUESTER: Requester = { tenantId: "bypass", objectId: "bypass", kind: "user", key: "bypass:bypass" };
+const BYPASS_REQUESTER: Requester = { kind: "user", authority: "bypass", subject: "bypass", key: "bypass:bypass" };
 
 /** `goal` (1–4,000 characters after trimming) and optional `sessionRef`; nothing else. */
 function parseBody(body: unknown): { goal: string; sessionRef?: string } | { error: string } {
@@ -92,12 +91,10 @@ export function createHostedApp(deps: HostedDeps): HostedApp {
   if (!deps.bypassAuth) {
     app.use(
       requesterAuth({
-        tenantId: deps.config.auth.tenantId,
-        audience: deps.config.auth.audience,
-        issuer: deps.config.auth.issuer,
+        ...(deps.config.auth.person !== undefined && { person: deps.config.auth.person }),
+        ...(deps.config.auth.service !== undefined && { service: deps.config.auth.service }),
         keys: deps.keys,
-        ...(deps.config.auth.portalClientId !== undefined && { portalClientId: deps.config.auth.portalClientId }),
-        ...(deps.skipScopeCheck && { skipScopeCheck: true }),
+        ...(deps.skipClientCheck && { skipClientCheck: true }),
       }),
     );
   }
@@ -148,7 +145,7 @@ export function createHostedApp(deps: HostedDeps): HostedApp {
     // 013 FR-033: the user every payment of this run is for. Fixed here, from the verified requester, before the
     // model sees anything: a person's own identifier, and none for a system identity (FR-002). Neither the goal
     // text nor a tool input can change it.
-    const userId = !deps.bypassAuth && requester.kind === "user" ? userIdFor(requester.tenantId, requester.objectId) : undefined;
+    const userId = !deps.bypassAuth && requester.kind === "user" ? userIdFor(requester.authority, requester.subject) : undefined;
     try {
       const outcome = await runGoal({
         goal: parsed.goal,

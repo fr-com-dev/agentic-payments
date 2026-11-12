@@ -24,7 +24,7 @@ async function main(): Promise<void> {
   }
 
   const { loadPortalConfig } = await import("./portal/config.js");
-  const { keysFor } = await import("./shared/entra-token.js");
+  const { personKeys } = await import("./shared/identity-token.js");
   const { ControlClient } = await import("./portal/control-client.js");
   const { AdminClient } = await import("./portal/admin-client.js");
   const { ProfileStore } = await import("./portal/profile-store.js");
@@ -35,7 +35,7 @@ async function main(): Promise<void> {
   const config = loadPortalConfig();
   const { app, markReady } = createPortalApp({
     config,
-    keys: keysFor(config.auth),
+    keys: personKeys(config.auth),
     control: new ControlClient(config.controlUrl, config.portalToken),
     profiles: new ProfileStore(config.profileDir),
     balance: createBalanceCache(rpcBalanceReader(config.rpcUrl)),

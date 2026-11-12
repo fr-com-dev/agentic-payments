@@ -1,17 +1,46 @@
 <!--
 Sync Impact Report
-- Version change: 1.4.0 → 1.5.0 (MINOR, 2026-11-11, feature 014-portal-l2-control-api)
+- Version change: 1.6.0 → 1.7.0 (MINOR, 2026-11-12, feature 014-portal-l2-control-api)
 - Modified principles: V. Least-Privilege Credentials (the caller roles gain a sixth, portal→control for
   administration; one new bullet for the administration credential; the bullet on the portal role credential is
   unchanged word for word, and stays true: that credential still can't approve or reject). No principle is
   redefined or removed.
 - Modified sections: Technology & Scope Constraints (scope: administrators decide escalations in the portal, a user
-  approving their own payments stays out; residual risks for v1.11). No new technology.
+  approving their own payments stays out; residual risks for v1.14). No new technology: who is an administrator is
+  a second permission of the sign-in tenant, in the same Terraform.
 - Templates reviewed: plan-template.md, spec-template.md, tasks-template.md (no change)
-- Source: SPEC.md v1.11 (Changes in 1.11, §3.3, §4 INV-13, §4.1 A12 and A13, L2-4.3, L2-5, L2-8, §11 SEC-8 and
-  SEC-25..SEC-27)
+- Source: SPEC.md v1.14 (Changes in 1.14, §3.3, §4 INV-13, §4.1 A12 and A13, L2-4.3, L2-5, L2-8, §11 SEC-8 and
+  SEC-26..SEC-28)
 - Deferred TODOs: none. The first design kept a "seen" marker in the browser's localStorage; it was dropped during
-  implementation because the web app's standing safety test forbids it.
+  implementation because the web app's standing safety test forbids it. The feature was first written as 1.5.0
+  against SPEC v1.11, with the administrator as an app role of the organization's directory; main took those
+  numbers and moved people's sign-in to Auth0 before it merged, so it is 1.7.0 and a permission of the tenant.
+
+Previous report (1.6.0)
+- Version change: 1.5.0 → 1.6.0 (MINOR, 2026-11-11, feature 013-l2-portal-onboarding, research R19)
+- Modified principles: V. Least-Privilege Credentials (the requester credential is now one of two: a person's
+  access token from the sign-in tenant, Auth0, or a system identity's token from the organization's directory,
+  Microsoft Entra ID; the same person's token for the portal and for the agent service differ by the client they
+  were issued to, and each service accepts only its own clients). No principle is redefined or removed.
+- Modified sections: Technology & Scope Constraints (the web app's sign-in library is `@auth0/auth0-spa-js`
+  instead of `@azure/msal-browser`; the Auth0 tenant now also holds people's sign-in, still Terraform; residual
+  risks for v1.12)
+- Templates reviewed: plan-template.md, spec-template.md, tasks-template.md (no change)
+- Source: SPEC.md v1.12 (Changes in 1.12, §3.3, L1-6, L2-8, CFG-2, §11 SEC-14, SEC-19..SEC-21)
+- Deferred TODOs: the five checks of specs/013 research R19 against the Auth0 tenant (tasks.md T140)
+
+Previous report (1.5.0)
+- Version change: 1.4.0 → 1.5.0 (MINOR, 2026-11-10, feature 012-ciba-escalation-approval, convergence T072–T075)
+- Modified principles: V. Least-Privilege Credentials (adds the Auth0 Management API credential: held only by the
+  Auth0 pipeline's GitHub environment, the only credential GitHub holds, never one of L2's and never payment
+  authority). No principle is redefined or removed.
+- Modified sections: Technology & Scope Constraints (the Auth0 tenant's Terraform is applied by its pipeline,
+  provision-auth0.yml, started by hand, no longer by an administrator's own shell; its state is a blob in Azure
+  made by Bicep; residual risks for v1.11)
+- Templates reviewed: plan-template.md, spec-template.md, tasks-template.md (no change)
+- Source: SPEC.md v1.9 (Changes in 1.9) and v1.11 (Changes in 1.11, §11 SEC-25)
+- Deferred TODOs: none. This report is late for v1.9: the pipeline was merged on 2026-11-10 before the
+  constitution was amended, and /speckit-converge found it.
 
 Previous report (1.4.0)
 - Version change: 1.3.0 → 1.4.0 (MINOR, 2026-11-10, feature 013-l2-portal-onboarding)
@@ -143,13 +172,22 @@ Rationale: authorization must be reproducible, auditable and race-free.
 - A third-party API credential (for example, the seller's CDP facilitator key) is held by
   exactly one process and confined to one file by an architecture rule. It must never become
   payment authority.
-- A requester credential (the Entra ID token a person or system presents to the hosted agent
+- A requester credential (the access token a person or system presents to the hosted agent
   service) authenticates the requester to L1 only. It MUST NOT be forwarded to L2 or L3, and it
-  never replaces a role credential.
+  never replaces a role credential. Since 1.6.0 a person's comes from the sign-in tenant (Auth0) and a
+  system identity's from the organization's directory (Microsoft Entra ID); a system identity never names a
+  user. A person's token for the portal and for the agent service differ by the client they were issued to:
+  each service MUST accept only its own clients and refuse the other's.
 - The approval-service client credential (L2's Auth0 key or secret, for backchannel approval) is held by L2
   only and confined to one module by an architecture rule (A9). It authenticates L2 to the approval service; it
   never signs a payment, and it never approves one by itself: an approval counts only when the approver's
   signed answer verifies.
+- The Auth0 Management API credential, which the tenant's pipeline (`provision-auth0.yml`) applies Terraform
+  with, is held only by that pipeline's own GitHub environment and reaches only its plan and apply steps. It is
+  the only credential GitHub holds: no deploy pipeline reads a secret. GitHub MUST NEVER hold a credential of
+  L2's (the pipeline provisions the public half of L2's key only), a payment key or a role credential. The
+  Management API credential can change the tenant's configuration; it never signs a payment and never approves
+  one.
 - The portal role credential opens only the control layer's user-account routes. It MUST NOT authorize,
   approve, reject or reconcile, and no other role credential opens those routes. The portal is the second
   public process beside the hosted agent service; it holds no payment key and MUST refuse to start if it
@@ -201,9 +239,12 @@ Rationale: authorization must be reproducible, auditable and race-free.
   `@ai-sdk/anthropic`, zod, jose and `@azure/identity`. The Node floor is 22.13. Added in 1.3.0: L2 also
   uses jose, to verify the approver's token and sign its client assertion; the approval service is an Auth0
   tenant reached over HTTPS by OpenID CIBA in poll mode, from L2 only, with no inbound route. The tenant is
-  Terraform (`auth0/`, provider `auth0/auth0`), applied by a tenant administrator by hand; Terraform manages
-  nothing in Azure, which stays Bicep only. Added in 1.4.0, for the portal's web app only and at build time:
-  React, Vite and `@azure/msal-browser`, bundled into static files and never a runtime dependency. The two public
+  Terraform (`auth0/`, provider `auth0/auth0`), applied by its pipeline, `provision-auth0.yml`, which an
+  administrator starts by hand (amended in 1.5.0; by hand from a shell until then); Terraform manages
+  nothing in Azure, which stays Bicep only, and its state is a blob in a storage account Bicep makes. Added in 1.4.0, for the portal's web app only and at build time:
+  React, Vite and a sign-in library (`@azure/msal-browser` in 1.4.0; `@auth0/auth0-spa-js` since 1.6.0, when
+  people's sign-in moved to the Auth0 tenant, defined in the same Terraform), bundled into static files and never
+  a runtime dependency. The two public
   services (the hosted agent and the portal) use express-rate-limit 8.7.1 to bound requests per client address
   before a token is verified. The card
   vault is Stripe in test mode, reached over HTTPS from the portal only, through its REST API with a pinned
@@ -215,7 +256,7 @@ Rationale: authorization must be reproducible, auditable and race-free.
   Solana, AP2, ACP, Visa TAP, Mastercard Agent Pay, a persistent DB beyond JSONL, and mTLS.
   Since 1.4.0 user accounts are in scope (many users, each with their own account and expense
   policies); organizations of users, paying with a card, moving funds out of a user's account
-  and deleting a user stay out. Since 1.5.0 administrators decide escalated payments in the portal; a user
+  and deleting a user stay out. Since 1.7.0 administrators decide escalated payments in the portal; a user
   approving their own payments stays out. Each extension (EXT-1..EXT-9) is delivered one per change and MUST
   preserve every invariant.
 - Cross-layer types live only in the shared contract module. Changing them is a contract
@@ -237,10 +278,16 @@ Rationale: authorization must be reproducible, auditable and race-free.
   - a stolen portal sign-in can loosen a policy up to the platform limits, after a fresh sign-in;
   - one mnemonic covers every user's test funds and cannot be rotated in place;
   - the card vault sees card details.
-  Added in 1.5.0:
+  Added in 1.6.0:
+  - one provider, Auth0, stands behind people's sign-in and behind approvals; their clients, credentials and
+    permissions are separate;
+  - step-up relies on a claim that a post-login Action of the tenant sets, to be checked against the tenant
+    before user accounts are turned on anywhere.
+  Added in 1.7.0:
   - the portal is trusted to name the administrator who decided an escalation and when they confirmed their
     identity; a compromised portal could approve pending escalations within the policies' limits;
-  - a stolen administrator sign-in can approve pending escalations after a fresh sign-in;
+  - a stolen administrator sign-in can approve pending escalations after a fresh sign-in, and an administrator
+    permission taken away holds until the person's access token expires;
   - one portal process holds two role credentials, separate at the control layer and in its own code.
 
 ## Development Workflow & Quality Gates
@@ -270,4 +317,4 @@ New policy rules get a snake_case rule ID, a row in the SPEC rule table and a po
   design and again before implementation. Every review verifies the quality gates above.
 - Runtime guidance for agents lives in `CLAUDE.md`.
 
-**Version**: 1.5.0 | **Ratified**: 2026-10-16 | **Last Amended**: 2026-11-11
+**Version**: 1.7.0 | **Ratified**: 2026-10-16 | **Last Amended**: 2026-11-12

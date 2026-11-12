@@ -1,5 +1,5 @@
-// 014 portal administration, portal side (SPEC.md v1.11 L2-8; specs/014 contracts/portal-api.md "Tests").
-// T-PRT-10..14: who may use the administration area (the Portal.Admin role, checked before L2 is called), what the
+// 014 portal administration, portal side (SPEC.md v1.14 L2-8; specs/014 contracts/portal-api.md "Tests").
+// T-PRT-10..14: who may use the administration area (the portal:admin permission of the sign-in tenant, checked before L2 is called), what the
 // portal takes from the verified token only (the decider and the time of their identity confirmation), how each L2
 // answer is mapped, the log, and the switch. In-process portal against an in-process L2 and the local dev issuer.
 import { afterEach, describe, expect, it } from "vitest";
@@ -44,7 +44,7 @@ const USER_ROUTES: Array<[string, string, unknown?]> = [
 ];
 
 describe("T-PRT-10 access by role (FR-002, FR-003, FR-004, FR-006)", () => {
-  it("T-PRT-10 a user without Portal.Admin is refused on the administration routes, and L2 is not called", async () => {
+  it("T-PRT-10 a user without portal:admin is refused on the administration routes, and L2 is not called", async () => {
     const p = await start({ admin: true });
     const before = p.l2Calls();
     const r = await p.as("alice")("GET", "/api/admin/escalations");
@@ -55,7 +55,7 @@ describe("T-PRT-10 access by role (FR-002, FR-003, FR-004, FR-006)", () => {
     expect(p.l2Calls()).toBe(before);
   });
 
-  it("T-PRT-10 a person with Portal.Admin only: who they are, and none of a user's own routes (FR-003, FR-006)", async () => {
+  it("T-PRT-10 a person with portal:admin only: who they are, and none of a user's own routes (FR-003, FR-006)", async () => {
     const p = await start({ admin: true });
     const carol = p.adminAs("carol", { user: false });
     const before = p.l2Calls();
@@ -70,7 +70,7 @@ describe("T-PRT-10 access by role (FR-002, FR-003, FR-004, FR-006)", () => {
     expect(p.profiles.get(p.userId("carol"))).toBeUndefined();
   });
 
-  it("T-PRT-10 a person with both roles has both halves; a person with neither has none", async () => {
+  it("T-PRT-10 a person with both permissions has both halves; a person with neither has none", async () => {
     const p = await start({ admin: true });
     const dana = p.adminAs("dana");
     const me = await dana("GET", "/api/me");
@@ -79,7 +79,7 @@ describe("T-PRT-10 access by role (FR-002, FR-003, FR-004, FR-006)", () => {
     // The administration half is open to them: the route itself answers (or 404 until it exists), never 403.
     expect((await dana("GET", "/api/admin/escalations")).status).not.toBe(403);
 
-    const none = await p.token("erin", { roles: [] });
+    const none = await p.token("erin", { permissions: [] });
     expect(await p.call("GET", "/api/me", { token: none })).toMatchObject({ status: 403, body: FORBIDDEN });
     expect(await p.call("GET", "/api/admin/escalations", { token: none })).toMatchObject({ status: 403, body: FORBIDDEN });
   });
@@ -92,16 +92,16 @@ describe("T-PRT-10 access by role (FR-002, FR-003, FR-004, FR-006)", () => {
 
   it("T-PRT-10 the permission taken away: the person's next token is refused on every administration route; a token issued before holds until it expires", async () => {
     const p = await start({ admin: true });
-    // The role is read from the token and nowhere else: the portal asks no directory per request (research R3).
+    // The permission is read from the token and nowhere else: the portal asks the sign-in tenant nothing per request (research R3).
     const issuedBefore = await p.adminToken("carol", { user: false });
-    const issuedAfter = await p.token("carol", { roles: ["Agent.Run"] });
+    const issuedAfter = await p.token("carol", { permissions: ["agent:run"] });
     const before = p.l2Calls();
     for (const path of ADMIN_READS) expect(await p.call("GET", path, { token: issuedAfter }), path).toMatchObject({ status: 403, body: FORBIDDEN });
     for (const [path, body] of ADMIN_WRITES) expect(await p.call("POST", path, { token: issuedAfter, body }), path).toMatchObject({ status: 403, body: FORBIDDEN });
     expect(p.l2Calls()).toBe(before);
     expect((await p.call<{ admin: boolean }>("GET", "/api/me", { token: issuedAfter })).body.admin).toBe(false);
     // With no role left at all, the next token opens nothing.
-    expect(await p.call("GET", "/api/me", { token: await p.token("carol", { roles: [] }) })).toMatchObject({ status: 403, body: FORBIDDEN });
+    expect(await p.call("GET", "/api/me", { token: await p.token("carol", { permissions: [] }) })).toMatchObject({ status: 403, body: FORBIDDEN });
     // The bound: the earlier token still carries the role, so it works until its own expiry and not a request longer.
     expect((await p.call("GET", "/api/admin/escalations", { token: issuedBefore })).status).toBe(200);
     const expired = await p.adminToken("carol", { user: false, exp: Math.floor(Date.now() / 1000) - 120 });
@@ -109,25 +109,32 @@ describe("T-PRT-10 access by role (FR-002, FR-003, FR-004, FR-006)", () => {
     for (const [path, body] of ADMIN_WRITES) expect(await p.call("POST", path, { token: expired, body }), path).toMatchObject({ status: 401, body: { error: "unauthorized" } });
   });
 
-  it("T-PRT-10 a token issued for the agent service is refused, whatever its roles; no token is 401", async () => {
+  it("T-PRT-10 a token issued to an agent client is refused, whatever its permissions; so are a machine token and the directory's role; no token is 401", async () => {
     const p = await start({ admin: true });
-    const agent = await p.agentToken("carol", { roles: ["Agent.Run", "Portal.Admin"] });
+    const agent = await p.agentToken("carol", { permissions: ["agent:run", "portal:admin"] });
     expect(await p.call("GET", "/api/admin/escalations", { token: agent })).toMatchObject({ status: 403, body: FORBIDDEN });
     expect(await p.call("GET", "/api/me", { token: agent })).toMatchObject({ status: 403, body: FORBIDDEN });
     expect(await p.call("GET", "/api/admin/escalations")).toMatchObject({ status: 401, body: { error: "unauthorized" } });
-    const service = await p.token("svc", { idtyp: "app", roles: ["Portal.Admin"] });
-    expect((await p.call("GET", "/api/admin/escalations", { token: service })).status).toBe(403);
+    // A machine token of the sign-in tenant that claims the permission, from the portal's own client.
+    const machine = await p.token("svc", { sub: "x402-portal-dev@clients", permissions: ["portal:admin"], claims: { gty: "client-credentials" } });
+    expect((await p.call("GET", "/api/admin/escalations", { token: machine })).status).toBe(403);
+    // The organization's directory can't make an administrator: a `roles` claim is not a permission.
+    const byRole = await p.token("carol", { permissions: null, claims: { roles: ["Portal.Admin", "portal:admin"] } });
+    expect(await p.call("GET", "/api/admin/escalations", { token: byRole })).toMatchObject({ status: 403, body: FORBIDDEN });
+    // A system identity's token (the dev directory's) is not a token of the sign-in tenant at all.
+    const system = await p.agentToken("svc", { service: true, roles: ["Agent.Run", "Portal.Admin"] });
+    expect((await p.call("GET", "/api/admin/escalations", { token: system })).status).toBe(401);
   });
 
-  it("T-PRT-10 administration off: the routes are not there, and Portal.Admin counts for nothing", async () => {
+  it("T-PRT-10 administration off: the routes are not there, and portal:admin counts for nothing", async () => {
     const p = await start();
     expect(await p.as("alice")("GET", "/api/admin/escalations")).toMatchObject({ status: 404, body: { error: "not found" } });
     expect(await p.adminAs("dana")("GET", "/api/admin/escalations")).toMatchObject({ status: 404, body: { error: "not found" } });
-    // A person with only Portal.Admin is refused everywhere, exactly as before this feature.
+    // A person with only portal:admin is refused everywhere, exactly as before this feature.
     const carol = p.adminAs("carol", { user: false });
     expect(await carol("GET", "/api/me")).toMatchObject({ status: 403, body: FORBIDDEN });
     expect(await carol("GET", "/api/admin/escalations")).toMatchObject({ status: 403, body: FORBIDDEN });
-    // A person with both roles is a user and nothing more.
+    // A person with both permissions is a user and nothing more.
     expect((await p.adminAs("dana")("GET", "/api/me")).body).toMatchObject({ user: true, admin: false });
     expect(await p.call("GET", "/api/admin/escalations")).toMatchObject({ status: 401 });
   });
@@ -142,7 +149,7 @@ describe("T-PRT-14 configuration and the flags (FR-001, CFG-2)", () => {
   const base = {
     NETWORK: "local",
     CONTROL_URL: "http://127.0.0.1:4020",
-    AUTH_TENANT_ID: "dev",
+    AUTH_ISSUER: "urn:x402:dev-issuer",
     AUTH_AUDIENCE: "api://x402-l1-agent",
     PORTAL_CLIENT_ID: "x402-portal-dev",
     AUTH_JWKS_FILE: ".local/dev-issuer/jwks.json",
@@ -160,9 +167,9 @@ describe("T-PRT-14 configuration and the flags (FR-001, CFG-2)", () => {
       NETWORK: "base-sepolia",
       CONTROL_URL: "http://l2.internal",
       PORTAL_TOKEN: "a-portal-token-value",
-      AUTH_TENANT_ID: "11111111-1111-4111-8111-111111111111",
-      AUTH_AUDIENCE: "22222222-2222-4222-8222-222222222222",
-      PORTAL_CLIENT_ID: "33333333-3333-4333-8333-333333333333",
+      AUTH_ISSUER: "https://tenant.example/",
+      AUTH_AUDIENCE: "https://x402.example/api",
+      PORTAL_CLIENT_ID: "PortalSpaClient0123456789abcdefg",
       PORTAL_ADMIN: "1",
     };
     let message = "";

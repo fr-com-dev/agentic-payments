@@ -102,7 +102,7 @@ approvals now also rely on ([R6](research.md#r6-identity-confirmation-for-approv
 | VI. Exact money arithmetic | Budget lines are atomic strings computed with `BigInt` by the decision's own function; the browser formats them with the existing `money.ts`. | PASS | PASS |
 | VII. Protocol fidelity | x402 handling is not touched. | PASS | PASS |
 | VIII. Proven safety | Five must-fail proofs ([Proofs](#proofs-constitution-viii)). Every new route, field and rule has a test. | PASS | PASS |
-| Quality gates | typecheck, the full suite, an unchanged demo summary, SPEC v1.11 in the same change, requirement IDs in test names. | PASS | PASS |
+| Quality gates | typecheck, the full suite, an unchanged demo summary, SPEC v1.14 in the same change, requirement IDs in test names. | PASS | PASS |
 
 **Amendments made in the same change, not violations** (the spec's Assumptions asked for them):
 
@@ -323,7 +323,7 @@ token.
 
 ## SPEC and governance changes (same change)
 
-SPEC.md v1.10 → **v1.11**, with a "Changes in 1.11" table:
+SPEC.md v1.10 → **v1.14**, with a "Changes in 1.14" table:
 
 | Section | Change |
 |---|---|

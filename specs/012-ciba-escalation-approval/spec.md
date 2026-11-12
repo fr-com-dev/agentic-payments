@@ -26,6 +26,16 @@
 - Q: How is the Auth0 tenant provisioned? → A: As code, in Terraform under a new top-level `auth0/` folder (the
   official `auth0/auth0` provider), applied by a tenant administrator by hand, like `infra/pre-deploy.bicep`.
   Azure stays Bicep only. The plan, the approver's Guardian enrollment and L2's private key stay manual.
+
+### Session 2026-11-10
+
+- Q: Who applies the tenant's Terraform? → A: A pipeline, `.github/workflows/provision-auth0.yml`, started by hand
+  (the owner's decision, SPEC v1.9; this replaces "applied by a tenant administrator by hand" above). It runs in its
+  own GitHub environment, `auth0-<env>`, which holds the Auth0 Management API credential as the only secrets in
+  GitHub, and its Terraform variables as that environment's variables: no tfvars file is kept anywhere. The state
+  is a blob in Azure that `infra/pre-deploy.bicep` makes.
+- Q: May the pipeline take L2's client secret? → A: No. L2's credential is held by L2 only, so the pipeline
+  provisions the key credential alone and GitHub holds only the public half of L2's key (SPEC v1.11).
 - Q: How does Azure deliver the CIBA settings? → A: Always present on L2's container. The l2 vault always holds
   `ciba-client-credential`, as the placeholder `off` while the feature is off.
 
@@ -614,13 +624,16 @@ deciding identity. Neither shows a token, a request handle or text from the appr
 - **Client authentication.** A private-key JWT credential is preferred over a client secret, so no
   shared secret leaves L2's vault. Auth0 also supports a client secret or mTLS.
 - **The Auth0 tenant is configured as code** (clarified 2026-11-08), in Terraform under `auth0/`, outside
-  Bicep because it is not an Azure resource. A tenant administrator applies it by hand. It makes:
+  Bicep because it is not an Azure resource. Its pipeline, `provision-auth0.yml`, applies it when an administrator
+  starts it (clarified 2026-11-10; by hand from a shell until then). It makes:
   - the CIBA grant on L2's client;
   - the API with its payment-details type;
   - Guardian push.
 
   The approver's account must already exist; their Guardian enrollment and the plan stay manual. `infra/` gains
-  no new script (T-E2E-AZ), and its parameter files gain the non-secret values (FR-003).
+  no new script (T-E2E-AZ), and its parameter files gain the non-secret values (FR-003). Since 2026-11-10
+  `infra/pre-deploy.bicep` also makes the storage for the Terraform state and the deploy app's second sign-in, and
+  `infra/github-setup.sh` the pipeline's GitHub environment with its variables.
 - **Approval time-to-live.** A backchannel approval uses the operator default, 600 seconds.
 - **Resuming without the handle (planning, 2026-11-07).** FR-026 asks for whatever resuming needs
   to be recorded, while NFR-003 and SC-008 keep the request handle out of the ledger. The design

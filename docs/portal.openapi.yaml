@@ -10,10 +10,11 @@ info:
     The portal is where a person sets up what their agent may spend. It serves a web app and this API from one
     origin, and it holds no payment key: deciding and signing stay in L2.
 
-    - **One person per request.** Every `/api` operation except `/api/config` needs the person's own Entra ID access
-      token for the portal (scope `Portal.Access`, issued to the portal's web app, with the app role `Agent.Run`).
-      The user is derived from the token and nothing else: no operation takes a user identifier.
-    - **A token for the agent service is refused** (403), and so is a system identity.
+    - **One person per request.** Every `/api` operation except `/api/config` needs the person's own access token
+      from the sign-in tenant (Auth0): for the API, issued to the portal's web app, with the permission
+      `agent:run`. The user is derived from the token and nothing else: no operation takes a user identifier.
+    - **A token for the agent service is refused** (403: it comes from another client), and so is a machine token.
+      A token of any other issuer, the organization's directory included, is not valid here (401).
     - **Amounts** go in as USDC text with at most 6 decimals (never rounded) and come back as decimal strings of
       atomic units (`"20000"` is 0.02 USDC).
     - **Loosening** a policy, resuming one or enabling the account needs a sign-in at most 15 minutes old; otherwise
@@ -38,7 +39,7 @@ tags:
     description: Disabling and enabling the account.
   - name: administration
     description: >-
-      v1.11 the administration area (L2-8). Mounted only when `PORTAL_ADMIN=1`. For a signed-in person whose token
+      v1.14 the administration area (L2-8). Mounted only when `PORTAL_ADMIN=1`. For a signed-in person whose token
       carries the `Portal.Admin` role; anyone else gets 403 and the control service is not called. No operation takes
       a user identifier or any text: the decider comes from the verified token.
   - name: docs
@@ -85,7 +86,7 @@ paths:
       operationId: getConfig
       summary: "Public values the web app needs before anyone signs in"
       description: |
-        The sign-in mode and identifiers, the network, whether cards are available, and (v1.11) whether the
+        The sign-in mode and identifiers, the network, whether cards are available, and (v1.14) whether the
         administration area is on. Nothing here is a secret.
       security: []
       responses:
@@ -102,7 +103,7 @@ paths:
       operationId: getMe
       summary: "The signed-in person: onboarding steps, account state and profile"
       description: |
-        v1.11: `user` says whether the person may start agent runs (and so has a profile, a wallet and policies), and
+        v1.14: `user` says whether the person may start agent runs (and so has a profile, a wallet and policies), and
         `admin` whether they may use the administration area. A person who is only an administrator gets
         `{ userId, user: false, admin: true }` and nothing else; the control service is not asked.
       security:
@@ -1110,8 +1111,9 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: >-
-        The person's Entra ID v2.0 access token for the portal: `aud` the API app, `scp` containing `Portal.Access`,
-        `azp` the portal's web app, `idtyp: user`, `roles` containing `Agent.Run`, and an `auth_time`.
+        The person's access token from the sign-in tenant (Auth0): `iss` the tenant, `aud` containing the API's
+        identifier, the portal's web app as the client (`azp`, or `client_id`), `permissions` containing
+        `agent:run`, and the sign-in time claim (`https://x402.dev/auth_time` by default). Never a machine token.
 
   parameters:
     EscalationId:
@@ -1139,16 +1141,18 @@ components:
 
   responses:
     Unauthorized:
-      description: Missing, malformed, invalid or expired token, or one without a sign-in time. Nothing is written.
+      description: >-
+        Missing, malformed, invalid or expired token, a token of another issuer (the organization's directory
+        included), or the portal's own token without a usable sign-in time. Nothing is written.
       content:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
     Forbidden:
       description: >-
-        A valid token that is not allowed here: a system identity, a token issued for the agent service or to another
-        client, or a person without the permission the route needs: `Agent.Run` for a person's own routes, and
-        (v1.11) `Portal.Admin` for the administration routes. Nothing is written and the control service is not called.
+        A valid token that is not allowed here: a machine token, a token issued to an agent client or to any other
+        client, or a person without the permission the route needs: `agent:run` for a person's own routes, and
+        (v1.14) `portal:admin` for the administration routes. Nothing is written and the control service is not called.
       content:
         application/json:
           schema:
@@ -1183,7 +1187,7 @@ components:
       type: object
       additionalProperties: false
       required: [authorizationId, referenceCode, owner, mine, resourceKey, payTo, amountAtomic, createdAt, expiresAt]
-      description: v1.11. One payment waiting for a person.
+      description: v1.14. One payment waiting for a person.
       properties:
         authorizationId:
           type: string
@@ -1310,7 +1314,7 @@ components:
       additionalProperties: false
       required: [seq, at, kind, authorizationId, resourceKey, payTo, amount, mine]
       description: >-
-        v1.11. One step in an escalation's life. `operator` and `reason` are text an operator typed on the command
+        v1.14. One step in an escalation's life. `operator` and `reason` are text an operator typed on the command
         line: plain strings, to be shown as text. A user is named by identifier only.
       properties:
         mine:
@@ -1366,11 +1370,11 @@ components:
         channel:
           type: string
           enum: [operator, backchannel, portal]
-          description: v1.8. On `approved` and `denied` events, the path that decided. v1.11 adds `portal`.
+          description: v1.8. On `approved` and `denied` events, the path that decided. v1.14 adds `portal`.
         decidedBy:
           type: string
           description: >-
-            v1.8. The operator's label, or the approver's verified identity (`sub`). v1.11: for the portal channel,
+            v1.8. The operator's label, or the approver's verified identity (`sub`). v1.14: for the portal channel,
             the administrator's identifier (`usr_…`).
         reasonCode:
           $ref: "#/components/schemas/RejectionReasonCode"
@@ -1420,7 +1424,7 @@ components:
       type: object
       additionalProperties: false
       required: [capAtomic, spentAtomic, remainingAtomic]
-      description: v1.11. One budget a payment counts against. `remainingAtomic` is never below 0.
+      description: v1.14. One budget a payment counts against. `remainingAtomic` is never below 0.
       properties:
         capAtomic:
           $ref: "#/components/schemas/AtomicAmount"
@@ -1434,7 +1438,7 @@ components:
       additionalProperties: false
       required: [asset, decimals, applies, autoApproveMaxAtomic, hardCapPerPaymentAtomic, run, day, fits]
       description: >-
-        v1.11. The budget behind an escalation, as of the read, under the rules that apply to its owner now: the
+        v1.14. The budget behind an escalation, as of the read, under the rules that apply to its owner now: the
         same ledger-derived figures a decision uses. `fits: true` is no promise; the payment is decided again when
         the agent retries.
       properties:
@@ -1466,7 +1470,7 @@ components:
       type: object
       additionalProperties: false
       required: [at, channel, decidedBy]
-      description: v1.11. How a person ended an escalation.
+      description: v1.14. How a person ended an escalation.
       properties:
         at:
           $ref: "#/components/schemas/IsoTime"
@@ -1491,7 +1495,7 @@ components:
       type: object
       additionalProperties: false
       required: [authorizationId, referenceCode, owner, mine, resourceKey, payTo, amountAtomic, createdAt, expiresAt, state, budget, readAt]
-      description: "v1.11. A payment in any state, and the portal's clock at the read (`readAt`): the browser counts the time left from it."
+      description: "v1.14. A payment in any state, and the portal's clock at the read (`readAt`): the browser counts the time left from it."
       properties:
         authorizationId:
           type: string
@@ -1585,17 +1589,20 @@ components:
         auth:
           type: object
           additionalProperties: false
-          required: [mode, tenantId, clientId, scope]
+          required: [mode, domain, clientId, audience]
           properties:
             mode:
               type: string
-              enum: [entra, dev]
-            tenantId:
+              enum: [auth0, dev]
+            domain:
               type: string
+              description: The sign-in tenant's domain. Empty with the local dev issuer.
             clientId:
               type: string
-            scope:
+              description: The portal's web app at the sign-in tenant. Public.
+            audience:
               type: string
+              description: The API's identifier, which the web app asks a token for.
         network:
           type: string
         cards:
@@ -1612,7 +1619,7 @@ components:
           type: object
           additionalProperties: false
           required: [available]
-          description: v1.11. Whether the administration area is on. Who may use it comes from the person's token.
+          description: v1.14. Whether the administration area is on. Who may use it comes from the person's token.
           properties:
             available:
               type: boolean
@@ -1641,10 +1648,10 @@ components:
         user:
           type: boolean
           enum: [true]
-          description: v1.11. Holds the permission to start agent runs.
+          description: v1.14. Holds the permission to start agent runs.
         admin:
           type: boolean
-          description: v1.11. Holds the administrator permission, and the administration area is on.
+          description: v1.14. Holds the administrator permission, and the administration area is on.
         enabled:
           type: boolean
         onboarding:
@@ -1664,7 +1671,7 @@ components:
       additionalProperties: false
       required: [userId, user, admin]
       description: |
-        v1.11. A person who holds the administrator permission and not the permission to start agent runs: they have
+        v1.14. A person who holds the administrator permission and not the permission to start agent runs: they have
         no profile, wallet or policy, and only the administration area is theirs.
       properties:
         userId:

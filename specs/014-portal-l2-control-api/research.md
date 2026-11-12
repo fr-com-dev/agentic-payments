@@ -73,7 +73,7 @@ word. It also gives the off switch a hard edge: without the token, L2 has nothin
   directory call. The person's next token no longer carries it and every `/api/admin` route refuses them (T-PRT-10).
   A token issued before keeps working until it expires, about an hour with Entra's default lifetime. In that time
   a rejection is possible, and an approval only with a sign-in under 15 minutes old. Revoking the person's sessions
-  in Entra, or turning the area off, ends it at once. SPEC §11 records this as a residual risk of v1.11.
+  in Entra, or turning the area off, ends it at once. SPEC §11 records this as a residual risk of v1.14.
 
 **Rationale**: one sign-in, one token, one place where the organization grants access. An app role reaches the
 portal in the same `roles` claim it already reads, so no directory lookup and no new package. FR-003's "holding
@@ -361,6 +361,6 @@ Five must-fail switches, all test-only deps ([plan.md](plan.md#proofs-constituti
    check and four of the five proofs.
 2. **Portal backend**: access by role, `admin-client.ts`, `/api/admin/*`, rule A13, T-PRT-10..14, T-E2E-14.
 3. **Web app**: the four screens, T-WEB-09..12.
-4. **Azure and docs**: the app role, the secret, the parameter, T-IAC-01, SPEC v1.11, the constitution, `CLAUDE.md`.
+4. **Azure and docs**: the app role, the secret, the parameter, T-IAC-01, SPEC v1.14, the constitution, `CLAUDE.md`.
 
 **Rationale**: the same order as 013: authority first and without a screen, the public surface second.

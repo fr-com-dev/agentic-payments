@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Express } from "express";
 import { createLocalJWKSet } from "jose";
-import { DEV_ADMIN_ROLE, DEV_PORTAL_CLIENT, DEV_PORTAL_SCOPE, DEV_ROLE, loadOrCreateDevIssuer, signDevToken, type DevTokenOptions } from "../../scripts/dev-issuer-lib.js";
+import { DEV_ADMIN_PERMISSION, DEV_AUDIENCE, DEV_PERMISSION, DEV_PORTAL_CLIENT, devUserId, loadOrCreateDevIssuer, signDevToken, type DevTokenOptions } from "../../scripts/dev-issuer-lib.js";
 import { AdminClient } from "../../src/portal/admin-client.js";
 import { createBalanceCache, type BalanceReader } from "../../src/portal/balance.js";
 import { CardVault } from "../../src/portal/card-vault.js";
@@ -16,7 +16,7 @@ import { loadPortalConfig, type PortalConfig } from "../../src/portal/config.js"
 import { ControlClient } from "../../src/portal/control-client.js";
 import { ProfileStore } from "../../src/portal/profile-store.js";
 import { createPortalApp, type PortalDeps } from "../../src/portal/server.js";
-import { userIdFor } from "../../src/shared/user-id.js";
+import { DEV_ISSUER } from "../../src/shared/identity-token.js";
 import type { CardVaultStub } from "./card-vault-stub.js";
 import { startUsersL2, TOKENS, type UsersL2, type UsersL2Options } from "./users.js";
 
@@ -68,7 +68,7 @@ export interface PortalTestApp {
   issued: string[];
   /** A portal token for `subject` (fresh sign-in on L2's clock unless `authTime` is given). */
   token(subject: string, o?: Omit<DevTokenOptions, "subject">): Promise<string>;
-  /** 014: a portal token for an administrator: `Portal.Admin`, plus `Agent.Run` unless `user: false`. */
+  /** 014: a portal token for an administrator: `portal:admin`, plus `agent:run` unless `user: false`. */
   adminToken(subject: string, o?: Omit<DevTokenOptions, "subject"> & { user?: boolean }): Promise<string>;
   /** 014: calls as the administrator `subject`, with a fresh token each time. */
   adminAs(subject: string, o?: Omit<DevTokenOptions, "subject"> & { user?: boolean }): <T = Record<string, unknown>>(method: string, path: string, body?: unknown) => Promise<Reply<T>>;
@@ -95,8 +95,8 @@ export async function startPortal(o: StartPortalOptions = {}): Promise<PortalTes
     NETWORK: "local",
     CONTROL_URL: o.controlDown ? "http://127.0.0.1:9" : l2.url,
     PORTAL_TOKEN: TOKENS.portal,
-    AUTH_TENANT_ID: "dev",
-    AUTH_AUDIENCE: "api://x402-l1-agent",
+    AUTH_ISSUER: DEV_ISSUER,
+    AUTH_AUDIENCE: DEV_AUDIENCE,
     PORTAL_CLIENT_ID: DEV_PORTAL_CLIENT,
     AUTH_JWKS_FILE: issuer.jwksPath,
     PROFILE_DIR: profilesDir,
@@ -110,7 +110,7 @@ export async function startPortal(o: StartPortalOptions = {}): Promise<PortalTes
   const reader: BalanceReader = o.balance ?? { balanceOf: async () => 0n };
   const deps: PortalDeps = {
     config,
-    keys: createLocalJWKSet(issuer.jwks),
+    keys: { keys: createLocalJWKSet(issuer.jwks), algorithms: ["ES256"] },
     control: new ControlClient(config.controlUrl, config.portalToken),
     profiles,
     balance: createBalanceCache(reader, { now: l2.clock.now }),
@@ -137,7 +137,7 @@ export async function startPortal(o: StartPortalOptions = {}): Promise<PortalTes
     issued.push(signed);
     return signed;
   };
-  const token: PortalTestApp["token"] = (subject, to = {}) => sign({ subject, scp: DEV_PORTAL_SCOPE, azp: DEV_PORTAL_CLIENT, authTime: Math.floor(l2.clock.now() / 1000), ...to });
+  const token: PortalTestApp["token"] = (subject, to = {}) => sign({ subject, azp: DEV_PORTAL_CLIENT, authTime: Math.floor(l2.clock.now() / 1000), ...to });
   const call: PortalTestApp["call"] = async (method, path, co = {}) => {
     const body = co.raw ?? (co.body === undefined ? undefined : JSON.stringify(co.body));
     const res = await fetch(`${base}${path}`, {
@@ -157,7 +157,7 @@ export async function startPortal(o: StartPortalOptions = {}): Promise<PortalTes
   };
 
   const adminToken: PortalTestApp["adminToken"] = (subject, { user, ...to } = {}) =>
-    token(subject, { roles: user === false ? [DEV_ADMIN_ROLE] : [DEV_ROLE, DEV_ADMIN_ROLE], ...to });
+    token(subject, { permissions: user === false ? [DEV_ADMIN_PERMISSION] : [DEV_PERMISSION, DEV_ADMIN_PERMISSION], ...to });
 
   return {
     base,
@@ -180,7 +180,7 @@ export async function startPortal(o: StartPortalOptions = {}): Promise<PortalTes
         call(method, path, { token: await adminToken(subject, to), ...(body !== undefined && { body }) }),
     l2Calls: () => l2.requestCount(),
     agentToken: (subject, to = {}) => sign({ subject, ...to }),
-    userId: (subject) => userIdFor("dev", subject),
+    userId: devUserId,
     call,
     as:
       (subject, to = {}) =>

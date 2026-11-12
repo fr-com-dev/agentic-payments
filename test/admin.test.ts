@@ -1,20 +1,20 @@
-// 014 portal administration, L2 side (SPEC.md v1.11 L2-5, L2-8; specs/014 contracts/control-api.md "Tests").
+// 014 portal administration, L2 side (SPEC.md v1.14 L2-5, L2-8; specs/014 contracts/control-api.md "Tests").
 // T-ADM-01..10: the six routes under /v1/admin, their own role and token, the two decisions with the checks L2
 // keeps (pending only, never one's own payment, a fresh identity confirmation for an approval), the reads that
 // write nothing, and the switch. Every must-fail switch is a test-only dep (AdminDeps), never an environment value.
 import { readFileSync, writeFileSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 import { ESCALATION_TTL_MS } from "../src/layer2-control/escalations.js";
+import { devUserId } from "../scripts/dev-issuer-lib.js";
 import { adminFromEnv, userAccountsFromEnv } from "../src/layer2-control/service.js";
 import { ENDPOINT_ROLES } from "../src/shared/auth.js";
 import type { EscalationDetail, EscalationEvent, EscalationView, EventPage } from "../src/shared/contracts.js";
-import { userIdFor } from "../src/shared/user-id.js";
 import { startBackchannelL2, type BackchannelL2 } from "./helpers/backchannel-l2.js";
 import { ALICE, BOB, PAY_TO, SELLER_HOST, startUsersL2, T0, TEST_MNEMONIC, TOKENS, type UsersL2 } from "./helpers/users.js";
 
 /** An administrator: an identifier like any person's. They need no account in L2 to decide. */
-const CAROL = userIdFor("dev", "carol");
-const DANA = userIdFor("dev", "dana");
+const CAROL = devUserId("carol");
+const DANA = devUserId("dana");
 
 const NET = { caip2: "eip155:31337", asset: "0xAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAa" } as const;
 

@@ -5,12 +5,15 @@ import { spawn } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { DEV_AGENT_CLIENT, DEV_AUDIENCE, DEV_PORTAL_CLIENT } from "../scripts/dev-issuer-lib.js";
 import { createBalanceCache } from "../src/portal/balance.js";
 import { loadPortalConfig } from "../src/portal/config.js";
 import { LOG_KEYS } from "../src/portal/log.js";
 import { endOfDayUtc, parsePolicyInput } from "../src/portal/routes.js";
 import { ProfileStore, validDisplayName, validEmail, validPolicyName } from "../src/portal/profile-store.js";
-import { contentSecurityPolicy, MAX_REQUESTS_PER_MINUTE } from "../src/portal/server.js";
+import { contentSecurityPolicy, MAX_REQUESTS_PER_MINUTE, signInOriginOf } from "../src/portal/server.js";
+import { DEV_DIRECTORY_ISSUER } from "../src/shared/identity-token.js";
+import { userIdFor } from "../src/shared/user-id.js";
 import { OTHER_HOST, SELLER_HOST, STEP_UP_AGE, T0, TEST_MNEMONIC, TOKENS } from "./helpers/users.js";
 import { startPortal, type PortalTestApp, type StartPortalOptions } from "./helpers/portal.js";
 
@@ -24,6 +27,9 @@ afterEach(async () => {
   await Promise.all(open.map((p) => p.close()));
   open = [];
 });
+
+/** A sign-in tenant's issuer, as its tokens carry it (013 research R19). */
+const SIGN_IN_ISSUER = "https://x402-test.eu.auth0.com/";
 
 const PROFILE = { displayName: "Ana Pérez", contactEmail: "ana.perez@example.com", acknowledgedTestFunds: true };
 const POLICY = {
@@ -53,25 +59,37 @@ async function onboard(p: PortalTestApp, subject: string, policy: Record<string,
 // ---------------------------------------------------------------------------
 
 describe("T-PRT-09 configuration and the entry point (CFG-2, INV-2)", () => {
-  const dev = { NETWORK: "local", AUTH_TENANT_ID: "dev", AUTH_AUDIENCE: "api://x402-l1-agent", PORTAL_CLIENT_ID: "x402-portal-dev", AUTH_JWKS_FILE: "jwks.json" };
-  const GUID = "11111111-2222-4333-8444-555555555555";
+  const dev = { NETWORK: "local", AUTH_ISSUER: "urn:x402:dev-issuer", AUTH_AUDIENCE: "api://x402-l1-agent", PORTAL_CLIENT_ID: "x402-portal-dev", AUTH_JWKS_FILE: "jwks.json" };
+  const TENANT = { NETWORK: "base-sepolia", PORTAL_TOKEN: "t", AUTH_ISSUER: SIGN_IN_ISSUER, AUTH_AUDIENCE: "https://x402.example/api", PORTAL_CLIENT_ID: "PortalSpaClient0123456789abcdefg" };
 
   it("T-PRT-09 the local dev settings load, with the defaults", () => {
     const c = loadPortalConfig(dev);
-    expect(c.auth).toMatchObject({ mode: "dev", issuer: "urn:x402:dev-issuer", clientId: "x402-portal-dev", scope: "api://x402-l1-agent/Portal.Access" });
+    expect(c.auth).toEqual({
+      mode: "dev",
+      issuer: "urn:x402:dev-issuer",
+      audience: "api://x402-l1-agent",
+      clientId: "x402-portal-dev",
+      jwksFile: "jwks.json",
+      authTimeClaim: "https://x402.dev/auth_time",
+    });
     expect([c.port, c.bindHost, c.profileDir, c.portalToken, c.apiDocs, c.cardVault]).toEqual([4025, "127.0.0.1", ".local/portal/profiles", "dev-portal-token", false, undefined]);
   });
 
   it("T-PRT-09 each error names the variable and never a value", () => {
     const bad: Array<[Record<string, string | undefined>, RegExp]> = [
-      [{ ...dev, AUTH_TENANT_ID: undefined }, /AUTH_TENANT_ID is required/],
+      [{ ...dev, AUTH_ISSUER: undefined }, /AUTH_ISSUER is required/],
       [{ ...dev, AUTH_AUDIENCE: "" }, /AUTH_AUDIENCE is required/],
       [{ ...dev, PORTAL_CLIENT_ID: undefined }, /PORTAL_CLIENT_ID is required/],
+      [{ ...dev, PORTAL_CLIENT_ID: "two clients" }, /PORTAL_CLIENT_ID must be the portal's client ID/],
       [{ ...dev, NETWORK: "base-sepolia", PORTAL_TOKEN: "t" }, /AUTH_JWKS_FILE is allowed only with NETWORK=local/],
       [{ ...dev, NETWORK: "mainnet" }, /unknown network/],
-      [{ ...dev, AUTH_JWKS_FILE: undefined }, /AUTH_AUDIENCE must be the API app's client ID/],
-      [{ ...dev, AUTH_JWKS_FILE: undefined, AUTH_AUDIENCE: GUID }, /PORTAL_CLIENT_ID must be the portal web app's client ID/],
-      [{ ...dev, NETWORK: "base-sepolia", AUTH_JWKS_FILE: undefined, AUTH_AUDIENCE: GUID, PORTAL_CLIENT_ID: GUID }, /missing PORTAL_TOKEN/],
+      // The dev issuer's keys go with the dev issuer's name only, and a tenant's name needs the tenant's keys.
+      [{ ...dev, AUTH_ISSUER: SIGN_IN_ISSUER }, /AUTH_ISSUER must be urn:x402:dev-issuer with AUTH_JWKS_FILE/],
+      [{ ...dev, AUTH_JWKS_FILE: undefined }, /AUTH_ISSUER must be the sign-in tenant's issuer/],
+      [{ ...TENANT, AUTH_ISSUER: SIGN_IN_ISSUER.slice(0, -1) }, /AUTH_ISSUER must be the sign-in tenant's issuer/],
+      [{ ...TENANT, AUTH_ISSUER: "https://login.microsoftonline.com/11111111-2222-4333-8444-555555555555/v2.0" }, /AUTH_ISSUER must be the sign-in tenant's issuer/],
+      [{ ...TENANT, AUTH_TIME_CLAIM: "auth_time" }, /AUTH_TIME_CLAIM must be a namespaced claim name/],
+      [{ ...TENANT, PORTAL_TOKEN: undefined }, /missing PORTAL_TOKEN/],
       [{ ...dev, PORTAL_PORT: "99999" }, /PORTAL_PORT is not a valid port/],
       [{ ...dev, API_DOCS: "yes" }, /API_DOCS must be 1 or 0/],
       [{ ...dev, CARD_VAULT: "adyen" }, /CARD_VAULT must be "stripe" or unset/],
@@ -79,10 +97,18 @@ describe("T-PRT-09 configuration and the entry point (CFG-2, INV-2)", () => {
     for (const [env, message] of bad) expect(() => loadPortalConfig(env), String(message)).toThrow(message);
   });
 
-  it("T-PRT-09 against Entra: GUIDs, the tenant's issuer, and the scope on the API app", () => {
-    const c = loadPortalConfig({ NETWORK: "base-sepolia", PORTAL_TOKEN: "t", AUTH_TENANT_ID: "contoso-tenant", AUTH_AUDIENCE: GUID, PORTAL_CLIENT_ID: GUID });
-    expect(c.auth).toMatchObject({ mode: "entra", issuer: "https://login.microsoftonline.com/contoso-tenant/v2.0", scope: `${GUID}/Portal.Access` });
-    expect(loadPortalConfig({ ...dev, PORTAL_SCOPE: "api://app-l1/Portal.Access" }).auth.scope).toBe("api://app-l1/Portal.Access");
+  it("T-PRT-09 against the sign-in tenant: its issuer, the API's identifier, the portal's client and the sign-in time claim", () => {
+    const c = loadPortalConfig(TENANT);
+    expect(c.auth).toEqual({
+      mode: "auth0",
+      issuer: SIGN_IN_ISSUER,
+      audience: "https://x402.example/api",
+      clientId: "PortalSpaClient0123456789abcdefg",
+      authTimeClaim: "https://x402.dev/auth_time",
+    });
+    expect(loadPortalConfig({ ...TENANT, AUTH_TIME_CLAIM: "https://example.org/signed_in_at" }).auth.authTimeClaim).toBe("https://example.org/signed_in_at");
+    // The earlier sign-in's settings are gone: they are neither needed nor read.
+    expect(JSON.stringify(loadPortalConfig({ ...TENANT, AUTH_TENANT_ID: "contoso", PORTAL_SCOPE: "api://x/Portal.Access" }).auth)).not.toMatch(/contoso|Portal\.Access/);
   });
 
   const runEntry = (env: Record<string, string>) =>
@@ -124,7 +150,7 @@ describe("T-PRT-01 access (FR-003, FR-005, SEC-19, SEC-20)", () => {
     const res = await p.call("GET", "/api/config");
     expect(res.status).toBe(200);
     expect(res.body).toEqual({
-      auth: { mode: "dev", tenantId: "dev", clientId: "x402-portal-dev", scope: "api://x402-l1-agent/Portal.Access" },
+      auth: { mode: "dev", domain: "", clientId: "x402-portal-dev", audience: "api://x402-l1-agent" },
       network: "local",
       cards: { available: false },
       // 014: additive. Off unless PORTAL_ADMIN=1.
@@ -138,33 +164,46 @@ describe("T-PRT-01 access (FR-003, FR-005, SEC-19, SEC-20)", () => {
     const nowSec = Math.floor(p.l2.clock.now() / 1000);
     const entriesBefore = p.l2.ledger.entries().length;
     const cases: Array<[string, Parameters<typeof p.token>[1], number]> = [
+      // 401: not a valid token of the sign-in tenant.
       ["expired", { exp: Math.floor(Date.now() / 1000) - 120 }, 401],
       ["not yet valid", { nbf: Math.floor(Date.now() / 1000) + 300 }, 401],
       ["wrong audience", { audience: "api://someone-else" }, 401],
-      ["wrong issuer", { issuer: "https://login.microsoftonline.com/other/v2.0" }, 401],
-      ["wrong tenant", { tenant: "other-tenant" }, 401],
-      ["no oid", { omitOid: true }, 401],
+      ["another sign-in tenant", { issuer: SIGN_IN_ISSUER }, 401],
+      ["the organization's directory as issuer", { issuer: "https://login.microsoftonline.com/11111111-2222-4333-8444-555555555555/v2.0" }, 401],
+      ["the dev directory as issuer", { issuer: DEV_DIRECTORY_ISSUER }, 401],
+      ["no subject", { sub: null }, 401],
+      ["an empty subject", { sub: "" }, 401],
+      // 403: valid, but not allowed here.
+      ["a machine token of the sign-in tenant", { sub: "x402-portal-dev@clients", claims: { gty: "client-credentials" } }, 403],
+      ["a machine token by its subject alone", { sub: "some-client@clients" }, 403],
+      ["an agent client", { azp: DEV_AGENT_CLIENT }, 403],
+      ["another client", { azp: "some-other-client" }, 403],
+      ["no client", { azp: null }, 403],
+      ["two client claims that disagree", { claims: { client_id: DEV_AGENT_CLIENT } }, 403],
+      ["no permission", { permissions: [] }, 403],
+      ["no permissions claim", { permissions: null }, 403],
+      ["another permission", { permissions: ["agent:read"] }, 403],
+      ["the directory's role instead of the permission", { permissions: null, claims: { roles: ["Agent.Run"] } }, 403],
+      // 014: with the administration area off (the default), the administrator permission alone admits nobody.
+      ["the administrator permission alone, with administration off", { permissions: ["portal:admin"] }, 403],
+      // 401, checked last: the portal's own token, without a usable sign-in time.
       ["a sign-in time in the future", { authTime: nowSec + 600 }, 401],
       ["a sign-in time that is not a whole number", { authTime: nowSec + 0.5 }, 401],
-      ["a system identity", { idtyp: "app", scp: null }, 403],
-      ["a system identity that claims the scope", { idtyp: "app" }, 403],
-      ["the agent service's scope", { scp: "user_impersonation" }, 403],
-      ["no scope", { scp: null }, 403],
-      ["another client", { azp: "04b07795-8ddb-461a-bbee-02f9e1bf7b46" }, 403],
-      ["no client", { azp: undefined }, 403],
-      ["no role", { roles: [] }, 403],
-      ["another role", { roles: ["Agent.Read"] }, 403],
-      // 014: with the administration area off (the default), the administrator role alone admits nobody.
-      ["the administrator role alone, with administration off", { roles: ["Portal.Admin"] }, 403],
+      ["a sign-in time as text", { authTime: String(nowSec) }, 401],
+      ["the sign-in time under another claim name", { authTimeClaim: "auth_time" }, 401],
     ];
     for (const [name, o, status] of cases) {
       const res = await p.call("GET", "/api/me", { token: await p.token("alice", o) });
       expect(res.status, name).toBe(status);
       expect(res.body, name).toEqual(status === 401 ? { error: "unauthorized" } : { error: "forbidden" });
     }
-    // No sign-in time at all: an agent-style token that happens to carry the portal's scope and client.
-    const noAuthTime = await p.agentToken("alice", { scp: "Portal.Access", azp: "x402-portal-dev" });
+    // No sign-in time at all, from the portal's own client: 401. From an agent client: 403, with the claim or not.
+    const noAuthTime = await p.agentToken("alice", { azp: DEV_PORTAL_CLIENT });
     expect((await p.call("GET", "/api/me", { token: noAuthTime })).status).toBe(401);
+    expect((await p.call("GET", "/api/me", { token: await p.agentToken("alice") })).status).toBe(403);
+    expect((await p.call("GET", "/api/me", { token: await p.agentToken("alice", { authTime: nowSec }) })).status).toBe(403);
+    // The other dialect of the tenant's tokens names the client in `client_id`: the same person gets in.
+    expect((await p.call("GET", "/api/me", { token: await p.token("alice", { clientClaim: "client_id" }) })).status).toBe(200);
     for (const token of [undefined, "not-a-jwt"]) {
       const res = await p.call("PUT", "/api/profile", { ...(token !== undefined && { token }), body: PROFILE });
       expect(res.status).toBe(401);
@@ -173,11 +212,31 @@ describe("T-PRT-01 access (FR-003, FR-005, SEC-19, SEC-20)", () => {
     expect(existsSync(p.profilesDir)).toBe(false);
   });
 
+  it("T-PRT-01 no role token opens the portal: the agent's, the verifier's, the operator's, or the portal's own (FR-005)", async () => {
+    const p = await start();
+    const before = p.l2.entries().length;
+    // The tokens this L2 verifies, and the local dev defaults of all five roles: none is a person's sign-in.
+    const roleTokens = [...Object.values(TOKENS), "dev-control-token", "dev-verifier-token", "dev-settlement-token", "dev-operator-token", "dev-portal-token"];
+    for (const token of roleTokens) {
+      for (const [method, path] of [
+        ["GET", "/api/me"],
+        ["PUT", "/api/profile"],
+        ["GET", "/api/wallet"],
+        ["POST", "/api/policies"],
+        ["POST", "/api/account/disable"],
+      ] as const) {
+        const res = await p.call(method, path, { token, ...(method !== "GET" && { body: {} }) });
+        expect([res.status, res.body], `${token} ${method} ${path}`).toEqual([401, { error: "unauthorized" }]);
+      }
+    }
+    expect(p.l2.entries().length).toBe(before);
+    expect(existsSync(p.profilesDir)).toBe(false);
+  });
+
   it("T-PRT-01 a token issued for the agent service is refused, on every route (FR-005)", async () => {
     const p = await start();
     const agent = await p.agentToken("alice");
-    const service = await p.agentToken("svc-app-id", { idtyp: "app" });
-    for (const token of [agent, service]) {
+    for (const token of [agent]) {
       for (const [method, path] of [
         ["GET", "/api/me"],
         ["PUT", "/api/profile"],
@@ -194,9 +253,53 @@ describe("T-PRT-01 access (FR-003, FR-005, SEC-19, SEC-20)", () => {
     expect(existsSync(p.profilesDir)).toBe(false);
   });
 
+  it("T-PRT-01 a token of the organization's directory is not valid here at all: a system identity's or a person's (401)", async () => {
+    const p = await start();
+    const before = p.l2.entries().length;
+    const tokens = [
+      await p.agentToken("svc-app-id", { service: true }),
+      // Even made to look as much like the portal's own token as the directory could.
+      await p.agentToken("alice", { service: true, audience: DEV_AUDIENCE, claims: { azp: DEV_PORTAL_CLIENT, permissions: ["agent:run"], "https://x402.dev/auth_time": Math.floor(p.l2.clock.now() / 1000) } }),
+      await p.agentToken("alice", { service: true, idtyp: "user", claims: { scp: "Portal.Access", roles: ["Agent.Run"], auth_time: Math.floor(p.l2.clock.now() / 1000) } }),
+    ];
+    for (const token of tokens) {
+      for (const [method, path] of [["GET", "/api/me"], ["PUT", "/api/profile"], ["POST", "/api/policies"]] as const) {
+        const res = await p.call(method, path, { token, ...(method !== "GET" && { body: PROFILE }) });
+        expect([res.status, res.body], `${method} ${path}`).toEqual([401, { error: "unauthorized" }]);
+      }
+    }
+    expect(p.l2.entries().length).toBe(before);
+    expect(existsSync(p.profilesDir)).toBe(false);
+  });
+
+  it("T-PRT-01 against a sign-in tenant: its tokens open the portal, the dev issuer's do not, and the settings name its domain", async () => {
+    // The tenant's name with the test's own keys: everything but the JWKS download is the real path.
+    const p = await start({ env: { AUTH_ISSUER: SIGN_IN_ISSUER, AUTH_JWKS_FILE: "" } });
+    expect(p.config.auth.mode).toBe("auth0");
+    expect((await p.call("GET", "/api/config")).body).toMatchObject({
+      auth: { mode: "auth0", domain: "x402-test.eu.auth0.com", clientId: "x402-portal-dev", audience: "api://x402-l1-agent" },
+    });
+    const sub = "auth0|6543210fedcba";
+    const res = await p.call<{ userId: string }>("GET", "/api/me", { token: await p.token("alice", { issuer: SIGN_IN_ISSUER, sub }) });
+    expect(res.status).toBe(200);
+    expect(res.body.userId).toBe(userIdFor(SIGN_IN_ISSUER, sub));
+    expect(res.body.userId).toBe(userIdFor("https://x402-test.eu.auth0.com", sub));
+    expect((await p.call("GET", "/api/me", { token: await p.token("alice") })).status).toBe(401);
+  });
+
+  it("T-PRT-01 the user is the issuer and the subject: the same name from another connection is another person", async () => {
+    const p = await start();
+    const id = async (o: Parameters<typeof p.token>[1]) => (await p.call<{ userId: string }>("GET", "/api/me", { token: await p.token("alice", o) })).body.userId;
+    expect(await id({})).toBe(p.userId("alice"));
+    expect(await id({})).toBe(userIdFor("urn:x402:dev-issuer", "dev|alice"));
+    expect(await id({ sub: "google-oauth2|alice" })).not.toBe(p.userId("alice"));
+    // A subject with the old separator inside is accepted as it is.
+    expect(await id({ sub: "dev|a|b" })).toBe(userIdFor("urn:x402:dev-issuer", "dev|a|b"));
+  });
+
   it("T-PRT-01 a person without the permission to start agent runs is refused, and no profile exists afterwards (US1 scenario 4)", async () => {
     const p = await start();
-    const res = await p.call("PUT", "/api/profile", { token: await p.token("mallory", { roles: [] }), body: PROFILE });
+    const res = await p.call("PUT", "/api/profile", { token: await p.token("mallory", { permissions: [] }), body: PROFILE });
     expect(res.status).toBe(403);
     expect(existsSync(p.profilesDir)).toBe(false);
     expect(p.l2.entries("USER_REGISTERED")).toEqual([]);
@@ -741,8 +844,8 @@ describe("T-PRT-07 headers on every response", () => {
     expect(csp.split("; ")).toEqual([
       "default-src 'none'",
       "script-src 'self' https://js.stripe.com https://*.js.stripe.com",
-      "frame-src https://js.stripe.com https://*.js.stripe.com https://hooks.stripe.com https://login.microsoftonline.com",
-      "connect-src 'self' https://api.stripe.com https://login.microsoftonline.com",
+      "frame-src https://js.stripe.com https://*.js.stripe.com https://hooks.stripe.com",
+      "connect-src 'self' https://api.stripe.com",
       "style-src 'self'",
       "img-src 'self' data:",
       "font-src 'self'",
@@ -764,9 +867,30 @@ describe("T-PRT-07 headers on every response", () => {
     }
   });
 
-  it("T-PRT-07 the sign-in redirect page may be framed by this origin only; nothing else may be framed", () => {
-    expect(contentSecurityPolicy({ framed: true })).toContain("frame-ancestors 'self'");
-    expect(contentSecurityPolicy({ framed: true })).not.toContain("frame-ancestors 'none'");
+  it("T-PRT-07 with a sign-in tenant the policy lets the web app call that tenant, and nothing of the earlier sign-in", async () => {
+    const p = await start({ env: { AUTH_ISSUER: SIGN_IN_ISSUER, AUTH_JWKS_FILE: "" } });
+    const csp = contentSecurityPolicy({ signInOrigin: "https://x402-test.eu.auth0.com" });
+    expect(signInOriginOf(p.config.auth)).toBe("https://x402-test.eu.auth0.com");
+    expect(csp.split("; ")).toEqual([
+      "default-src 'none'",
+      "script-src 'self' https://js.stripe.com https://*.js.stripe.com",
+      // The tenant is never framed: sessions are renewed with a refresh token, and sign-in is a pop-up.
+      "frame-src https://js.stripe.com https://*.js.stripe.com https://hooks.stripe.com",
+      "connect-src 'self' https://api.stripe.com https://x402-test.eu.auth0.com",
+      "style-src 'self'",
+      "img-src 'self' data:",
+      "font-src 'self'",
+      "base-uri 'none'",
+      "form-action 'none'",
+      "frame-ancestors 'none'",
+    ]);
+    for (const path of ["/api/config", "/api/me", "/healthz", "/nope", "/redirect.html"]) {
+      const header = (await p.call("GET", path)).headers.get("content-security-policy");
+      expect(header, path).toBe(csp);
+      expect(header, path).not.toContain("login.microsoftonline.com");
+      // No page may be framed any more, the earlier sign-in's redirect page included.
+      expect(header, path).toContain("frame-ancestors 'none'");
+    }
   });
 
   it("T-PRT-07 bodies: over 16 KB is 413, unparsable JSON is 400, an unknown /api path is 404", async () => {
@@ -784,16 +908,16 @@ describe("T-PRT-07 headers on every response", () => {
     const root = mkdtempSync(join(tmpdir(), "portal-web-"));
     try {
       writeFileSync(join(root, "index.html"), "<!doctype html><title>x402 portal</title>");
-      writeFileSync(join(root, "redirect.html"), "<!doctype html><title>redirect</title>");
       const p = await start({ webRoot: root });
       for (const path of ["/", "/policies", "/policies/pol_1/history"]) {
         const res = await p.call("GET", path);
         expect(res.status, path).toBe(200);
         expect(res.text).toContain("x402 portal");
       }
+      // The earlier sign-in's redirect page is gone: its path is the app like any other.
       const redirect = await p.call("GET", "/redirect.html");
-      expect(redirect.text).toContain("redirect");
-      expect(redirect.headers.get("content-security-policy")).toContain("frame-ancestors 'self'");
+      expect(redirect.text).toContain("x402 portal");
+      expect(redirect.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
       // The API is never shadowed by the page.
       expect((await p.call("GET", "/api/me")).status).toBe(401);
     } finally {
@@ -834,19 +958,20 @@ describe("T-PRT-08 the log holds route templates and identifiers only (NFR-003, 
 
 describe("T-PRT-09 the local dev issuer must exist before a service that trusts it starts", () => {
   it("T-PRT-09 a missing AUTH_JWKS_FILE says how to create it, instead of a bare file error", async () => {
-    const { keysFor } = await import("../src/shared/entra-token.js");
-    expect(() => keysFor({ tenantId: "dev", jwksFile: ".local/no-such-issuer/jwks.json" })).toThrow(/AUTH_JWKS_FILE: no file at .*npm run dev-token/);
+    const { personKeys, serviceKeys } = await import("../src/shared/identity-token.js");
+    expect(() => personKeys({ issuer: "urn:x402:dev-issuer", jwksFile: ".local/no-such-issuer/jwks.json" })).toThrow(/AUTH_JWKS_FILE: no file at .*npm run dev-token/);
+    expect(() => serviceKeys({ tenantId: "dev", jwksFile: ".local/no-such-issuer/jwks.json" })).toThrow(/AUTH_JWKS_FILE: no file at .*npm run dev-token/);
   });
 });
 
-describe("014 dev-token --admin (the Portal.Admin role of the local dev issuer)", () => {
-  it("014 dev-token --admin adds Portal.Admin, alone with --no-role, and only with --portal", async () => {
-    const { rolesFor } = await import("../scripts/dev-token.js");
-    expect(rolesFor(["--portal"])).toEqual({});
-    expect(rolesFor(["--no-role"])).toEqual({ roles: [] });
-    expect(rolesFor(["--portal", "--admin"])).toEqual({ roles: ["Agent.Run", "Portal.Admin"] });
-    expect(rolesFor(["--portal", "--admin", "--no-role"])).toEqual({ roles: ["Portal.Admin"] });
-    expect(rolesFor(["--admin"])).toEqual({ error: expect.stringContaining("--admin needs --portal") });
+describe("014 dev-token --admin (the portal:admin permission of the local dev issuer)", () => {
+  it("014 dev-token --admin adds portal:admin, alone with --no-role, and only with --portal", async () => {
+    const { permissionsFor } = await import("../scripts/dev-token.js");
+    expect(permissionsFor(["--portal"])).toEqual({});
+    expect(permissionsFor(["--no-role"])).toEqual({ permissions: [] });
+    expect(permissionsFor(["--portal", "--admin"])).toEqual({ permissions: ["agent:run", "portal:admin"] });
+    expect(permissionsFor(["--portal", "--admin", "--no-role"])).toEqual({ permissions: ["portal:admin"] });
+    expect(permissionsFor(["--admin"])).toEqual({ error: expect.stringContaining("--admin needs --portal") });
   });
 
   it("014 dev-token still prints a token when run as a script", async () => {
@@ -863,8 +988,9 @@ describe("014 dev-token --admin (the Portal.Admin role of the local dev issuer)"
       child.on("close", (code) => resolve({ code, stdout }));
     });
     expect(out.code).toBe(0);
-    const claims = JSON.parse(Buffer.from(out.stdout.trim().split(".")[1]!, "base64url").toString()) as { roles: string[]; scp: string };
-    expect(claims.roles).toEqual(["Agent.Run", "Portal.Admin"]);
-    expect(claims.scp).toBe("Portal.Access");
+    const claims = JSON.parse(Buffer.from(out.stdout.trim().split(".")[1]!, "base64url").toString()) as { permissions: string[]; azp: string; roles?: unknown };
+    expect(claims.permissions).toEqual(["agent:run", "portal:admin"]);
+    expect(claims.azp).toBe("x402-portal-dev");
+    expect(claims.roles).toBeUndefined();
   });
 });

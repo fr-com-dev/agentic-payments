@@ -26,8 +26,9 @@ export function createDevAuth(): Auth {
     signedIn: () => token !== null,
     account: (): AuthAccount | null => {
       const c = token === null ? null : claims(token);
-      // The dev issuer's subject is a short name; it stands in for the person's display name.
-      return c === null ? null : { ...(typeof c.oid === "string" && { name: c.oid }) };
+      // The dev issuer's subject is `dev|<short name>`; the short name stands in for the person's display name.
+      const name = c !== null && typeof c.sub === "string" ? c.sub.replace(/^dev\|/, "") : "";
+      return c === null ? null : { ...(name.length > 0 && { name }) };
     },
     signIn: async (input) => accept(input),
     token: async () => token,
@@ -35,5 +36,6 @@ export function createDevAuth(): Auth {
     signOut: async () => {
       token = null;
     },
+    lastError: () => null,
   };
 }

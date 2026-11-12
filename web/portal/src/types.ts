@@ -36,7 +36,7 @@ export interface Me {
 }
 
 export interface Config {
-  auth: { mode: "entra" | "dev"; tenantId: string; clientId: string; scope: string };
+  auth: { mode: "auth0" | "dev"; domain: string; clientId: string; audience: string };
   network: string;
   cards: { available: boolean; publishableKey?: string };
   /** 014: whether the administration area is on in this deployment. */
