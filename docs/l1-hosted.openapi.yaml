@@ -11,8 +11,10 @@ info:
     payment is decided and signed by L2, and settled payments are verified on-chain by L3. One call runs one
     goal to the end and answers with every step and a receipt.
 
-    - **Auth.** An Entra ID v2.0 access token carrying the app role `Agent.Run`, checked before anything else.
-      Without a valid token every path answers 401, except `/healthz`, `/readyz` and the docs routes.
+    - **Auth.** An access token, checked before anything else. A person's comes from the sign-in tenant (Auth0)
+      and carries the permission `agent:run`; a system identity's comes from the organization's directory
+      (Microsoft Entra ID), app-only, with the app role `Agent.Run`. Without a valid token every path answers 401,
+      except `/healthz`, `/readyz` and the docs routes.
     - **One call, one run.** The response arrives when the run has ended (completed, stopped or failed), at
       most 200 s later. Allow up to 220 s on the client.
     - **Sessions.** Each new run gets a session and a budget. Send the returned `sessionRef` with the next
@@ -28,7 +30,7 @@ servers:
     description: Default local bind (npm run agent:hosted; 0.0.0.0 in a container)
 tags:
   - name: runs
-    description: Run a goal (requires `Agent.Run`).
+    description: Run a goal (a person needs `agent:run`, a system identity `Agent.Run`).
   - name: health
     description: Liveness and readiness; no token.
   - name: docs
@@ -47,7 +49,7 @@ paths:
         for a stopped or failed run. An ESCALATED purchase carries an `authorizationId`: give it to an operator,
         then call again with the same `sessionRef`.
       security:
-        - entraBearer: []
+        - requesterBearer: []
       requestBody:
         required: true
         content:
@@ -225,31 +227,43 @@ paths:
 
 components:
   securitySchemes:
-    entraBearer:
+    requesterBearer:
       type: http
       scheme: bearer
       bearerFormat: JWT
       description: |
-        An Entra ID v2.0 access token for the API app, with the app role `Agent.Run`. Its `aud` is the API
-        app's client ID; issuer, tenant, `exp` and `nbf` are checked (60 s tolerance). A person assigned
-        `Agent.Run` gets one from the Azure CLI:
+        One of two access tokens. The service reads the token's issuer only to choose the checks, then verifies in
+        full against that issuer (60 s tolerance on `exp` and `nbf`); any other issuer is 401.
 
-            az account get-access-token --scope api://app-l1-eastus2-dev/user_impersonation --query accessToken -o tsv
+        **A person** (since v1.12): a token of the sign-in tenant (Auth0, `AUTH_ISSUER`) for the API
+        (`AUTH_AUDIENCE`), with the permission `agent:run` in `permissions`, issued to a client on the service's
+        list (`AGENT_CLIENT_IDS`). The run's payments are that person's. Get one from a terminal with the
+        tenant's device flow:
 
-        With `@azure/identity`'s `AzureCliCredential`, ask for `api://app-l1-eastus2-dev/.default`. Locally
-        (`NETWORK=local`, `AUTH_JWKS_FILE`), `npm run dev-token -- --subject alice` prints a dev-issuer token.
+            npm run -s user-token
+
+        **A system identity**: an app-only Entra ID v2.0 token (`idtyp: app`) of the organization's directory
+        (`AUTH_TENANT_ID`) whose `aud` is the API app's client ID (`SERVICE_AUDIENCE`), with the app role
+        `Agent.Run`. The run names no user. With `@azure/identity`, ask for `api://app-l1-eastus2-dev/.default`.
+
+        Locally (`NETWORK=local`, `AUTH_JWKS_FILE`), `npm run -s dev-token -- --subject alice` prints a
+        dev-issuer token for a person, and `--service` one for a system identity.
 
   responses:
     Unauthorized:
-      description: Missing, malformed, invalid, expired, wrong-audience, wrong-issuer or wrong-tenant token.
+      description: >-
+        Missing, malformed, invalid, expired, wrong-audience or wrong-tenant token, or a token of an issuer the
+        service does not know.
       content:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
     Forbidden:
       description: >-
-        A valid token without the app role `Agent.Run`. Since v1.10, also a person's token that was not issued for
-        this service: its `scp` lacks `user_impersonation`, or its `azp` is the portal's web app (SEC-20).
+        A valid token that may not start a run. A person's: without the permission `agent:run`, from a client that
+        is not on the service's list (which covers the portal's web app, SEC-20), or a machine token of the sign-in
+        tenant. The directory's: without the app role `Agent.Run`, or a person's token (people sign in with the
+        sign-in tenant since v1.12).
       content:
         application/json:
           schema:

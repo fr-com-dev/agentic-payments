@@ -1,33 +1,60 @@
 // 013 shared helpers: the user identifier and USDC parsing (specs/013 data-model.md "Identifiers", FR-025, FR-046).
 import { describe, expect, it } from "vitest";
 import { formatAtomic, parseUsdc } from "../src/shared/config.js";
-import { USER_ID_RE, userIdFor } from "../src/shared/user-id.js";
+import { issuerHost, USER_ID_RE, userIdFor } from "../src/shared/user-id.js";
 
 describe("013 shared userIdFor", () => {
+  const TENANT = "https://x402-dev.eu.auth0.com/";
+
   it("is deterministic and matches the identifier pattern", () => {
-    const id = userIdFor("dev", "alice");
-    expect(id).toBe(userIdFor("dev", "alice"));
+    const id = userIdFor(TENANT, "auth0|6543210fedcba");
+    expect(id).toBe(userIdFor(TENANT, "auth0|6543210fedcba"));
     expect(id).toMatch(USER_ID_RE);
   });
 
-  it("pins one vector, so the hosted agent and the portal can never drift apart", () => {
-    expect(userIdFor("dev", "alice")).toBe("usr_deeee4478bc01dab1b0afa3fbe31f010");
+  it("pins the v2 vectors, so the hosted agent and the portal can never drift apart", () => {
+    // sha256("x402-user-v2\n<issuer host>\n<sub>"), first 32 hex characters; worked out apart from the code.
+    expect(userIdFor(TENANT, "auth0|6543210fedcba")).toBe("usr_0ff9ed6a6382b9be927c8d68e1734685");
+    expect(userIdFor("urn:x402:dev-issuer", "dev|alice")).toBe("usr_e788b761935d1cdd2710436f6a033eed");
   });
 
-  it("differs for another tenant or another object ID", () => {
-    const base = userIdFor("dev", "alice");
-    expect(userIdFor("dev", "bob")).not.toBe(base);
-    expect(userIdFor("other", "alice")).not.toBe(base);
+  it("takes the issuer's host: the trailing slash and the letter case of the host don't make another person", () => {
+    const base = userIdFor(TENANT, "auth0|abc");
+    expect(userIdFor("https://x402-dev.eu.auth0.com", "auth0|abc")).toBe(base);
+    expect(userIdFor("https://X402-Dev.EU.auth0.com/", "auth0|abc")).toBe(base);
+    expect(issuerHost(TENANT)).toBe("x402-dev.eu.auth0.com");
+    // Not a web address (the dev issuer): the whole value.
+    expect(issuerHost("urn:x402:dev-issuer")).toBe("urn:x402:dev-issuer");
   });
 
-  it("refuses an empty value or one holding the separator, so two pairs never share an input", () => {
-    for (const [tid, oid] of [["a|b", "c"], ["a", "b|c"], ["", "c"], ["a", ""]] as const) {
-      expect(() => userIdFor(tid, oid)).toThrow(/non-empty and free of/);
+  it("differs for another issuer or another subject", () => {
+    const base = userIdFor(TENANT, "auth0|abc");
+    expect(userIdFor(TENANT, "auth0|abd")).not.toBe(base);
+    expect(userIdFor("https://other.eu.auth0.com/", "auth0|abc")).not.toBe(base);
+    // The same subject text from another connection is another person.
+    expect(userIdFor(TENANT, "google-oauth2|abc")).not.toBe(base);
+  });
+
+  it("accepts a subject that holds the old separator", () => {
+    expect(userIdFor(TENANT, "auth0|a|b")).toMatch(USER_ID_RE);
+    expect(userIdFor(TENANT, "auth0|a|b")).not.toBe(userIdFor(TENANT, "auth0|a"));
+  });
+
+  it("refuses an empty value or one holding a line break, so two pairs never share an input", () => {
+    for (const [issuer, subject] of [["a\nb", "c"], ["a", "b\nc"], ["a", "b\rc"], ["", "c"], ["a", ""]] as const) {
+      expect(() => userIdFor(issuer, subject)).toThrow(/non-empty and free of line breaks/);
     }
+    // Without the rule these two pairs would hash the same text.
+    expect(["x402-user-v2", "a", "b\nc"].join("\n")).toBe(["x402-user-v2", "a\nb", "c"].join("\n"));
+  });
+
+  it("no longer makes a v1 identifier", () => {
+    // v1 was sha256("x402-user-v1|dev|alice"): nobody signs in as that user any more.
+    expect(userIdFor("dev", "alice")).not.toBe("usr_deeee4478bc01dab1b0afa3fbe31f010");
   });
 
   it("reveals neither input", () => {
-    const id = userIdFor("contoso-tenant", "ana.perez");
+    const id = userIdFor("https://contoso.eu.auth0.com/", "auth0|ana.perez");
     expect(id).not.toContain("contoso");
     expect(id).not.toContain("ana");
   });

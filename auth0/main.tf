@@ -2,12 +2,24 @@
 # payment-details type, L2's CIBA client and its credential, the grant that lets only that client request the type,
 # and Guardian push. Least privilege throughout: the client can do CIBA and nothing else, and no other client and no
 # machine token can request the payment details. Users, passwords and private keys are never managed here.
+#
+# And what people's sign-in needs (SPEC L2-8 and L1-6, specs/013 research R19), further down: one API with one
+# permission, the role that holds it, two public clients (the portal's web app and the agent CLI) and the post-login
+# Action that dates the sign-in. No user is created and no role is assigned here: an administrator does that in Auth0.
 
 locals {
   # Must equal DETAILS_TYPE in src/layer2-control/payment-details.ts (T-IAC-02): Auth0's Guardian schema, the only
   # format the stock Guardian app displays (specs/012 research R4).
   details_type = "urn:auth0:schemas:authorization-details:v1:x402-payment"
   issuer       = "https://${var.tenant_domain}/"
+
+  # People's sign-in. The API's identifier is AUTH_AUDIENCE for the portal and the agent service; it can't change
+  # once created. The claim is the services' default AUTH_TIME_CLAIM, and the one sign-in-time.js writes (T-IAC-02).
+  identity_audience = "https://x402-api/${var.environment}"
+  permission        = "agent:run"
+  auth_time_claim   = "https://x402.dev/auth_time"
+  # The local portal (its default port), and the deployed one once var.portal_origin is set.
+  portal_origins = concat(["http://localhost:4025"], var.portal_origin == "" ? [] : [var.portal_origin])
 }
 
 # The approver must already exist (plan fails otherwise). Their Guardian enrollment is theirs to do, on their phone.
@@ -113,4 +125,144 @@ resource "auth0_guardian" "this" {
   lifecycle {
     prevent_destroy = true
   }
+}
+
+# ---- People's sign-in (specs/013 research R19) ---------------------------------------------------------------------
+
+# People's API: its identifier is AUTH_AUDIENCE, for the portal and for the agent service. RBAC is enforced and the
+# permissions go into the access token (the default token profile, which names the client as azp), so a token says
+# what its person may do, and both services verify it offline. Refresh tokens are allowed, for the web app's rotation.
+# Tokens live an hour: a role taken from a person stays in their tokens no longer than that.
+resource "auth0_resource_server" "identity" {
+  name                                            = "api-x402-${var.environment}"
+  identifier                                      = local.identity_audience
+  signing_alg                                     = "RS256"
+  enforce_policies                                = true
+  token_dialect                                   = "access_token_authz"
+  token_lifetime                                  = 3600
+  token_lifetime_for_web                          = 3600
+  allow_offline_access                            = true
+  skip_consent_for_verifiable_first_party_clients = true
+
+  lifecycle {
+    precondition {
+      condition     = var.api_identifier != local.identity_audience
+      error_message = "api_identifier is the approval API's: it can't be people's API identifier too."
+    }
+  }
+}
+
+# Its one permission: the same grant opens the portal and starts runs. The two services tell their clients apart by
+# client ID, never by permission.
+resource "auth0_resource_server_scopes" "identity" {
+  resource_server_identifier = auth0_resource_server.identity.identifier
+
+  scopes {
+    name        = local.permission
+    description = "Use the x402 portal and run the purchasing agent, as oneself"
+  }
+}
+
+# The one role, with exactly that permission. An administrator assigns it per person, in Auth0: nobody is assigned
+# here, and no user is created.
+resource "auth0_role" "user" {
+  name        = "x402-user"
+  description = "May onboard at the x402 portal and run the purchasing agent (${var.environment})."
+}
+
+resource "auth0_role_permissions" "user" {
+  role_id = auth0_role.user.id
+
+  permissions {
+    name                       = local.permission
+    resource_server_identifier = auth0_resource_server.identity.identifier
+  }
+
+  depends_on = [auth0_resource_server_scopes.identity]
+}
+
+# The portal's web app: a public single-page client. Authorization code with PKCE (a public client has no other way
+# to use the code), and the refresh_token grant only because its refresh tokens rotate. Its client ID is
+# PORTAL_CLIENT_ID: the only client whose tokens the portal accepts, and one the agent service refuses.
+resource "auth0_client" "portal" {
+  name            = "app-portal-${var.environment}"
+  description     = "x402 portal (${var.environment}): people sign in to it to see and change their own profile, account and expense policy."
+  app_type        = "spa"
+  is_first_party  = true
+  oidc_conformant = true
+  grant_types     = ["authorization_code", "refresh_token"]
+
+  callbacks           = local.portal_origins
+  web_origins         = local.portal_origins
+  allowed_logout_urls = local.portal_origins
+
+  jwt_configuration {
+    alg = "RS256"
+  }
+
+  # A used refresh token is revoked, and using it again revokes its whole family. One lives a day at most, and
+  # twelve hours unused.
+  refresh_token {
+    rotation_type                = "rotating"
+    expiration_type              = "expiring"
+    token_lifetime               = 86400
+    idle_token_lifetime          = 43200
+    infinite_token_lifetime      = false
+    infinite_idle_token_lifetime = false
+    leeway                       = 0
+  }
+}
+
+# No secret and no key: a browser can't keep one.
+resource "auth0_client_credentials" "portal" {
+  client_id             = auth0_client.portal.client_id
+  authentication_method = "none"
+}
+
+# The agent CLI: a public native client with the device authorization grant only, for `npm run user-token`. Its
+# client ID is on the agent service's allow-list (AGENT_CLIENT_IDS), and the portal refuses it.
+resource "auth0_client" "agent_cli" {
+  name            = "app-agent-cli-${var.environment}"
+  description     = "x402 agent CLI (${var.environment}): a person gets a token for the hosted agent service from a terminal, with the device flow."
+  app_type        = "native"
+  is_first_party  = true
+  oidc_conformant = true
+  grant_types     = ["urn:ietf:params:oauth:grant-type:device_code"]
+
+  jwt_configuration {
+    alg = "RS256"
+  }
+}
+
+resource "auth0_client_credentials" "agent_cli" {
+  client_id             = auth0_client.agent_cli.client_id
+  authentication_method = "none"
+}
+
+# The post-login Action: it writes the time of the person's most recent authentication on the access token, as
+# local.auth_time_claim (Auth0 puts auth_time in the ID token only). L2 judges from it whether a loosening policy
+# change follows a fresh sign-in. It sets nothing else, holds no secret and uses no package. T-IAC-02 runs its code.
+resource "auth0_action" "sign_in_time" {
+  name    = "x402-sign-in-time-${var.environment}"
+  runtime = "node22"
+  deploy  = true
+  code    = file("${path.module}/sign-in-time.js")
+
+  supported_triggers {
+    id      = "post-login"
+    version = "v3"
+  }
+
+  lifecycle {
+    precondition {
+      condition     = strcontains(file("${path.module}/sign-in-time.js"), "\"${local.auth_time_claim}\"")
+      error_message = "sign-in-time.js must write local.auth_time_claim, the claim the services read."
+    }
+  }
+}
+
+# Appended to the tenant's post-login flow: an Action another configuration bound there stays.
+resource "auth0_trigger_action" "sign_in_time" {
+  trigger   = "post-login"
+  action_id = auth0_action.sign_in_time.id
 }

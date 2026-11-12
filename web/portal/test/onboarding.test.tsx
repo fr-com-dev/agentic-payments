@@ -174,6 +174,50 @@ describe("T-WEB-01: signed out and refused", () => {
     expect(await screen.findByRole("heading", { level: 1, name: "Hello, Alice" })).toBeTruthy();
   });
 
+  it("a failed sign-in says why: the code, and what to do about it", async () => {
+    const user = userEvent.setup();
+    const cases: Array<[string | undefined, RegExp]> = [
+      ["popup_open", /\(popup_open\)\. Your browser blocked the sign-in window\. Allow pop-ups/],
+      ["cancelled", /The sign-in window was closed before it finished/],
+      ["timeout", /The sign-in window was open too long without an answer/],
+      ["access_denied", /\(access_denied\)\. The sign-in service refused this account/],
+      ["unauthorized_client", /does not accept this portal's address or its sign-in settings\. An administrator must check/],
+      ["invalid_grant", /Your session ended\. Sign in again\./],
+      ["account_changed", /Another person signed in in the sign-in window, so you were signed out/],
+      ["server_error", /\(server_error\)\. Try again, or give this code to your administrator/],
+      [undefined, /^The sign-in did not complete\. Try again\.$/],
+    ];
+    for (const [code, text] of cases) {
+      const auth = fakeAuth({ signedIn: false, ...(code !== undefined && { lastError: code }) });
+      auth.signIn.mockResolvedValue(false);
+      const view = renderApp("/", world("done"), { auth });
+      await user.click(screen.getByRole("button", { name: "Sign in" }));
+      expect((await screen.findByRole("alert")).textContent, String(code)).toMatch(text);
+      expect(view.api.me).not.toHaveBeenCalled();
+      view.unmount();
+    }
+  });
+
+  it("one sign-in at a time: the button waits while the sign-in window is open", async () => {
+    const user = userEvent.setup();
+    const auth = fakeAuth({ signedIn: false });
+    let finish: (ok: boolean) => void = () => undefined;
+    auth.signIn.mockImplementation(() => new Promise<boolean>((resolve) => (finish = resolve)));
+    renderApp("/", world("done"), { auth });
+    const button = screen.getByRole("button", { name: "Sign in" }) as HTMLButtonElement;
+    await user.click(button);
+    expect(button.disabled).toBe(true);
+    expect(screen.getByRole("status").textContent).toBe("A sign-in window is open. Finish there, or close it to try again.");
+    await user.click(button);
+    expect(auth.signIn).toHaveBeenCalledTimes(1);
+    // The window was closed without signing in: the button is back, with the reason.
+    finish(false);
+    await waitFor(() => expect(button.disabled).toBe(false));
+    expect(screen.getByRole("alert").textContent).toMatch(/The sign-in did not complete/);
+    await user.click(button);
+    expect(auth.signIn).toHaveBeenCalledTimes(2);
+  });
+
   it("an ended sign-in (401) goes back to Sign in", async () => {
     const w = world("done");
     const api = fakeApi(w);

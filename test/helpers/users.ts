@@ -1,6 +1,7 @@
 // 013 in-process L2 with user accounts on (specs/013 research R15), shared by test/users.test.ts and the portal
 // tests. Real ledger on a temp file, real keyring (so each user signs with their own derived account), real routes;
 // only the platform account's signer is fake. Every must-fail switch arrives as a dep, never through the environment.
+import { devUserId } from "../../scripts/dev-issuer-lib.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -14,7 +15,6 @@ import { createControlService, recordPlatformConfig, type ControlService } from 
 import { WalletKeyring, type PaymentSignerLike } from "../../src/layer2-control/signer.js";
 import type { UserAccountsDeps } from "../../src/layer2-control/users.js";
 import type { AuthorizationDecision, PaymentIntent, PolicyValues } from "../../src/shared/contracts.js";
-import { userIdFor } from "../../src/shared/user-id.js";
 
 export const CAIP2 = "eip155:31337";
 export const ASSET = "0xAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAa";
@@ -31,8 +31,8 @@ export const T0 = Date.parse("2026-11-10T12:00:00.000Z");
 /** FR-007: the step-up window, in seconds. */
 export const STEP_UP_AGE = 900;
 
-export const ALICE = userIdFor("dev", "alice");
-export const BOB = userIdFor("dev", "bob");
+export const ALICE = devUserId("alice");
+export const BOB = devUserId("bob");
 
 const MANDATE_JSON = {
   mandateId: "mandate-test-013",

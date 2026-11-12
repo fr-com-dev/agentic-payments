@@ -344,6 +344,11 @@ export function PolicyEditor({ policyId, step = false }: { policyId?: string; st
           {flag}
         </Banner>
       ))}
+      {policy?.expired && !locked ? (
+        <Banner kind="warning">
+          This policy ended on {formatDay(policy.values.expiresAt)}, so your agent can't pay under it. To extend it, choose a later <a href="#policy-endsOn">end date</a> and save.
+        </Banner>
+      ) : null}
       {locked ? <Banner kind="warning">Your account is disabled, so this policy can't be saved.</Banner> : null}
       <ErrorSummary title="The policy was not saved" items={problems} />
       {stepUp.prompt}

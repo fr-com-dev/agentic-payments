@@ -8,7 +8,7 @@
     "quality_profile": "showcase",
     "repository": {
       "url": "https://github.com/fr-com-dev/agentic-payments",
-      "revision": "4b258df77ebbff091e45ce7a5a4edb2adad5dc10"
+      "revision": "759a9bbaa85e1850b97ae4240ca66a1f228f6a5b"
     },
     "views": [
       {
@@ -63,10 +63,9 @@
           "portal",
           "l2",
           "ledger",
-          "agent",
-          "chain"
+          "agent"
         ],
-        "note": "Optional (USER_ACCOUNTS=1): a person sets up a profile, a wallet and expense policies in the portal; L2 records them in the ledger and signs each person's payments with that person's account."
+        "note": "Optional: a person sets up a profile, wallet and policies in the portal; L2 records them and signs with that person's account."
       }
     ]
   },
@@ -274,7 +273,7 @@
       "id": "portal",
       "type": "frontend",
       "label": "Portal :4025",
-      "sublabel": "profile · wallet · policies · no keys",
+      "sublabel": "user accounts · no keys",
       "pos": [
         40,
         200
@@ -354,7 +353,8 @@
       "from": "operator",
       "to": "l2",
       "label": "approve",
-      "variant": "security"
+      "variant": "security",
+      "labelDy": 18
     },
     {
       "id": "settle-cdp",
@@ -416,18 +416,7 @@
       "from": "portal",
       "to": "l2",
       "label": "user-account routes",
-      "variant": "security",
-      "fromSide": "bottom",
-      "toSide": "left"
-    },
-    {
-      "id": "portal-balance",
-      "from": "portal",
-      "to": "chain",
-      "label": "balance (read-only)",
-      "variant": "dashed",
-      "fromSide": "top",
-      "toSide": "top"
+      "variant": "security"
     }
   ],
   "cards": [

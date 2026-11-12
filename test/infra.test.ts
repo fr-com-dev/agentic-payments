@@ -7,8 +7,11 @@
 // BICEP_PATH (deploy.yml does);
 // without it this suite is skipped. Each rule has a must-fail mutant. Every name is in the parameter files (`names`):
 // names are resolved with the dev files' values, and rule 15 checks each one against the naming standard.
-// 013 (specs/013 contracts/config-and-secrets.md "T-IAC-01 changes"): the portal unit joins the tables, rules 2, 3, 4,
-// 8 and 16 are extended for it, and rule 21 covers user accounts.
+// 013 (specs/013 contracts/config-and-secrets.md "T-IAC-01 changes"): the portal unit joins the tables, rules 2, 3, 4
+// and 8 are extended for it, and rule 21 covers user accounts. Since 2026-11-10 (research R19) people sign in with
+// Auth0, defined in auth0/ (T-IAC-02), so rule 16 is back to the Entra objects of system identities (no web app, no
+// Portal.Access scope but while it is being retired), rule 11 is the agent's SERVICE_AUDIENCE, and rule 21 covers the
+// identity parameter.
 import { cpSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -163,10 +166,9 @@ const RBAC_ADMINISTRATOR = "f58310d9-a9f6-439a-9e8d-f62e7b41a168";
 const BLOB_CONTRIBUTOR = "ba92f5b4-2d11-453d-a403-e96b0029c9fe";
 const AGENT_RUN = "5b2c3a7e-6f1d-4c55-9f0e-0a1b2c3d4e51";
 const USER_IMPERSONATION = "5b2c3a7e-6f1d-4c55-9f0e-0a1b2c3d4e52";
+/** 013's retired scope: in the API app only while retirePortalScope is true, and then disabled (rule 16). */
 const PORTAL_ACCESS = "5b2c3a7e-6f1d-4c55-9f0e-0a1b2c3d4e53";
 const AZURE_CLI = "04b07795-8ddb-461a-bbee-02f9e1bf7b46";
-/** The web app's local redirect URI (the portal on its default port); the deployed one comes from portalOrigin. */
-const LOCAL_REDIRECT = "http://localhost:4025/redirect.html";
 const GUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g;
 /** The two templates: everything in the resource group, and what precedes it. */
 export const TEMPLATES = ["main", "pre-deploy"] as const;
@@ -207,7 +209,6 @@ const STANDARD: Record<string, { type: string; app?: string; compact?: boolean; 
   jobs: { type: "caj", limits: [2, 32, /^[a-z](?!.*--)[a-z0-9-]*[a-z0-9]$/] },
   apiApp: { type: "app", app: "l1", limits: [1, 120, /^[a-z][a-z0-9-]*[a-z0-9]$/] },
   deployApp: { type: "app", app: "deploy", limits: [1, 120, /^[a-z][a-z0-9-]*[a-z0-9]$/] },
-  portalApp: { type: "app", app: "portal", limits: [1, 120, /^[a-z][a-z0-9-]*[a-z0-9]$/] },
   operators: { type: "grp", app: "op", limits: [1, 64, /^[a-z][a-z0-9-]*[a-z0-9]$/] },
   stateStorage: { type: "st", app: "tfstate", compact: true, limits: [3, 24, /^[a-z0-9]+$/] },
 };
@@ -286,7 +287,7 @@ const vaultKeysOf = (r: Res, url: string | undefined) => [...withVars(url ?? "",
 const paramLines = (text: string) => new Map([...text.matchAll(/^param (\w+) = (.+)$/gm)].map((m) => [m[1]!, m[2]!.trim()]));
 
 /**
- * Rules 1–20 of contracts/cloud-topology.md, on the compiled templates, the compiled parameter files (`params`, by
+ * Rules 1–21 of contracts/cloud-topology.md (21: specs/013 contracts/config-and-secrets.md), on the compiled templates, the compiled parameter files (`params`, by
  * file name) and the infra sources. Returns one message per violation, prefixed `rule N:`.
  */
 export function violations(arms: Templates, params: Params, infraFiles: Record<string, string>): string[] {
@@ -495,15 +496,20 @@ export function violations(arms: Templates, params: Params, infraFiles: Record<s
   }
   for (const u of units) if (u.subnet !== (u.key === "seller" ? "seller" : "x402")) v.push(`rule 10: unit ${u.key} on subnet ${u.subnet}`);
 
-  // Rule 11: the agent's AUTH_AUDIENCE is the API app's client ID, a required 36-character parameter. Entra
-  // v2.0 tokens carry it as `aud`; a default such as the api:// URI would refuse every real token.
+  // Rule 11: the agent's SERVICE_AUDIENCE, the audience of system identities' tokens, is the Entra API app's client
+  // ID, a required 36-character parameter. Entra v2.0 tokens carry it as `aud`; a default such as the api:// URI
+  // would refuse every real token. Since 013 (research R19) AUTH_AUDIENCE is Auth0's, for people (rule 21); the
+  // Entra tenant stays the agent's AUTH_TENANT_ID.
   const audience = ((arms.main.parameters as Json)?.authAudience ?? {}) as Json;
   if ("defaultValue" in audience || audience.minLength !== 36 || audience.maxLength !== 36) {
     v.push("rule 11: authAudience must be a required 36-character parameter (the API app's client ID)");
   }
   const agentEnv = apps(main).filter((r) => namesOf(r).includes(MN.apps.l1)).flatMap((r) => containersOf(r).flatMap((c) => c.env ?? []));
-  if (agentEnv.find((e) => e.name === "AUTH_AUDIENCE")?.value !== "[parameters('authAudience')]" || deploymentParam(main, "l1-apps", "authAudience") !== JSON.stringify({ value: "[parameters('authAudience')]" })) {
-    v.push("rule 11: the agent's AUTH_AUDIENCE must come from the authAudience parameter");
+  if (agentEnv.find((e) => e.name === "SERVICE_AUDIENCE")?.value !== "[parameters('authAudience')]" || deploymentParam(main, "l1-apps", "authAudience") !== JSON.stringify({ value: "[parameters('authAudience')]" })) {
+    v.push("rule 11: the agent's SERVICE_AUDIENCE must come from the authAudience parameter");
+  }
+  if (agentEnv.find((e) => e.name === "AUTH_TENANT_ID")?.value !== "[parameters('authTenantId')]" || deploymentParam(main, "l1-apps", "authTenantId") !== JSON.stringify({ value: "[parameters('tenantId')]" })) {
+    v.push("rule 11: the agent's AUTH_TENANT_ID must be the parameter file's tenant");
   }
 
   // Rule 12: each app and job runs from its own unit's image, x402-<unit>:<imageTag> in the platform's registry,
@@ -629,11 +635,12 @@ export function violations(arms: Templates, params: Params, infraFiles: Record<s
     for (const [n, path] of declared) if (text.includes(n)) v.push(`rule 15: ${name} writes out ${n}: use ${path}`);
   }
 
-  // Rule 16: the Entra objects (pre-deploy.bicep). The API app takes v2.0 tokens for its standard URI, has one
-  // role (Agent.Run, assignment required) and two admin scopes, each with one pre-authorized client: the Azure CLI
-  // for user_impersonation (the agent), and 013's portal web app for Portal.Access. Its access tokens carry the
-  // optional claims auth_time, and idtyp for user tokens too. The web app is a public single-page client: no secret,
-  // no certificate, no role, no API, no permissions of its own, and only its own /redirect.html as redirect URIs.
+  // Rule 16: the Entra objects (pre-deploy.bicep), which serve system identities only since 013 (research R19:
+  // people sign in with Auth0, T-IAC-02). The API app takes v2.0 tokens for its standard URI, has one role (Agent.Run,
+  // assignment required), one admin scope (user_impersonation) and one pre-authorized client, the Azure CLI. Its
+  // access tokens carry one optional claim, idtyp, for user tokens too. 013's Portal.Access scope is retired: it may
+  // stay only while retirePortalScope is true, and then disabled and pre-authorized for nobody (Entra wants a scope
+  // disabled before it is removed). No web app is registered: the app registrations are the API app and the deploy app.
   // The deploy app has no API, no permissions and no secret: GitHub signs in as it through two federated
   // credentials, for the repository's deploy environment and its Auth0 environment (provision-auth0.yml). Agent.Run goes to the deploy app and agentUsers only. The deploy app's roles are
   // Contributor and Role Based Access Control Administrator on the resource group only, the latter limited by
@@ -643,10 +650,9 @@ export function violations(arms: Templates, params: Params, infraFiles: Record<s
   const appNamed = (n: string | undefined) => entraApps.find((r) => namesOf(r).includes(n ?? ""));
   const apiApp = appNamed(PN.apiApp);
   const deployApp = appNamed(PN.deployApp);
-  const portalApp = appNamed(PN.portalApp);
   const api = (apiApp?.properties.api ?? {}) as Json;
   const appRoles = (apiApp?.properties.appRoles ?? []) as Json[];
-  const scopes = (api.oauth2PermissionScopes ?? []) as Json[];
+  const scopes = api.oauth2PermissionScopes;
   if (api.requestedAccessTokenVersion !== 2) v.push("rule 16: the API app must receive v2.0 access tokens");
   if (JSON.stringify(((apiApp?.properties.identifierUris ?? []) as string[]).flatMap((u) => resolved(u, apiApp!.vars, devParams["pre-deploy"]!))) !== JSON.stringify([`api://${PN.apiApp}`])) {
     v.push(`rule 16: the API app's identifier URI must be api://${PN.apiApp}`);
@@ -654,37 +660,41 @@ export function violations(arms: Templates, params: Params, infraFiles: Record<s
   if (appRoles.length !== 1 || appRoles[0]!.value !== "Agent.Run" || !withVars(appRoles[0]!.id, apiApp!.vars).includes(AGENT_RUN) || JSON.stringify(appRoles[0]!.allowedMemberTypes) !== '["User","Application"]') {
     v.push("rule 16: the API app's only role must be Agent.Run, for users and applications");
   }
-  const scopeIds = Object.fromEntries(scopes.map((s) => [String(s.value), s.type === "Admin" ? (withVars(s.id, apiApp?.vars ?? {}).match(GUID) ?? []).join() : "not admin consent only"]));
-  if (scopes.length !== 2 || JSON.stringify(Object.entries(scopeIds).sort()) !== JSON.stringify([["Portal.Access", PORTAL_ACCESS], ["user_impersonation", USER_IMPERSONATION]])) {
-    v.push("rule 16: the API app's scopes must be user_impersonation and Portal.Access, each admin consent only, with its fixed ID");
+  // The scopes: user_impersonation always; the retired Portal.Access only while retirePortalScope is true. Each is
+  // a variable of the template: [value, type, fixed ID, enabled].
+  const scopeOf = (name: string) => {
+    const scope = ((apiApp?.vars ?? {})[name] ?? {}) as Json;
+    return JSON.stringify([scope.value, scope.type, (withVars(scope.id, apiApp?.vars ?? {}).match(GUID) ?? []).join(), scope.isEnabled]);
+  };
+  if (
+    String(scopes) !== "[if(parameters('retirePortalScope'), createArray(variables('userImpersonationScope'), variables('retiredPortalAccessScope')), createArray(variables('userImpersonationScope')))]" ||
+    scopeOf("userImpersonationScope") !== JSON.stringify(["user_impersonation", "Admin", USER_IMPERSONATION, true]) ||
+    scopeOf("retiredPortalAccessScope") !== JSON.stringify(["Portal.Access", "Admin", PORTAL_ACCESS, false])
+  ) {
+    v.push("rule 16: the API app's only scope must be user_impersonation, admin consent only, with its fixed ID; the retired Portal.Access may stay only while retirePortalScope is true, and then disabled");
   }
-  // Each pre-authorized client with the scope IDs it gets: the Azure CLI by its well-known ID, the web app by reference.
-  const preAuthorized = ((api.preAuthorizedApplications ?? []) as { appId?: unknown; delegatedPermissionIds?: unknown[] }[]).map((a) => {
+  const retire = ((arms["pre-deploy"].parameters as Json)?.retirePortalScope ?? {}) as Json;
+  if (retire.type !== "bool" || "defaultValue" in retire) v.push("rule 16: retirePortalScope must be a required bool parameter: each environment's parameter file says which of the two deployments it is at");
+  // Each pre-authorized client with the scope IDs it gets: the Azure CLI by its well-known ID, and nobody else, in
+  // every deployment (a literal array: nothing is pre-authorized for the retired scope).
+  const preAuthorized = (Array.isArray(api.preAuthorizedApplications) ? (api.preAuthorizedApplications as { appId?: unknown; delegatedPermissionIds?: unknown[] }[]) : [{ appId: api.preAuthorizedApplications }]).map((a) => {
     const client = withVars(a.appId, apiApp?.vars ?? {});
     return [client.match(GUID)?.join() ?? client, (a.delegatedPermissionIds ?? []).flatMap((id) => withVars(id, apiApp?.vars ?? {}).match(GUID) ?? [String(id)]).join()];
   });
-  if (JSON.stringify(preAuthorized.sort()) !== JSON.stringify([[AZURE_CLI, USER_IMPERSONATION], ["[reference('portalApp').appId]", PORTAL_ACCESS]].sort())) {
-    v.push("rule 16: only the Azure CLI (for user_impersonation only) and the portal web app (for Portal.Access only) may be pre-authorized");
-  }
+  if (JSON.stringify(preAuthorized) !== JSON.stringify([[AZURE_CLI, USER_IMPERSONATION]])) v.push("rule 16: only the Azure CLI may be pre-authorized, for user_impersonation only");
   const claims = (((apiApp?.properties.optionalClaims ?? {}) as Json).accessToken ?? []) as { name?: string; additionalProperties?: string[] }[];
   const otherTokens = Object.keys((apiApp?.properties.optionalClaims ?? {}) as Json).filter((k) => k !== "accessToken");
-  if (
-    otherTokens.length > 0 ||
-    JSON.stringify(claims.map((c) => [c.name, c.additionalProperties ?? []]).sort()) !== JSON.stringify([["auth_time", []], ["idtyp", ["include_user_token"]]])
-  ) {
-    v.push("rule 16: the API app's access tokens must carry the optional claims auth_time, and idtyp with include_user_token, and no other");
+  if (otherTokens.length > 0 || JSON.stringify(claims.map((c) => [c.name, c.additionalProperties ?? []])) !== JSON.stringify([["idtyp", ["include_user_token"]]])) {
+    v.push("rule 16: the API app's access tokens must carry the optional claim idtyp, with include_user_token, and no other");
   }
-  if (!portalApp) v.push(`rule 16: the portal web app ${PN.portalApp} is missing`);
-  else {
-    for (const k of ["api", "appRoles", "identifierUris", "requiredResourceAccess", "web", "publicClient", "isFallbackPublicClient"]) if (k in portalApp.properties) v.push(`rule 16: the portal web app must have no ${k}`);
-    const redirects = String(((portalApp.properties.spa ?? {}) as Json).redirectUris ?? "");
-    const literals = [...redirects.matchAll(/'([a-z]+:\/\/[^']*)'/g)].map((m) => m[1]);
-    if (JSON.stringify(literals) !== JSON.stringify([LOCAL_REDIRECT]) || !redirects.includes("if(empty(parameters('portalOrigin')), createArray(), createArray(format('{0}/redirect.html', parameters('portalOrigin'))))")) {
-      v.push(`rule 16: the portal web app's redirect URIs must be ${LOCAL_REDIRECT}, and portalOrigin's /redirect.html once it is set (a single-page app: spa.redirectUris)`);
-    }
-  }
-  if (!JSON.stringify(((arms["pre-deploy"].outputs ?? {}) as Json).mainParameters ?? "").includes("reference('portalApp').appId")) {
-    v.push("rule 16: pre-deploy's mainParameters output must give the portal web app's client ID (userAccounts.portalClientId)");
+  // No web app registration, and nothing left of the one 013 first made: its name, its origin, its pre-authorization
+  // switch, its line in the output.
+  if (entraApps.length !== 2 || !apiApp || !deployApp) v.push("rule 16: the app registrations must be exactly the API app and the deploy app: people sign in with Auth0 (auth0/), through no Entra app of ours");
+  for (const a of entraApps) for (const k of ["spa", "web", "publicClient", "isFallbackPublicClient"]) if (k in a.properties) v.push(`rule 16: ${label(a)} must have no ${k}: nobody signs in through it`);
+  for (const gone of ["portalOrigin", "portalPreAuthorized"]) if (gone in ((arms["pre-deploy"].parameters ?? {}) as Json)) v.push(`rule 16: pre-deploy must have no ${gone} parameter: the portal's origin is a Terraform variable of auth0/`);
+  const mainParameters = JSON.stringify(((arms["pre-deploy"].outputs ?? {}) as Json).mainParameters ?? "");
+  if (JSON.stringify([...mainParameters.matchAll(/param (\w+) = /g)].map((m) => m[1])) !== JSON.stringify(["deployClientId", "authAudience", "operatorsGroupId"])) {
+    v.push("rule 16: pre-deploy's mainParameters output must be the three lines main's parameter file takes: deployClientId, authAudience and operatorsGroupId");
   }
   for (const a of entraApps) {
     for (const k of ["passwordCredentials", "keyCredentials"]) if (k in a.properties) v.push(`rule 16: ${label(a)} has ${k}`);
@@ -841,7 +851,12 @@ export function violations(arms: Templates, params: Params, infraFiles: Record<s
   // but PORTAL_TOKEN, which only it and L2 hold, and the card vault key, which only it holds. Its other values come
   // from parameters, it calls L2 only, and nothing in infra/ turns API docs on. main passes userAccounts whole to
   // the three modules that read it, and refuses (fail()) one it can't use.
+  // People's sign-in (research R19): the identity parameter, Terraform's output, is Auth0's issuer, the API's
+  // identifier and the clients the agent service accepts. The agent and the portal take AUTH_ISSUER and AUTH_AUDIENCE
+  // from it, and the agent AGENT_CLIENT_IDS; nothing of Entra reaches the portal, which accepts no Entra token. main
+  // passes identity whole to those two modules, and refuses (fail()) user accounts turned on without a usable one.
   const UA = "parameters('userAccounts')";
+  const ID = "parameters('identity')";
   const L2_USER_SECRETS: Record<string, string> = { PORTAL_TOKEN: "portal-token", USER_WALLET_MNEMONIC: "user-wallet-mnemonic" };
   const PORTAL_SECRETS: Record<string, string> = { PORTAL_TOKEN: "portal-token", CARD_VAULT_KEY: "card-vault-key" };
   /** Each env name's secret is referenced, from the app's own vault, in arrays no flag can empty. */
@@ -895,8 +910,8 @@ export function violations(arms: Templates, params: Params, infraFiles: Record<s
     }
     const env = containersOf(portal).find((c) => c.name === "portal")?.env ?? [];
     const FROM_PARAM: Record<string, string> = {
-      AUTH_TENANT_ID: "[parameters('authTenantId')]",
-      AUTH_AUDIENCE: "[parameters('authAudience')]",
+      AUTH_ISSUER: `[${ID}.issuer]`,
+      AUTH_AUDIENCE: `[${ID}.audience]`,
       PORTAL_CLIENT_ID: `[${UA}.portalClientId]`,
       CARD_VAULT: `[if(equals(${UA}.cardVault, 'stripe'), 'stripe', '')]`,
       CARD_VAULT_PUBLISHABLE_KEY: `[${UA}.cardVaultPublishableKey]`,
@@ -905,22 +920,50 @@ export function violations(arms: Templates, params: Params, infraFiles: Record<s
       const got = env.find((e) => e.name === name);
       if (got?.value !== want || got.secretRef !== undefined) v.push(`rule 21: the portal's ${name} must come from its parameter`);
     }
-    for (const [param, from] of [["authTenantId", "tenantId"], ["authAudience", "authAudience"]]) {
-      if (deploymentParam(main, "portal-apps", param!) !== JSON.stringify({ value: `[parameters('${from}')]` })) v.push(`rule 21: main must pass ${from} to portal-apps as ${param}`);
-    }
+    // The portal accepts Auth0 tokens of its own client only: nothing of Entra, and no agent allow-list, reaches it.
+    for (const e of env) if (/^(AUTH_TENANT_ID|SERVICE_AUDIENCE|AGENT_CLIENT_IDS)$/.test(e.name)) v.push(`rule 21: ${e.name} in ${label(portal)}/portal: the portal accepts no Entra token and no agent client`);
+    const portalParams = (((deployment(main, "portal-apps")?.properties.template ?? {}) as Json).parameters ?? {}) as Json;
+    for (const param of ["authTenantId", "authAudience"]) if (param in portalParams) v.push(`rule 21: portal-apps must take no ${param} parameter: the portal accepts no Entra token`);
     const control = resolved(env.find((e) => e.name === "CONTROL_URL")?.value ?? "", portal.vars, devParams.main!);
     if (JSON.stringify(control) !== JSON.stringify([`http://${MN.apps.l2}.internal.*`])) v.push("rule 21: the portal's CONTROL_URL must be L2's internal address");
     if (env.some((e) => /^(SETTLEMENT_URL|SELLER_URL|SELLER_ALIAS_URL)$/.test(e.name))) v.push("rule 21: the portal calls L2 only");
   }
-  if (agentEnv.find((e) => e.name === "PORTAL_CLIENT_ID")?.value !== `[${UA}.portalClientId]`) v.push("rule 21: the agent's PORTAL_CLIENT_ID (the azp it refuses) must come from the userAccounts parameter");
+  if (agentEnv.find((e) => e.name === "PORTAL_CLIENT_ID")?.value !== `[${UA}.portalClientId]`) v.push("rule 21: the agent's PORTAL_CLIENT_ID (the client it refuses) must come from the userAccounts parameter");
+  const AGENT_FROM_IDENTITY: Record<string, string> = { AUTH_ISSUER: `[${ID}.issuer]`, AUTH_AUDIENCE: `[${ID}.audience]`, AGENT_CLIENT_IDS: `[join(${ID}.agentClientIds, ',')]` };
+  for (const [name, want] of Object.entries(AGENT_FROM_IDENTITY)) {
+    const got = agentEnv.filter((e) => e.name === name);
+    if (got.length !== 1 || got[0]!.value !== want || got[0]!.secretRef !== undefined) v.push(`rule 21: the agent's ${name} must come from the identity parameter`);
+  }
   for (const module of ["l1-apps", "l2-apps", "portal-apps"]) {
     if (deploymentParam(main, module, "userAccounts") !== JSON.stringify({ value: `[${UA}]` })) v.push(`rule 21: main must pass the userAccounts parameter to ${module} whole`);
   }
+  for (const module of ["l1-apps", "portal-apps"]) {
+    if (deploymentParam(main, module, "identity") !== JSON.stringify({ value: `[${ID}]` })) v.push(`rule 21: main must pass the identity parameter to ${module} whole`);
+  }
   const userAccountsChecked = String(((arms.main.variables ?? {}) as Json).userAccountsChecked ?? "");
-  for (const part of ["fail(", `contains(createArray('off', 'stripe'), ${UA}.cardVault)`, `equals(length(${UA}.portalClientId), 36)`, "not(equals(parameters('unit'), 'portal'))", `startsWith(${UA}.cardVaultPublishableKey, 'pk_test_')`]) {
+  for (const part of ["fail(", `contains(createArray('off', 'stripe'), ${UA}.cardVault)`, `or(and(not(${UA}.enabled), not(equals(parameters('unit'), 'portal'))), not(empty(${UA}.portalClientId)))`, `startsWith(${UA}.cardVaultPublishableKey, 'pk_test_')`]) {
     if (!userAccountsChecked.includes(part)) {
-      v.push("rule 21: main must refuse (fail()) a userAccounts whose cardVault is not off or stripe, that is enabled without a 36-character portalClientId, or whose cardVault is stripe without a pk_test_ publishable key");
+      v.push("rule 21: main must refuse (fail()) a userAccounts whose cardVault is not off or stripe, that is enabled without a portalClientId (not empty: an Auth0 client ID is not a GUID), or whose cardVault is stripe without a pk_test_ publishable key");
       break;
+    }
+  }
+  const identityChecked = String(((arms.main.variables ?? {}) as Json).identityChecked ?? "");
+  if (!identityChecked.startsWith(`[if(or(not(${UA}.enabled), and(and(and(startsWith(${ID}.issuer, 'https://'), endsWith(${ID}.issuer, '/')), not(empty(${ID}.audience))), not(contains(${ID}.agentClientIds, ${UA}.portalClientId)))), ${UA}.enabled, fail(`)) {
+    v.push("rule 21: main must refuse (fail()) user accounts turned on without an identity.issuer of the form https://…/, an identity.audience, or with the portal's client among identity.agentClientIds");
+  }
+  // Each environment's parameter file: the identity object has exactly the keys the templates read, the portal's
+  // client is never on the agent's allow-list, and user accounts are on only with a usable identity (what main's
+  // fail() would refuse at deployment, found here first).
+  for (const [file, p] of Object.entries(params).filter(([f]) => /^main\.[a-z0-9]+\.bicepparam$/.test(f))) {
+    const id = (p.identity ?? {}) as Json;
+    const accounts = (p.userAccounts ?? {}) as Json;
+    const clients = id.agentClientIds;
+    if (JSON.stringify(Object.keys(id).sort()) !== '["agentClientIds","audience","issuer"]' || typeof id.issuer !== "string" || typeof id.audience !== "string" || !Array.isArray(clients) || clients.some((c) => typeof c !== "string" || c === "")) {
+      v.push(`rule 21: ${file}'s identity must be exactly issuer, audience and agentClientIds (a list of client IDs)`);
+    } else if (clients.includes(accounts.portalClientId)) {
+      v.push(`rule 21: ${file}'s identity.agentClientIds holds the portal's client ID: the agent service must refuse the portal's tokens`);
+    } else if (accounts.enabled === true && (!/^https:\/\/[^/]+\/$/.test(id.issuer) || id.audience === "")) {
+      v.push(`rule 21: ${file} turns user accounts on without an identity.issuer of the form https://<domain>/ and an identity.audience`);
     }
   }
 
@@ -992,20 +1035,23 @@ describe.skipIf(!BICEP_PATH)("T-IAC-01 Azure identity, secret, exposure and nami
     return { arms: arms as Templates, params };
   }
 
-  /** A copy of infra/ with one edit, compiled. */
-  async function mutant(file: string, from: string, to: string): Promise<string[]> {
+  /** A copy of infra/ with one edit (or, with `also`, several in the same file), compiled. */
+  async function mutant(file: string, from: string, to: string, also: [from: string, to: string][] = []): Promise<string[]> {
     const dir = mkdtempSync(join(tmpdir(), "infra-mutant-"));
     tmp.push(dir);
     cpSync("infra", dir, { recursive: true });
     const path = join(dir, file);
-    const text = readFileSync(path, "utf8");
-    expect(text.includes(from), `${file} contains the mutation anchor`).toBe(true);
-    writeFileSync(path, text.replace(from, () => to));
+    let text = readFileSync(path, "utf8");
+    for (const [a, b] of [[from, to] as [string, string], ...also]) {
+      expect(text.includes(a), `${file} contains the mutation anchor ${a}`).toBe(true);
+      text = text.replace(a, () => b);
+    }
+    writeFileSync(path, text);
     const { arms, params } = await compile(dir);
     return violations(arms, params, infraSources(dir));
   }
 
-  it("T-IAC-01 the real templates and parameter files pass rules 1–20", async () => {
+  it("T-IAC-01 the real templates and parameter files pass rules 1–21", async () => {
     const { arms, params } = await compile("infra");
     expect(violations(arms, params, infraSources("infra"))).toEqual([]);
   }, 60_000);
@@ -1105,6 +1151,13 @@ resource extraRead 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
     expect(v).toContain("rule 11: authAudience must be a required 36-character parameter (the API app's client ID)");
   }, 60_000);
 
+  it("T-IAC-01 must-fail rule 11: system identities checked against Auth0's audience, or against a tenant written in the template, are reported", async () => {
+    const audience = await mutant("modules/l1-apps.bicep", "{ name: 'SERVICE_AUDIENCE', value: authAudience }", "{ name: 'SERVICE_AUDIENCE', value: identity.audience }");
+    expect(audience).toContain("rule 11: the agent's SERVICE_AUDIENCE must come from the authAudience parameter");
+    const tenant = await mutant("modules/l1-apps.bicep", "{ name: 'AUTH_TENANT_ID', value: authTenantId }", "{ name: 'AUTH_TENANT_ID', value: 'common' }");
+    expect(tenant).toContain("rule 11: the agent's AUTH_TENANT_ID must be the parameter file's tenant");
+  }, 120_000);
+
   it("T-IAC-01 must-fail rule 12: L2's apps on the L1 image are reported", async () => {
     const v = await mutant("main.bicep", "image: '${acrServer}/x402-l2-control:${imageTag}'", "image: '${acrServer}/x402-l1-agent:${imageTag}'");
     expect(v).toContain("rule 12: l2-apps's image is not x402-l2-control:<imageTag> from the platform's registry");
@@ -1165,6 +1218,11 @@ resource extraRead 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   it("T-IAC-01 must-fail rule 15: a name in the parameter file outside the standard is reported", async () => {
     const v = await mutant("main.dev.bicepparam", "    x402: 'cae-x402-${location}-${environment}'", "    x402: 'cae-main-${location}-${environment}'");
     expect(v).toContain(`rule 15: main.dev.bicepparam's names.environments.x402 is cae-main-${N.location}-dev, not the standard ${N.main.environments.x402}`);
+  }, 60_000);
+
+  it("T-IAC-01 must-fail rule 15: the retired portal web app's name back in the parameter file is reported", async () => {
+    const v = await mutant("pre-deploy.dev.bicepparam", "  deployApp: 'app-deploy-${location}-${environment}'\n", "  deployApp: 'app-deploy-${location}-${environment}'\n  portalApp: 'app-portal-${location}-${environment}'\n");
+    expect(v).toContain("rule 15: pre-deploy.dev.bicepparam's names.portalApp is not a standard name");
   }, 60_000);
 
   it("T-IAC-01 must-fail rule 15: a template that names a resource itself is reported", async () => {
@@ -1238,34 +1296,57 @@ resource extraRead 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
     expect(entry).toContain(`rule 12: ${N.main.apps.portal}/portal runs dist/src/layer2-control/service.js, which the portal image doesn't contain`);
   }, 120_000);
 
-  it("T-IAC-01 must-fail rule 16: a web app pre-authorized for the agent's scope, a third pre-authorized client, or a scope open to user consent, is reported", async () => {
-    const both = await mutant("pre-deploy.bicep", "{ appId: portalApp.appId, delegatedPermissionIds: [portalAccessId] }", "{ appId: portalApp.appId, delegatedPermissionIds: [portalAccessId, userImpersonationId] }");
-    expect(both).toContain("rule 16: only the Azure CLI (for user_impersonation only) and the portal web app (for Portal.Access only) may be pre-authorized");
-    const third = await mutant("pre-deploy.bicep", "      { appId: portalApp.appId, delegatedPermissionIds: [portalAccessId] }\n", "      { appId: portalApp.appId, delegatedPermissionIds: [portalAccessId] }\n      { appId: deployApp.appId, delegatedPermissionIds: [portalAccessId] }\n");
-    expect(third).toContain("rule 16: only the Azure CLI (for user_impersonation only) and the portal web app (for Portal.Access only) may be pre-authorized");
-    const user = await mutant("pre-deploy.bicep", "        value: 'Portal.Access'\n        type: 'Admin'", "        value: 'Portal.Access'\n        type: 'User'");
-    expect(user).toContain("rule 16: the API app's scopes must be user_impersonation and Portal.Access, each admin consent only, with its fixed ID");
-  }, 120_000);
+  const SCOPES = "rule 16: the API app's only scope must be user_impersonation, admin consent only, with its fixed ID; the retired Portal.Access may stay only while retirePortalScope is true, and then disabled";
+  const PRE_AUTHORIZED = "rule 16: only the Azure CLI may be pre-authorized, for user_impersonation only";
+  const RETIRED = "oauth2PermissionScopes: retirePortalScope ? [userImpersonationScope, retiredPortalAccessScope] : [userImpersonationScope]";
 
-  it("T-IAC-01 must-fail rule 16: an API app without the idtyp claim, or whose idtyp leaves user tokens out, is reported", async () => {
-    const message = "rule 16: the API app's access tokens must carry the optional claims auth_time, and idtyp with include_user_token, and no other";
-    expect(await mutant("pre-deploy.bicep", "      { name: 'idtyp', additionalProperties: ['include_user_token'] }\n", "")).toContain(message);
-    expect(await mutant("pre-deploy.bicep", "{ name: 'idtyp', additionalProperties: ['include_user_token'] }", "{ name: 'idtyp' }")).toContain(message);
-  }, 120_000);
+  it("T-IAC-01 must-fail rule 16: a retired scope left enabled, kept in every deployment, or kept without the switch, and a scope open to user consent, are reported", async () => {
+    const enabled = await mutant("pre-deploy.bicep", "  value: 'Portal.Access'\n  type: 'Admin'\n  isEnabled: false", "  value: 'Portal.Access'\n  type: 'Admin'\n  isEnabled: true");
+    expect(enabled).toContain(SCOPES);
+    const always = await mutant("pre-deploy.bicep", RETIRED, "oauth2PermissionScopes: [userImpersonationScope, retiredPortalAccessScope]");
+    expect(always).toContain(SCOPES);
+    // The other way round: the scope kept when the switch is off, so it would never be removed.
+    const inverted = await mutant("pre-deploy.bicep", RETIRED, "oauth2PermissionScopes: retirePortalScope ? [userImpersonationScope] : [userImpersonationScope, retiredPortalAccessScope]");
+    expect(inverted).toContain(SCOPES);
+    const user = await mutant("pre-deploy.bicep", "  value: 'user_impersonation'\n  type: 'Admin'", "  value: 'user_impersonation'\n  type: 'User'");
+    expect(user).toContain(SCOPES);
+    const optional = await mutant("pre-deploy.bicep", "param retirePortalScope bool\n", "param retirePortalScope bool = true\n");
+    expect(optional).toContain("rule 16: retirePortalScope must be a required bool parameter: each environment's parameter file says which of the two deployments it is at");
+  }, 240_000);
 
-  it("T-IAC-01 must-fail rule 16: a web app with a secret, a role, permissions of its own, or a redirect URI that isn't its own page, is reported", async () => {
-    const anchor = "  signInAudience: 'AzureADMyOrg'\n  spa: {";
-    const secret = await mutant("pre-deploy.bicep", anchor, `  passwordCredentials: [{ displayName: 'portal' }]\n${anchor}`);
-    expect(secret).toContain(`rule 16: ${N.pre.portalApp} has passwordCredentials`);
-    const role = await mutant("pre-deploy.bicep", anchor, `  appRoles: [{ id: agentRunRoleId, value: 'Portal.Admin', displayName: 'Portal.Admin', description: 'x', allowedMemberTypes: ['User'], isEnabled: true }]\n${anchor}`);
-    expect(role).toContain("rule 16: the portal web app must have no appRoles");
-    const permissions = await mutant("pre-deploy.bicep", anchor, `  requiredResourceAccess: [{ resourceAppId: '00000003-0000-0000-c000-000000000000', resourceAccess: [{ id: 'e1fe6dd8-ba31-4d61-89e7-88639da4683d', type: 'Scope' }] }]\n${anchor}`);
-    expect(permissions).toContain("rule 16: the portal web app must have no requiredResourceAccess");
-    const redirect = await mutant("pre-deploy.bicep", "concat(['http://localhost:4025/redirect.html'], ", "concat(['http://localhost:4025/redirect.html', 'https://portal.example/redirect.html'], ");
-    expect(redirect).toContain(`rule 16: the portal web app's redirect URIs must be ${LOCAL_REDIRECT}, and portalOrigin's /redirect.html once it is set (a single-page app: spa.redirectUris)`);
-    const web = await mutant("pre-deploy.bicep", "  spa: {\n    redirectUris: concat(", "  web: {\n    redirectUris: concat(");
-    expect(web).toContain("rule 16: the portal web app must have no web");
+  it("T-IAC-01 must-fail rule 16: a client pre-authorized for the retired scope, a second pre-authorized client, or a pre-authorization behind a switch, is reported", async () => {
+    const cli = "      { appId: azureCliAppId, delegatedPermissionIds: [userImpersonationId] }\n";
+    const retired = await mutant("pre-deploy.bicep", cli, "      { appId: azureCliAppId, delegatedPermissionIds: [userImpersonationId, portalAccessId] }\n");
+    expect(retired).toContain(PRE_AUTHORIZED);
+    const second = await mutant("pre-deploy.bicep", cli, `${cli}      { appId: deployApp.appId, delegatedPermissionIds: [userImpersonationId] }\n`);
+    expect(second).toContain(PRE_AUTHORIZED);
+    const switched = await mutant("pre-deploy.bicep", `    preAuthorizedApplications: [\n${cli}    ]`, `    preAuthorizedApplications: retirePortalScope ? [\n${cli}    ] : []`);
+    expect(switched).toContain(PRE_AUTHORIZED);
   }, 180_000);
+
+  it("T-IAC-01 must-fail rule 16: an API app without the idtyp claim, whose idtyp leaves user tokens out, or that still asks for auth_time, is reported", async () => {
+    const message = "rule 16: the API app's access tokens must carry the optional claim idtyp, with include_user_token, and no other";
+    const idtyp = "      { name: 'idtyp', additionalProperties: ['include_user_token'] }\n";
+    expect(await mutant("pre-deploy.bicep", idtyp, "")).toContain(message);
+    expect(await mutant("pre-deploy.bicep", "{ name: 'idtyp', additionalProperties: ['include_user_token'] }", "{ name: 'idtyp' }")).toContain(message);
+    // The sign-in time is Auth0's now (the post-login Action of auth0/): Entra's claim is no longer asked for.
+    expect(await mutant("pre-deploy.bicep", idtyp, `      { name: 'auth_time' }\n${idtyp}`)).toContain(message);
+  }, 180_000);
+
+  it("T-IAC-01 must-fail rule 16: a web app registered in Entra again, a redirect URI on the deploy app, the portal's origin as a parameter, or a fourth line in the output, is reported", async () => {
+    const anchor = "// ---- The deploy app: what GitHub Actions sign in as";
+    const webApp = "resource portalApp 'Microsoft.Graph/applications@v1.0' = {\n  uniqueName: names.operators\n  displayName: names.operators\n  signInAudience: 'AzureADMyOrg'\n  spa: {\n    redirectUris: ['http://localhost:4025/redirect.html']\n  }\n}\n\n";
+    const again = await mutant("pre-deploy.bicep", anchor, `${webApp}${anchor}`);
+    expect(again).toContain("rule 16: the app registrations must be exactly the API app and the deploy app: people sign in with Auth0 (auth0/), through no Entra app of ours");
+    expect(again).toContain(`rule 16: ${N.pre.operators} must have no spa: nobody signs in through it`);
+    const redirect = await mutant("pre-deploy.bicep", "  uniqueName: names.deployApp\n  displayName: names.deployApp\n  signInAudience: 'AzureADMyOrg'\n", "  uniqueName: names.deployApp\n  displayName: names.deployApp\n  signInAudience: 'AzureADMyOrg'\n  web: {\n    redirectUris: ['https://portal.example/redirect.html']\n  }\n");
+    expect(redirect).toContain(`rule 16: ${N.pre.deployApp} must have no web: nobody signs in through it`);
+    const origin = await mutant("pre-deploy.bicep", "param retirePortalScope bool\n", "param retirePortalScope bool\n#disable-next-line no-unused-params\nparam portalOrigin string = ''\n");
+    expect(origin).toContain("rule 16: pre-deploy must have no portalOrigin parameter: the portal's origin is a Terraform variable of auth0/");
+    expect(origin).toContain("rule 17: pre-deploy.dev.bicepparam doesn't set portalOrigin");
+    const fourth = await mutant("pre-deploy.bicep", "  'param operatorsGroupId = \\'${operatorsGroup.id}\\''\n", "  'param operatorsGroupId = \\'${operatorsGroup.id}\\''\n  'param userAccounts = { ..., portalClientId: \\'${apiApp.appId}\\', ... }'\n");
+    expect(fourth).toContain("rule 16: pre-deploy's mainParameters output must be the three lines main's parameter file takes: deployClientId, authAudience and operatorsGroupId");
+  }, 240_000);
 
   it("T-IAC-01 must-fail rule 21: L2 without one of its always-referenced secrets, with one behind the flag's value, or with a literal USER_ACCOUNTS, is reported", async () => {
     const always = `rule 21: ${N.main.apps.l2}/l2 must always reference the l2 vault's portal-token and user-wallet-mnemonic, as PORTAL_TOKEN and USER_WALLET_MNEMONIC`;
@@ -1312,7 +1393,7 @@ resource extraRead 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
     const written = await mutant("modules/portal-apps.bicep", "{ name: 'PORTAL_CLIENT_ID', value: userAccounts.portalClientId }", "{ name: 'PORTAL_CLIENT_ID', value: '00000000-0000-4000-8000-000000000000' }");
     expect(written).toContain("rule 21: the portal's PORTAL_CLIENT_ID must come from its parameter");
     const agent = await mutant("modules/l1-apps.bicep", "            { name: 'PORTAL_CLIENT_ID', value: userAccounts.portalClientId }\n", "");
-    expect(agent).toContain("rule 21: the agent's PORTAL_CLIENT_ID (the azp it refuses) must come from the userAccounts parameter");
+    expect(agent).toContain("rule 21: the agent's PORTAL_CLIENT_ID (the client it refuses) must come from the userAccounts parameter");
     const flagged = await mutant(
       "modules/portal-apps.bicep",
       "      secrets: [\n        { name: 'portal-token', keyVaultUrl: '${vaultPortal}secrets/portal-token', identity: idPortal.id }\n        { name: 'card-vault-key', keyVaultUrl: '${vaultPortal}secrets/card-vault-key', identity: idPortal.id }\n      ]",
@@ -1321,12 +1402,64 @@ resource extraRead 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
     expect(flagged.some((m) => m.startsWith(`rule 21: ${N.main.apps.portal}/portal must always reference the portal vault's portal-token and card-vault-key`))).toBe(true);
     const part = await mutant("main.bicep", "    ciba: ciba\n    userAccounts: userAccounts\n", "    ciba: ciba\n    userAccounts: { enabled: userAccounts.enabled, sellerName: userAccounts.sellerName }\n");
     expect(part).toContain("rule 21: main must pass the userAccounts parameter to l2-apps whole");
-    const unchecked = await mutant("main.bicep", " && ((!userAccounts.enabled && unit != 'portal') || length(userAccounts.portalClientId) == 36)", "");
-    expect(unchecked).toContain("rule 21: main must refuse (fail()) a userAccounts whose cardVault is not off or stripe, that is enabled without a 36-character portalClientId, or whose cardVault is stripe without a pk_test_ publishable key");
+    const CHECK = "rule 21: main must refuse (fail()) a userAccounts whose cardVault is not off or stripe, that is enabled without a portalClientId (not empty: an Auth0 client ID is not a GUID), or whose cardVault is stripe without a pk_test_ publishable key";
+    const unchecked = await mutant("main.bicep", " && ((!userAccounts.enabled && unit != 'portal') || !empty(userAccounts.portalClientId))", "");
+    expect(unchecked).toContain(CHECK);
     // The portal doesn't start without the web app's client ID, so its own deployment needs it even while the feature is off.
     const portalUnchecked = await mutant("main.bicep", "(!userAccounts.enabled && unit != 'portal')", "!userAccounts.enabled");
-    expect(portalUnchecked).toContain("rule 21: main must refuse (fail()) a userAccounts whose cardVault is not off or stripe, that is enabled without a 36-character portalClientId, or whose cardVault is stripe without a pk_test_ publishable key");
-  }, 240_000);
+    expect(portalUnchecked).toContain(CHECK);
+    // The first build's check, for an Entra client ID: it would refuse every Auth0 client ID.
+    const guid = await mutant("main.bicep", "!empty(userAccounts.portalClientId))", "length(userAccounts.portalClientId) == 36)");
+    expect(guid).toContain(CHECK);
+  }, 300_000);
+
+  it("T-IAC-01 must-fail rule 21: people's sign-in taken from Entra, written in a template, or without the agent's allow-list, is reported", async () => {
+    const entraAudience = await mutant("modules/portal-apps.bicep", "{ name: 'AUTH_AUDIENCE', value: identity.audience }", "{ name: 'AUTH_AUDIENCE', value: userAccounts.portalClientId }");
+    expect(entraAudience).toContain("rule 21: the portal's AUTH_AUDIENCE must come from its parameter");
+    const issuer = await mutant("modules/portal-apps.bicep", "{ name: 'AUTH_ISSUER', value: identity.issuer }", "{ name: 'AUTH_ISSUER', value: 'https://tenant.example/' }");
+    expect(issuer).toContain("rule 21: the portal's AUTH_ISSUER must come from its parameter");
+    const tenant = await mutant("modules/portal-apps.bicep", "            { name: 'AUTH_ISSUER', value: identity.issuer }\n", "            { name: 'AUTH_ISSUER', value: identity.issuer }\n            { name: 'AUTH_TENANT_ID', value: tenant().tenantId }\n");
+    expect(tenant).toContain(`rule 21: AUTH_TENANT_ID in ${N.main.apps.portal}/portal: the portal accepts no Entra token and no agent client`);
+    const agentAudience = await mutant("modules/l1-apps.bicep", "{ name: 'AUTH_AUDIENCE', value: identity.audience }", "{ name: 'AUTH_AUDIENCE', value: authAudience }");
+    expect(agentAudience).toContain("rule 21: the agent's AUTH_AUDIENCE must come from the identity parameter");
+    const noList = await mutant("modules/l1-apps.bicep", "            { name: 'AGENT_CLIENT_IDS', value: join(identity.agentClientIds, ',') }\n", "");
+    expect(noList).toContain("rule 21: the agent's AGENT_CLIENT_IDS must come from the identity parameter");
+    const withPortal = await mutant("modules/l1-apps.bicep", "join(identity.agentClientIds, ',')", "join(concat(identity.agentClientIds, [userAccounts.portalClientId]), ',')");
+    expect(withPortal).toContain("rule 21: the agent's AGENT_CLIENT_IDS must come from the identity parameter");
+  }, 360_000);
+
+  it("T-IAC-01 must-fail rule 21: identity passed in part, the portal given the Entra API app, or main without its identity check, is reported", async () => {
+    const part = await mutant("main.bicep", "    userAccounts: userAccounts\n    identity: identity\n  }\n  dependsOn: [ids, registry, vaults, envs, foundry]", "    userAccounts: userAccounts\n    identity: { issuer: identity.issuer, audience: identity.audience, agentClientIds: [] }\n  }\n  dependsOn: [ids, registry, vaults, envs, foundry]");
+    expect(part).toContain("rule 21: main must pass the identity parameter to l1-apps whole");
+    const entra = await mutant("modules/portal-apps.bicep", "param identity object\n", "param identity object\n#disable-next-line no-unused-params\nparam authAudience string = ''\n");
+    expect(entra).toContain("rule 21: portal-apps must take no authAudience parameter: the portal accepts no Entra token");
+    const IDENTITY = "rule 21: main must refuse (fail()) user accounts turned on without an identity.issuer of the form https://…/, an identity.audience, or with the portal's client among identity.agentClientIds";
+    const noSlash = await mutant("main.bicep", " && endsWith(identity.issuer, '/')", "");
+    expect(noSlash).toContain(IDENTITY);
+    const portalAllowed = await mutant("main.bicep", " && !contains(identity.agentClientIds, userAccounts.portalClientId)", "");
+    expect(portalAllowed).toContain(IDENTITY);
+    const never = await mutant("main.bicep", "var identityChecked = !userAccounts.enabled || (", "var identityChecked = true || (");
+    expect(never).toContain(IDENTITY);
+  }, 360_000);
+
+  it("T-IAC-01 must-fail rule 21: a parameter file whose identity has other keys, lists the portal's client for the agent, or turns user accounts on without an issuer, is reported", async () => {
+    const keys = await mutant("main.dev.bicepparam", "  audience: ''\n  agentClientIds: []\n", "  apiAudience: ''\n  agentClientIds: []\n");
+    expect(keys).toContain("rule 21: main.dev.bicepparam's identity must be exactly issuer, audience and agentClientIds (a list of client IDs)");
+    const empty = await mutant("main.dev.bicepparam", "  agentClientIds: []\n", "  agentClientIds: ['']\n");
+    expect(empty).toContain("rule 21: main.dev.bicepparam's identity must be exactly issuer, audience and agentClientIds (a list of client IDs)");
+    // Not vacuous: a client of its own on the list is fine; the portal's is not, also while user accounts are off.
+    expect(await mutant("main.dev.bicepparam", "  agentClientIds: []\n", "  agentClientIds: ['cli']\n", [["  portalClientId: ''", "  portalClientId: 'web'"]])).toEqual([]);
+    const listed = await mutant("main.dev.bicepparam", "  agentClientIds: []\n", "  agentClientIds: ['cli', 'web']\n", [["  portalClientId: ''", "  portalClientId: 'web'"]]);
+    expect(listed).toEqual(["rule 21: main.dev.bicepparam's identity.agentClientIds holds the portal's client ID: the agent service must refuse the portal's tokens"]);
+    const on = await mutant("main.dev.bicepparam", "param userAccounts = {\n  enabled: false\n  portalClientId: ''", "param userAccounts = {\n  enabled: true\n  portalClientId: 'web'");
+    expect(on).toEqual(["rule 21: main.dev.bicepparam turns user accounts on without an identity.issuer of the form https://<domain>/ and an identity.audience"]);
+    // Not vacuous: with the tenant's values, user accounts may be on. An issuer without its trailing slash is not one.
+    const identity = "param identity = {\n  issuer: ''\n  audience: ''\n  agentClientIds: []\n}";
+    const tenant = (issuer: string) => `param identity = {\n  issuer: '${issuer}'\n  audience: 'https://x402-api/dev'\n  agentClientIds: ['cli']\n}`;
+    const enabled: [string, string][] = [["  enabled: false\n  portalClientId: ''", "  enabled: true\n  portalClientId: 'web'"]];
+    expect(await mutant("main.dev.bicepparam", identity, tenant("https://x402-dev.us.auth0.com/"), enabled)).toEqual([]);
+    expect(await mutant("main.dev.bicepparam", identity, tenant("https://x402-dev.us.auth0.com"), enabled)).toEqual(["rule 21: main.dev.bicepparam turns user accounts on without an identity.issuer of the form https://<domain>/ and an identity.audience"]);
+  }, 360_000);
 
   it("T-IAC-01 must-fail rule 19: the CIBA credential on the agent, as a literal, or under one name only is reported", async () => {
     const onAgent = await mutant(
@@ -1368,7 +1501,12 @@ resource extraRead 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
     expect(other.some((m) => m.startsWith("rule 17: pre-deploy.dev.bicepparam and main.dev.bicepparam name different subscriptionIds"))).toBe(true);
     const id = await mutant("pre-deploy.dev.bicepparam", "param githubOwnerId = '274163174'", "param githubOwnerId = 'fr-com-dev'");
     expect(id).toContain("rule 17: pre-deploy.dev.bicepparam's githubOwnerId fr-com-dev is not a numeric GitHub ID");
+    // 013: neither the two-step switch nor people's sign-in is a per-run value.
+    const retire = await mutant("pre-deploy.dev.bicepparam", "param retirePortalScope = true", "param retirePortalScope = bool(readEnvironmentVariable('RETIRE_PORTAL_SCOPE', 'true'))");
+    expect(retire).toContain(`rule 17: pre-deploy.dev.bicepparam reads retirePortalScope from the environment; only ${PER_RUN.join(", ")} may be`);
+    const issuer = await mutant("main.dev.bicepparam", "param identity = {\n  issuer: ''", "param identity = {\n  issuer: readEnvironmentVariable('AUTH_ISSUER', '')");
+    expect(issuer).toContain(`rule 17: main.dev.bicepparam reads issuer: readEnvironmentVariable('AUTH_ISSUER', '') from the environment; only ${PER_RUN.join(", ")} may be`);
     const name = await mutant("pre-deploy.dev.bicepparam", "var environment = 'dev'", "var environment = readEnvironmentVariable('ENVIRONMENT', 'dev')");
     expect(name).toContain(`rule 17: pre-deploy.dev.bicepparam reads var environment = readEnvironmentVariable('ENVIRONMENT', 'dev') from the environment; only ${PER_RUN.join(", ")} may be`);
-  }, 60_000);
+  }, 180_000);
 });

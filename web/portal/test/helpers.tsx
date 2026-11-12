@@ -19,7 +19,7 @@ export const SELLER = { host: "127.0.0.1:4021", name: "Local demo seller" };
 export const SELLER_2 = { host: "api.example.test", name: "Example data" };
 export const ADDRESS = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8";
 
-export const CONFIG: Config = { auth: { mode: "entra", tenantId: "t", clientId: "c", scope: "api://x/Portal.Access" }, network: "eip155:31337", cards: { available: true, publishableKey: "pk_test_x" } };
+export const CONFIG: Config = { auth: { mode: "auth0", domain: "tenant.example", clientId: "c", audience: "https://x402.example/api" }, network: "eip155:31337", cards: { available: true, publishableKey: "pk_test_x" } };
 
 export const platform = (over: Partial<Platform> = {}): Platform => ({
   limits: { hardCapPerPaymentAtomic: "100000", sessionBudgetAtomic: "100000", userDailyCeilingAtomic: "500000", maxAuthorizationsPerMinute: 10, maxPolicyDays: 730 },
@@ -195,10 +195,10 @@ export function fakeApi(w: World): FakeApi {
 
 export type FakeAuth = Auth & { confirmIdentity: Mock<Auth["confirmIdentity"]>; signIn: Mock<Auth["signIn"]>; signOut: Mock<Auth["signOut"]> };
 
-export function fakeAuth(over: { signedIn?: boolean; mode?: "entra" | "dev" } = {}): FakeAuth {
+export function fakeAuth(over: { signedIn?: boolean; mode?: "auth0" | "dev"; lastError?: string } = {}): FakeAuth {
   let signedIn = over.signedIn ?? true;
   return {
-    mode: over.mode ?? "entra",
+    mode: over.mode ?? "auth0",
     signedIn: () => signedIn,
     account: () => ({ name: "Alice Example", email: "alice@example.test" }),
     signIn: vi.fn(async () => {
@@ -210,6 +210,7 @@ export function fakeAuth(over: { signedIn?: boolean; mode?: "entra" | "dev" } = 
     signOut: vi.fn(async () => {
       signedIn = false;
     }),
+    lastError: () => over.lastError ?? null,
   };
 }
 

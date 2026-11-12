@@ -8,14 +8,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Express } from "express";
 import { createLocalJWKSet } from "jose";
-import { DEV_PORTAL_CLIENT, DEV_PORTAL_SCOPE, loadOrCreateDevIssuer, signDevToken, type DevTokenOptions } from "../../scripts/dev-issuer-lib.js";
+import { DEV_AUDIENCE, DEV_PORTAL_CLIENT, devUserId, loadOrCreateDevIssuer, signDevToken, type DevTokenOptions } from "../../scripts/dev-issuer-lib.js";
 import { createBalanceCache, type BalanceReader } from "../../src/portal/balance.js";
 import { CardVault } from "../../src/portal/card-vault.js";
 import { loadPortalConfig, type PortalConfig } from "../../src/portal/config.js";
 import { ControlClient } from "../../src/portal/control-client.js";
 import { ProfileStore } from "../../src/portal/profile-store.js";
 import { createPortalApp, type PortalDeps } from "../../src/portal/server.js";
-import { userIdFor } from "../../src/shared/user-id.js";
+import { DEV_ISSUER } from "../../src/shared/identity-token.js";
 import type { CardVaultStub } from "./card-vault-stub.js";
 import { startUsersL2, TOKENS, type UsersL2, type UsersL2Options } from "./users.js";
 
@@ -81,8 +81,8 @@ export async function startPortal(o: StartPortalOptions = {}): Promise<PortalTes
     NETWORK: "local",
     CONTROL_URL: o.controlDown ? "http://127.0.0.1:9" : l2.url,
     PORTAL_TOKEN: TOKENS.portal,
-    AUTH_TENANT_ID: "dev",
-    AUTH_AUDIENCE: "api://x402-l1-agent",
+    AUTH_ISSUER: DEV_ISSUER,
+    AUTH_AUDIENCE: DEV_AUDIENCE,
     PORTAL_CLIENT_ID: DEV_PORTAL_CLIENT,
     AUTH_JWKS_FILE: issuer.jwksPath,
     PROFILE_DIR: profilesDir,
@@ -95,7 +95,7 @@ export async function startPortal(o: StartPortalOptions = {}): Promise<PortalTes
   const reader: BalanceReader = o.balance ?? { balanceOf: async () => 0n };
   const deps: PortalDeps = {
     config,
-    keys: createLocalJWKSet(issuer.jwks),
+    keys: { keys: createLocalJWKSet(issuer.jwks), algorithms: ["ES256"] },
     control: new ControlClient(config.controlUrl, config.portalToken),
     profiles,
     balance: createBalanceCache(reader, { now: l2.clock.now }),
@@ -114,7 +114,7 @@ export async function startPortal(o: StartPortalOptions = {}): Promise<PortalTes
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 
   const token: PortalTestApp["token"] = (subject, to = {}) =>
-    signDevToken(issuer, { subject, scp: DEV_PORTAL_SCOPE, azp: DEV_PORTAL_CLIENT, authTime: Math.floor(l2.clock.now() / 1000), ...to });
+    signDevToken(issuer, { subject, azp: DEV_PORTAL_CLIENT, authTime: Math.floor(l2.clock.now() / 1000), ...to });
   const call: PortalTestApp["call"] = async (method, path, co = {}) => {
     const body = co.raw ?? (co.body === undefined ? undefined : JSON.stringify(co.body));
     const res = await fetch(`${base}${path}`, {
@@ -145,7 +145,7 @@ export async function startPortal(o: StartPortalOptions = {}): Promise<PortalTes
     },
     token,
     agentToken: (subject, to = {}) => signDevToken(issuer, { subject, ...to }),
-    userId: (subject) => userIdFor("dev", subject),
+    userId: devUserId,
     call,
     as:
       (subject, to = {}) =>
