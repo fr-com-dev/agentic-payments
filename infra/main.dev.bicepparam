@@ -66,14 +66,14 @@ param payerAddress = '0x0048A66969cE8886A5e9bC00059Cb8c5D3989516'
 
 // 012 backchannel approval (SPEC L2-7): the values are Terraform's output bicepparam_ciba (auth0/, applied by
 // provision-auth0.yml on 2026-11-12). Still off in dev: enabled goes to true only once the l2 vault's
-// ciba-client-credential holds L2's private key and the approver has enrolled in Guardian push (specs/012
-// quickstart §6). Until then the vault holds the placeholder off.
+// ciba-client-credential holds L2's private key (specs/012 quickstart §6), and it needs userAccounts.enabled. Until
+// then the vault holds the placeholder off. There is no approver (SPEC v1.16, specs/015): each request goes to the
+// user the payment is for.
 param ciba = {
   enabled: false
   issuer: 'https://fabriciorojas.us.auth0.com/'
   clientId: 'EqXwAxwj0VXpiE9pn7vR5r6P2KBc5UD4'
   audience: 'https://x402-payments/dev'
-  approver: 'auth0|6af359b5e09a8d4f4ebb5e89'
   credential: 'key'
   clientKeyId: ''
 }

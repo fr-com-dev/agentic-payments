@@ -295,19 +295,19 @@ setting and see it refuse, naming the setting; plan the tenant with no approver 
 
 ### Tests for User Story 6 (write first; they must fail)
 
-- [ ] T040 [P] [US6] T-CIBA-24 in test/ciba-client.test.ts and test/backchannel-failures.test.ts:
+- [X] T040 [P] [US6] T-CIBA-24 in test/ciba-client.test.ts and test/backchannel-failures.test.ts:
   - `CIBA_APPROVAL=1` with `CIBA_APPROVER=auth0|leftover-value-91c2`: `cibaConfigFromEnv` throws a `ConfigError` whose message contains `CIBA_APPROVER` and not the value;
   - `CIBA_APPROVAL` off with `CIBA_APPROVER` set: `ignored` lists it, as today;
   - a complete configuration without `CIBA_APPROVER` is enabled;
   - `main()`'s check: `CIBA_APPROVAL=1` without `USER_ACCOUNTS=1` throws naming both, before the ledger lock is taken (no lock file appears);
   - `createControlService` with backchannel deps and no user-account deps throws.
-- [ ] T041 [P] [US6] T-IAC-01 rule 19 in test/infra.test.ts (contracts/config-and-secrets.md "T-IAC-01 rule 19, as amended"): the compiled `ciba` has exactly the keys `audience, clientId, clientKeyId, credential, enabled, issuer`; no app has a `CIBA_APPROVER` environment variable; `main.bicep` calls `fail()` for `ciba.enabled` without `userAccounts.enabled`. **Must fail** rows: an `approver` key, the variable put back in the L2 app, the `fail()` removed.
+- [X] T041 [P] [US6] T-IAC-01 rule 19 in test/infra.test.ts (contracts/config-and-secrets.md "T-IAC-01 rule 19, as amended"): the compiled `ciba` has exactly the keys `audience, clientId, clientKeyId, credential, enabled, issuer`; no app has a `CIBA_APPROVER` environment variable; `main.bicep` calls `fail()` for `ciba.enabled` without `userAccounts.enabled`. **Must fail** rows: an `approver` key, the variable put back in the L2 app, the `fail()` removed.
 - [ ] T042 [P] [US6] T-IAC-02 and the setup script in test/auth0-iac.test.ts and test/github-setup.test.ts: `REQUIRED` is `tenant_domain, api_identifier, client_public_key_pem`; `VARIABLES` has no `approver_user_id`; the variables without a default are `api_identifier, environment, tenant_domain`; the output `bicepparam_ciba` has exactly the parameter file's `ciba` keys; `github-setup.sh` creates five variables and never deletes or overwrites one. **Must fail** rows: an `auth0_user` data source, an `auth0_user` resource, `approver` in an output, the pipeline reading `vars.AUTH0_APPROVER_USER_ID`. Replace the existing rows that used `var.approver_user_id` as their example by another variable.
 
 ### Implementation for User Story 6
 
-- [ ] T043 [US6] Refuse a leftover approver in src/layer2-control/ciba-client.ts: with `CIBA_APPROVAL=1`, a present `CIBA_APPROVER` throws `ConfigError("CIBA_APPROVER is no longer used: remove it (SPEC L2-7)")`, checked right after the switch; keep the name in the list used for the "ignoring …" line. In src/layer2-control/service.ts, `main()` throws `ConfigError("CIBA_APPROVAL=1 needs USER_ACCOUNTS=1 (SPEC L2-7)")` after both configs are read and before `acquireLedgerLock`, and `createControlService` throws when `deps.backchannel` is set without `deps.users`. T040 passes.
-- [ ] T044 [P] [US6] Remove the approver from L2's deployment settings, in the same change as T043 (research R18):
+- [X] T043 [US6] Refuse a leftover approver in src/layer2-control/ciba-client.ts: with `CIBA_APPROVAL=1`, a present `CIBA_APPROVER` throws `ConfigError("CIBA_APPROVER is no longer used: remove it (SPEC L2-7)")`, checked right after the switch; keep the name in the list used for the "ignoring …" line. In src/layer2-control/service.ts, `main()` throws `ConfigError("CIBA_APPROVAL=1 needs USER_ACCOUNTS=1 (SPEC L2-7)")` after both configs are read and before `acquireLedgerLock`, and `createControlService` throws when `deps.backchannel` is set without `deps.users`. T040 passes.
+- [X] T044 [P] [US6] Remove the approver from L2's deployment settings, in the same change as T043 (research R18):
   - env/l2-control.env.example: delete the `# CIBA_APPROVER=` line; test/architecture.test.ts `TEMPLATES`: the `l2-control` spec loses the name (T-ARCH-ENV);
   - infra/main.bicep: `approver` out of the `ciba` comment and of `cibaChecked`, its `fail()` message reworded, and a new `fail()` when `ciba.enabled && !userAccounts.enabled`;
   - infra/main.dev.bicepparam: `approver` out of `ciba`, and the comment above it no longer mentions the approver's enrollment;

@@ -4,6 +4,7 @@ import { generateKeyPairSync } from "node:crypto";
 import { decodeJwt } from "jose";
 import { afterEach, describe, expect, it } from "vitest";
 import { CibaClient, cibaConfigFromEnv, type CibaSettings, errorCode, rsaKeySizeAllowed } from "../src/layer2-control/ciba-client.js";
+import { ConfigError } from "../src/shared/config.js";
 import { type CibaStub, PLANTED_ERROR_TEXT, startCibaStub, testRsaKeyPair } from "./helpers/ciba-stub.js";
 
 const KEY = testRsaKeyPair();
@@ -87,6 +88,44 @@ describe("T-CIBA-01 configuration", () => {
     expect(m).not.toContain(pemBody(KEY.privatePem).slice(0, 40));
     expect(m).not.toContain(SECRET);
     expect(m).not.toContain(pemBody(rsaOversized).slice(0, 40));
+  });
+
+  // 015 US6 (FR-003; specs/015 contracts/config-and-secrets.md "L2"): no approver is configured, and a leftover one
+  // stops L2 instead of looking as if it mattered.
+  describe("T-CIBA-24 a leftover CIBA_APPROVER", () => {
+    const LEFTOVER = "auth0|leftover-value-91c2";
+
+    it("T-CIBA-24 with CIBA_APPROVAL=1, a present CIBA_APPROVER is a ConfigError naming the variable and never its value", () => {
+      let thrown: unknown;
+      try {
+        cibaConfigFromEnv({ ...base, CIBA_APPROVER: LEFTOVER });
+      } catch (e) {
+        thrown = e;
+      }
+      expect(thrown).toBeInstanceOf(ConfigError);
+      const m = (thrown as Error).message;
+      expect(m).toBe("CIBA_APPROVER is no longer used: remove it (SPEC L2-7)");
+      expect(m).not.toContain(LEFTOVER);
+      expect(m).not.toContain("leftover");
+    });
+
+    it("T-CIBA-24 it is checked right after the switch: named even when every other setting is missing or wrong", () => {
+      expect(message(() => cibaConfigFromEnv({ CIBA_APPROVAL: "1", CIBA_APPROVER: LEFTOVER }))).toContain("CIBA_APPROVER");
+      expect(message(() => cibaConfigFromEnv({ ...base, CIBA_ISSUER: "http://tenant.example/", CIBA_APPROVER: LEFTOVER }))).toContain("CIBA_APPROVER");
+      // An empty value is not a leftover setting (Azure writes empty strings for unset values).
+      expect(cibaConfigFromEnv({ ...base, CIBA_APPROVER: "" }).enabled).toBe(true);
+    });
+
+    it("T-CIBA-24 with CIBA_APPROVAL off, a present CIBA_APPROVER is only named as ignored, as before", () => {
+      expect(cibaConfigFromEnv({ CIBA_APPROVER: LEFTOVER })).toEqual({ enabled: false, ignored: ["CIBA_APPROVER"] });
+      expect(cibaConfigFromEnv({ CIBA_APPROVAL: "0", CIBA_ISSUER: "https://x/", CIBA_APPROVER: LEFTOVER })).toEqual({ enabled: false, ignored: ["CIBA_ISSUER", "CIBA_APPROVER"] });
+    });
+
+    it("T-CIBA-24 a complete configuration without CIBA_APPROVER is enabled, with a key or with a secret", () => {
+      expect(cibaConfigFromEnv(base).enabled).toBe(true);
+      const { CIBA_CLIENT_KEY: _k, ...noKey } = base;
+      expect(cibaConfigFromEnv({ ...noKey, CIBA_CLIENT_SECRET: SECRET }).enabled).toBe(true);
+    });
   });
 
   it.each<[number, boolean]>([

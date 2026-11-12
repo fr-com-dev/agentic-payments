@@ -17,8 +17,8 @@ type Env = Record<string, string | undefined>;
 // ---------------------------------------------------------------------------
 
 /**
- * Every CIBA_* name L2 knows. `CIBA_APPROVER` is no longer a setting (v1.16): it stays in this list only so that a
- * leftover one is named in the "ignoring …" line while the feature is off.
+ * Every CIBA_* name L2 knows. The approver's variable is no longer a setting (v1.16): it stays in this list only so
+ * that a leftover one is named in the "ignoring …" line while the feature is off. With the feature on it stops L2.
  */
 export const CIBA_VARIABLES = [
   "CIBA_APPROVAL",
@@ -100,6 +100,9 @@ export function cibaConfigFromEnv(env: Env = process.env): CibaConfig {
     const placeholder = (n: string) => (n === "CIBA_CLIENT_KEY" || n === "CIBA_CLIENT_SECRET") && env[n] === CIBA_CREDENTIAL_PLACEHOLDER;
     return { enabled: false, ignored: CIBA_VARIABLES.filter((n) => n !== "CIBA_APPROVAL" && present(env, n) && !placeholder(n)) };
   }
+  // 015 (FR-003): nobody is configured as an approver. A leftover setting would look as if a fallback existed, so
+  // it stops L2, right after the switch and before any other check. The message never holds the value.
+  if (present(env, "CIBA_APPROVER")) throw new ConfigError("CIBA_APPROVER is no longer used: remove it (SPEC L2-7)");
 
   const issuer = issuerFrom(requireText(env, "CIBA_ISSUER", 2048));
   const clientId = requireText(env, "CIBA_CLIENT_ID", 64);

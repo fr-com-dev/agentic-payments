@@ -1,5 +1,7 @@
 // 012 US5 — an unavailable or misconfigured approval service fails closed (specs/012 tasks T036–T038):
 // T-CIBA-05 (start failures and retries), T-CIBA-13 (availability) and T-CIBA-01 (startup).
+// 015 US6: T-CIBA-24 (a leftover CIBA_APPROVER, or backchannel approval without user accounts, stops L2 before the
+// ledger lock).
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
@@ -7,7 +9,12 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { PLANTED_ERROR_TEXT, type StartMode } from "./helpers/ciba-stub.js";
-import { CLIENT_KEY, startBackchannelL2, type BackchannelL2 } from "./helpers/backchannel-l2.js";
+import { issuerKeys } from "../src/layer2-control/approval-evidence.js";
+import { CibaClient } from "../src/layer2-control/ciba-client.js";
+import { AuditLedger } from "../src/layer2-control/ledger.js";
+import { buildMandate } from "../src/layer2-control/mandate.js";
+import { createControlService } from "../src/layer2-control/service.js";
+import { ASSET, AUDIENCE, CAIP2, CLIENT_ID, CLIENT_KEY, startBackchannelL2, type BackchannelL2 } from "./helpers/backchannel-l2.js";
 
 const opened: BackchannelL2[] = [];
 async function start(o: Parameters<typeof startBackchannelL2>[0] = {}) {
@@ -117,34 +124,91 @@ describe("T-CIBA-13 availability", () => {
   }, 15_000);
 });
 
+/** Runs L2's own entry point (`main()`) with one env file in an empty directory. It never gets as far as listening. */
+function startL2(lines: string[], port: number) {
+  const repo = resolve(import.meta.dirname, "..");
+  const dir = mkdtempSync(join(tmpdir(), "x402-ciba-start-"));
+  try {
+    const envFile = join(dir, "l2.env");
+    writeFileSync(envFile, `${lines.join("\n")}\n`);
+    const r = spawnSync(join(repo, "node_modules", ".bin", "tsx"), [join(repo, "src", "layer2-control", "service.ts")], {
+      cwd: dir,
+      env: { PATH: process.env.PATH, HOME: process.env.HOME, ENV_FILE: envFile, CONTROL_PORT: String(port) },
+      encoding: "utf8",
+      timeout: 60_000,
+    });
+    return { status: r.status, output: r.stderr + r.stdout, stderr: r.stderr, lockTaken: existsSync(join(dir, ".local", "ledger-local.jsonl.lock")), ledgerWritten: existsSync(join(dir, ".local", "ledger-local.jsonl")) };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+const notListening = (port: number) =>
+  new Promise<void>((done) => {
+    const c = createConnection({ host: "127.0.0.1", port }, () => {
+      c.end();
+      throw new Error("L2 is listening");
+    });
+    c.on("error", () => done());
+  });
+const KEY_LINE = `CIBA_CLIENT_KEY="${CLIENT_KEY.privatePem.replace(/\n/g, "\\n")}"`;
+const keyBody = CLIENT_KEY.privatePem.split("\n").filter((l) => l && !l.startsWith("-----"));
+
 describe("T-CIBA-01 startup", () => {
-  it("CIBA_APPROVAL=1 without CIBA_ISSUER: exit 1 naming the variable, before the lock, never listening, no key text", () => {
-    const repo = resolve(import.meta.dirname, "..");
-    const dir = mkdtempSync(join(tmpdir(), "x402-ciba-start-"));
+  it("CIBA_APPROVAL=1 without CIBA_ISSUER: exit 1 naming the variable, before the lock, never listening, no key text", async () => {
+    const port = 47321;
+    const r = startL2(["NETWORK=local", "CIBA_APPROVAL=1", "CIBA_CLIENT_ID=c", "CIBA_AUDIENCE=a", KEY_LINE], port);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("CIBA_ISSUER");
+    for (const line of keyBody) expect(r.output).not.toContain(line);
+    expect(r.lockTaken).toBe(false);
+    await notListening(port);
+  }, 60_000);
+});
+
+describe("T-CIBA-24 startup without an approver (015 US6, FR-001, FR-003)", () => {
+  const COMPLETE = ["NETWORK=local", "CIBA_APPROVAL=1", "CIBA_ISSUER=https://tenant.example.auth0.com/", "CIBA_CLIENT_ID=c", "CIBA_AUDIENCE=a", KEY_LINE];
+
+  it("T-CIBA-24 a leftover CIBA_APPROVER with CIBA_APPROVAL=1: exit 1 naming the variable and never its value, before the lock, never listening", async () => {
+    const port = 47322;
+    const r = startL2([...COMPLETE, "USER_ACCOUNTS=1", "CIBA_APPROVER=auth0|leftover-value-91c2"], port);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("CIBA_APPROVER is no longer used: remove it (SPEC L2-7)");
+    expect(r.output).not.toContain("leftover-value-91c2");
+    for (const line of keyBody) expect(r.output).not.toContain(line);
+    expect([r.lockTaken, r.ledgerWritten]).toEqual([false, false]);
+    await notListening(port);
+  }, 60_000);
+
+  it("T-CIBA-24 CIBA_APPROVAL=1 without USER_ACCOUNTS=1: exit 1 naming both, before the lock is taken (no lock file appears)", async () => {
+    const port = 47323;
+    const r = startL2(COMPLETE, port);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("CIBA_APPROVAL=1 needs USER_ACCOUNTS=1 (SPEC L2-7)");
+    for (const line of keyBody) expect(r.output).not.toContain(line);
+    expect([r.lockTaken, r.ledgerWritten]).toEqual([false, false]);
+    expect(r.output).not.toContain("backchannel approval on");
+    await notListening(port);
+  }, 60_000);
+
+  it("T-CIBA-24 createControlService refuses backchannel deps without user-account deps", async () => {
+    const l2 = await start(); // for a stand-in issuer and a ledger file's directory
+    const dir = mkdtempSync(join(tmpdir(), "x402-ciba-deps-"));
     try {
-      const envFile = join(dir, "l2.env");
-      writeFileSync(envFile, `NETWORK=local\nCIBA_APPROVAL=1\nCIBA_CLIENT_ID=c\nCIBA_AUDIENCE=a\nCIBA_APPROVER=u\nCIBA_CLIENT_KEY="${CLIENT_KEY.privatePem.replace(/\n/g, "\\n")}"\n`);
-      const port = 47321;
-      const r = spawnSync(join(repo, "node_modules", ".bin", "tsx"), [join(repo, "src", "layer2-control", "service.ts")], {
-        cwd: dir,
-        env: { PATH: process.env.PATH, HOME: process.env.HOME, ENV_FILE: envFile, CONTROL_PORT: String(port) },
-        encoding: "utf8",
-        timeout: 60_000,
-      });
-      expect(r.status).toBe(1);
-      expect(r.stderr).toContain("CIBA_ISSUER");
-      const body = CLIENT_KEY.privatePem.split("\n").filter((l) => l && !l.startsWith("-----"));
-      for (const line of body) expect(r.stderr + r.stdout).not.toContain(line);
-      expect(existsSync(join(dir, ".local", "ledger-local.jsonl.lock"))).toBe(false);
-      return new Promise<void>((done) => {
-        const c = createConnection({ host: "127.0.0.1", port }, () => {
-          c.end();
-          throw new Error("L2 is listening");
-        });
-        c.on("error", () => done());
-      });
+      const settings = { issuer: l2.stub.issuer, clientId: CLIENT_ID, audience: AUDIENCE, credential: { kind: "key" as const, keyPem: CLIENT_KEY.privatePem } };
+      const deps = {
+        mandate: buildMandate(
+          { mandateId: "m", expiresAt: "2027-12-31T23:59:59Z", allowedSchemes: ["exact"], allowedPayees: [], allowedHosts: ["127.0.0.1:4021"], autoApproveMaxAtomic: "20000", hardCapPerPaymentAtomic: "100000", sessionBudgetAtomic: "100000", dailyBudgetAtomic: "500000", maxAuthorizationsPerMinute: 100, maxTimeoutSeconds: 300 },
+          { caip2: CAIP2, asset: ASSET },
+          {},
+        ),
+        signer: { address: "0x00000000000000000000000000000000000000f1", sign: async () => ({ headers: {}, payer: "0x00000000000000000000000000000000000000f1", validBefore: 0 }) },
+        ledger: new AuditLedger(join(dir, "ledger-local.jsonl")),
+        asset: { address: ASSET, decimals: 6 },
+        backchannel: { port: new CibaClient(settings, { allowInsecureLoopback: true }), issuer: settings.issuer, clientId: CLIENT_ID, audience: AUDIENCE, keys: issuerKeys(settings.issuer, { allowInsecureLoopback: true }), decimals: 6 },
+      };
+      expect(() => createControlService(deps)).toThrow("backchannel approval needs user accounts (SPEC L2-7)");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
-  }, 60_000);
+  });
 });

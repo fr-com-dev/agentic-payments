@@ -538,12 +538,11 @@ const TEMPLATES: Record<string, TemplateSpec> = {
     optional: [
       "CONTROL_PORT",
       "API_DOCS",
-      // 012 backchannel approval (CFG-2)
+      // 012 backchannel approval (CFG-2). 015: no CIBA_APPROVER; L2 refuses to start with one.
       "CIBA_APPROVAL",
       "CIBA_ISSUER",
       "CIBA_CLIENT_ID",
       "CIBA_AUDIENCE",
-      "CIBA_APPROVER",
       "CIBA_CLIENT_KEY",
       "CIBA_CLIENT_SECRET",
       "CIBA_CLIENT_KEY_ID",

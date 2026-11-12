@@ -12,7 +12,6 @@ output "bicepparam_ciba" {
     issuer      = local.issuer
     clientId    = auth0_client.l2.client_id
     audience    = auth0_resource_server.payments.identifier
-    approver    = data.auth0_user.approver.user_id
     credential  = var.credential
     clientKeyId = ""
   }

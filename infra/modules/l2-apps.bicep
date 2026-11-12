@@ -91,7 +91,6 @@ resource control 'Microsoft.App/containerApps@2025-01-01' = {
             { name: 'CIBA_ISSUER', value: ciba.issuer }
             { name: 'CIBA_CLIENT_ID', value: ciba.clientId }
             { name: 'CIBA_AUDIENCE', value: ciba.audience }
-            { name: 'CIBA_APPROVER', value: ciba.approver }
             { name: 'CIBA_CLIENT_KEY_ID', value: ciba.clientKeyId }
             { name: ciba.credential == 'secret' ? 'CIBA_CLIENT_SECRET' : 'CIBA_CLIENT_KEY', secretRef: 'ciba-client-credential' }
             { name: 'USER_ACCOUNTS', value: userAccounts.enabled ? '1' : '0' }

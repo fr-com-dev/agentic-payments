@@ -265,6 +265,9 @@ export function createControlService(deps: ControlServiceDeps): ControlService {
       dailyCommittedAtomic: spend.dailyCommittedAtomic,
     });
   }
+  // 015 (FR-001): a request goes to the user a payment is for. Without user accounts no payment names a user, so
+  // the feature would be on and could ask nobody.
+  if (deps.backchannel && !users) throw new Error("backchannel approval needs user accounts (SPEC L2-7)");
   const backchannel = deps.backchannel ? new Backchannel({ ...deps.backchannel, ledger, serialize, now }) : undefined;
 
   type Decided = { decision: AuthorizationDecision; start?: StartPlan };
@@ -704,6 +707,9 @@ export async function main(): Promise<void> {
   const accounts = userAccountsFromEnv(process.env, networkProfile());
   // 014: and for the administration area (its own token, and user accounts on).
   const administration = adminFromEnv(process.env, accounts);
+  // 015 (L2-7, FR-001): backchannel approval asks the user a payment is for, so it needs user accounts. Checked with
+  // the rest, before the lock.
+  if (ciba.enabled && !accounts.enabled) throw new ConfigError("CIBA_APPROVAL=1 needs USER_ACCOUNTS=1 (SPEC L2-7)");
   // L2-6: one writer. Wait in standby while another L2 holds the ledger, then read it only once ours.
   const lock = await acquireLedgerLock(ledgerPathFor());
   // The ledger loads and verifies first, so an integrity failure is reported before anything else.
