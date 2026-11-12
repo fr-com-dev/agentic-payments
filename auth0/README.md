@@ -3,8 +3,13 @@
 Terraform for what the project needs from Auth0:
 
 - L2's backchannel approval (SPEC L2-7, `specs/012`);
-- people's sign-in at the portal and at the hosted agent service (SPEC L2-8 and L1-6, `specs/013` research R19).
+- people's sign-in at the portal (SPEC L2-8, `specs/013` research R19).
   System identities stay on Microsoft Entra ID, in `infra/pre-deploy.bicep`.
+
+It makes exactly two applications: L2's backchannel approval client and the portal's single-page client (SPEC
+v1.13, `specs/013` research R20). There is none for the hosted agent service, so no person's token from the tenant
+starts a run there; a deployed agent accepts system identities only. The Management API application the pipeline
+signs in with (step 2 below) is made by hand and is not part of the running system.
 
 - **Who runs it**: its pipeline, `.github/workflows/provision-auth0.yml`, started by hand. Every run shows the
   plan; it applies that same plan only when `apply` is checked. Nothing else applies this folder.
@@ -33,14 +38,13 @@ For people's sign-in:
 | Resource | What it is | Becomes |
 |---|---|---|
 | `auth0_resource_server.identity` | People's API, `https://x402-api/<environment>`. It uses RS256, enforces RBAC and puts the permissions in the access token. Tokens live one hour. Refresh tokens are allowed. | `AUTH_AUDIENCE`, `identity.audience` |
-| `auth0_resource_server_scopes.identity` | Its one permission, `agent:run`. The same permission opens the portal and starts runs. | — |
+| `auth0_resource_server_scopes.identity` | Its one permission, `agent:run`. It opens the portal. The agent service checks the same permission, but no client of the tenant reaches it. | — |
 | `auth0_role.user`, `auth0_role_permissions.user` | The role `x402-user`, which holds exactly `agent:run`. Nobody is assigned here. | — |
 | `auth0_client.portal`, `auth0_client_credentials.portal` | The portal's web app: a public single-page client with no secret. It uses the authorization code with PKCE, and the `refresh_token` grant because its refresh tokens rotate. Its callbacks, web origins and logout URLs are `http://localhost:4025` and `portal_origin` when set. | `PORTAL_CLIENT_ID`, `userAccounts.portalClientId` |
-| `auth0_client.agent_cli`, `auth0_client_credentials.agent_cli` | The agent CLI: a public native client with no secret. Its only grant is the device authorization grant, for `npm run user-token`. | `AGENT_CLIENT_IDS`, `identity.agentClientIds` |
 | `auth0_action.sign_in_time`, `auth0_trigger_action.sign_in_time` | The post-login Action in `sign-in-time.js`. It writes one claim on the access token, `https://x402.dev/auth_time`: the time of the person's most recent authentication, in seconds. It is appended to the tenant's post-login flow and replaces nothing there. | `AUTH_TIME_CLAIM` |
 
-The two services tell the two clients apart by client ID. The portal accepts only its own client. The agent service
-accepts only the clients in `AGENT_CLIENT_IDS`, never the portal's.
+The portal accepts only its own client. The agent service accepts no client of the tenant: a deployed agent has no
+`AGENT_CLIENT_IDS`, and T-IAC-02 fails on a third `auth0_client`.
 
 ## What stays by hand
 
@@ -161,13 +165,12 @@ accepts only the clients in `AGENT_CLIENT_IDS`, never the portal's.
    - **Locally**: put its `issuer`, `clientId`, `audience` and `approver` in `env/l2-control.env` as `CIBA_ISSUER`,
      `CIBA_CLIENT_ID`, `CIBA_AUDIENCE` and `CIBA_APPROVER`, with `CIBA_APPROVAL=1`. Add `CIBA_CLIENT_KEY` yourself.
 4. **The approver enrolls in Guardian push**, then you run the live check (`specs/012` quickstart §5).
-5. **Hand the values of people's sign-in to the portal and the agent service.** The apply run's summary also shows
+5. **Hand the values of people's sign-in to the portal.** The apply run's summary also shows
    the `identity` object and the portal web app's client ID.
    - **Azure**: paste the object as `param identity` in `infra/main.dev.bicepparam`, and the client ID as
-     `portalClientId` in its `userAccounts` object. Then run `deploy-portal.yml` and `deploy-l1.yml`.
-   - **Locally**: an administrator with a role on the state's container reads the lines for the env files with
-     `terraform -chdir=auth0 output -raw agent_env` (for `env/l1-hosted.env`) and `-raw portal_env` (for
-     `env/portal.env`). They hold the same values as the summary.
+     `portalClientId` in its `userAccounts` object. Then run `deploy-portal.yml`.
+   - **Locally**: an administrator with a role on the state's container reads the lines for `env/portal.env` with
+     `terraform -chdir=auth0 output -raw portal_env`. They hold the same values as the summary.
 6. **Assign the role `x402-user`** in Auth0 to each person who may onboard.
 
 **Key only.** The pipeline provisions `credential = "key"` and nothing else, so GitHub holds only the public half

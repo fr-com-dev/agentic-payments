@@ -133,7 +133,7 @@ npm run -s dev-token -- --subject alice --portal   # a sign-in token to paste in
 npm run build:web && npm run portal   # the portal on http://127.0.0.1:4025
 ```
 
-People sign in with Auth0 where it is deployed (SPEC v1.12); locally the dev issuer stands in for it, and the "sign-in" is the pasted token. Then follow the three steps on screen. `npm run fund-user -- <address> 1` mints 1 test USDC to the new account. To pay as that person, start `npm run agent:hosted` and send a run with an agent token (`npm run -s dev-token -- --subject alice`, without `--portal`): the two services refuse each other's tokens. The full walk-through, the isolation checks, cards and Azure are in [specs/013 quickstart](specs/013-l2-portal-onboarding/quickstart.md). It is off by default, and the local demo never uses it.
+People sign in to the portal with Auth0 where it is deployed (SPEC v1.12); locally the dev issuer stands in for it, and the "sign-in" is the pasted token. Then follow the three steps on screen. `npm run fund-user -- <address> 1` mints 1 test USDC to the new account. To pay as that person, start `npm run agent:hosted` and send a run with an agent token (`npm run -s dev-token -- --subject alice`, without `--portal`): the two services refuse each other's tokens. This part is local only: a deployed agent accepts no person's token (SPEC v1.13). The full walk-through, the isolation checks, cards and Azure are in [specs/013 quickstart](specs/013-l2-portal-onboarding/quickstart.md). It is off by default, and the local demo never uses it.
 
 ## Base Sepolia
 
@@ -250,7 +250,7 @@ To run the agent's container image instead, see [quickstart §3](specs/011-l1-ho
 - Every resource is named `{type}-{app}-{location}-{env}`, such as `ca-l1-eastus2-dev`; the parameter files' `names` hold them all. `infra/` has two scripts only: `infra/github-setup.sh` and `infra/cleanup.sh`, which deletes all of an environment (`--dry-run` first).
 - Azure is provisioned by Bicep only. `infra/pre-deploy.bicep` makes the resource group, the Entra app registrations, the operators' group and the deploy app's roles; an administrator deploys it by hand. `infra/main.bicep` makes everything in the resource group, the Claude model deployment included.
 - Every value is in a parameter file: `infra/pre-deploy.<env>.bicepparam` and `infra/main.<env>.bicepparam`, the tenant, subscription and resource group included. Each template refuses to run anywhere else.
-- People sign in with Auth0 (the tenant in `auth0/`, Terraform): a person with the role `x402-user` gets a token with `npm run -s user-token`, the tenant's device flow. System identities, the deploy pipeline included, use Entra ID (the API app `app-l1-<location>-<env>`, role `Agent.Run`); an Entra token never names a user.
+- A deployed agent accepts system identities only (SPEC v1.13): the Auth0 tenant in `auth0/` has two applications, the portal's and L2's, and none that gives a person an agent token. Runs as a person work locally, with the dev issuer. System identities, the deploy pipeline included, use Entra ID (the API app `app-l1-<location>-<env>`, role `Agent.Run`); an Entra token never names a user.
 
 **Deployment**: one GitHub Actions pipeline per unit, each run by hand or on its own tag, one at a time:
 

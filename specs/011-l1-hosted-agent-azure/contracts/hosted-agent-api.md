@@ -25,7 +25,9 @@ publishes no routes (research R1).
 
 - **Auth**: a bearer token, checked before the body is read. Since SPEC v1.12 a person's is an Auth0 access token
   with the permission `agent:run` from a client on `AGENT_CLIENT_IDS`, and a system identity's an Entra app-only
-  token with role `Agent.Run` ([access-and-sessions.md](access-and-sessions.md)). Before: an Entra ID bearer token with role `Agent.Run`, checked before the body is read
+  token with role `Agent.Run` ([access-and-sessions.md](access-and-sessions.md)). Since SPEC v1.13 the sign-in tenant
+  has no client for this service: a deployed service has no `AGENT_CLIENT_IDS` and answers a person's token with
+  401; only the local dev issuer gives a person's token that starts a run. Before: an Entra ID bearer token with role `Agent.Run`, checked before the body is read
   ([access-and-sessions](access-and-sessions.md)).
 - **Body**: `{ "goal": string, "sessionRef"?: string }`, JSON, at most 16 KB.
 

@@ -139,9 +139,8 @@ person the role `x402-user` in Auth0, then run the portal locally with `AUTH_ISS
 |---|---|
 | Sign in as a person with the role | the portal opens; the access token (decode it locally) has `iss` = the tenant, `aud` containing the API, `permissions: ["agent:run"]`, the portal's client as `azp` (or `client_id`), and the sign-in time claim (R19, checks 1 and 3) |
 | Sign in as a person without the role | the portal answers 403 and shows the refusal; no profile file is created |
-| `npm run -s user-token` (the device flow), sent to the portal | 403: that token belongs to the agent's client |
-| The portal's token sent to the agent service | 403 |
-| The same `user-token` sent to the agent service | a run starts, and its intents carry the person's `userId` (R19, check 4) |
+| The portal's token sent to a deployed agent service | 401: it accepts no token of the tenant ([R20](research.md#r20-two-applications-in-auth0-no-client-for-the-agent-service)). Sent to a local one configured for the tenant, 403: the portal's client is never on its list |
+| The tenant's applications, in the Auth0 dashboard | two made by `auth0/`: `app-portal-<env>` and `app-l2-ciba-<env>`. None for the agent service |
 | An Entra token of a person (`az account get-access-token …`) sent to either service | 401 at the portal, 403 at the agent service |
 | The deploy app's Entra token (a system identity) sent to the agent service | a run starts with no user, paid by the platform account |
 | **Sign-in time after a forced sign-in** (R19, check 2) | after "Confirm it's you", the new token's claim is within the last minute |
@@ -160,7 +159,7 @@ Follows `specs/011` quickstart §4, with the additions of
 
 1. **Identity, by an administrator.**
    - Auth0: run `provision-auth0.yml` (plan, then apply). It adds the API with its `agent:run` permission, the
-     role `x402-user`, the portal's and the agent CLI's clients, and the sign-in time Action. Paste its `identity`
+     role `x402-user`, the portal's client and the sign-in time Action. Paste its `identity`
      output and `portalClientId` into `infra/main.<env>.bicepparam`. Assign the role to each person in Auth0.
    - Entra: apply `infra/pre-deploy.bicep` to take out what this feature first added (the `Portal.Access` scope,
      the web app registration). Expect two deployments, the first only disabling the scope
@@ -271,6 +270,10 @@ nothing here ran against the Auth0 tenant, and nothing was deployed.
 | Hosted agent's entry point (`src/hosted-main.ts`, the template's settings, no model call) | portal token 403; a person without `agent:run` 403; a system identity without `Agent.Run` 403; a person's and a system identity's token pass access (400 for an empty goal); no token 401 |
 | A person's run paid from their own account, through the hosted agent | covered by T-E2E-12 with a scripted model, on the local chain. Not run with a model key (T123 stays open) |
 
-Not checked, and still open: research R19's five items against the tenant (T140), the two deployments of
-`pre-deploy.bicep` that retire the Entra scope, and `npm run user-token` against a real tenant (its test uses a
-stand-in).
+Not checked, and still open: research R19's items against the tenant (T140; four since R20 took the device flow
+out), and the two deployments of `pre-deploy.bicep` that retire the Entra scope.
+
+**2026-11-11, two applications (R20).** `auth0/` makes two clients, the portal's and L2's; the agent CLI's client,
+`scripts/user-token.ts` and `npm run user-token` are removed, and the agent's Azure app gets no setting of people's
+sign-in. Checked offline only: `terraform validate`, T-IAC-02 and T-IAC-01 (with their must-fail mutants), the
+typecheck and the other suites that need no local chain. Nothing was applied to the tenant or deployed.

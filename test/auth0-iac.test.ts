@@ -8,7 +8,8 @@
 // Terraform and the locked provider (its lock file holds the Linux runner's checksum too), the state in Azure with
 // OIDC and no key, and an apply of exactly the plan shown.
 // 013 (specs/013 contracts/config-and-secrets.md "auth0/", research R19): people's sign-in. The API with RBAC and its
-// one permission, the role that holds exactly it, the two public clients with one grant each, the portal client's
+// one permission, the role that holds exactly it, the portal's public client (the only one for people: the tenant has
+// two applications, L2's and the portal's, research R20) with its own grant, the portal client's
 // URLs, and the post-login Action, whose code is also run here against a stand-in for Auth0's `api`.
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
@@ -48,6 +49,9 @@ const AUTH_TIME_CLAIM = "https://x402.dev/auth_time";
 /** The Action's code, a file of its own so that this suite can run it. */
 const ACTION_FILE = "sign-in-time.js";
 const DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code";
+/** Research R20: the tenant has two applications. No client exists for the hosted agent service. */
+const TWO_CLIENTS = "the clients must be exactly L2's and the portal's: the tenant has no client for the hosted agent service";
+const IDENTITY_OUTPUT = "output bicepparam_identity must be the tenant's issuer and people's API only, and name no client";
 /** How the lock file gets the checksum of each platform that runs Terraform: the pipeline's runner and a Mac. */
 const LOCK_COMMAND = "terraform -chdir=auth0 providers lock -platform=linux_amd64 -platform=darwin_arm64";
 const LOCKED_FOR_RUNNER = `auth0/.terraform.lock.hcl must hold the provider's h1 checksum for the pipeline's Linux runner as well as a Mac's (${LOCK_COMMAND})`;
@@ -224,7 +228,7 @@ export function auth0Problems(s: Sources): string[] {
     p.push(`the role ${ROLE} must hold exactly the permission ${PERMISSION} on people's API`);
   }
 
-  // The two public clients: no secret, no key, and each with only its own grant.
+  // The portal's public client: no secret, no key, and only its own grant. It is the only client for people.
   const publicClient = (name: string, label: string, appType: string, grants: string[]): string | undefined => {
     const c = block(tf, new RegExp(`resource\\s+"auth0_client"\\s+"${name}"\\s*\\{`));
     const cred = block(tf, new RegExp(`resource\\s+"auth0_client_credentials"\\s+"${name}"\\s*\\{`));
@@ -247,7 +251,6 @@ export function auth0Problems(s: Sources): string[] {
   };
   // Refresh-token rotation needs the refresh_token grant beside the authorization code (with PKCE: a public client).
   const portalClient = publicClient("portal", "the portal's client", "spa", ["authorization_code", "refresh_token"]);
-  const cliClient = publicClient("agent_cli", "the agent CLI's client", "native", [DEVICE_GRANT]);
   const origins = /^\s*portal_origins\s*=\s*(.+)$/m.exec(tf)?.[1] ?? "";
   if (portalClient) {
     const urls = [...portalClient.matchAll(/^\s*(callbacks|web_origins|allowed_logout_urls|allowed_origins|initiate_login_uri|cross_origin_loc|oidc_backchannel_logout_urls)\s*=\s*(.+)$/gm)].map((m) => `${m[1]} = ${m[2]!.trim()}`).sort();
@@ -267,9 +270,8 @@ export function auth0Problems(s: Sources): string[] {
   if (!/condition\s*=\s*var\.portal_origin == "" \|\| can\(regex\("\^https:\/\/\[a-z0-9\]\[a-z0-9\.-\]\*\$", var\.portal_origin\)\)/.test(block(tf, /variable\s+"portal_origin"\s*\{/) ?? "")) {
     p.push("var.portal_origin must be empty or one https origin: a host, with no path, port, wildcard or trailing slash");
   }
-  if (cliClient && /^\s*(callbacks|web_origins|allowed_logout_urls|allowed_origins)\s*=/m.test(cliClient)) p.push("the agent CLI's client must have no callback, origin or logout URL: the device flow needs none");
   const clients = [...tf.matchAll(/resource\s+"auth0_client"\s+"(\w+)"/g)].map((m) => m[1]).sort();
-  if (JSON.stringify(clients) !== JSON.stringify(["agent_cli", "l2", "portal"])) p.push("the clients must be exactly L2's, the portal's and the agent CLI's");
+  if (JSON.stringify(clients) !== JSON.stringify(["l2", "portal"])) p.push(TWO_CLIENTS);
 
   // The post-login Action: its code is the file this suite runs (actionProblems), it holds no secret and no package,
   // and it is appended to the tenant's flow, never replacing it. It writes one namespaced claim on the access token.
@@ -312,16 +314,16 @@ export function auth0Problems(s: Sources): string[] {
   const out = block(block(tf, /output\s+"bicepparam_ciba"\s*\{/) ?? "", /value\s*=\s*\{/) ?? "";
   const got = [...out.matchAll(/^\s*(\w+)\s*=/gm)].map((m) => m[1]!).sort();
   if (JSON.stringify(got) !== JSON.stringify(want)) p.push(`output bicepparam_ciba must have exactly the ciba keys of the parameter file (${want.join(", ")}), got ${got.join(", ")}`);
-  // 013: the outputs for people's sign-in. The identity object has exactly the keys main.bicep reads, and the agent
-  // service's allow-list is the agent CLI's client only, never the portal's.
+  // 013: the outputs for people's sign-in. The identity object has exactly the keys main.bicep reads, and names no
+  // client: the agent service accepts no person's token from the tenant, so it has no allow-list to fill.
   const wantIdentity = Object.keys(bicepObject(s.bicepparam, "identity")).sort();
   const identityOut = block(block(tf, /output\s+"bicepparam_identity"\s*\{/) ?? "", /value\s*=\s*\{/) ?? "";
   const gotIdentity = [...identityOut.matchAll(/^\s*(\w+)\s*=/gm)].map((m) => m[1]!).sort();
   if (wantIdentity.length === 0 || JSON.stringify(gotIdentity) !== JSON.stringify(wantIdentity)) {
     p.push(`output bicepparam_identity must have exactly the identity keys of the parameter file (${wantIdentity.join(", ")}), got ${gotIdentity.join(", ")}`);
   }
-  if (!/issuer\s*=\s*local\.issuer\b/.test(identityOut) || !/audience\s*=\s*auth0_resource_server\.identity\.identifier\b/.test(identityOut) || !/agentClientIds\s*=\s*\[auth0_client\.agent_cli\.client_id\]/.test(identityOut)) {
-    p.push("output bicepparam_identity must be the tenant's issuer, people's API and the agent CLI's client only, never the portal's");
+  if (!/issuer\s*=\s*local\.issuer\b/.test(identityOut) || !/audience\s*=\s*auth0_resource_server\.identity\.identifier\b/.test(identityOut) || /auth0_client\./.test(identityOut)) {
+    p.push(IDENTITY_OUTPUT);
   }
   if (!has(block(tf, /output\s+"bicepparam_portal_client_id"\s*\{/), /value\s*=\s*auth0_client\.portal\.client_id\b/)) p.push("output bicepparam_portal_client_id must be the portal client's ID (userAccounts.portalClientId)");
 
@@ -525,8 +527,8 @@ describe("T-IAC-02 Auth0 tenant as code (auth0/)", () => {
     expect(bicepObject(load().bicepparam, "ciba")).toMatchObject({ enabled: "false", credential: "'key'" });
   });
 
-  it("013: the parameter file's identity object has the three keys main.bicep reads", () => {
-    expect(Object.keys(bicepObject(load().bicepparam, "identity")).sort()).toEqual(["agentClientIds", "audience", "issuer"]);
+  it("013: the parameter file's identity object has the two keys main.bicep reads", () => {
+    expect(Object.keys(bicepObject(load().bicepparam, "identity")).sort()).toEqual(["audience", "issuer"]);
   });
 
   it.each<[string, string, string | RegExp, string, string]>([
@@ -562,14 +564,11 @@ describe("T-IAC-02 Auth0 tenant as code (auth0/)", () => {
   const ONE_PERMISSION = `people's API must have exactly one permission, ${PERMISSION}`;
   const ROLE_HOLDS = `the role ${ROLE} must hold exactly the permission ${PERMISSION} on people's API`;
   const PORTAL_PUBLIC = "the portal's client must be a public spa client: authentication_method none, no secret and no key";
-  const CLI_PUBLIC = "the agent CLI's client must be a public native client: authentication_method none, no secret and no key";
   const PORTAL_GRANT = "the portal's client must have only its own grant (authorization_code, refresh_token)";
-  const CLI_GRANT = `the agent CLI's client must have only its own grant (${DEVICE_GRANT})`;
   const PORTAL_URLS = `the portal client's callbacks, web origins and logout URLs must be exactly ${LOCAL_PORTAL} and var.portal_origin when set`;
   const ONE_ACTION = `the one Action must be the post-login sign-in time Action (${ACTION_FILE}, no secret, no package), appended to the flow (auth0_trigger_action), never replacing it`;
   const ONE_CLAIM = `the Action must write one namespaced claim, ${AUTH_TIME_CLAIM}, on the access token, and do nothing else`;
   const NOBODY_ASSIGNED = `no role or permission is assigned to a person here: an administrator assigns ${ROLE} in Auth0`;
-  const IDENTITY_OUTPUT = "output bicepparam_identity must be the tenant's issuer, people's API and the agent CLI's client only, never the portal's";
   it.each<[string, string, string | RegExp, string, string]>([
     ["an API without RBAC", "main.tf", /enforce_policies(\s*)= true/, "enforce_policies$1= false", "people's API must enforce RBAC (enforce_policies = true)"],
     ["permissions left out of the token", "main.tf", '"access_token_authz"', '"access_token"', 'people\'s API must put the permissions in the access token (token_dialect = "access_token_authz")'],
@@ -584,13 +583,9 @@ describe("T-IAC-02 Auth0 tenant as code (auth0/)", () => {
     ["a role holding a permission of another API", "main.tf", /(permissions \{\n\s+name\s*= local\.permission\n\s+resource_server_identifier\s*= )auth0_resource_server\.identity\.identifier/, "$1auth0_resource_server.payments.identifier", ROLE_HOLDS],
     ["a portal client with a secret", "main.tf", /(resource "auth0_client_credentials" "portal" \{[\s\S]*?authentication_method\s*=\s*)"none"/, '$1"client_secret_post"', PORTAL_PUBLIC],
     ["a confidential portal client", "main.tf", 'app_type        = "spa"', 'app_type        = "regular_web"', PORTAL_PUBLIC],
-    ["an agent CLI client with a secret", "main.tf", /(resource "auth0_client_credentials" "agent_cli" \{[\s\S]*?authentication_method\s*=\s*)"none"/, '$1"client_secret_basic"', CLI_PUBLIC],
     ["a portal client with the implicit grant", "main.tf", '["authorization_code", "refresh_token"]', '["authorization_code", "refresh_token", "implicit"]', PORTAL_GRANT],
     ["a portal client with the device grant", "main.tf", '["authorization_code", "refresh_token"]', `["authorization_code", "refresh_token", "${DEVICE_GRANT}"]`, PORTAL_GRANT],
-    ["an agent CLI client that can use the authorization code", "main.tf", `["${DEVICE_GRANT}"]`, `["${DEVICE_GRANT}", "authorization_code"]`, CLI_GRANT],
-    ["an agent CLI client with refresh tokens", "main.tf", `["${DEVICE_GRANT}"]`, `["${DEVICE_GRANT}", "refresh_token"]`, CLI_GRANT],
-    ["an agent CLI client with a callback", "main.tf", 'app_type        = "native"', 'app_type        = "native"\n  callbacks       = ["http://localhost:8080"]', "the agent CLI's client must have no callback, origin or logout URL: the device flow needs none"],
-    ["a fourth client", "main.tf", 'resource "auth0_client" "portal" {', 'resource "auth0_client" "admin" {\n  name = "admin"\n}\n\nresource "auth0_client" "portal" {', "the clients must be exactly L2's, the portal's and the agent CLI's"],
+    ["a client for the agent service", "main.tf", 'resource "auth0_client" "portal" {', 'resource "auth0_client" "agent_cli" {\n  name     = "agent-cli"\n  app_type = "native"\n}\n\nresource "auth0_client" "portal" {', TWO_CLIENTS],
     ["a second callback URL", "main.tf", `concat(["${LOCAL_PORTAL}"], `, `concat(["${LOCAL_PORTAL}", "https://portal.example"], `, PORTAL_URLS],
     ["another local origin", "main.tf", `"${LOCAL_PORTAL}"`, '"http://localhost:3000"', PORTAL_URLS],
     ["a callback written in the client", "main.tf", /callbacks(\s*)= local\.portal_origins/, 'callbacks$1= ["https://portal.example/callback"]', PORTAL_URLS],
@@ -610,10 +605,10 @@ describe("T-IAC-02 Auth0 tenant as code (auth0/)", () => {
     ["an Action that refuses sign-ins", ACTION_FILE, /(\n\s+api\.accessToken\.setCustomClaim\(CLAIM, [^\n]+)/, '$1\n    api.access.deny("no");', ONE_CLAIM],
     ["a role assigned to a person", "main.tf", 'resource "auth0_role_permissions" "user" {', 'resource "auth0_user_roles" "someone" {\n  user_id = var.approver_user_id\n  roles   = [auth0_role.user.id]\n}\n\nresource "auth0_role_permissions" "user" {', NOBODY_ASSIGNED],
     ["a connection with a password in code", "main.tf", 'resource "auth0_role" "user" {', 'resource "auth0_connection" "db" {\n  name     = "db"\n  strategy = "auth0"\n  options {\n    password = "x"\n  }\n}\n\nresource "auth0_role" "user" {', "users and passwords are never managed here"],
-    ["the portal's client on the agent's allow-list", "outputs.tf", "agentClientIds = [auth0_client.agent_cli.client_id]", "agentClientIds = [auth0_client.agent_cli.client_id, auth0_client.portal.client_id]", IDENTITY_OUTPUT],
+    ["a client the agent service would accept", "outputs.tf", /(output "bicepparam_identity" \{[\s\S]*?audience\s*= auth0_resource_server\.identity\.identifier)/, "$1\n    agentClientIds = [auth0_client.portal.client_id]", IDENTITY_OUTPUT],
     ["an identity output for the approval API", "outputs.tf", /(output "bicepparam_identity" \{[\s\S]*?audience\s*= )auth0_resource_server\.identity\.identifier/, "$1auth0_resource_server.payments.identifier", IDENTITY_OUTPUT],
-    ["an identity output missing the audience", "outputs.tf", /(output "bicepparam_identity" \{[\s\S]*?)\n\s+audience\s*= auth0_resource_server\.identity\.identifier/, "$1", "output bicepparam_identity must have exactly the identity keys of the parameter file (agentClientIds, audience, issuer), got agentClientIds, issuer"],
-    ["the agent CLI's client as the portal's client ID", "outputs.tf", /(output "bicepparam_portal_client_id" \{[\s\S]*?value\s*= )auth0_client\.portal\.client_id/, "$1auth0_client.agent_cli.client_id", "output bicepparam_portal_client_id must be the portal client's ID (userAccounts.portalClientId)"],
+    ["an identity output missing the audience", "outputs.tf", /(output "bicepparam_identity" \{[\s\S]*?)\n\s+audience\s*= auth0_resource_server\.identity\.identifier/, "$1", "output bicepparam_identity must have exactly the identity keys of the parameter file (audience, issuer), got issuer"],
+    ["L2's client as the portal's client ID", "outputs.tf", /(output "bicepparam_portal_client_id" \{[\s\S]*?value\s*= )auth0_client\.portal\.client_id/, "$1auth0_client.l2.client_id", "output bicepparam_portal_client_id must be the portal client's ID (userAccounts.portalClientId)"],
   ])("013 must fail: %s is reported", (_label, file, from, to, message) => {
     expect(auth0Problems(mutate(load(), file, from, to))).toContain(message);
   });

@@ -30,7 +30,6 @@
     "fund-user": "tsx scripts/fund-user.ts",
     "wallet-mnemonic": "tsx scripts/wallet-mnemonic.ts",
     "dev-token": "tsx scripts/dev-token.ts",
-    "user-token": "tsx scripts/user-token.ts",
     "ledger-verify": "tsx scripts/ledger-verify.ts",
     "payer-balance": "tsx scripts/payer-balance.ts",
     "scan-logs": "tsx scripts/scan-logs.ts",

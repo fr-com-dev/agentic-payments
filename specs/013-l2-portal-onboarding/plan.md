@@ -412,7 +412,8 @@ Also in the same change:
 ## Change of identity provider (2026-11-10)
 
 The first build signs people in with Microsoft Entra ID. Per the clarifications of the same day, **Auth0 replaces
-it for people**, at the portal and at the hosted agent service; system identities stay on Entra. The decision, its
+it for people**, at the portal and at the hosted agent service; system identities stay on Entra. (Since 2026-11-11,
+R20, at the portal only where the system is deployed: the tenant has no application for the agent service.) The decision, its
 alternatives and the facts still to verify are in [R19](research.md#r19-auth0-as-the-identity-provider-for-people).
 Where this section and an earlier one disagree, this one holds. Tasks: Phase 14.
 
@@ -425,7 +426,7 @@ Where this section and an earlier one disagree, this one holds. Tasks: Phase 14.
 | User identifier | `x402-user-v1`, tenant and object ID | `x402-user-v2`, issuer host and `sub`; everyone onboards again |
 | Step-up source | Entra's `auth_time` optional claim | a namespaced claim set by a post-login Action |
 | Web sign-in | `@azure/msal-browser`, `redirect.html` | `@auth0/auth0-spa-js` behind the same `Auth` adapter; no page of its own, if R19's third check holds |
-| Getting an agent token | Azure CLI | a native client with the device flow, `npm run user-token` |
+| Getting an agent token | Azure CLI | a native client with the device flow, `npm run user-token`. Removed 2026-11-11 ([R20](research.md#r20-two-applications-in-auth0-no-client-for-the-agent-service)): the tenant has two applications, and a deployed agent accepts system identities only |
 | Identity as code | app registrations in `infra/pre-deploy.bicep` | the API, role, clients and Action in `auth0/` (Terraform, `provision-auth0.yml`); the Entra additions of this feature are removed |
 | Parameters | `userAccounts.portalClientId` (a GUID), `portalOrigin`, `portalPreAuthorized` | an `identity` object in `main.<env>.bicepparam` from Terraform's output; the two `portal…` parameters of `pre-deploy` go |
 

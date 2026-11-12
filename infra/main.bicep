@@ -58,10 +58,11 @@ param ciba object
 // user-defined type, as for ciba.
 @description('013: user accounts and the portal. The secrets are the l2 vault\'s portal-token and user-wallet-mnemonic and the portal vault\'s portal-token and card-vault-key, seeded by hand in every environment (the placeholder off while enabled is false).')
 param userAccounts object
-// 013 people's sign-in (SPEC L2-8 and L1-6; specs/013 research R19): the Auth0 tenant's values, from Terraform's
-// output bicepparam_identity (auth0/), { issuer, audience, agentClientIds }. None is a secret. A plain object, not a
-// user-defined type, as for ciba.
-@description('013: people\'s sign-in with Auth0: the tenant\'s issuer (https://<domain>/), the API\'s identifier, and the clients the agent service accepts, never the portal\'s.')
+// 013 people's sign-in at the portal (SPEC L2-8; specs/013 research R19 and R20): the Auth0 tenant's values, from
+// Terraform's output bicepparam_identity (auth0/), { issuer, audience }. None is a secret. A plain object, not a
+// user-defined type, as for ciba. The agent service gets none of it: the tenant has no client for it, so in Azure
+// it accepts system identities only.
+@description('013: people\'s sign-in with Auth0, at the portal: the tenant\'s issuer (https://<domain>/) and the API\'s identifier.')
 param identity object
 @description('Who uses Claude, declared to Anthropic with the model deployment, which accepts Anthropic\'s Azure Marketplace terms: the legal entity\'s name.')
 param claudeOrganizationName string
@@ -92,12 +93,12 @@ var userAccountsChecked = contains(['off', 'stripe'], userAccounts.cardVault) &&
   ? userAccounts.enabled
   : fail('main: userAccounts.cardVault must be off or stripe, userAccounts.enabled and the portal unit each need a portalClientId, and cardVault stripe needs a cardVaultPublishableKey that starts with pk_test_ (specs/013 contracts/config-and-secrets.md)')
 
-// 013: with user accounts on, people's sign-in must be usable: an issuer of the form https://…/, an audience, and
-// an agent allow-list without the portal's client, whose tokens the agent service must refuse (T-IAC-01 rule 21).
+// 013: with user accounts on, people's sign-in at the portal must be usable: an issuer of the form https://…/ and
+// an audience (T-IAC-01 rule 21). There is no list of clients for the agent service: the tenant has none.
 #disable-next-line no-unused-vars
-var identityChecked = !userAccounts.enabled || (startsWith(identity.issuer, 'https://') && endsWith(identity.issuer, '/') && !empty(identity.audience) && !contains(identity.agentClientIds, userAccounts.portalClientId))
+var identityChecked = !userAccounts.enabled || (startsWith(identity.issuer, 'https://') && endsWith(identity.issuer, '/') && !empty(identity.audience))
   ? userAccounts.enabled
-  : fail('main: userAccounts.enabled needs an identity.issuer of the form https://<domain>/, an identity.audience, and identity.agentClientIds without userAccounts.portalClientId (specs/013 contracts/config-and-secrets.md)')
+  : fail('main: userAccounts.enabled needs an identity.issuer of the form https://<domain>/ and an identity.audience (specs/013 contracts/config-and-secrets.md)')
 
 // The identity and vault matrix (contracts/cloud-topology.md "Role assignments"): one identity and one
 // vault per runtime unit, and each identity reads only its own vault. The key names the unit's identity
@@ -189,8 +190,6 @@ module l1 'modules/l1-apps.bicep' = if (unit == 'l1') {
     authAudience: authAudience
     modelDeployment: modelDeployment
     agentStableRevision: agentStableRevision
-    userAccounts: userAccounts
-    identity: identity
   }
   dependsOn: [ids, registry, vaults, envs, foundry]
 }

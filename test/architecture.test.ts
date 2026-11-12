@@ -488,7 +488,8 @@ const TEMPLATES: Record<string, TemplateSpec> = {
     optional: ["ANTHROPIC_MODEL", "SESSION_ID", "SELLER_ALIAS_URL"],
   },
   "l1-hosted": {
-    // 013 (research R19): people sign in with Auth0 (issuer, audience, client list); the directory covers system identities.
+    // 013 (research R19, R20): a person's token is checked by issuer, audience and client list. Only the local dev issuer
+    // has a client for the agent (the Auth0 tenant has none); the directory covers system identities.
     required: ["NETWORK", "SELLER_URL", "CONTROL_URL", "SETTLEMENT_URL", "CONTROL_TOKEN", "VERIFIER_TOKEN", "MODEL_PROVIDER", "AUTH_ISSUER", "AUTH_AUDIENCE", "AGENT_CLIENT_IDS", "SESSION_REF_SECRET"],
     optional: [
       "ANTHROPIC_MODEL",
@@ -503,7 +504,6 @@ const TEMPLATES: Record<string, TemplateSpec> = {
       "TRUSTED_PROXY_HOPS",
       "API_DOCS",
       "PORTAL_CLIENT_ID",
-      "AGENT_CLI_CLIENT_ID",
     ],
   },
   "l2-control": {

@@ -235,12 +235,11 @@ components:
         One of two access tokens. The service reads the token's issuer only to choose the checks, then verifies in
         full against that issuer (60 s tolerance on `exp` and `nbf`); any other issuer is 401.
 
-        **A person** (since v1.12): a token of the sign-in tenant (Auth0, `AUTH_ISSUER`) for the API
-        (`AUTH_AUDIENCE`), with the permission `agent:run` in `permissions`, issued to a client on the service's
-        list (`AGENT_CLIENT_IDS`). The run's payments are that person's. Get one from a terminal with the
-        tenant's device flow:
-
-            npm run -s user-token
+        **A person** (since v1.12): a token of the issuer in `AUTH_ISSUER` for the API (`AUTH_AUDIENCE`), with
+        the permission `agent:run` in `permissions`, issued to a client on the service's list
+        (`AGENT_CLIENT_IDS`). The run's payments are that person's. Since v1.13 the sign-in tenant (Auth0) has
+        no client for this service, so only the local dev issuer gives such a token: a deployed service is
+        configured without these three settings and answers a person's token with 401.
 
         **A system identity**: an app-only Entra ID v2.0 token (`idtyp: app`) of the organization's directory
         (`AUTH_TENANT_ID`) whose `aud` is the API app's client ID (`SERVICE_AUDIENCE`), with the app role

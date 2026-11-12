@@ -45,9 +45,10 @@ visible**, from the process environment or from the file, before anything else (
 `env/l1-hosted.env` changes for people's sign-in (2026-11-10, [R19](../research.md#r19-auth0-as-the-identity-provider-for-people)):
 `AUTH_ISSUER` and `AUTH_AUDIENCE` are the Auth0 tenant's issuer and the API's identifier; `AGENT_CLIENT_IDS` is the
 comma-separated list of Auth0 clients whose tokens the agent service accepts (never the portal's client; the
-service refuses to start when `PORTAL_CLIENT_ID`, if given, is on it). `AGENT_CLI_CLIENT_ID` (optional) is the
-native client `npm run user-token` signs in with; the service itself does not read it. As built, the three people's variables go together: all three, or none, and with none no person is accepted
-(an environment whose `identity` parameter is still empty runs system identities only). `AUTH_TENANT_ID` and the new
+service refuses to start when `PORTAL_CLIENT_ID`, if given, is on it). As built, the three people's variables go together: all three, or none, and with none no person is accepted.
+Since 2026-11-11 ([R20](../research.md#r20-two-applications-in-auth0-no-client-for-the-agent-service)) the tenant
+has no client for the agent service, so these three are set only locally, for the dev issuer; every deployed
+environment runs system identities only, and `AGENT_CLI_CLIENT_ID` and `npm run user-token` are gone. `AUTH_TENANT_ID` and the new
 `SERVICE_AUDIENCE` (the Entra API app's client ID) now cover system identities only; without them no system
 identity is accepted.
 
@@ -91,7 +92,7 @@ names; a template key ending in `_MNEMONIC`, or named `CARD_VAULT_KEY`, must be 
 
 | Item | Change |
 |---|---|
-| `package.json` scripts | `user-token` (2026-11-10: a person's agent token through the tenant's device flow), `portal` (`tsx src/portal-main.ts`), `build:web` (Vite build of `web/portal` to `dist/portal-web`), `fund-user` (local only), `wallet-mnemonic` (prints one new 24-word mnemonic; reads no env file and derives no account); `typecheck` also checks `web/portal/tsconfig.json` |
+| `package.json` scripts | `portal` (`tsx src/portal-main.ts`), `build:web` (Vite build of `web/portal` to `dist/portal-web`), `fund-user` (local only), `wallet-mnemonic` (prints one new 24-word mnemonic; reads no env file and derives no account); `typecheck` also checks `web/portal/tsconfig.json` |
 | `src/shared/config.ts` | `EnvRole` gains `portal`; `Role` gains `portal-control`; `ROLE_TOKEN_VAR` and `DEV_TOKENS` gain `PORTAL_TOKEN`; `DEFAULT_PORTS` gains `portal: 4025` |
 | `scripts/demo-lib.ts` | `--users`: L2's child env gets `USER_ACCOUNTS=1` and the dev mnemonic. `demo:local` never passes it |
 | `scripts/dev-issuer-lib.ts`, `dev-token.ts` | since 2026-11-10 the dev issuer speaks the Auth0 shape: `sub` (`dev\|<subject>`), `permissions`, `azp`, the sign-in time claim; `--portal` for the portal's client; `--service` for an Entra-shaped app token (`idtyp: app`, `roles`) |
@@ -135,12 +136,13 @@ as `ciba` is:
 param identity = {
   issuer: ''          // https://<auth0 domain>/
   audience: ''        // the API's identifier
-  agentClientIds: []  // the Auth0 clients the agent service accepts
 }
 ```
 
-`main.bicep` fails validation when `userAccounts.enabled` is true with an `identity.issuer` that is not `https://…/`,
-an empty `audience`, or `portalClientId` among `agentClientIds`.
+`main.bicep` fails validation when `userAccounts.enabled` is true with an `identity.issuer` that is not `https://…/`
+or an empty `audience`. Only the portal's module takes `identity`. Until 2026-11-11 the object also had
+`agentClientIds`, the clients the agent service accepted; R20 took the agent's client out of the tenant, so the
+agent's app gets no setting of people's sign-in (T-IAC-01 rule 21).
 
 `pre-deploy.<env>.bicepparam` loses `portalOrigin` and `portalPreAuthorized` (2026-11-10): the portal's origin is now
 a Terraform variable of `auth0/`, for the client's allowed callback and web origins.
@@ -232,18 +234,17 @@ The tenant already holds the approval set-up of 012. This feature adds, in the s
 | API (resource server) | identifier = `identity.audience`; RS256; RBAC enforced; permissions added to the access token; one permission, `agent:run`; offline access allowed (refresh-token rotation for the web app) |
 | Role `x402-user` | exactly the permission `agent:run` on that API. No user is assigned in code |
 | Client: portal (single-page application) | authorization code with PKCE, no secret; allowed callbacks, web origins and logout URLs = `http://localhost:4025` and the `portal_origin` variable when set; refresh-token rotation; no other grant |
-| Client: agent CLI (native) | device authorization grant only, no secret; for `npm run user-token` |
+| ~~Client: agent CLI (native)~~ | removed 2026-11-11 (R20): the tenant has exactly two applications, the portal's and L2's |
 | Action, post-login | sets `AUTH_TIME_CLAIM` on the access token to the time of the most recent authentication; sets nothing else |
 
 Outputs, named as the existing `bicepparam_ciba` is: `bicepparam_identity` (the `identity` object) and
-`bicepparam_portal_client_id` (`userAccounts.portalClientId`) for `main.<env>.bicepparam`, and `agent_env` and
-`portal_env`, the `AUTH_*` lines for the env files (`agent_env` includes `AGENT_CLI_CLIENT_ID` for
-`npm run user-token`). The deployed portal's origin arrives as the GitHub environment variable
+`bicepparam_portal_client_id` (`userAccounts.portalClientId`) for `main.<env>.bicepparam`, and `portal_env`, the
+`AUTH_*` lines for `env/portal.env` (R20 removed `agent_env`). The deployed portal's origin arrives as the GitHub environment variable
 `AUTH0_PORTAL_ORIGIN`, set by hand after the portal's first deployment (a GitHub variable can't be empty, so
-`github-setup.sh` does not create it). No secret is created: both clients are public.
+`github-setup.sh` does not create it). No secret is created: the portal's client is public.
 
-T-IAC-02 gains: the API's RBAC flags and its single permission; the role holds exactly that permission; both clients
-are public and each has only its own grant; the portal client's URLs are exactly the local one and the variable;
+T-IAC-02 gains: the API's RBAC flags and its single permission; the role holds exactly that permission; the portal's
+client is public and has only its own grant, and the clients are exactly the portal's and L2's (R20); the portal client's URLs are exactly the local one and the variable;
 the Action writes one namespaced claim; no user, role assignment or connection password in code. Must-fail mutants
 for each.
 
