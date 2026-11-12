@@ -166,7 +166,7 @@ and they must not be left guessing.
 
 **Independent Test**: Have the stand-in approval service refuse the request for a person with no phone. Check
 that the escalation stays pending, that no retry is sent, that the operator can still approve it, and that the
-person sees their payment waiting with the reason "no phone set up for approvals".
+person sees their payment waiting with the reason "we could not send a request to your phone".
 
 **Acceptance Scenarios**:
 
@@ -367,9 +367,10 @@ text from the approval service, a name or an email.
   administrator's help. A person who has not done so is in a normal state, not an error: FR-017 and FR-019
   apply. *(SPEC: L2-8, `auth0/`)*
 - **FR-019**: A person MUST be able to see, for their own pending payments only, that a payment is waiting for
-  the operator and why. The reason MUST come from a fixed list written by this system (no phone set up, the
-  hourly limit reached, the approval service could not be reached, the request went unanswered, phone approval
-  is not available for this sign-in), never from the
+  the operator and why. The reason MUST come from a fixed list written by this system (a request could not be sent to
+  the phone, which covers a phone that was never set up; the hourly limit reached; the approval service could
+  not be reached; the request went unanswered; the answer could not be accepted; phone approval is not available
+  for this sign-in), never from the
   approval service's text. The route MUST take no user identifier: the person comes from the verified token.
   *(SPEC: L2-8, SEC-19, SEC-12)*
 
