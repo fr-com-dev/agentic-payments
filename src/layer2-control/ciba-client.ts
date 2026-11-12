@@ -4,6 +4,8 @@
 // fresh client authentication per call, and the sealed request handle (research R8). Only the OAuth `error`
 // code is ever read from an error body, and only from a fixed list; error_description is never read (NFR-003,
 // NFR-006). This module never logs.
+// 015 (v1.16): no approver is configured. Each request is addressed to the subject the caller passes (the
+// escalation's owner, already checked against the user by the backchannel coordinator); the settings hold none.
 import { createCipheriv, createDecipheriv, createPrivateKey, hkdfSync, randomBytes, type KeyObject } from "node:crypto";
 import { importPKCS8, SignJWT } from "jose";
 import { ConfigError } from "../shared/config.js";
@@ -14,6 +16,10 @@ type Env = Record<string, string | undefined>;
 // Part 1: configuration (contracts/config-and-secrets.md, CFG-2)
 // ---------------------------------------------------------------------------
 
+/**
+ * Every CIBA_* name L2 knows. `CIBA_APPROVER` is no longer a setting (v1.16): it stays in this list only so that a
+ * leftover one is named in the "ignoring …" line while the feature is off.
+ */
 export const CIBA_VARIABLES = [
   "CIBA_APPROVAL",
   "CIBA_ISSUER",
@@ -37,7 +43,6 @@ export interface CibaSettings {
   issuer: string;
   clientId: string;
   audience: string;
-  approver: string;
   credential: CibaCredential;
 }
 
@@ -99,7 +104,6 @@ export function cibaConfigFromEnv(env: Env = process.env): CibaConfig {
   const issuer = issuerFrom(requireText(env, "CIBA_ISSUER", 2048));
   const clientId = requireText(env, "CIBA_CLIENT_ID", 64);
   const audience = requireText(env, "CIBA_AUDIENCE", 255);
-  const approver = requireText(env, "CIBA_APPROVER", 255);
   const hasKey = present(env, "CIBA_CLIENT_KEY");
   const hasSecret = present(env, "CIBA_CLIENT_SECRET");
   if (hasKey && hasSecret) throw new ConfigError("set only one of CIBA_CLIENT_KEY and CIBA_CLIENT_SECRET");
@@ -123,7 +127,7 @@ export function cibaConfigFromEnv(env: Env = process.env): CibaConfig {
     if (secret.length < 16) throw new ConfigError("CIBA_CLIENT_SECRET must be at least 16 characters");
     credential = { kind: "secret", secret };
   }
-  return { enabled: true, issuer, clientId, audience, approver, credential };
+  return { enabled: true, issuer, clientId, audience, credential };
 }
 
 // ---------------------------------------------------------------------------
@@ -172,6 +176,8 @@ export type PollResult =
   | { kind: "permanent"; httpStatus: number; error: string };
 
 export interface StartParams {
+  /** 015: who is asked: the escalation owner's subject at this issuer. Sent as the `login_hint`, kept nowhere. */
+  subject: string;
   bindingMessage: string;
   requestedExpiry: number;
   authorizationDetails: unknown[];
@@ -294,11 +300,11 @@ export class CibaClient implements CibaPort {
   }
 
   async start(p: StartParams): Promise<StartResult> {
-    const { clientId, issuer, approver, audience } = this.settings;
+    const { clientId, issuer, audience } = this.settings;
     const form = {
       client_id: clientId,
       scope: "openid",
-      login_hint: JSON.stringify({ format: "iss_sub", iss: issuer, sub: approver }),
+      login_hint: JSON.stringify({ format: "iss_sub", iss: issuer, sub: p.subject }),
       binding_message: p.bindingMessage,
       audience,
       requested_expiry: String(p.requestedExpiry),
@@ -356,7 +362,7 @@ export class CibaClient implements CibaPort {
   }
 }
 
-/** The non-secret settings the rest of L2 may see (issuer, client, audience, approver). */
+/** The non-secret settings the rest of L2 may see (issuer, client, audience). */
 export function publicSettings(s: CibaSettings): Omit<CibaSettings, "credential"> {
-  return { issuer: s.issuer, clientId: s.clientId, audience: s.audience, approver: s.approver };
+  return { issuer: s.issuer, clientId: s.clientId, audience: s.audience };
 }

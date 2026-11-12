@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LedgerEntry } from "../src/layer2-control/ledger.js";
 import { PLANTED_ERROR_TEXT, testRsaKeyPair } from "./helpers/ciba-stub.js";
-import { APPROVER, CLIENT_KEY, CLIENT_SECRET, startBackchannelL2, type BackchannelL2 } from "./helpers/backchannel-l2.js";
+import { CLIENT_KEY, CLIENT_SECRET, startBackchannelL2, type BackchannelL2 } from "./helpers/backchannel-l2.js";
 
 const opened: BackchannelL2[] = [];
 async function start(o: Parameters<typeof startBackchannelL2>[0] = {}) {
@@ -102,14 +102,15 @@ describe("T-CIBA-14 operator views and audit trail", () => {
 
     const { events } = await l2.events();
     const kinds = events.map((e) => e.kind);
+    const OWNER = l2.people.alice.userId; // 015: who was asked and who decided, by usr_…
     for (const k of ["escalated", "approval_requested", "approved", "denied", "approval_request_lapsed", "approval_verification_failed", "approval_request_failed"]) expect(kinds).toContain(k);
     const escalated = events.find((e) => e.kind === "escalated")!;
     expect(escalated).toMatchObject({ approvalRequest: "requested", referenceCode: expect.stringMatching(/^[0-9a-f]{8}$/) });
     expect(events.find((e) => e.kind === "approval_requested")).toMatchObject({ requestId: expect.stringMatching(/^apq_/), referenceCode: expect.any(String), requestExpiresAt: expect.any(String) });
-    expect(events.find((e) => e.kind === "approved")).toMatchObject({ channel: "backchannel", decidedBy: APPROVER, approver: APPROVER });
+    expect(events.find((e) => e.kind === "approved")).toMatchObject({ channel: "backchannel", decidedBy: OWNER, approver: OWNER });
     const denied = events.filter((e) => e.kind === "denied");
     const bc = denied.find((e) => e.channel === "backchannel")!;
-    expect(bc).toMatchObject({ decidedBy: APPROVER });
+    expect(bc).toMatchObject({ decidedBy: OWNER });
     expect(bc.operator).toBeUndefined();
     expect(denied.find((e) => e.channel === "operator")).toMatchObject({ decidedBy: "dana", operator: "dana", reason: "not needed" });
     expect(events.find((e) => e.kind === "approval_request_lapsed")).toMatchObject({ cause: "expired" });
@@ -120,8 +121,8 @@ describe("T-CIBA-14 operator views and audit trail", () => {
     const fromFile = readFileSync(l2.ledgerFile, "utf8").trim().split("\n").map((line) => JSON.parse(line) as LedgerEntry);
     const ids = fromFile.filter((e) => e.type === "ESCALATED").map((e) => e.authorizationId!);
     const read = ids.map((id) => audit(fromFile, id));
-    expect(read[0]).toMatchObject({ asked: true, requestOutcome: "answered", channel: "backchannel", decidedBy: APPROVER, paid: { amount: "50000" } });
-    expect(read[1]).toMatchObject({ asked: true, requestOutcome: "answered", channel: "backchannel", decidedBy: APPROVER, paid: undefined });
+    expect(read[0]).toMatchObject({ asked: true, requestOutcome: "answered", channel: "backchannel", decidedBy: OWNER, paid: { amount: "50000" } });
+    expect(read[1]).toMatchObject({ asked: true, requestOutcome: "answered", channel: "backchannel", decidedBy: OWNER, paid: undefined });
     expect(read[2]).toMatchObject({ asked: true, requestOutcome: "APPROVAL_REQUEST_LAPSED", channel: undefined });
     expect(read[3]).toMatchObject({ asked: true, requestOutcome: "APPROVAL_VERIFICATION_FAILED", channel: undefined });
     expect(read[4]).toMatchObject({ asked: true, channel: "operator", decidedBy: "dana" });

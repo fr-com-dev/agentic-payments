@@ -24,7 +24,6 @@ import { userIdFor } from "../../src/shared/user-id.js";
 import { type CibaStub, startCibaStub, testRsaKeyPair, type TestRsaKeyPair } from "./ciba-stub.js";
 import { TEST_MNEMONIC, testPlatform } from "./users.js";
 
-export const APPROVER = "auth0|approver-1";
 /** 015: the two people's subjects at the stand-in approval service (the `sub` of their sign-in tokens). */
 export const ALICE_SUB = "auth0|alice-1";
 export const BOB_SUB = "auth0|bob-1";
@@ -136,6 +135,8 @@ export interface BackchannelL2 {
   reject(id: string, body?: Record<string, unknown>): Promise<{ status: number; body: Record<string, unknown> }>;
   /** 014: an administration route, with the administration role's token (needs the `admin` option). */
   admin(method: string, path: string, body?: unknown): Promise<{ status: number; body: Record<string, unknown> }>;
+  /** 015: a user-account route, with the portal role's token. */
+  portal(method: string, path: string, body?: unknown): Promise<{ status: number; body: Record<string, unknown> }>;
   pending(): Promise<{ pending: Record<string, unknown>[]; cursor: number }>;
   events(after?: number): Promise<{ events: Record<string, unknown>[]; cursor: number }>;
   budget(sessionId: string): Promise<{ status: number; body: Record<string, unknown> }>;
@@ -155,7 +156,7 @@ export async function startBackchannelL2(o: BackchannelL2Options = {}): Promise<
   const key = o.clientKey ?? CLIENT_KEY;
   const stub =
     o.stub ??
-    (await startCibaStub({ approver: APPROVER, clientId: CLIENT_ID, audience: AUDIENCE, clientPublicKeyPem: CLIENT_KEY.publicPem, clientSecret: CLIENT_SECRET, now: clock.now }));
+    (await startCibaStub({ clientId: CLIENT_ID, audience: AUDIENCE, clientPublicKeyPem: CLIENT_KEY.publicPem, clientSecret: CLIENT_SECRET, now: clock.now }));
   const dir = o.ledgerFile ? undefined : mkdtempSync(join(tmpdir(), "x402-bc-"));
   const ledgerFile = o.ledgerFile ?? join(dir!, "ledger-local.jsonl");
   const ledger = new AuditLedger(ledgerFile);
@@ -164,7 +165,6 @@ export async function startBackchannelL2(o: BackchannelL2Options = {}): Promise<
     issuer: stub.issuer,
     clientId: CLIENT_ID,
     audience: AUDIENCE,
-    approver: APPROVER,
     credential: (o.credential ?? "key") === "key" ? { kind: "key", keyPem: key.privatePem } : { kind: "secret", secret: CLIENT_SECRET },
   };
   const deps: BackchannelDeps = {
@@ -172,7 +172,6 @@ export async function startBackchannelL2(o: BackchannelL2Options = {}): Promise<
     issuer: stub.issuer,
     clientId: CLIENT_ID,
     audience: AUDIENCE,
-    approver: APPROVER,
     keys: issuerKeys(stub.issuer, { allowInsecureLoopback: true }),
     decimals: 6,
     waitMs: 1500,
@@ -261,6 +260,7 @@ export async function startBackchannelL2(o: BackchannelL2Options = {}): Promise<
     approve: (id, body = {}) => call("POST", `/v1/approvals/${id}`, TOKENS.operator, body),
     reject: (id, body = {}) => call("POST", `/v1/rejections/${id}`, TOKENS.operator, body),
     admin: (method, path, body) => call(method, path, TOKENS.portalAdmin, body),
+    portal: (method, path, body) => call(method, path, TOKENS.portal, body),
     pending: async () => (await call("GET", "/v1/escalations", TOKENS.operator)).body,
     events: async (after = -1) => (await call("GET", `/v1/escalations/events?after=${after}`, TOKENS.operator)).body,
     budget: (sessionId) => call("GET", `/v1/budget/${sessionId}`, TOKENS.control),

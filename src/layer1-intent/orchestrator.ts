@@ -51,6 +51,12 @@ export interface OrchestratorDeps {
    * (src/layer1-intent/hosted/server.ts) sets it, from the verified requester; the agents' tools cannot.
    */
   userId?: string;
+  /**
+   * 015 (L2-7): that user's subject at the approval service, copied onto every intent beside `userId` so that L2 can
+   * address an approval request to them. Only a composition that verified the person's sign-in sets it; nothing
+   * else in L1 reads it: not the agents' tools, the model, a result or a log line.
+   */
+  approvalSubject?: string;
 }
 
 /** Non-JSON bodies are returned as text truncated to this many characters (L1-1 step 2). */
@@ -111,6 +117,7 @@ export class PaidResourceOrchestrator {
       createdAt: new Date().toISOString(),
       ...(this.deps.operatorApprovalOnly === true && { operatorApprovalOnly: true }),
       ...(this.deps.userId !== undefined && { userId: this.deps.userId }),
+      ...(this.deps.userId !== undefined && this.deps.approvalSubject !== undefined && { approvalSubject: this.deps.approvalSubject }),
     };
     let decision;
     try {

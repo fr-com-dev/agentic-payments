@@ -22,7 +22,8 @@ import { listenControl } from "../src/layer2-control/service.js";
 import { issuerKeys } from "../src/layer2-control/approval-evidence.js";
 import { CibaClient, type CibaSettings } from "../src/layer2-control/ciba-client.js";
 import { type CibaStub, PLANTED_ERROR_TEXT, startCibaStub } from "./helpers/ciba-stub.js";
-import { APPROVER, AUDIENCE, CLIENT_ID, CLIENT_KEY } from "./helpers/backchannel-l2.js";
+import { AUDIENCE, CLIENT_ID, CLIENT_KEY } from "./helpers/backchannel-l2.js";
+import { userIdFor } from "../src/shared/user-id.js";
 import { listenSettlement } from "../src/layer3-settlement/service.js";
 import type {
   AuthorizationDecision,
@@ -695,20 +696,25 @@ describe("T-E2E-09 hosted agent", () => {
 // ---------------------------------------------------------------------------
 // 012: backchannel approval end to end, through the real L1 orchestrator, chain and L3 (specs/012 T018, T025, T043).
 // One harness and one stand-in Auth0; each scenario uses its own session and its own request script.
+// 015 (v1.16): the platform account can no longer be asked, so the purchases that are approved or refused by phone
+// are a person's. Pat is onboarded with an account that holds local test USDC, and their identifier is made from
+// the stand-in's own issuer, as it would be with one tenant. The scripted plan is still the platform account's.
 // ---------------------------------------------------------------------------
 describe("012 backchannel approval end to end", () => {
   let h: Harness;
   let stub: CibaStub;
+  const PAT_SUB = "auth0|pat-e2e";
+  let pat: { userId: string; address: `0x${string}` };
   beforeAll(async () => {
-    stub = await startCibaStub({ approver: APPROVER, clientId: CLIENT_ID, audience: AUDIENCE, clientPublicKeyPem: CLIENT_KEY.publicPem });
-    const settings: CibaSettings = { issuer: stub.issuer, clientId: CLIENT_ID, audience: AUDIENCE, approver: APPROVER, credential: { kind: "key", keyPem: CLIENT_KEY.privatePem } };
+    stub = await startCibaStub({ clientId: CLIENT_ID, audience: AUDIENCE, clientPublicKeyPem: CLIENT_KEY.publicPem });
+    const settings: CibaSettings = { issuer: stub.issuer, clientId: CLIENT_ID, audience: AUDIENCE, credential: { kind: "key", keyPem: CLIENT_KEY.privatePem } };
     h = await startHarness({
+      users: {},
       controlBackchannel: {
         port: new CibaClient(settings, { allowInsecureLoopback: true }),
         issuer: stub.issuer,
         clientId: CLIENT_ID,
         audience: AUDIENCE,
-        approver: APPROVER,
         keys: issuerKeys(stub.issuer, { allowInsecureLoopback: true }),
         decimals: 6,
         waitMs: 10_000,
@@ -716,6 +722,24 @@ describe("012 backchannel approval end to end", () => {
         log: () => {},
       },
     });
+    // Pat: profile, a crypto account with 1 local test USDC, and one policy (0.02 without asking, 0.10 per payment).
+    const userId = userIdFor(stub.issuer, PAT_SUB);
+    expect((await h.portal("PUT", `/v1/users/${userId}/registration`, { acknowledgedTestFunds: true })).status).toBe(200);
+    const address = (await h.portal<{ wallet: { address: `0x${string}` } }>("PUT", `/v1/users/${userId}/wallet`)).body.wallet.address;
+    await h.fund(address, 1_000_000n);
+    const policy = await h.portal("POST", `/v1/users/${userId}/policies`, {
+      sellers: [new URL(h.urls.seller).host],
+      autoApproveMaxAtomic: "20000",
+      hardCapPerPaymentAtomic: "100000",
+      sessionBudgetAtomic: "100000",
+      dailyBudgetAtomic: "500000",
+      maxAuthorizationsPerMinute: 10,
+      expiresAt: new Date(Date.now() + 30 * 86_400_000).toISOString(),
+      paymentMethod: "crypto_account",
+      identityConfirmedAtMs: Date.now(),
+    });
+    expect(policy.status).toBe(201);
+    pat = { userId, address };
   }, 60_000);
   afterAll(async () => {
     await h?.close();
@@ -724,21 +748,36 @@ describe("012 backchannel approval end to end", () => {
 
   const leaks = (r: PaidFetchResult) => {
     const text = JSON.stringify(r);
-    return [...stub.tokensIssued, ...stub.authReqIds, PLANTED_ERROR_TEXT].filter((s) => text.includes(s));
+    return [...stub.tokensIssued, ...stub.authReqIds, PLANTED_ERROR_TEXT, PAT_SUB].filter((s) => text.includes(s));
   };
+  /** L1 for a run of pat's: the orchestrator names the user and carries their subject, as the hosted agent service does. */
+  const patsRun = (sessionId: string) =>
+    new PaidResourceOrchestrator({
+      gate: new HttpAuthorizationGate(h.urls.control, h.tokens.control),
+      settlement: new HttpSettlementVerifier(h.urls.settlement, h.tokens.verifier),
+      sessionId,
+      userId: pat.userId,
+      approvalSubject: PAT_SUB,
+    });
 
   it("T-E2E-10 backchannel approval within the wait pays in the same fetch", async () => {
     const before = stub.authReqIds.length;
     stub.setAnswersFor(before, "pending", "pending", { approve: {} });
-    const { orchestrator } = l1(h, "sess_e2e10a");
-    const payer0 = await h.balanceOf(h.addresses.payer);
+    const orchestrator = patsRun("sess_e2e10a");
+    const payer0 = await h.balanceOf(pat.address);
+    const platform0 = await h.balanceOf(h.addresses.payer);
     const r = await orchestrator.fetchPaid(`${h.urls.seller}/api/premium-report`, "premium report");
-    expect(r.outcome).toBe("PAID");
+    expect(r.outcome, JSON.stringify(r.violations ?? r.error)).toBe("PAID");
     expect(r.payment?.settlement?.status).toBe("CONFIRMED");
-    expect(payer0 - (await h.balanceOf(h.addresses.payer))).toBe(50000n);
+    // 50000 left pat's own account on-chain; the platform payer is untouched.
+    expect(payer0 - (await h.balanceOf(pat.address))).toBe(50000n);
+    expect(r.payment!.settlement!.verified.payer.toLowerCase()).toBe(pat.address.toLowerCase());
+    expect(await h.balanceOf(h.addresses.payer)).toBe(platform0);
+    // One request, addressed to pat.
     expect(stub.authReqIds.length - before).toBe(1);
+    expect(JSON.parse(stub.startForms().at(-1)!.login_hint!)).toEqual({ format: "iss_sub", iss: stub.issuer, sub: PAT_SUB });
     const approval = h.ledgerEntries().find((e) => e.type === "HUMAN_APPROVAL" && e.sessionId === "sess_e2e10a")!;
-    expect(approval.data.channel).toBe("backchannel");
+    expect(approval.data).toMatchObject({ channel: "backchannel", approver: pat.userId });
     const paid = h.ledgerEntries().filter((e) => e.type === "AUTHORIZED" && e.sessionId === "sess_e2e10a");
     expect(paid).toHaveLength(1);
     expect(paid[0]!.data.approvalRef).toBe(approval.data.approvalId);
@@ -763,12 +802,13 @@ describe("012 backchannel approval end to end", () => {
   it("T-E2E-11 backchannel refusal through the orchestrator", async () => {
     const before = stub.authReqIds.length;
     stub.setAnswersFor(before, "deny");
-    const { orchestrator } = l1(h, "sess_e2e11");
-    const payer0 = await h.balanceOf(h.addresses.payer);
+    // 015: pat's own purchase, refused from pat's phone (the platform account can no longer be asked).
+    const orchestrator = patsRun("sess_e2e11");
+    const payer0 = await h.balanceOf(pat.address);
     const r = await orchestrator.fetchPaid(`${h.urls.seller}/api/premium-report`, "premium report");
     expect(r.outcome).toBe("DENIED");
     expect(rulesOf(r)).toEqual(["human_rejected"]);
-    expect(await h.balanceOf(h.addresses.payer)).toBe(payer0);
+    expect(await h.balanceOf(pat.address)).toBe(payer0);
     const esc = h.ledgerEntries().find((e) => e.type === "ESCALATED" && e.sessionId === "sess_e2e11")!;
     const trail = h.ledgerEntries().filter((e) => e.sessionId === "sess_e2e11" && e.seq > esc.seq).map((e) => e.type);
     expect(trail).toEqual(["APPROVAL_REQUESTED", "HUMAN_REJECTION", "INTENT", "DENIED"]);
@@ -975,8 +1015,10 @@ describe("014 portal administration end to end", () => {
   let stub: CibaStub;
   let portal: import("./helpers/portal.js").PortalTestApp;
   beforeAll(async () => {
-    stub = await startCibaStub({ approver: APPROVER, clientId: CLIENT_ID, audience: AUDIENCE, clientPublicKeyPem: CLIENT_KEY.publicPem });
-    const settings: CibaSettings = { issuer: stub.issuer, clientId: CLIENT_ID, audience: AUDIENCE, approver: APPROVER, credential: { kind: "key", keyPem: CLIENT_KEY.privatePem } };
+    stub = await startCibaStub({ clientId: CLIENT_ID, audience: AUDIENCE, clientPublicKeyPem: CLIENT_KEY.publicPem });
+    const settings: CibaSettings = { issuer: stub.issuer, clientId: CLIENT_ID, audience: AUDIENCE, credential: { kind: "key", keyPem: CLIENT_KEY.privatePem } };
+    // 015: erin's identifier is made from the stand-in's issuer, so the run that asks the phone too can ask hers.
+    ERIN = userIdFor(stub.issuer, ERIN_SUB);
     h = await startHarness({
       users: {},
       admin: true,
@@ -985,7 +1027,6 @@ describe("014 portal administration end to end", () => {
         issuer: stub.issuer,
         clientId: CLIENT_ID,
         audience: AUDIENCE,
-        approver: APPROVER,
         keys: issuerKeys(stub.issuer, { allowInsecureLoopback: true }),
         decimals: 6,
         waitMs: 20_000,
@@ -1004,17 +1045,21 @@ describe("014 portal administration end to end", () => {
     await stub?.close();
   });
 
-  const ERIN = devUserId("erin");
+  const ERIN_SUB = "auth0|erin-e2e";
+  let ERIN: string;
   const CAROL = devUserId("carol");
   const premium = () => `${h.urls.seller}/api/premium-report`;
-  /** A run of erin's. `operatorApprovalOnly` keeps the phone out of it, so the call returns ESCALATED at once. */
+  /**
+   * A run of erin's. `operatorApprovalOnly` keeps the phone out of it, so the call returns ESCALATED at once. With
+   * `phone`, the run carries her subject (015), so her own phone is asked.
+   */
   const run = (sessionId: string, o: { phone?: boolean } = {}) =>
     new PaidResourceOrchestrator({
       gate: new HttpAuthorizationGate(h.urls.control, h.tokens.control),
       settlement: new HttpSettlementVerifier(h.urls.settlement, h.tokens.verifier),
       sessionId,
       userId: ERIN,
-      ...(!o.phone && { operatorApprovalOnly: true }),
+      ...(o.phone ? { approvalSubject: ERIN_SUB } : { operatorApprovalOnly: true }),
     });
   const carol = () => portal.adminAs("carol");
   let erinAddress: `0x${string}`;

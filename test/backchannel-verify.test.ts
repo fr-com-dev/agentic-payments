@@ -1,6 +1,9 @@
 // 012 US4 — L2 trusts only a verified approval of this exact payment (specs/012 task T034): T-CIBA-08 through L2.
 // Each forgery from the stand-in Auth0 records one APPROVAL_VERIFICATION_FAILED naming the check, leaves the
 // escalation pending and signs nothing. Must-fail: without a check, its forgery approves and pays.
+// 015: step 7 is the owner check (it was `approver`). It reads the answer's subject under the answer's own issuer,
+// so a token from another issuer fails it as well: that forgery pays only without both the issuer and the owner
+// check, where 012 needed only the issuer check gone.
 import { afterEach, describe, expect, it } from "vitest";
 import type { VerificationCheck } from "../src/layer2-control/approval-evidence.js";
 import type { Forgery } from "./helpers/ciba-stub.js";
@@ -25,7 +28,7 @@ const CASES: [label: string, forge: Forgery, check: VerificationCheck][] = [
   ["another client", "client", "client"],
   ["a bad signature", "signature", "signature"],
   ["an expired answer", "expired", "expired"],
-  ["another user", "subject", "approver"],
+  ["another user", "subject", "owner"],
   ["another amount", { details: setValue("amount_atomic", "99999") }, "details"],
   ["another payee", { details: setValue("pay_to", "0x000000000000000000000000000000000000dEaD") }, "details"],
   ["another escalation", { details: setValue("escalation_id", "auth_00000000-0000-4000-8000-000000000000") }, "details"],
@@ -68,8 +71,8 @@ describe("T-CIBA-08 verification through L2", () => {
 
   it.each<[VerificationCheck[], Forgery, string]>([
     [["details"], { details: setValue("amount_atomic", "99999") }, "an answer for a different amount"],
-    [["approver"], "subject", "another user's approval"],
-    [["issuer"], "issuer", "a token from another issuer"],
+    [["owner"], "subject", "another user's approval"],
+    [["issuer", "owner"], "issuer", "a token from another issuer"],
     [["request", "details", "replay"], "replay", "one token for two escalations"],
   ])("must fail without %j: %s approves and pays", async (skip, forge) => {
     l2 = await startBackchannelL2({ backchannel: { skipChecks: new Set(skip) } });
@@ -83,6 +86,15 @@ describe("T-CIBA-08 verification through L2", () => {
     const res = await l2.authorize(l2.intentFor(PREMIUM, "50000"));
     expect(res.body.status).toBe("AUTHORIZED");
     expect(l2.ledger.entries().filter((e) => e.type === "APPROVAL_VERIFICATION_FAILED")).toHaveLength(0);
+  });
+
+  it("015: without the issuer check alone, a token from another issuer still approves nothing: it fails the owner check", async () => {
+    l2 = await startBackchannelL2({ backchannel: { skipChecks: new Set<VerificationCheck>(["issuer"]) } });
+    l2.stub.setAnswers({ approve: { forge: "issuer" } });
+    const res = await l2.authorize(l2.intentFor(PREMIUM, "50000"));
+    expect(res.body.status).toBe("ESCALATE");
+    expect(l2.ledger.entries().filter((e) => e.type === "APPROVAL_VERIFICATION_FAILED").map((e) => e.data.check)).toEqual(["owner"]);
+    expect(l2.ledger.entries().filter((e) => e.type === "HUMAN_APPROVAL" || e.type === "AUTHORIZED")).toHaveLength(0);
   });
 
   it("US4 scenario 4: two pending escalations; approving the second leaves the first pending", async () => {

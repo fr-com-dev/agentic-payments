@@ -5,8 +5,13 @@
 // backchannel channel of HUMAN_APPROVAL / HUMAN_REJECTION, with data copied from the escalation (INV-12), and
 // never a token, a handle or the service's text (NFR-003). The policy engine never sees any of this: an approval
 // reaches it through findOpenApproval, a refusal through findRejection, exactly as from the operator (FR-032).
+// 015 (v1.16; specs/015 research R4, R6, R7): the request goes to the escalation's owner and to nobody else. No
+// person is configured here. The owner's subject at the approval service arrives on the payment request, is checked
+// against the user with `userIdFor`, lives in `StartPlan.subject` and in the one request's login hint, and is never
+// appended, logged or returned. The entries name the owner by `usr_…`, copied from the `ESCALATED` entry.
 import { randomUUID } from "node:crypto";
 import type { PaymentRequirements } from "@x402/core/types";
+import { userIdFor } from "../shared/user-id.js";
 import { DEFAULT_APPROVAL_TTL_SECONDS } from "./approval-routes.js";
 import { type ApprovalKeys, type VerificationCheck, type VerificationResult, verifyApprovalToken } from "./approval-evidence.js";
 import type { CibaPort, PollResult, StartResult } from "./ciba-client.js";
@@ -16,6 +21,7 @@ import {
   type ApprovalRequestMark,
   approvalRequestCount,
   approvalRequestState,
+  escalationOwner,
   escalationState,
   findEscalation,
   openApprovalRequest,
@@ -44,9 +50,8 @@ export interface BackchannelDeps {
   issuer: string;
   clientId: string;
   audience: string;
-  approver: string;
   keys: ApprovalKeys;
-  /** The asset's decimals, for the USDC amount shown to the approver. */
+  /** The asset's decimals, for the USDC amount shown on the owner's phone. */
   decimals: number;
   /** Test-only: the wait in the authorize call. Default BACKCHANNEL_WAIT_MS. */
   waitMs?: number;
@@ -79,11 +84,24 @@ export interface StartPlan {
   amount: string;
   requirement: PaymentRequirements;
   escalationExpiresAtMs: number;
+  /** 015: the escalation's owner (`usr_…`), as recorded on the `ESCALATED` entry. */
+  owner: string;
+  /** 015: the owner's subject at the approval service. For the one request's login hint; never appended or logged. */
+  subject: string;
 }
 
 export type WaitResult = "approved" | "denied" | "expired" | "ended" | "timeout" | "aborted";
 
 type Copied = { escalationId: string; resourceKey: unknown; payTo: unknown; amount: unknown };
+
+/** 015: whether `subject`, read under L2's own approval issuer, is the user `owner` (research R2). Pure. */
+function subjectIsOwner(issuer: string, subject: string, owner: string): boolean {
+  try {
+    return userIdFor(issuer, subject) === owner;
+  } catch {
+    return false;
+  }
+}
 
 export class Backchannel {
   private stopped = false;
@@ -99,13 +117,31 @@ export class Backchannel {
     return this.d.waitMs ?? BACKCHANNEL_WAIT_MS;
   }
 
-  /** Decided inside the serialized section that writes the new ESCALATED, from the ledger only (research R9). */
-  eligibility(o: { operatorOnly: boolean; reevaluation: boolean; nowMs: number }): ApprovalRequestMark {
+  /**
+   * Decided inside the serialized section that writes the new ESCALATED, from the ledger and the request only
+   * (012 research R9; 015 research R4). The order is fixed. `owner` is the user the escalation records (absent: the
+   * platform account) and `subject` the `approvalSubject` of the request (absent: no identity was sent). Synchronous:
+   * no network call, and the subject is neither stored nor logged here.
+   */
+  eligibility(o: { operatorOnly: boolean; reevaluation: boolean; nowMs: number; owner?: string; subject?: string }): ApprovalRequestMark {
     if (o.reevaluation) return "reevaluation";
     if (o.operatorOnly) return "operator_only";
+    // FR-007: no user, no request. Nothing can route an ownerless escalation to a person.
+    if (o.owner === undefined) return "no_owner";
+    if (o.subject === undefined) return "no_identity";
+    // FR-009, FR-011: the subject must be this user's, under L2's own approval issuer.
+    if (!subjectIsOwner(this.d.issuer, o.subject, o.owner)) return "identity_mismatch";
     const cap = this.d.approvalRequestCap ?? APPROVAL_REQUEST_CAP;
     if (approvalRequestCount(this.d.ledger.entries(), o.nowMs, APPROVAL_REQUEST_CAP_WINDOW_MS) >= cap) return "capped";
     return "requested";
+  }
+
+  /**
+   * Who the request of an escalation marked `requested` goes to: the owner and the subject eligibility just
+   * accepted. Both are present whenever eligibility answered `requested`; a plan without a subject is never sent.
+   */
+  addressee(o: { owner?: string; subject?: string }): { owner: string; subject: string } {
+    return { owner: o.owner ?? "", subject: o.subject ?? "" };
   }
 
   /** Fire and forget: starts the request outside the lock, records the result inside it, then polls. */
@@ -201,12 +237,21 @@ export class Backchannel {
     return { escalationId, resourceKey: e.data.resourceKey, payTo: e.data.payTo, amount: e.data.amount };
   }
 
+  /**
+   * 015 (research R6): who a backchannel entry names as `approver`: the escalation's owner, by `usr_…`, copied from
+   * its `ESCALATED` entry as the resource, the payee and the amount are. Never a subject, and nothing from the deps.
+   */
+  private ownerOf(entries: readonly LedgerEntry[], escalationId: string): string | undefined {
+    return escalationOwner(entries, escalationId) ?? undefined;
+  }
+
   private envelope(e: LedgerEntry, escalationId: string) {
     return { ...(e.sessionId !== undefined && { sessionId: e.sessionId }), authorizationId: escalationId };
   }
 
   private async runStart(plan: StartPlan): Promise<void> {
     const id = plan.escalationId;
+    if (plan.subject === "") return; // nobody to ask: never send a request with no addressee
     const requestId = `apq_${randomUUID()}`;
     const details = paymentDetails({
       escalationId: id,
@@ -232,7 +277,7 @@ export class Backchannel {
       expiry = requestedExpirySeconds(plan.escalationExpiresAtMs, sentAt);
       if (expiry < 1) return;
       attempts++;
-      result = await this.d.port.start({ bindingMessage: message, requestedExpiry: expiry, authorizationDetails: details });
+      result = await this.d.port.start({ subject: plan.subject, bindingMessage: message, requestedExpiry: expiry, authorizationDetails: details });
       if (result.kind !== "transient") break;
     }
     if (!result || this.stopped) return;
@@ -252,7 +297,7 @@ export class Backchannel {
               channel: "backchannel",
               requestId,
               issuer: this.d.issuer,
-              approver: this.d.approver,
+              approver: this.ownerOf(entries, id),
               referenceCode: referenceCode(id),
               bindingMessage: message,
               details,
@@ -359,7 +404,8 @@ export class Backchannel {
         issuer: this.d.issuer,
         audience: this.d.audience,
         clientId: this.d.clientId,
-        approver: this.d.approver,
+        // The owner comes from the escalation itself, so the check is the same after a restart.
+        ownerUserId: this.ownerOf(this.d.ledger.entries(), String(req.data.escalationId)) ?? "",
         requestId: String(req.data.requestId),
         sentDetails: req.data.details,
       },
@@ -412,7 +458,7 @@ export class Backchannel {
         data: {
           approvalId,
           ...this.copied(req),
-          approver: result.evidence.subject,
+          approver: this.ownerOf(this.d.ledger.entries(), id),
           expiresAtMs: t + DEFAULT_APPROVAL_TTL_SECONDS * 1000,
           channel: "backchannel",
           requestId,
@@ -436,7 +482,8 @@ export class Backchannel {
         {
           type: "HUMAN_REJECTION",
           ...this.envelope(req, id),
-          data: { rejectionId, ...this.copied(req), channel: "backchannel", approver: this.d.approver, issuer: this.d.issuer, requestId },
+          // The request was addressed to the owner and the service asks nobody else, so the refusal is theirs.
+          data: { rejectionId, ...this.copied(req), channel: "backchannel", approver: this.ownerOf(entries, id), issuer: this.d.issuer, requestId },
         },
         t,
       );

@@ -353,10 +353,15 @@ export function createControlService(deps: ControlServiceDeps): ControlService {
         return { decision: { status: "ESCALATE", authorizationId: pending.authorizationId, intentId, violations: d.violations } };
       }
       // 012 (L2-7): eligibility is decided here, inside the section, from the ledger; recorded on the entry.
+      // 015: also from who the escalation is for. `u` is the user this decision resolved (absent: the platform
+      // account, which asks nobody) and the subject is the request's own; it goes to eligibility and, for
+      // `requested`, into the start plan, and nowhere else: never an entry, a log line or the decision.
       const approvalRequest = backchannel?.eligibility({
         operatorOnly: intent.operatorApprovalOnly === true,
         reevaluation: opts.reevaluationOf !== undefined,
         nowMs: t,
+        ...(u && { owner: u.userId }),
+        ...(intent.approvalSubject !== undefined && { subject: intent.approvalSubject }),
       });
       ledger.append(
         {
@@ -369,7 +374,7 @@ export function createControlService(deps: ControlServiceDeps): ControlService {
         t,
       );
       const decision: AuthorizationDecision = { status: "ESCALATE", ...base, violations: d.violations };
-      if (approvalRequest !== "requested") return { decision };
+      if (approvalRequest !== "requested" || !backchannel) return { decision };
       return {
         decision,
         start: {
@@ -380,6 +385,7 @@ export function createControlService(deps: ControlServiceDeps): ControlService {
           amount: chosen.amount,
           requirement: chosen,
           escalationExpiresAtMs: t + ESCALATION_TTL_MS,
+          ...backchannel.addressee({ ...(u && { owner: u.userId }), ...(intent.approvalSubject !== undefined && { subject: intent.approvalSubject }) }),
         },
       };
     }
@@ -697,7 +703,7 @@ export async function main(): Promise<void> {
   if (ciba.enabled) {
     const settings = publicSettings(ciba);
     backchannelDeps = { port: new CibaClient(ciba), ...settings, keys: issuerKeys(settings.issuer), decimals: net.decimals };
-    console.log(`l2-control: backchannel approval on (issuer ${settings.issuer}, approver ${settings.approver})`);
+    console.log(`l2-control: backchannel approval on (issuer ${settings.issuer}, per user)`);
   } else if (ciba.ignored.length > 0) {
     console.log(`l2-control: backchannel approval is off; ignoring ${ciba.ignored.join(", ")}`);
   }
