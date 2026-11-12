@@ -62,7 +62,7 @@ free text: every string is an identifier or a code. Unknown body or query fields
 | `GET /v1/admin/escalations/:authorizationId` | — | `EscalationDetail`: the escalation in any state, its decision if any, its budget | 400, 401, 404 |
 | `POST /v1/admin/escalations/:authorizationId/approve` | `{ decidedBy, identityConfirmedAtMs }` | `DecisionOutcome` (`state: "approved"`). Pending: one `HUMAN_APPROVAL`, `already: false`. Already approved, on any path: the first approval, `already: true`, nothing appended | 400, 401, 403 `own_payment`, 403 `step_up_required` (`maxAgeSec: 900`), 404, 409 `not_pending` |
 | `POST /v1/admin/escalations/:authorizationId/reject` | `{ decidedBy, reasonCode }` | `DecisionOutcome` (`state: "denied"`). Pending: one `HUMAN_REJECTION`, `already: false`. Already denied, on any path: the first rejection, `already: true`, nothing appended | 400, 401, 403 `own_payment`, 404, 409 `not_pending` |
-| `GET /v1/admin/ledger/verify` | — | `LedgerCheck`: `{ entries, ok, brokenAt? }` | 401 |
+| `GET /v1/admin/ledger/verify` | — | `LedgerCheck`: `{ entries, ok, brokenAt? }`. At most 30 a minute from one address | 401, 429 `{ "error": "too many requests" }` with `Retry-After` |
 
 Notes:
 

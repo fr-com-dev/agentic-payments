@@ -106,7 +106,8 @@ async function startService(opts: { apiDocs?: boolean; users?: boolean; admin?: 
       users: { platform: testPlatform(), keyring: new WalletKeyring(TEST_MNEMONIC, { caip2: CAIP2, asset: ASSET }) },
       net: { caip2: CAIP2, asset: ASSET, decimals: 6 },
     }),
-    ...(opts.users !== false && opts.admin !== false && { admin: {} }),
+    // A low limit for the ledger check, so the scenario reaches its documented 429 in a few requests.
+    ...(opts.users !== false && opts.admin !== false && { admin: { maxLedgerChecksPerMinute: 3 } }),
   });
   const server = await new Promise<Server>((r) => {
     const s = svc.app.listen(0, "127.0.0.1", () => r(s));
@@ -410,7 +411,8 @@ describe("T-API-03 live responses match the documented status and schema", () =>
     for (const id of [a1, a2, own]) expect((await call("GET", "/v1/admin/escalations/{authorizationId}", esc(id))).budget).toBeDefined();
     await call("GET", "/v1/admin/escalations/{authorizationId}", esc(UNKNOWN));
     await call("GET", "/v1/admin/escalations/{authorizationId}", esc("auth_nope"));
-    await call("GET", "/v1/admin/ledger/verify", A);
+    // the ledger check, until its limit refuses one (429, with nothing read)
+    for (let i = 0; i < 4; i++) await call("GET", "/v1/admin/ledger/verify", A);
     // the trail in pages: the latest, forward, back, and a refused query
     await call("GET", "/v1/admin/escalations/events", A);
     await call("GET", "/v1/admin/escalations/events", { ...A, query: "?after=-1&limit=200" });

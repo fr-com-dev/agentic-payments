@@ -1,5 +1,5 @@
 // A limit on requests per client address, for the two public services (the hosted agent and the portal): SEC-14,
-// SEC-19. It runs before the bearer token is verified, so a caller without a valid token can't make a service
+// SEC-19. L2 uses the same limiter for one costly route, the administration area's ledger check (014). It runs before the bearer token is verified, so a caller without a valid token can't make a service
 // verify signatures without bound; the per-person limits each service applies after authentication stay as they
 // are. Counters are held in memory by the replica. Behind the Azure ingress the client's address is the last entry
 // of X-Forwarded-For, which Express reads only when TRUSTED_PROXY_HOPS says how many proxies to trust.
