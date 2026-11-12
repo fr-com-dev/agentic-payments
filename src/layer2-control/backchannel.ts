@@ -69,6 +69,12 @@ export interface BackchannelDeps {
    * reaches it.
    */
   skipIdentityCheck?: boolean;
+  /**
+   * Test-only (must-fail proof of FR-007, T-CIBA-18): a fallback subject. When set, an escalation with no owner is
+   * treated as `requested` and its request is sent to this subject. It is what a configured approver would be.
+   * Never set outside tests: `main()` does not set it and no environment variable reaches it.
+   */
+  ownerlessSubject?: string;
   /** Test-only (must-fail proof, T-CIBA-10): false checks the state, awaits verification, then appends unserialized. */
   serializeOutcomes?: boolean;
   /** Log sink for the whitelisted lifecycle lines. Default console.log. */
@@ -133,7 +139,7 @@ export class Backchannel {
     if (o.reevaluation) return "reevaluation";
     if (o.operatorOnly) return "operator_only";
     // FR-007: no user, no request. Nothing can route an ownerless escalation to a person.
-    if (o.owner === undefined) return "no_owner";
+    if (o.owner === undefined) return this.d.ownerlessSubject !== undefined ? "requested" : "no_owner";
     if (o.subject === undefined) return "no_identity";
     // FR-009, FR-011: the subject must be this user's, under L2's own approval issuer.
     if (!this.d.skipIdentityCheck && !subjectIsOwner(this.d.issuer, o.subject, o.owner)) return "identity_mismatch";
@@ -145,9 +151,10 @@ export class Backchannel {
   /**
    * Who the request of an escalation marked `requested` goes to: the owner and the subject eligibility just
    * accepted. Both are present whenever eligibility answered `requested`; a plan without a subject is never sent.
+   * (The test-only `ownerlessSubject` is the one way an escalation with no owner gets a subject.)
    */
   addressee(o: { owner?: string; subject?: string }): { owner: string; subject: string } {
-    return { owner: o.owner ?? "", subject: o.subject ?? "" };
+    return { owner: o.owner ?? "", subject: o.subject ?? (o.owner === undefined ? this.d.ownerlessSubject : undefined) ?? "" };
   }
 
   /** Fire and forget: starts the request outside the lock, records the result inside it, then polls. */
@@ -205,6 +212,10 @@ export class Backchannel {
     }
     for (const req of set.stale) void this.recordLapse(req, "expired");
     for (const esc of set.interrupted) void this.recordFailure(esc, { phase: "resume", failure: "interrupted" });
+    // 015 (research R10): a request of an escalation with no owner (addressed, before v1.16, to the configured
+    // approver) is not resumed for anybody. No answer to it could pass the owner check. It is closed; the escalation
+    // stays pending for the operator.
+    for (const req of set.ownerless) void this.recordFailure(req, { phase: "resume", failure: "no_owner" });
   }
 
   stop(): void {
@@ -519,7 +530,7 @@ export class Backchannel {
   /** From a request entry (poll, resume) or an ESCALATED entry (interrupted). */
   private async recordFailure(
     from: LedgerEntry,
-    f: { phase: "poll" | "resume"; failure: "permanent" | "interrupted" | "unrecoverable"; httpStatus?: number; error?: string },
+    f: { phase: "poll" | "resume"; failure: "permanent" | "interrupted" | "unrecoverable" | "no_owner"; httpStatus?: number; error?: string },
   ): Promise<void> {
     const c = this.copied(from);
     const requestId = from.type === "APPROVAL_REQUESTED" ? String(from.data.requestId) : undefined;

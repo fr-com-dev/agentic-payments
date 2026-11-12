@@ -396,8 +396,9 @@ describe("012 approval request derivations", () => {
     // Re-append with the mark: the helper writes the 010 shape, so write the 012 shape directly here.
     return { e, marked: l.append({ type: "ESCALATED", sessionId: `sess_${id}m`, authorizationId: `${id}m`, data: { ...e.data, approvalRequest } }, at) };
   };
-  const requested = (l: AuditLedger, id: string, at = T0, expiresIn = 300_000) => {
-    l.append({ type: "ESCALATED", sessionId: "sess_r", authorizationId: id, data: { violations: [], resourceKey: KEY, payTo: PAY_TO, amount: "50000", approvalRequest: "requested" } }, at);
+  /** 015: `userId` is the escalation's owner. Without one the entry has the shape written before v1.16. */
+  const requested = (l: AuditLedger, id: string, at = T0, expiresIn = 300_000, userId?: string) => {
+    l.append({ type: "ESCALATED", sessionId: "sess_r", authorizationId: id, data: { violations: [], resourceKey: KEY, payTo: PAY_TO, amount: "50000", approvalRequest: "requested", ...(userId !== undefined && { userId }) } }, at);
     return (requestId = `apq_${id}`) =>
       l.append(
         {
@@ -472,20 +473,28 @@ describe("012 approval request derivations", () => {
     expect(activeApprovalRequest(l.entries(), "auth_o")).toBeUndefined();
   });
 
-  it("requestsToResume: open, stale and interrupted; never a decided or expired escalation", () => {
+  it("requestsToResume: open, stale, interrupted and (015, T-CIBA-22) ownerless; never a decided or expired escalation", () => {
     const l = new AuditLedger(file);
-    requested(l, "auth_open", T0)();
-    requested(l, "auth_stale", T0, 60_000)();
-    requested(l, "auth_int", T0);
-    requested(l, "auth_done", T0)();
+    const OWNER = `usr_${"a".repeat(32)}`;
+    requested(l, "auth_open", T0, 300_000, OWNER)();
+    requested(l, "auth_stale", T0, 60_000, OWNER)();
+    requested(l, "auth_int", T0, 300_000, OWNER);
+    requested(l, "auth_done", T0, 300_000, OWNER)();
     approveEntry(l, "auth_done", "apr_d");
-    requested(l, "auth_failed", T0);
+    requested(l, "auth_failed", T0, 300_000, OWNER);
     end(l, "auth_failed", "APPROVAL_REQUEST_FAILED");
+    // Written before v1.16: no user on the escalation. Open or stale, such a request is never polled again.
+    requested(l, "auth_old_open", T0)();
+    requested(l, "auth_old_stale", T0, 60_000)();
+    requested(l, "auth_old_int", T0);
+    requested(l, "auth_old_done", T0)();
+    approveEntry(l, "auth_old_done", "apr_od");
     const r = requestsToResume(l.entries(), T0 + 120_000);
     expect(r.open.map((e) => e.data.escalationId)).toEqual(["auth_open"]);
     expect(r.stale.map((e) => e.data.escalationId)).toEqual(["auth_stale"]);
-    expect(r.interrupted.map((e) => e.authorizationId)).toEqual(["auth_int"]);
-    expect(requestsToResume(l.entries(), T0 + ESCALATION_TTL_MS)).toEqual({ open: [], stale: [], interrupted: [] });
+    expect(r.interrupted.map((e) => e.authorizationId)).toEqual(["auth_int", "auth_old_int"]);
+    expect(r.ownerless.map((e) => e.data.escalationId)).toEqual(["auth_old_open", "auth_old_stale"]);
+    expect(requestsToResume(l.entries(), T0 + ESCALATION_TTL_MS)).toEqual({ open: [], stale: [], interrupted: [], ownerless: [] });
   });
 });
 

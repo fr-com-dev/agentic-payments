@@ -427,11 +427,16 @@ export interface ResumeSet {
   stale: LedgerEntry[];
   /** `requested` escalations still pending with no request entry at all: L2 died between the two sections. */
   interrupted: LedgerEntry[];
+  /**
+   * 015: active requests, open or stale, whose pending escalation records no user (written before v1.16, for the
+   * configured approver). Never polled: nobody's answer can approve an escalation with no owner.
+   */
+  ownerless: LedgerEntry[];
 }
 
 /** What `resume()` must do after a restart (FR-012). Never resends a request. */
 export function requestsToResume(entries: Entries, nowMs: number): ResumeSet {
-  const out: ResumeSet = { open: [], stale: [], interrupted: [] };
+  const out: ResumeSet = { open: [], stale: [], interrupted: [], ownerless: [] };
   for (const esc of entries) {
     if (esc.type !== "ESCALATED" || esc.data.approvalRequest !== "requested" || esc.authorizationId === undefined) continue;
     const id = esc.authorizationId;
@@ -443,7 +448,8 @@ export function requestsToResume(entries: Entries, nowMs: number): ResumeSet {
     }
     const req = activeApprovalRequest(entries, id);
     if (!req) continue;
-    (nowMs < (req.data.requestExpiresAtMs as number) ? out.open : out.stale).push(req);
+    if (typeof esc.data.userId !== "string") out.ownerless.push(req);
+    else (nowMs < (req.data.requestExpiresAtMs as number) ? out.open : out.stale).push(req);
   }
   return out;
 }

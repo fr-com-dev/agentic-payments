@@ -1,8 +1,8 @@
 // 015 — backchannel approval by the person the run is for (SPEC L2-7 v1.16; specs/015 contracts/control-api.md
 // "Tests"). In-process L2 with user accounts, two onboarded people and the stand-in approval service
 // (test/helpers/backchannel-l2.ts): T-CIBA-15 (one request, to the owner, and their answer decides), T-CIBA-16
-// (another person's genuine answer approves nothing), T-CIBA-17 (a subject that is not the user's asks nobody) and
-// T-CIBA-20 (the subject is written nowhere).
+// (another person's genuine answer approves nothing), T-CIBA-17 (a subject that is not the user's asks nobody),
+// T-CIBA-18 (a run with no person behind it asks nobody) and T-CIBA-20 (the subject is written nowhere).
 // Every must-fail switch is a test-only dep of the backchannel, never an environment variable.
 import { readFileSync } from "node:fs";
 import { inspect } from "node:util";
@@ -377,5 +377,56 @@ describe("T-CIBA-20 the subject is written nowhere (US2, FR-020, NFR-004, SC-009
     expect(l2.ledger.entries().length).toBe(before);
     // Without a token the body is never read: 401 precedes everything.
     expect((await fetch(`${l2.url}/v1/authorize`, { method: "POST", headers: { "content-type": "application/json" }, body: `{"approvalSubject":"${PLANTED}",}` })).status).toBe(401);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// US3: a run with no person behind it never reaches anyone's phone
+// ---------------------------------------------------------------------------
+
+describe("T-CIBA-18 no user, no request (US3, FR-007, FR-008)", () => {
+  it("T-CIBA-18 a platform intent, a scripted (operator-only) platform intent and an operator-only intent of a person's: nobody is asked, each returns at once, and an operator approval pays each", async () => {
+    const l2 = await start();
+    const { alice } = l2.people;
+    const cases = [
+      // What a system identity's run and the command-line agent send: no user, no subject.
+      { intent: l2.intentFor(PREMIUM, "50000", { as: "platform", sessionId: "sess_system" }), mark: "no_owner", payer: "0x00000000000000000000000000000000000000f1" },
+      // What the scripted regression sends.
+      { intent: l2.intentFor(PREMIUM, "50000", { as: "platform", sessionId: "sess_scripted", operatorApprovalOnly: true }), mark: "operator_only", payer: "0x00000000000000000000000000000000000000f1" },
+      { intent: l2.intentFor(PREMIUM, "50000", { sessionId: "sess_person_operator_only", operatorApprovalOnly: true }), mark: "operator_only", payer: alice.address },
+    ];
+    const ids: string[] = [];
+    for (const c of cases) {
+      const t0 = Date.now();
+      const res = await l2.authorize(c.intent);
+      expect(Date.now() - t0).toBeLessThan(500); // no wait: the helper's wait is 1500 ms
+      expect(res.body.status).toBe("ESCALATE");
+      ids.push(res.body.authorizationId);
+    }
+    const escalations = ofType(l2, "ESCALATED");
+    expect(escalations.map((e) => e.data.approvalRequest)).toEqual(cases.map((c) => c.mark));
+    expect(escalations.map((e) => e.data.userId)).toEqual([undefined, undefined, alice.userId]);
+    await new Promise((r) => setTimeout(r, 80));
+    expect(l2.stub.requests).toHaveLength(0);
+    expect((await l2.pending()).pending.map((p) => [p.authorizationId, p.approvalRequest])).toEqual(ids.map((id, i) => [id, cases[i]!.mark]));
+    for (const [i, c] of cases.entries()) {
+      expect((await l2.approve(ids[i]!)).status).toBe(200);
+      const paid = await l2.authorize({ ...c.intent, intentId: `${c.intent.intentId}_retry` });
+      expect(paid.body.status).toBe("AUTHORIZED");
+      expect((paid.body as { payer: string }).payer.toLowerCase()).toBe(c.payer.toLowerCase());
+    }
+    expect(l2.stub.requests).toHaveLength(0);
+    expect(ofType(l2, "HUMAN_APPROVAL").map((e) => e.data.channel)).toEqual(["operator", "operator", "operator"]);
+  });
+
+  it("T-CIBA-18 must fail with a fallback subject: with ownerlessSubject, the platform account's escalation sends a request to bob's phone", async () => {
+    const l2 = await start({ backchannel: { ownerlessSubject: BOB_SUB, waitMs: 200 } });
+    l2.stub.setAnswers("pending");
+    const res = await l2.authorize(l2.intentFor(PREMIUM, "50000", { as: "platform", sessionId: "sess_system" }));
+    expect(res.body.status).toBe("ESCALATE");
+    expect(ofType(l2, "ESCALATED")[0]!.data).toMatchObject({ approvalRequest: "requested" });
+    expect(ofType(l2, "ESCALATED")[0]!.data.userId).toBeUndefined();
+    // Nobody started this run, and bob's phone rings for it.
+    expect(l2.stub.startForms().map((f) => hintOf(f).sub)).toEqual([BOB_SUB]);
   });
 });

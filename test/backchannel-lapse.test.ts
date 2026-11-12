@@ -1,6 +1,8 @@
 // 012 US3 — no answer: expiry, the operator fallback and restarts (specs/012 tasks T027–T030): T-CIBA-07 (lapse
 // and expiry), the operator path during a request, T-CIBA-10 (serialized outcome recording, with its must-fail
 // proof) and T-CIBA-11 (restart).
+// 015: T-CIBA-22 (a request open at deployment for an escalation with no user is not resumed; two people's
+// requests are each resumed from their own handle).
 import { afterEach, describe, expect, it } from "vitest";
 import { approvalRequestCount } from "../src/layer2-control/escalations.js";
 import { AuditLedger } from "../src/layer2-control/ledger.js";
@@ -228,5 +230,110 @@ describe("T-CIBA-11 restart", () => {
     b.service.backchannel!.resume();
     await b.until((es) => es.some((e) => e.type === "APPROVAL_REQUEST_FAILED"));
     expect(b.ledger.entries().find((e) => e.type === "APPROVAL_REQUEST_FAILED")!.data).toMatchObject({ phase: "resume", failure: "unrecoverable" });
+  });
+});
+
+describe("T-CIBA-22 a request open when v1.16 is deployed (015 US3, research R10)", () => {
+  const OLD_ID = "auth_0ld00000-0000-4000-8000-000000000000";
+  const OLD_REQUEST = "apq_0ld00000-0000-4000-8000-000000000000";
+
+  /** A ledger as v1.15 left it: an escalation of the platform account marked requested, and its request to the configured approver. */
+  async function ledgerWithAnOldRequest(requestLifetimeMs = 300_000) {
+    const a = await start({ off: true });
+    const t = a.clock.now();
+    const base = { resourceKey: `${SELLER}${PREMIUM}`, payTo: PAY_TO, amount: "50000" };
+    a.ledger.append({ type: "ESCALATED", sessionId: "sess_old", intentId: "int_old", authorizationId: OLD_ID, data: { violations: [], ...base, approvalRequest: "requested" } }, t);
+    a.ledger.append(
+      {
+        type: "APPROVAL_REQUESTED",
+        sessionId: "sess_old",
+        authorizationId: OLD_ID,
+        data: {
+          escalationId: OLD_ID,
+          ...base,
+          channel: "backchannel",
+          requestId: OLD_REQUEST,
+          issuer: a.stub.issuer,
+          approver: "auth0|approver-1",
+          referenceCode: OLD_ID.slice(5, 13),
+          bindingMessage: "Pay_0.05_USDC",
+          details: [{ type: "x" }],
+          requestedExpirySec: 300,
+          requestExpiresAtMs: t + requestLifetimeMs,
+          intervalSec: 1,
+          handleSealed: a.port.seal("areq-from-before-1-16", `${OLD_ID}|${OLD_REQUEST}`),
+          attempts: 1,
+        },
+      },
+      t + 1,
+    );
+    await a.close({ keepLedger: true });
+    return a;
+  }
+
+  it("T-CIBA-22 an open request of an escalation with no user: no poll, one APPROVAL_REQUEST_FAILED{resume, no_owner}, and the escalation expires at 300 s", async () => {
+    const a = await ledgerWithAnOldRequest();
+    const b = await start({ stub: a.stub, ledgerFile: a.ledgerFile, clock: a.clock });
+    expect(b.port.open(String(b.ledger.entries().find((e) => e.type === "APPROVAL_REQUESTED")!.data.handleSealed), `${OLD_ID}|${OLD_REQUEST}`)).toBe("areq-from-before-1-16"); // it could have been polled
+    b.service.backchannel!.resume();
+    await b.until((es) => es.some((e) => e.type === "APPROVAL_REQUEST_FAILED"));
+    await new Promise((r) => setTimeout(r, 120)); // several poll intervals of the helper (20 ms)
+    expect(b.stub.requests).toHaveLength(0);
+    const failures = ofType(b, "APPROVAL_REQUEST_FAILED");
+    expect(failures).toHaveLength(1);
+    expect(failures[0]!.data).toMatchObject({ escalationId: OLD_ID, requestId: OLD_REQUEST, channel: "backchannel", phase: "resume", failure: "no_owner" });
+    // Neither the entry nor the log line repeats the old approver's subject.
+    expect(JSON.stringify(failures[0])).not.toContain("auth0|approver-1");
+    expect(b.logs.join("\n")).not.toContain("auth0|approver-1");
+    expect(b.logs.filter((l) => l.includes(OLD_ID))).toHaveLength(1);
+    // The operator path remains, and without it the escalation ends as every unanswered one does.
+    expect((await b.pending()).pending.map((p) => p.authorizationId)).toEqual([OLD_ID]);
+    b.clock.advance(300_000);
+    await b.service.sweep();
+    expect(ofType(b, "ESCALATION_EXPIRED").map((e) => e.data.escalationId)).toEqual([OLD_ID]);
+    expect(ofType(b, "HUMAN_APPROVAL")).toHaveLength(0);
+    expect(b.ledger.verifyChain().ok).toBe(true);
+  });
+
+  it("T-CIBA-22 the same request already past its own expiry at the restart is closed the same way, not recorded as a lapse", async () => {
+    // The service had granted this request 60 s. Two minutes later its own lifetime is over; the escalation's is not.
+    const a = await ledgerWithAnOldRequest(60_000);
+    const clock = new TestClock();
+    clock.offsetMs = a.clock.offsetMs + 120_000;
+    const b = await start({ stub: a.stub, ledgerFile: a.ledgerFile, clock });
+    b.service.backchannel!.resume();
+    await b.until((es) => es.some((e) => e.type === "APPROVAL_REQUEST_FAILED" || e.type === "APPROVAL_REQUEST_LAPSED"));
+    await new Promise((r) => setTimeout(r, 60));
+    expect(b.stub.requests).toHaveLength(0);
+    expect(ofType(b, "APPROVAL_REQUEST_LAPSED")).toHaveLength(0);
+    expect(ofType(b, "APPROVAL_REQUEST_FAILED").map((e) => [e.data.phase, e.data.failure])).toEqual([["resume", "no_owner"]]);
+    expect((await b.pending()).pending.map((p) => p.authorizationId)).toEqual([OLD_ID]);
+  });
+
+  it("T-CIBA-22 alice's and bob's requests both open at the restart: each is polled from its own handle, and each answer decides only its own escalation", async () => {
+    const a = await start();
+    a.stub.setAnswers("pending");
+    void a.authorize(a.intentFor(PREMIUM, "50000", { sessionId: "sess_alice" })).catch(() => undefined);
+    await a.until((es) => es.filter((e) => e.type === "APPROVAL_REQUESTED").length === 1);
+    void a.authorize(a.intentFor(PREMIUM, "50000", { sessionId: "sess_bob", as: "bob" })).catch(() => undefined);
+    await a.until((es) => es.filter((e) => e.type === "APPROVAL_REQUESTED").length === 2);
+    const [aliceHandle, bobHandle] = a.stub.authReqIds;
+    await a.close({ keepLedger: true });
+    const polledBefore = a.stub.requests.filter((r) => r.path === "/oauth/token").length;
+
+    a.stub.setAnswersFor(0, { approve: {} }); // alice approves
+    a.stub.setAnswersFor(1, "deny"); // bob refuses
+    const b = await start({ stub: a.stub, ledgerFile: a.ledgerFile, clock: a.clock });
+    b.service.backchannel!.resume();
+    await b.until((es) => es.some((e) => e.type === "HUMAN_APPROVAL") && es.some((e) => e.type === "HUMAN_REJECTION"));
+    const polls = b.stub.requests.filter((r) => r.path === "/oauth/token").slice(polledBefore);
+    expect(new Set(polls.map((p) => p.form.auth_req_id))).toEqual(new Set([aliceHandle, bobHandle]));
+    expect(b.stub.startForms()).toHaveLength(2); // no new request: the subjects are gone, and nothing needs them
+    const escalations = ofType(b, "ESCALATED");
+    const { alice, bob } = b.people;
+    expect(escalations.map((e) => e.data.userId)).toEqual([alice.userId, bob.userId]);
+    expect(ofType(b, "HUMAN_APPROVAL").map((e) => [e.data.escalationId, e.data.approver])).toEqual([[escalations[0]!.authorizationId, alice.userId]]);
+    expect(ofType(b, "HUMAN_REJECTION").map((e) => [e.data.escalationId, e.data.approver])).toEqual([[escalations[1]!.authorizationId, bob.userId]]);
+    expect(ofType(b, "APPROVAL_REQUEST_FAILED")).toHaveLength(0);
   });
 });
