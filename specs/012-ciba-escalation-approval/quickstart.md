@@ -70,6 +70,8 @@ Enterprise-only, otherwise set `credential = "secret"` (research R3).
 5. **Outputs**: the apply run's summary shows the `ciba` object for §6. For §3, take the `CIBA_*` values from it
    (`issuer`, `clientId`, `audience`, `approver`).
 6. **The approver enrolls their phone in Guardian push**, by scanning the enrollment QR code in the Guardian app.
+   The enrolled user must be the one named as the approver (`AUTH0_APPROVER_USER_ID`, `CIBA_APPROVER`): a
+   social-login user (`google-oauth2|…`) works as well as a database user.
 
 ## 3. Local run against the real tenant
 
@@ -134,6 +136,41 @@ Record the answers in the PR. They settle the facts that research marked **(live
 4. **Refusal and expiry**: a refusal yields `HUMAN_REJECTION{backchannel}`, and letting the push
    time out yields `APPROVAL_REQUEST_LAPSED`.
 5. **The secret scan**: on the L2 log, `npm run scan-logs` reports clean.
+
+### Results so far (2026-11-12)
+
+Run on the local stack (`npm run stack:local`, §3) against the tenant `fabriciorojas.us.auth0.com`, which
+`provision-auth0.yml` had applied, with the key credential and a Google social-login user as the approver.
+
+| # | Check | Result |
+|---|---|---|
+| 1 | The Guardian screen | Open: the approver has not yet said whether the details are listed or only the binding message |
+| 2 | The detail source | `token`: the access token carries `authorization_details`, so the signed token is what L2 verified |
+| 3 | Equality | Passed: a genuine approval verified, so Auth0 returned the details unchanged |
+| 4 | Refusal | Confirmed: `APPROVAL_REQUESTED`, `HUMAN_REJECTION{backchannel}` 5 s later, the second `INTENT`, `DENIED{human_rejected}`; the agent's same call reported it |
+| 4 | Expiry | Open: two requests left unanswered ended in `ESCALATION_EXPIRED` with no `APPROVAL_REQUEST_LAPSED` seen. Both had been resumed after L2 was restarted, so a clean timeout still has to be checked |
+| 5 | The secret scan | Open: not run |
+
+Also confirmed by the same runs:
+
+- **Approval, end to end.** `ESCALATED{requested}`, `APPROVAL_REQUESTED`, `HUMAN_APPROVAL{backchannel}` 104 s later
+  (inside the 120 s wait), the second `INTENT`, `AUTHORIZED`, `SETTLEMENT`, and L3's `CONFIRMED anomaly=false`.
+  The hash chain verified afterwards.
+- **Resuming.** After L2's terminal was closed with two requests open, the next start took over the stale lock and
+  printed `resuming approval request` for both.
+- **The tenant as provisioned works**: the user-delegated grant passes the API's access policy, `consent_policy =
+  "null"` behaves as standard consent, and push works with `guardian_policy = "never"` (research R17's open
+  questions).
+
+What went wrong on the way, and how it shows:
+
+- **The approver must be the user whose phone is enrolled.** With another user in `CIBA_APPROVER`, Auth0 answers
+  400 `invalid_request` ("No eligible notification channels were found. guardian-push: User does not have push
+  notifications set up"). L2 records `APPROVAL_REQUEST_FAILED failure=permanent error=invalid_request` and never
+  logs the description; the operator path remains.
+- **On iOS, no banner appears while the Guardian app is in the foreground**, and several requests at once may show
+  no banner at all. Open the app: pending requests are listed there.
+- **L2 reads `CIBA_*` at startup only**: restart the stack after changing the approver.
 
 ## 6. Azure
 

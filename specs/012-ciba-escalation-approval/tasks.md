@@ -624,7 +624,7 @@ secret.
   - under "Gotchas": Guardian push needs `requested_expiry` ≤ 300 s; Auth0 `private_key_jwt` is Enterprise-only and RS256, never ES256; the binding message allows no spaces.
 - [X] T063 Run test/architecture.test.ts (T-ARCH-TRACE: every test ID named in the threat matrix appears in a test title) and test/images.test.ts (T-IMG-01: the L2 image now imports `jose`). Update `IMAGES` in scripts/image-closure.ts only if T-IMG-01 asks for it.
 - [X] T064 Run `npm run check` (typecheck, the full suite, `demo:local`). The demo summary must still print `spent on-chain: 0.006 USDC` and `hash chain ok=true`. With `BICEP_PATH` set, run the full suite again for T-IAC-01. Then run quickstart.md §1.
-- [ ] T065 Manual, needs an Auth0 tenant: do quickstart.md §2–§5 against a real tenant and record the five live-check answers in the PR description. If check 3 shows normalization, update contracts/payment-details.md and `detailsEqual` together.
+- [ ] T065 (partly done 2026-11-12, quickstart §5 "Results so far": checks 2 and 3 and the refusal of check 4 are answered; check 1, the expiry of check 4 and check 5 are open) Manual, needs an Auth0 tenant: do quickstart.md §2–§5 against a real tenant and record the five live-check answers in the PR description. If check 3 shows normalization, update contracts/payment-details.md and `detailsEqual` together.
 
 ---
 
@@ -651,7 +651,7 @@ secret.
 
   Add 16 must-fail mutants, `terraform fmt -check` when Terraform is installed, and `terraform validate` once `auth0/.terraform` exists.
 - [X] T070 Update spec.md (the 2026-11-08 clarifications and the tenant assumption), research R17, plan.md, quickstart §2, SPEC.md v1.8 (§5, §6, §12, §13), the constitution 1.3.0 report, CLAUDE.md, README.md and specs/README.md.
-- [ ] T071 Manual, needs the tenant: `plan` and `apply` (since 2026-11-10 through `provision-auth0.yml`, SPEC v1.9; see `auth0/README.md`). Already done on 2026-11-08: `init` (provider 1.60.0, `.terraform.lock.hcl` written; commit it) and `validate` ("The configuration is valid"; T-IAC-02 runs it whenever `.terraform` exists). Fold the results into T065's live check: whether `subject_type = "user"` passes the access policy, `"null"` is standard consent, and push works with `guardian_policy = "never"`.
+- [X] T071 (done 2026-11-12: `provision-auth0.yml` applied the tenant `fabriciorojas.us.auth0.com` three times without error, and the live runs confirmed the three questions below; quickstart §5 "Results so far") Manual, needs the tenant: `plan` and `apply` (since 2026-11-10 through `provision-auth0.yml`, SPEC v1.9; see `auth0/README.md`). Already done on 2026-11-08: `init` (provider 1.60.0, `.terraform.lock.hcl` written; commit it) and `validate` ("The configuration is valid"; T-IAC-02 runs it whenever `.terraform` exists). Fold the results into T065's live check: whether `subject_type = "user"` passes the access policy, `"null"` is standard consent, and push works with `guardian_policy = "never"`.
 
 ---
 
