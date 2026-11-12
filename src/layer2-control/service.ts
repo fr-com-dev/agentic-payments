@@ -9,6 +9,8 @@
 // 013 (L2-8): with user accounts on, an intent that names a user is decided against that user's one active policy for
 // the requested seller, bounded by the platform limits, and signed with that user's own account. An intent without a
 // user is the platform account, exactly as before. The user routes come from ./user-routes.ts.
+// 014 (L2-8): with the administration area on as well, the portal's second role reaches the routes of
+// ./admin-routes.ts: the escalation reads, the two decisions, the budget behind an escalation and the ledger check.
 import { randomUUID } from "node:crypto";
 import type { Server } from "node:http";
 import { pathToFileURL } from "node:url";
@@ -17,7 +19,8 @@ import type { PaymentRequirements } from "@x402/core/types";
 import { requireRole } from "../shared/auth.js";
 import { apiDocsEnabled, ConfigError, CONTROL_BIND_HOST, controlPort, loadEnv, networkProfile, ROLE_TOKEN_VAR, tokenFor, type NetworkProfile } from "../shared/config.js";
 import { USER_ID_RE } from "../shared/user-id.js";
-import type { AuthorizationDecision, BudgetStatus, PaymentIntent, PolicyViolation } from "../shared/contracts.js";
+import type { AuthorizationDecision, BudgetStatus, EscalationBudget, PaymentIntent, PolicyViolation } from "../shared/contracts.js";
+import { mountAdminRoutes, toEscalationBudget, type AdminDeps } from "./admin-routes.js";
 import { mountApiDocs } from "./api-docs.js";
 import { issuerKeys } from "./approval-evidence.js";
 import { mountApprovalRoutes } from "./approval-routes.js";
@@ -25,7 +28,7 @@ import { Backchannel, type BackchannelDeps, type StartPlan } from "./backchannel
 import { CibaClient, cibaConfigFromEnv, publicSettings } from "./ciba-client.js";
 import { mountEscalationRoutes } from "./escalation-routes.js";
 import { ESCALATION_TTL_MS, findPendingEscalation, findRejection, sweep } from "./escalations.js";
-import { AuditLedger, resourceKey } from "./ledger.js";
+import { AuditLedger, resourceKey, type LedgerEntry } from "./ledger.js";
 import { acquireLedgerLock } from "./ledger-lock.js";
 import { mountLedgerRoutes, type Serialize } from "./ledger-routes.js";
 import { loadMandate, type SpendingMandate } from "./mandate.js";
@@ -57,7 +60,7 @@ export interface ControlServiceDeps {
   /** Test hook (T-E2E-04): simulated remote-signer latency, applied inside the serialized section. */
   signerLatencyMs?: number;
   /** Test hook: explicit tokens instead of resolving them from the environment. */
-  tokens?: { control?: string; settlement?: string; operator?: string; portal?: string };
+  tokens?: { control?: string; settlement?: string; operator?: string; portal?: string; portalAdmin?: string };
   /** Test hook: clock. Read once per authorize call. */
   now?: () => number;
   /**
@@ -73,6 +76,8 @@ export interface ControlServiceDeps {
   users?: UserAccountsDeps;
   /** 013: the network, for the effective mandate and the views. Required with `users`. */
   net?: Pick<NetworkProfile, "caip2" | "asset" | "decimals">;
+  /** 014 (L2-8): the administration routes. Absent: off, each answers 404. Needs `users`. */
+  admin?: AdminDeps;
 }
 
 export interface ControlService {
@@ -198,6 +203,43 @@ export function createControlService(deps: ControlServiceDeps): ControlService {
       }),
     };
   }
+  /**
+   * 014: the ledger-derived figures a payment counts against (INV-7), for one owner, session and moment. For a user:
+   * this user's and this policy's entries only, plus the user-wide figure for the daily ceiling (FR-031, FR-032).
+   * The decision builds its policy context from this, and so does the administration area's budget view, so what an
+   * administrator sees is what the retry will be judged against (specs/014 research R9).
+   */
+  function spendFigures(u: UserDecision | undefined, sessionId: string, t: number) {
+    const mine = u ? (users!.sharedBudgets ? {} : { userId: u.userId, ...(u.policy && { policyId: u.policy.policyId }) }) : platformOwner;
+    return {
+      mine,
+      sessionCommittedAtomic: ledger.committedAtomic({ sessionId, ...mine }, t),
+      dailyCommittedAtomic: ledger.committedAtomic({ sinceMs: t - DAY_MS, ...mine }, t),
+      userDailyCommittedAtomic: u ? ledger.committedAtomic({ userId: u.userId, sinceMs: t - DAY_MS }, t) : 0n,
+    };
+  }
+
+  /** 014: the budget behind an escalation, as of `t`, under the rules that apply to its owner now (INV-12). Reads only. */
+  function budgetFor(escalated: LedgerEntry, t: number): EscalationBudget {
+    const owner = typeof escalated.data.userId === "string" ? escalated.data.userId : undefined;
+    const u = users && owner !== undefined ? userDecision(owner, String(escalated.data.resourceKey)) : undefined;
+    const spend = spendFigures(u, String(escalated.sessionId ?? ""), t);
+    return toEscalationBudget({
+      asset: deps.asset,
+      amountAtomic: String(escalated.data.amount),
+      mandate: u ? u.mandate : mandate,
+      ...(u && {
+        user: {
+          ...(u.gate !== undefined && { gate: u.gate }),
+          hasPolicy: u.policy !== undefined,
+          dailyCeilingAtomic: users!.platform.limits.userDailyCeilingAtomic,
+          dailyCommittedAtomic: spend.userDailyCommittedAtomic,
+        },
+      }),
+      sessionCommittedAtomic: spend.sessionCommittedAtomic,
+      dailyCommittedAtomic: spend.dailyCommittedAtomic,
+    });
+  }
   const backchannel = deps.backchannel ? new Backchannel({ ...deps.backchannel, ledger, serialize, now }) : undefined;
 
   type Decided = { decision: AuthorizationDecision; start?: StartPlan };
@@ -253,14 +295,14 @@ export function createControlService(deps: ControlServiceDeps): ControlService {
 
     // Step 3: ledger-derived context (INV-7). For a user: this user's and this policy's entries only, plus the
     // user-wide figure for the daily ceiling (FR-031, FR-032).
-    const mine = u ? (users!.sharedBudgets ? {} : { userId: u.userId, ...(u.policy && { policyId: u.policy.policyId }) }) : platformOwner;
-    const userDaily = u ? ledger.committedAtomic({ userId: u.userId, sinceMs: t - DAY_MS }, t) : 0n;
+    const spend = spendFigures(u, sessionId, t);
+    const { mine } = spend;
     const ctx: PolicyContext = {
       nowMs: t,
       requestedUrl: intent.resourceUrl,
       challengeResourceUrl: String(intent.paymentRequired.resource?.url ?? ""),
-      sessionCommittedAtomic: ledger.committedAtomic({ sessionId, ...mine }, t),
-      dailyCommittedAtomic: ledger.committedAtomic({ sinceMs: t - DAY_MS, ...mine }, t),
+      sessionCommittedAtomic: spend.sessionCommittedAtomic,
+      dailyCommittedAtomic: spend.dailyCommittedAtomic,
       authorizationsLastMinute: ledger.authorizedSince(t - 60_000, mine),
       ...(approvalData && {
         humanApprovedFor: { payTo: approvalData.payTo, amount: approvalData.amount, approvalId: approvalData.approvalId },
@@ -269,7 +311,7 @@ export function createControlService(deps: ControlServiceDeps): ControlService {
       ...(u && {
         user: {
           ...(gate !== undefined && { gate }),
-          dailyCommittedAtomic: userDaily,
+          dailyCommittedAtomic: spend.userDailyCommittedAtomic,
           ...(!users!.skipUserCeiling && { dailyCeilingAtomic: users!.platform.limits.userDailyCeilingAtomic }),
         },
       }),
@@ -516,6 +558,21 @@ export function createControlService(deps: ControlServiceDeps): ControlService {
     });
   }
 
+  // 014: mounted only when user accounts and the administration area are both on; otherwise each is 404.
+  if (users && deps.admin) {
+    mountAdminRoutes(app, {
+      ledger,
+      serialize,
+      now,
+      admin: deps.admin,
+      budgetFor,
+      tokens: {
+        ...(deps.tokens?.portalAdmin !== undefined && { portalAdmin: deps.tokens.portalAdmin }),
+        ...(deps.tokens?.portal !== undefined && { portal: deps.tokens.portal }),
+      },
+    });
+  }
+
   if (deps.apiDocs) mountApiDocs(app);
 
   return { app, serialize, sweep: () => serialize(() => sweep(ledger, now())), ...(backchannel && { backchannel }) };
@@ -548,6 +605,31 @@ export function userAccountsFromEnv(env: Env, net: Pick<NetworkProfile, "caip2" 
     }
   }
   return { enabled: true, platform: loadPlatform(env), keyring: keyringFromEnv(env, net), portalToken };
+}
+
+// ---------------------------------------------------------------------------
+// 014 portal administration: configuration (CFG-2, L2-8)
+// ---------------------------------------------------------------------------
+
+export type AdminConfig = { enabled: false; ignored: string[] } | { enabled: true; adminToken: string };
+
+/**
+ * Reads the administration settings. Off unless `PORTAL_ADMIN=1`: the token is then ignored and only its name is
+ * reported. On, it needs user accounts on (the administration area belongs to the portal) and a token of its own,
+ * never another role's. Checked before the ledger lock; an error names the setting, never a value.
+ */
+export function adminFromEnv(env: Env, accounts: Pick<UserAccountsConfig, "enabled">): AdminConfig {
+  if (env.PORTAL_ADMIN !== "1") {
+    return { enabled: false, ignored: ["PORTAL_ADMIN_TOKEN"].filter((k) => env[k] !== undefined && env[k] !== "") };
+  }
+  if (!accounts.enabled) throw new ConfigError("PORTAL_ADMIN=1 needs USER_ACCOUNTS=1 (the administration area belongs to the portal)");
+  const adminToken = tokenFor("portal-admin", env);
+  for (const role of ["agent-control", "verifier-control", "operator", "portal-control"] as const) {
+    if (tokenFor(role, env) === adminToken) {
+      throw new ConfigError(`PORTAL_ADMIN_TOKEN must differ from ${ROLE_TOKEN_VAR[role]} (INV-13)`);
+    }
+  }
+  return { enabled: true, adminToken };
 }
 
 /** Fails closed when the keyring no longer derives a recorded wallet address (a changed or mistyped mnemonic). */
@@ -587,6 +669,8 @@ export async function main(): Promise<void> {
   const ciba = cibaConfigFromEnv(process.env);
   // 013: the same for the user-account settings (token, mnemonic, platform config). No network call.
   const accounts = userAccountsFromEnv(process.env, networkProfile());
+  // 014: and for the administration area (its own token, and user accounts on).
+  const administration = adminFromEnv(process.env, accounts);
   // L2-6: one writer. Wait in standby while another L2 holds the ledger, then read it only once ours.
   const lock = await acquireLedgerLock(ledgerPathFor());
   // The ledger loads and verifies first, so an integrity failure is reported before anything else.
@@ -617,6 +701,8 @@ export async function main(): Promise<void> {
   } else if (accounts.ignored.length > 0) {
     console.log(`l2-control: user accounts are off; ignoring ${accounts.ignored.join(", ")}`);
   }
+  if (administration.enabled) console.log("l2-control: portal administration on");
+  else if (administration.ignored.length > 0) console.log(`l2-control: portal administration is off; ignoring ${administration.ignored.join(", ")}`);
   const { app, sweep: sweepNow, backchannel } = createControlService({
     mandate,
     signer,
@@ -627,8 +713,9 @@ export async function main(): Promise<void> {
     ...(accounts.enabled && {
       users: { platform: accounts.platform, keyring: accounts.keyring },
       net,
-      tokens: { portal: accounts.portalToken },
+      tokens: { portal: accounts.portalToken, ...(administration.enabled && { portalAdmin: administration.adminToken }) },
     }),
+    ...(administration.enabled && { admin: {} }),
   });
   // FR-012: resume every open approval request from the ledger, without sending a new one.
   backchannel?.resume();

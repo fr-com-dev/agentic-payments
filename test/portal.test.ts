@@ -127,6 +127,8 @@ describe("T-PRT-01 access (FR-003, FR-005, SEC-19, SEC-20)", () => {
       auth: { mode: "dev", tenantId: "dev", clientId: "x402-portal-dev", scope: "api://x402-l1-agent/Portal.Access" },
       network: "local",
       cards: { available: false },
+      // 014: additive. Off unless PORTAL_ADMIN=1.
+      admin: { available: false },
     });
     expect(res.text).not.toContain(TOKENS.portal);
   });
@@ -152,6 +154,8 @@ describe("T-PRT-01 access (FR-003, FR-005, SEC-19, SEC-20)", () => {
       ["no client", { azp: undefined }, 403],
       ["no role", { roles: [] }, 403],
       ["another role", { roles: ["Agent.Read"] }, 403],
+      // 014: with the administration area off (the default), the administrator role alone admits nobody.
+      ["the administrator role alone, with administration off", { roles: ["Portal.Admin"] }, 403],
     ];
     for (const [name, o, status] of cases) {
       const res = await p.call("GET", "/api/me", { token: await p.token("alice", o) });
@@ -262,7 +266,8 @@ describe("T-PRT-03 profile (US1, FR-008..FR-011)", () => {
   it("T-PRT-03 a new person: three steps, none done, no profile", async () => {
     const p = await start();
     const res = await p.as("alice")("GET", "/api/me");
-    expect(res.body).toEqual({ userId: p.userId("alice"), enabled: true, onboarding: { profile: false, wallet: false, policy: false } });
+    // 014: `user` and `admin` are additive.
+    expect(res.body).toEqual({ userId: p.userId("alice"), enabled: true, onboarding: { profile: false, wallet: false, policy: false }, user: true, admin: false });
   });
 
   it("T-PRT-03 the first save writes the profile, then registers the user at L2", async () => {
@@ -274,6 +279,9 @@ describe("T-PRT-03 profile (US1, FR-008..FR-011)", () => {
       enabled: true,
       onboarding: { profile: true, wallet: false, policy: false },
       profile: { displayName: "Ana Pérez", contactEmail: "ana.perez@example.com" },
+      // 014: additive, on every answer that is "the /api/me body".
+      user: true,
+      admin: false,
     });
     expect(p.l2.entries("USER_REGISTERED").map((e) => e.data.userId)).toEqual([p.userId("alice")]);
     const file = join(p.profilesDir, `${p.userId("alice")}.json`);
@@ -828,5 +836,35 @@ describe("T-PRT-09 the local dev issuer must exist before a service that trusts 
   it("T-PRT-09 a missing AUTH_JWKS_FILE says how to create it, instead of a bare file error", async () => {
     const { keysFor } = await import("../src/shared/entra-token.js");
     expect(() => keysFor({ tenantId: "dev", jwksFile: ".local/no-such-issuer/jwks.json" })).toThrow(/AUTH_JWKS_FILE: no file at .*npm run dev-token/);
+  });
+});
+
+describe("014 dev-token --admin (the Portal.Admin role of the local dev issuer)", () => {
+  it("014 dev-token --admin adds Portal.Admin, alone with --no-role, and only with --portal", async () => {
+    const { rolesFor } = await import("../scripts/dev-token.js");
+    expect(rolesFor(["--portal"])).toEqual({});
+    expect(rolesFor(["--no-role"])).toEqual({ roles: [] });
+    expect(rolesFor(["--portal", "--admin"])).toEqual({ roles: ["Agent.Run", "Portal.Admin"] });
+    expect(rolesFor(["--portal", "--admin", "--no-role"])).toEqual({ roles: ["Portal.Admin"] });
+    expect(rolesFor(["--admin"])).toEqual({ error: expect.stringContaining("--admin needs --portal") });
+  });
+
+  it("014 dev-token still prints a token when run as a script", async () => {
+    const dir = (await import("node:fs")).mkdtempSync(join((await import("node:os")).tmpdir(), "x402-devtoken-"));
+    // A temporary working directory, so the issuer's key pair is not written into the repository's .local/.
+    const loader = (await import("node:url")).pathToFileURL(join(process.cwd(), "node_modules/tsx/dist/loader.mjs")).href;
+    const out = await new Promise<{ code: number | null; stdout: string }>((resolve) => {
+      const child = spawn(process.execPath, ["--import", loader, join(process.cwd(), "scripts/dev-token.ts"), "--portal", "--admin"], {
+        cwd: dir,
+        env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", NETWORK: "local" },
+      });
+      let stdout = "";
+      child.stdout.on("data", (d: Buffer) => (stdout += d.toString()));
+      child.on("close", (code) => resolve({ code, stdout }));
+    });
+    expect(out.code).toBe(0);
+    const claims = JSON.parse(Buffer.from(out.stdout.trim().split(".")[1]!, "base64url").toString()) as { roles: string[]; scp: string };
+    expect(claims.roles).toEqual(["Agent.Run", "Portal.Admin"]);
+    expect(claims.scp).toBe("Portal.Access");
   });
 });

@@ -16,7 +16,8 @@ export interface StepUp {
   prompt: ReactNode;
 }
 
-export function useStepUp(): StepUp {
+/** `text` says what the confirmation is for, where "this change" would be wrong (014: an approval changes nothing of the person's own). */
+export function useStepUp(text: string = STEP_UP_TEXT): StepUp {
   const { confirmIdentity } = useApp();
   const [parked, setParked] = useState<{ replay(): Promise<void> } | null>(null);
   const [failed, setFailed] = useState(false);
@@ -43,7 +44,7 @@ export function useStepUp(): StepUp {
   );
   const prompt = parked ? (
     <Banner kind="warning">
-      {STEP_UP_TEXT}{" "}
+      {text}{" "}
       <button type="button" onClick={() => void parked.replay()}>
         Confirm it's you
       </button>

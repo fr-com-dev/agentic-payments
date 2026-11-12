@@ -3,25 +3,10 @@
 // reaches the user-account routes and nothing else: there is deliberately no method here for authorize, budget,
 // approvals, rejections, reconcile or ledger verification (INV-13, FR-049).
 import type { PlatformView, PolicyValues, PolicyView, UserView } from "../shared/contracts.js";
+import { ControlError, ControlUnavailable } from "./control-errors.js";
 
-/** L2 answered with a documented error (403, 404, 409, 422...). `body` is its JSON. */
-export class ControlError extends Error {
-  override name = "ControlError";
-  constructor(
-    readonly status: number,
-    readonly body: Record<string, unknown>,
-  ) {
-    super(`control service answered ${status}`);
-  }
-  get code(): string {
-    return typeof this.body.error === "string" ? this.body.error : "error";
-  }
-}
-
-/** L2 could not be reached, timed out, or failed (5xx, a bad token). Nothing was changed that the caller knows of. */
-export class ControlUnavailable extends Error {
-  override name = "ControlUnavailable";
-}
+// 014: the two error classes live in ./control-errors.ts, shared with the administration client.
+export { ControlError, ControlUnavailable };
 
 const TIMEOUT_MS = 5_000;
 

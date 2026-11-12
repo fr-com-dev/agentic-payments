@@ -564,10 +564,11 @@ describe("T-USR-02 role isolation (INV-13, FR-049)", () => {
     expect(l2.entries().filter((e) => e.type !== "PLATFORM_CONFIG")).toEqual([]);
   });
 
-  it("T-USR-02 no token, and each of the other three tokens, is refused on every user-account route", async () => {
+  it("T-USR-02 no token, and each of the other tokens, is refused on every user-account route", async () => {
     const l2 = await start();
     for (const [method, path] of PORTAL_ROUTES) {
-      for (const token of [null, TOKENS.control, TOKENS.settlement, TOKENS.operator, "nonsense"]) {
+      // 014: the sixth token, the portal's own administration token, is refused here like any other.
+      for (const token of [null, TOKENS.control, TOKENS.settlement, TOKENS.operator, TOKENS.portalAdmin, "nonsense"]) {
         expect((await l2.call(method, path, { token, body: method === "GET" || method === "DELETE" ? undefined : {} })).status, `${method} ${path} ${token}`).toBe(401);
       }
     }
@@ -1503,5 +1504,24 @@ describe("013 US8 the operator's CLI names the user (FR-045)", () => {
     expect(formatPending({ ...view, userId: ALICE })).toBe(`${formatPending(view)} userId=${ALICE}`);
     const event = { kind: "escalated", authorizationId: "auth_1", sessionId: "s", resourceKey: "http://x/y", amount: "50000", expiresAt: "2026-11-10T12:05:00.000Z" };
     expect(formatEvent({ ...event, userId: ALICE })).toBe(`${formatEvent(event)} userId=${ALICE}`);
+  });
+});
+
+describe("014 US2 the operator's CLI shows a portal decision (FR-019, FR-032)", () => {
+  it("014 US2 escalations lines name the portal channel, the administrator's identifier and the reason code; the other channels are unchanged", async () => {
+    const { formatEvent } = await import("../scripts/escalations.js");
+    const base = { authorizationId: "auth_1", sessionId: "s", resourceKey: "http://x/y", amount: "50000" };
+    const approved = { ...base, kind: "approved", approvalId: "apr_1", approver: ALICE, approvalExpiresAt: "2026-11-11T12:10:00.000Z", channel: "portal", decidedBy: ALICE };
+    expect(formatEvent(approved)).toBe(
+      `APPROVED auth_1 session=s resource=http://x/y amount=50000 approvalId=apr_1 approver=${ALICE} approvalExpiresAt=2026-11-11T12:10:00.000Z channel=portal decidedBy=${ALICE}`,
+    );
+    const denied = { ...base, kind: "denied", rejectionId: "rej_1", channel: "portal", decidedBy: ALICE, reasonCode: "amount_too_high" };
+    expect(formatEvent(denied)).toBe(`DENIED auth_1 session=s resource=http://x/y amount=50000 rejectionId=rej_1 reasonCode=amount_too_high channel=portal decidedBy=${ALICE}`);
+    // An operator's rejection has a label and maybe free text, and no reason code: its line is what it was.
+    const operator = { ...base, kind: "denied", rejectionId: "rej_2", operator: "ops", reason: "not today", channel: "operator", decidedBy: "ops" };
+    expect(formatEvent(operator)).toBe('DENIED auth_1 session=s resource=http://x/y amount=50000 rejectionId=rej_2 operator=ops reason="not today" channel=operator decidedBy=ops');
+    expect(formatEvent({ ...base, kind: "denied", rejectionId: "rej_3", channel: "backchannel", decidedBy: "auth0|x" })).toBe(
+      "DENIED auth_1 session=s resource=http://x/y amount=50000 rejectionId=rej_3 channel=backchannel decidedBy=auth0|x",
+    );
   });
 });

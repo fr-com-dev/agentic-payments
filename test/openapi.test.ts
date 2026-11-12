@@ -39,16 +39,19 @@ const ASSET = "0xAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAa";
 const PAY_TO = "0xcccccccccccccccccccccccccccccccccccccccc";
 const PAYER = "0x00000000000000000000000000000000000000f1";
 const NOW = Date.parse("2026-10-21T12:00:00.000Z");
-const TOKENS = { control: "t-control", settlement: "t-settlement", operator: "t-operator", portal: "t-portal" };
+const TOKENS = { control: "t-control", settlement: "t-settlement", operator: "t-operator", portal: "t-portal", portalAdmin: "t-portal-admin" };
 /** Security scheme name in the document → the token the service expects for it. */
 const SCHEME_TOKENS: Record<string, string> = {
   controlToken: TOKENS.control,
   settlementToken: TOKENS.settlement,
   operatorToken: TOKENS.operator,
   portalToken: TOKENS.portal,
+  portalAdminToken: TOKENS.portalAdmin,
 };
 /** The v1.10 user-account operations (tag `portal`), mounted only with user accounts on. */
 const isUserRoute = (op: { tags?: string[] }) => op.tags?.includes("portal") === true;
+/** The v1.11 administration operations (tag `admin`), mounted only with user accounts and administration on. */
+const isAdminRoute = (op: { tags?: string[] }) => op.tags?.includes("admin") === true;
 const loadDoc = () => loadDocFile(DOC_FILE);
 
 const fakeSigner: PaymentSignerLike = {
@@ -70,9 +73,10 @@ afterEach(async () => {
 /**
  * T-API-01..03 describe the full surface, so API docs are on by default here. `startService({})` leaves
  * `apiDocs` unset, which is what main() passes without API_DOCS, so it tests the service's own default.
- * User accounts (v1.10) are on unless `users: false`, which is main() without USER_ACCOUNTS=1.
+ * User accounts (v1.10) are on unless `users: false`, which is main() without USER_ACCOUNTS=1; the administration
+ * routes (v1.11) are on with them unless `admin: false`, which is main() without PORTAL_ADMIN=1.
  */
-async function startService(opts: { apiDocs?: boolean; users?: boolean } = { apiDocs: true }) {
+async function startService(opts: { apiDocs?: boolean; users?: boolean; admin?: boolean } = { apiDocs: true }) {
   let t = NOW;
   const mandate = buildMandate(
     {
@@ -102,6 +106,7 @@ async function startService(opts: { apiDocs?: boolean; users?: boolean } = { api
       users: { platform: testPlatform(), keyring: new WalletKeyring(TEST_MNEMONIC, { caip2: CAIP2, asset: ASSET }) },
       net: { caip2: CAIP2, asset: ASSET, decimals: 6 },
     }),
+    ...(opts.users !== false && opts.admin !== false && { admin: {} }),
   });
   const server = await new Promise<Server>((r) => {
     const s = svc.app.listen(0, "127.0.0.1", () => r(s));
@@ -167,10 +172,20 @@ describe("T-API-01 every L2 route is documented, and every documented route is m
   it("T-API-01 without USER_ACCOUNTS, the user-account operations are not mounted and everything else is", async () => {
     const { app, base } = await startService({ apiDocs: true, users: false });
     const doc = loadDoc();
-    expect(routeDiff(documentedRoutes(doc, (op) => !isUserRoute(op)), mountedRoutes(app))).toEqual({ undocumented: [], unmounted: [] });
+    expect(routeDiff(documentedRoutes(doc, (op) => !isUserRoute(op) && !isAdminRoute(op)), mountedRoutes(app))).toEqual({ undocumented: [], unmounted: [] });
     expect(documentedRoutes(doc, isUserRoute)).toHaveLength(14);
     for (const [method, path, op] of operations(doc)) {
       if (isUserRoute(op)) expect((await send(base, method, path.replace(/\{\w+\}/g, "x"), TOKENS.portal)).status, `${method} ${path}`).toBe(404);
+    }
+  });
+
+  it("T-API-01 without PORTAL_ADMIN, the administration operations are not mounted and everything else is (v1.11)", async () => {
+    const { app, base } = await startService({ apiDocs: true, admin: false });
+    const doc = loadDoc();
+    expect(routeDiff(documentedRoutes(doc, (op) => !isAdminRoute(op)), mountedRoutes(app))).toEqual({ undocumented: [], unmounted: [] });
+    expect(documentedRoutes(doc, isAdminRoute).length).toBeGreaterThan(0);
+    for (const [method, path, op] of operations(doc)) {
+      if (isAdminRoute(op)) expect((await send(base, method, path.replace(/\{\w+\}/g, "x"), TOKENS.portalAdmin)).status, `${method} ${path}`).toBe(404);
     }
   });
 
@@ -356,6 +371,57 @@ describe("T-API-03 live responses match the documented status and schema", () =>
     await call("POST", "/v1/reconcile", { token: TOKENS.settlement, body: { authorizationId: "auth_x" } });
 
     await call("GET", "/v1/ledger/verify", O);
+
+    // v1.11 portal administration: every admin operation and each of its statuses
+    const A = { token: TOKENS.portalAdmin };
+    await call("GET", "/v1/admin/escalations", A);
+    const escalationOf = async (sessionId: string, userId?: string) =>
+      String((await authorize({ ...intent(sessionId, "/api/premium-report", "50000"), ...(userId !== undefined && { userId }) })).authorizationId);
+    const esc = (authorizationId: string) => ({ ...A, params: { authorizationId } });
+    const adminApprove = (id: string, body: unknown) => call("POST", "/v1/admin/escalations/{authorizationId}/approve", { ...esc(id), body });
+    const adminReject = (id: string, body: unknown) => call("POST", "/v1/admin/escalations/{authorizationId}/reject", { ...esc(id), body });
+    const ok = () => ({ decidedBy: CAROL, identityConfirmedAtMs: now() });
+    const no = { decidedBy: CAROL, reasonCode: "amount_too_high" };
+    const UNKNOWN = "auth_00000000-0000-4000-8000-000000000000";
+    // approve: 400, 404, 403 (stale, then the owner), 200, 200 again, and 409 on a rejected one
+    const a1 = await escalationOf("sess_adm_1");
+    await adminApprove(a1, { decidedBy: "carol" });
+    await adminApprove(UNKNOWN, ok());
+    await adminApprove(a1, { decidedBy: CAROL, identityConfirmedAtMs: now() - 86_400_000 });
+    // an escalation of a user's own run: a user with an active policy at this point of the scenario
+    const EVE = userIdFor("dev", "eve");
+    await call("PUT", "/v1/users/{userId}/registration", { ...user(EVE), body: { acknowledgedTestFunds: true } });
+    await call("PUT", "/v1/users/{userId}/wallet", user(EVE));
+    await call("POST", "/v1/users/{userId}/policies", { ...user(EVE), body: { ...values(), ...fresh() } });
+    const own = await escalationOf("sess_adm_own", EVE);
+    await adminApprove(own, { decidedBy: EVE, identityConfirmedAtMs: now() });
+    await adminReject(own, { decidedBy: EVE, reasonCode: "other" });
+    expect((await adminApprove(a1, ok())).already).toBe(false);
+    expect((await adminApprove(a1, ok())).already).toBe(true);
+    // reject: 400, 404, 200, 200 again, and 409 on the approved one
+    const a2 = await escalationOf("sess_adm_2");
+    await adminReject(a2, { decidedBy: CAROL });
+    await adminReject(UNKNOWN, no);
+    expect((await adminReject(a2, no)).already).toBe(false);
+    expect((await adminReject(a2, no)).already).toBe(true);
+    expect((await adminReject(a1, no)).error).toBe("not_pending");
+    expect((await adminApprove(a2, ok())).error).toBe("not_pending");
+    // one escalation in any state with its budget: a decided one, the owner's own, an unknown and a malformed ID
+    for (const id of [a1, a2, own]) expect((await call("GET", "/v1/admin/escalations/{authorizationId}", esc(id))).budget).toBeDefined();
+    await call("GET", "/v1/admin/escalations/{authorizationId}", esc(UNKNOWN));
+    await call("GET", "/v1/admin/escalations/{authorizationId}", esc("auth_nope"));
+    await call("GET", "/v1/admin/ledger/verify", A);
+    // the trail in pages: the latest, forward, back, and a refused query
+    await call("GET", "/v1/admin/escalations/events", A);
+    await call("GET", "/v1/admin/escalations/events", { ...A, query: "?after=-1&limit=200" });
+    await call("GET", "/v1/admin/escalations/events", { ...A, query: "?before=5&limit=2" });
+    await call("GET", "/v1/admin/escalations/events", { ...A, query: "?after=1&before=2" });
+    // the operator's reads now show the portal's decisions: the channel, the identifier and the reason code
+    const feed = (await call("GET", "/v1/escalations/events", O)).events as Array<Record<string, unknown>>;
+    expect(feed.filter((e) => e.channel === "portal").map((e) => [e.kind, e.decidedBy, e.reasonCode])).toEqual([
+      ["approved", CAROL, undefined],
+      ["denied", CAROL, "amount_too_high"],
+    ]);
 
     // docs (API_DOCS=1): the page, every documented asset and the document itself
     await call("GET", "/docs");

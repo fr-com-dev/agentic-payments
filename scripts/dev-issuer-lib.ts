@@ -8,6 +8,8 @@ import { DEV_ISSUER, DEV_TENANT } from "../src/shared/entra-token.js";
 
 export const DEV_AUDIENCE = "api://x402-l1-agent";
 export const DEV_ROLE = "Agent.Run";
+/** 014: the app role of a portal administrator. */
+export const DEV_ADMIN_ROLE = "Portal.Admin";
 /** 013: the delegated scope of the agent service, and of the portal. */
 export const DEV_AGENT_SCOPE = "user_impersonation";
 export const DEV_PORTAL_SCOPE = "Portal.Access";

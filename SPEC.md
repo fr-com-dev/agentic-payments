@@ -3,12 +3,33 @@
 | Field | Value |
 |---|---|
 | Spec ID | X402-3L-SPEC |
-| Version | 1.10 (2026-11-10). v1.0 described the original PoC; v1.1 is the build target for the spec-kit plans in `specs/`; v1.2 adds the CDP facilitator on Base Sepolia (`specs/009`); v1.3 adds the escalation lifecycle: operator rejection, expiry and notification (`specs/010`); v1.4 adds an OpenAPI copy of L2-5 and opt-in Swagger UI on L2 (`API_DOCS=1`); v1.5 adds the hosted agent service on Mastra and Azure (`specs/011`); v1.6 adds OpenAPI copies of L1-6 and the seller (CP-1), with opt-in Swagger UI on both (`API_DOCS=1`); v1.7 declares the seller's endpoints with decorators and a monetization model, freemium discovery plus pay-per-use tiers (CP-1); v1.8 adds backchannel approval of escalations through OpenID CIBA with Auth0 (L2-7, `specs/012`); v1.9 applies the Auth0 tenant from a pipeline (`provision-auth0.yml`); v1.10 adds user accounts and the L2 web portal: onboarding, a profile, a wallet per user and expense policies (L2-8, `specs/013`) |
+| Version | 1.11 (2026-11-11). v1.0 described the original PoC; v1.1 is the build target for the spec-kit plans in `specs/`; v1.2 adds the CDP facilitator on Base Sepolia (`specs/009`); v1.3 adds the escalation lifecycle: operator rejection, expiry and notification (`specs/010`); v1.4 adds an OpenAPI copy of L2-5 and opt-in Swagger UI on L2 (`API_DOCS=1`); v1.5 adds the hosted agent service on Mastra and Azure (`specs/011`); v1.6 adds OpenAPI copies of L1-6 and the seller (CP-1), with opt-in Swagger UI on both (`API_DOCS=1`); v1.7 declares the seller's endpoints with decorators and a monetization model, freemium discovery plus pay-per-use tiers (CP-1); v1.8 adds backchannel approval of escalations through OpenID CIBA with Auth0 (L2-7, `specs/012`); v1.9 applies the Auth0 tenant from a pipeline (`provision-auth0.yml`); v1.10 adds user accounts and the L2 web portal: onboarding, a profile, a wallet per user and expense policies (L2-8, `specs/013`); v1.11 adds the portal's administration area: the rest of the control API that a person uses, for administrators (L2-8, `specs/014`) |
 | Owner | Fabricio Rojas |
 | Status | Implemented PoC; this spec is the source of truth for changes |
 | Reference | IMF Note 2026/004, *How Agentic AI Will Reshape Payments* (three-layer model) |
 
 ---
+
+## Changes in 1.11
+
+The portal's administration area (`specs/014`). Off unless L2 and the portal are both configured for it (`PORTAL_ADMIN=1`, which needs `USER_ACCOUNTS=1`); without it every process behaves as in 1.10, apart from additive fields: `user` and `admin` on the portal's `/api/me`, `admin` on its `/api/config`, and `channel: "portal"`, the decider's identifier and `reasonCode` wherever a decision is shown. 1.10 wired the portal to every user-account route of L2. 1.11 gives it what is left of the control API that a person uses: seeing the pending escalations, approving or rejecting one, following the events, seeing the budget behind an escalation, and checking the ledger. The two machine capabilities stay where they were: only the agent requests a payment authorization, and only L3 reports a settlement.
+
+| Area | Change |
+|---|---|
+| §1.2, §1.3 | Administrators, a second kind of person in the portal, decide escalated payments there. A user approving their own payments, notifications and a payment history stay out of scope. |
+| §2 | Glossary: administrator, administration area, decision path. |
+| §3.1, §3.2 | The portal relays an administrator's decision to L2. It still holds no key and is never on the payment decision path; §3.2 shows the relay beside the payment flow. |
+| §3.3 | One row: `PORTAL_ADMIN_TOKEN`. |
+| §4, §4.1 | INV-13 names the sixth role, `portal-admin`. Rule A12 also bans `PORTAL_ADMIN_TOKEN` in the layers; rule A13 is new: the portal's two halves stay apart. |
+| §6 | New files `admin-routes.ts` (L2 and portal), `admin-client.ts`, `control-errors.ts`, the web app's `screens/admin/` and `poll.ts`. |
+| §7 | The escalation views move to `src/shared/contracts.ts`; `DecisionChannel` gains `portal`; `EscalationEvent.reasonCode`; new `EscalationDetail`, `EscalationBudget`, `BudgetLine`, `EventPage`, `DecisionOutcome`, `LedgerCheck`, `REJECTION_REASON_CODES` and `ESCALATION_ID_RE`. `PaymentIntent`, `AuthorizationDecision` and `BudgetStatus` are unchanged. |
+| L2-4, L2-4.3 | No new entry type. `HUMAN_APPROVAL` and `HUMAN_REJECTION` gain a third channel, `portal`, with the administrator's identifier as `approver`, and `identityConfirmedAtMs` or `reasonCode`. Three decision paths share one decision core (`recordApproval`, `recordRejection`). |
+| L2-5 | Six administration routes under `/v1/admin/`, behind `PORTAL_ADMIN_TOKEN`. The operator's routes are unchanged; their reads show a portal decision's channel, decider and reason code. |
+| L2-8 | The administration area: access by a second app role (`Portal.Admin`), six portal routes, four screens, and the checks L2 keeps. |
+| CFG-2 | `PORTAL_ADMIN` and `PORTAL_ADMIN_TOKEN` for L2 and for the portal. |
+| §3.1 Azure profile | The API app gets a second role, `Portal.Admin`, assigned to `portalAdmins`; `userAccounts.administration` sets `PORTAL_ADMIN` in L2 and the portal; both always reference a new secret, `portal-admin-token`. No new unit, image or pipeline. |
+| §11 | SEC-8 amended; SEC-25, SEC-26 and SEC-27; the v1.11 residual risks. |
+| §12, §13 | Tests T-ADM-01..10, T-LED-07, T-PRT-10..14, T-WEB-09..12, T-E2E-14 and T-ARCH-A13; T-IAC-01 rule 16 changed and rule 22 new; flags `stack:local -- --users --admin` and `dev-token -- --portal --admin`. |
 
 ## Changes in 1.10
 
@@ -188,9 +209,10 @@ Show, as runnable code, that an LLM agent can buy HTTP resources with x402 stabl
 - One buyer agent (Claude tool-use, or a scripted agent with no LLM), one seller API, one facilitator. On `base-sepolia` the facilitator is Coinbase Developer Platform's hosted x402 facilitator by default (CP-3).
 - Spending mandate, human-in-the-loop (HITL) escalation, hash-chained audit ledger, on-chain settlement verification.
 - User accounts (v1.10, off by default): many users, self-service. Every person who may start agent runs can onboard in the L2 web portal: a profile, one crypto account of their own that only L2 signs with, and expense policies that say where their agent may pay, how much, and when a person is asked first (L2-8). Cards can be registered at a card vault (Stripe test mode) and are never a way to pay.
+- Portal administration (v1.11, off by default): a person the organization names an administrator sees every pending escalation in the portal, approves or rejects it, follows what happened, sees the budget behind it and checks the ledger (L2-8). The operator's command line and the approver's phone stay as they are.
 
 ### 1.3 Out of scope (v1)
-Mainnet. Refunds and disputes. Schemes `upto` and `batch-settlement`. Solana. AP2 / ACP / Visa TAP / Mastercard Agent Pay integration. Organizations or teams of users, and roles among them (v1.10 has users, each on their own). Paying with a card. Moving funds out of a user's account. Per-user approvers: an escalation still goes to the operator and the one configured approver. Deleting a user: an account is disabled, never deleted. Persistent DB beyond JSONL. Production authentication (mTLS). These are covered in §15. The Azure profile (§3.1, v1.5) is in scope on testnet only.
+Mainnet. Refunds and disputes. Schemes `upto` and `batch-settlement`. Solana. AP2 / ACP / Visa TAP / Mastercard Agent Pay integration. Organizations or teams of users, and roles among them (v1.10 has users, each on their own). Paying with a card. Moving funds out of a user's account. Per-user approvers: an escalation still goes to the operator, the one configured approver and (v1.11) the portal's administrators, never to the user whose payment it is. Notifying an administrator when the portal is closed, and a payment history for users. Deleting a user: an account is disabled, never deleted. Persistent DB beyond JSONL. Production authentication (mTLS). These are covered in §15. The Azure profile (§3.1, v1.5) is in scope on testnet only.
 
 ---
 
@@ -208,7 +230,10 @@ Mainnet. Refunds and disputes. Schemes `upto` and `batch-settlement`. Solana. AP
 | Facilitator | Service that verifies and settles x402 payments on-chain and pays gas |
 | HITL | Human-in-the-loop approval of an `ESCALATE` decision |
 | User (v1.10) | A person who signed in to the portal with the permission to start agent runs. Known to L2 only as `userId` (`usr_` + 32 hex, from the tenant and object IDs of their sign-in); never by name or email |
-| Portal | The web portal process (`src/portal/`, port 4025): the web app and its API. It holds no key and decides nothing |
+| Portal | The web portal process (`src/portal/`, port 4025): the web app and its API. It holds no key and never signs; v1.11: it relays an administrator's decision on an escalation to L2, which checks and records it |
+| Administrator (v1.11) | A person who holds the portal's administrator permission (the app role `Portal.Admin`), separate from the permission to start agent runs. Known to L2 only as a `usr_` identifier, like a user. May also be a user |
+| Administration area | The part of the portal only administrators see (`/admin`, `/api/admin/*`): the waiting list, one payment with its budget and the two decisions, the activity trail and the ledger check |
+| Decision path | Where an approval or a rejection came from: the operator's command line (`operator`), the approver's phone (`backchannel`, v1.8) or the portal (`portal`, v1.11). Recorded as `channel` |
 | Wallet | What a user pays with: one crypto account that L2 derives and signs for, plus the cards they registered. Cards never pay |
 | Expense policy | A user's own spending rules for a set of sellers: auto-approve limit, per-payment cap, per-run and per-day budgets, payments per minute, end date. Versioned; active, paused or removed |
 | Platform limits | The operator's upper bounds on every policy (`config/platform.json`, CFG-4). A policy can be stricter, never looser |
@@ -235,7 +260,7 @@ Mainnet. Refunds and disputes. Schemes `upto` and `batch-settlement`. Solana. AP
 
 Ports are overridable with `CONTROL_PORT`, `SELLER_PORT`, `FACILITATOR_PORT`, `SETTLEMENT_PORT`, `AGENT_PORT` and `PORTAL_PORT`. The chain port 8545 is fixed. Each entry point loads its env with `loadEnv()` from `src/shared/config.ts`. When `ENV_FILE` is unset, it defaults to the file in the last column. Ports are read through getter functions (`controlPort()`, `sellerPort()`, `facilitatorPort()`, `settlementPort()`) at call time, so env loaded at startup applies. L2 and L3 bind only through `listenControl()` and `listenSettlement()`, which always use `127.0.0.1`.
 
-**The portal (v1.10, L2-8)** serves the web app (`web/portal/`, built to `dist/portal-web`) and a JSON API under `/api` to the signed-in person. It calls L2's portal routes with its own role token and reads balances from the chain's RPC; it has no key and no route that decides, signs, approves or reconciles. It is never on the decision path: with the portal down, agents pay exactly as before, and with L2 down the portal answers 502 and grants nothing. It runs only when user accounts are on (`npm run stack:local -- --users`); `demo:local` never starts it.
+**The portal (v1.10, L2-8)** serves the web app (`web/portal/`, built to `dist/portal-web`) and a JSON API under `/api` to the signed-in person. It calls L2's portal routes with its own role token and reads balances from the chain's RPC; it has no key and no route that authorizes, signs or reconciles. v1.11: with the administration area on (`PORTAL_ADMIN=1`), it also relays an administrator's approval or rejection of an escalation to L2's administration routes, with a second role token of its own; L2 checks and records the decision, and the portal decides nothing itself. It is never on the decision path: with the portal down, agents pay exactly as before, and with L2 down the portal answers 502 and grants nothing. It runs only when user accounts are on (`npm run stack:local -- --users`); `demo:local` never starts it.
 
 **Azure profile (v1.5, `specs/011` contracts/cloud-topology.md).**
 
@@ -250,6 +275,7 @@ Ports are overridable with `CONTROL_PORT`, `SELLER_PORT`, `FACILITATOR_PORT`, `S
 - **Loopback kept.** L2 and L3 still bind 127.0.0.1. A proxy sidecar in the same app forwards from port 8080 to the loopback port; it gets no env and no secrets.
 - **Backchannel approval (v1.8).** L2's container always references `ciba-client-credential` in the l2 vault and always gets the `CIBA_*` values of the `ciba` parameter, so every environment seeds that secret (`off` while `ciba.enabled` is false). Turning the feature on is a vault update plus `ciba.enabled: true` and a `deploy-l2.yml` run.
 - **User accounts (v1.10).** `main.bicep` takes a `userAccounts` object (`enabled`, `portalClientId`, `sellerName`, `cardVault`, `cardVaultPublishableKey`; no secret). L2's container always references `portal-token` and `user-wallet-mnemonic` in the l2 vault, and the portal always references `portal-token` and `card-vault-key` in its own vault (`kv-portal-eastus2-dev`), so every environment seeds all four, as `off` while the feature is off. L2 gets `USER_ACCOUNTS` and `PLATFORM_SELLERS` (one entry: the seller's own host, `userAccounts.sellerName` and the seller's payee) from the parameter file; the agent gets `PORTAL_CLIENT_ID`. The portal's profile files live on a second NFS share, `profiles`, mounted at `/app/.local/portal` by the portal only. Turning the feature on is the vault updates, `userAccounts.enabled: true`, and runs of `deploy-l2.yml`, `deploy-portal.yml` and `deploy-l1.yml`. The mnemonic is never rotated in place: with another one L2 refuses to start (L2-3).
+- **Portal administration (v1.11).** `userAccounts` gains `administration` (a boolean; `main.bicep` refuses it without `enabled`), which sets `PORTAL_ADMIN` in L2 and in the portal. Both always reference one more secret, `portal-admin-token`, each from its own vault, so every environment seeds it (`off` until the area is turned on; then one new random value, the same in both vaults and different from `portal-token`). `pre-deploy.bicep` gives the API app a second role, `Portal.Admin` (people only, a fixed ID), and assigns it to the people in `portalAdmins`. No new unit, image or pipeline (T-IAC-01 rules 16 and 22).
 - **Identity and secrets.** Each runtime unit has its own user-assigned identity and Key Vault. The identity lifecycle is `None` everywhere except the agent, so no container in L2 or L3 can request a token at run time. Secrets reach containers only as Key Vault references.
 - **Ledger.** L2's ledger lives on an NFS Azure Files share mounted at `/app/.local`, with the L2-6 lock.
 - **Images.** One image per unit, each tagged with the commit that its own pipeline built:
@@ -292,6 +318,26 @@ sequenceDiagram
   L3-->>L1: SettlementReport
 ```
 
+An administrator's decision (v1.11, L2-8) runs beside this flow and never inside it. It starts only after step 4
+has answered `ESCALATE`, and it ends in one ledger entry; the payment itself is still made by a later run of steps
+3 to 12, where L2 decides again.
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant B as Browser (administrator)
+  participant P as Portal (no key)
+  participant L2 as L2 Control (key)
+  B->>P: POST /api/admin/escalations/:id/approve or /reject (the person's token, Portal.Admin)
+  P->>L2: POST /v1/admin/escalations/:id/approve or /reject (PORTAL_ADMIN_TOKEN; the decider and their sign-in time, from the token)
+  L2-->>P: DecisionOutcome, after one HUMAN_APPROVAL or HUMAN_REJECTION (channel: portal), or a refusal that appends nothing
+  P-->>B: DecisionOutcome
+```
+
+The portal names the decider and relays the answer; L2 checks that the escalation is pending, that it is not the
+decider's own, and (for an approval) that their sign-in is fresh, inside the serialized section. The operator's
+command line and the approver's phone (L2-7) reach the same decision core by their own routes.
+
 ### 3.3 Credential matrix (who holds what)
 
 | Secret | L1 | L2 | L3 | Seller | Facilitator | Human operator | Portal (v1.10) |
@@ -309,6 +355,7 @@ sequenceDiagram
 | `CDP_API_KEY_ID` / `CDP_API_KEY_SECRET` | — | — | — | ✅ (`FACILITATOR=cdp`) | — | — | — |
 | `CIBA_CLIENT_KEY` or `CIBA_CLIENT_SECRET` (L2→Auth0, v1.8) | — | ✅ (`ciba-client.ts` only) | — | — | — | — | — |
 | `PORTAL_TOKEN` (portal→L2, v1.10) | **never** | ✅ verifies | — | — | — | — | ✅ |
+| `PORTAL_ADMIN_TOKEN` (portal→L2, administration, v1.11) | **never** | ✅ verifies | — | — | — | — | ✅ (`admin-client.ts` only) |
 | `USER_WALLET_MNEMONIC` (v1.10) | **never** | ✅ (`signer.ts` only) | — | — | — | — | **never** |
 | Person's portal token (browser→portal, v1.10) | refuses it | — | — | — | — | — | ✅ verifies, never forwards |
 | `CARD_VAULT_KEY` (portal→card vault, v1.10) | — | — | — | — | — | — | ✅ (`card-vault.ts` only) |
@@ -341,7 +388,7 @@ v1.10 (L2-8):
 | INV-10 | L3 trusts the chain, not the seller's `PAYMENT-RESPONSE`. CONFIRMED requires a matching Transfer log. | T-E2E-03 |
 | INV-11 | CONFIRMED is final in L2. A later contradicting report is recorded with `anomaly: true` and does not change the effective status. | T-E2E-03, T-LED-03 |
 | INV-12 | A human approval never overrides a DENY rule. It only lifts `human_approval_required` for one exact (session, resource, payTo, amount) tuple, once. "Once" means once per approval: each approval is a separate human act and is consumed by the first payment that uses it. Since v1.3 an escalation has at most one approval, and a `HUMAN_REJECTION` (R15) is a DENY that no approval can lift. | T-POL-13, T-POL-15, T-E2E-02 |
-| INV-13 | Each caller has its own bearer token. L1 cannot reconcile or approve; L3 cannot authorize. v1.10: a fifth role, `portal-control` (`PORTAL_TOKEN`), opens only the portal routes of L2-5 and none of the others, and no other token opens them; L2 refuses to start when the portal's token equals another role's. | T-E2E-02, T-E2E-05, T-USR-02, T-USR-07 |
+| INV-13 | Each caller has its own bearer token. L1 cannot reconcile or approve; L3 cannot authorize. v1.10: a fifth role, `portal-control` (`PORTAL_TOKEN`), opens only the portal routes of L2-5 and none of the others, and no other token opens them; L2 refuses to start when the portal's token equals another role's. v1.11: a sixth role, `portal-admin` (`PORTAL_ADMIN_TOKEN`), opens only the administration routes of L2-5: no user-account route, and never authorize, budget, reconcile or the operator's routes; no other token opens them, and L2 refuses to start when it equals another role's. Every endpoint still accepts exactly one role. | T-E2E-02, T-E2E-05, T-USR-02, T-USR-07, T-ADM-02, T-ADM-10 |
 
 ---
 
@@ -360,7 +407,8 @@ v1.10 (L2-8):
 | A9 (v1.8) | §3.3, SEC-17 | `src/**`, `scripts/**`, `env/*.env.example` (`test/**` exempt) | `CIBA_CLIENT_KEY` or `CIBA_CLIENT_SECRET` outside `src/layer2-control/ciba-client.ts` and `env/l2-control.env.example` (comments in TS don't count; `CIBA_CLIENT_KEY_ID` is not the credential) |
 | A10 (v1.10) | §3.3, SEC-22 | `src/**`, `scripts/**`, `env/*.env.example` (`test/**` exempt) | `CARD_VAULT_KEY` (not `CARD_VAULT_KEY_…` or the publishable key), or the string `api.stripe.com`, outside `src/portal/card-vault.ts` and `env/portal.env.example` |
 | A11 (v1.10) | INV-2, SEC-24 | `src/**`, `scripts/**`, `env/*.env.example` (`test/**` exempt) | `USER_WALLET_MNEMONIC` outside `src/layer2-control/signer.ts`, `src/portal-main.ts` (the refusal), `scripts/demo-lib.ts` (the local dev value) and `env/l2-control.env.example` |
-| A12 (v1.10) | INV-13, SEC-19 | `src/layer1-intent/**`, `src/layer3-settlement/**`, `src/counterparty/**`; and `src/portal/**` | in a layer: `PORTAL_TOKEN`. In the portal: `PAYER_PRIVATE_KEY`, `CONTROL_TOKEN`, `OPERATOR_TOKEN`, `SETTLEMENT_TOKEN` or `VERIFIER_TOKEN` |
+| A12 (v1.10) | INV-13, SEC-19 | `src/layer1-intent/**`, `src/layer3-settlement/**`, `src/counterparty/**`; and `src/portal/**` | in a layer: `PORTAL_TOKEN` or (v1.11) `PORTAL_ADMIN_TOKEN`. In the portal: `PAYER_PRIVATE_KEY`, `CONTROL_TOKEN`, `OPERATOR_TOKEN`, `SETTLEMENT_TOKEN` or `VERIFIER_TOKEN` |
+| A13 (v1.11) | INV-13, SEC-26 | `src/portal/**` | the role name `portal-admin` or `PORTAL_ADMIN_TOKEN` outside `config.ts` and `admin-client.ts`; an import of `./admin-client.js` outside `admin-routes.ts` and `server.ts`; an import of `./control-client.js` in `admin-routes.ts` or `admin-client.ts` |
 
 Each rule has a fixture under `test/fixtures/arch/` that must trip it (Principle VIII). T-ARCH-ENV checks that each `env/*.env.example` holds only the variables its process may see (§3.3, CFG-2); since v1.10 that includes `env/portal.env.example`, and a key ending in `_MNEMONIC` or named `CARD_VAULT_KEY` must be empty.
 
@@ -500,6 +548,9 @@ src/
     users.ts                     user accounts as pure functions over ledger entries: state, policy validation, loosening,
                                  policy selection, the effective mandate, views (L2-8; v1.10)
     user-routes.ts               the portal routes of L2-5, each write inside the serialized section (L2-8; v1.10)
+    admin-routes.ts              the administration routes of L2-5 for the portal's second role: the escalation reads, the
+                                 two decisions with the own-payment and identity checks, the budget view, the ledger check
+                                 (L2-8; v1.11)
     api-docs.ts                  L2's OpenAPI document for src/shared/api-docs.ts, only with API_DOCS=1 (L2-5, SEC-13)
     service.ts                   HTTP API (L2-5)
   layer3-settlement/
@@ -517,7 +568,9 @@ src/
   portal/                        the portal's backend (L2-8, v1.10): server.ts (createPortalApp, headers, limits), access.ts
                                  (the person's token), routes.ts (/api), control-client.ts (L2's portal routes),
                                  profile-store.ts (one file per user), balance.ts (read-only balance), cards.ts and
-                                 card-vault.ts (the only reader of the card vault key, A10), config.ts, log.ts, api-docs.ts
+                                 card-vault.ts (the only reader of the card vault key, A10), config.ts, log.ts, api-docs.ts;
+                                 v1.11: admin-routes.ts (/api/admin) and admin-client.ts (L2's administration routes, the
+                                 only user of the second role token, A13), control-errors.ts (shared by both clients)
   portal-main.ts                 composition root for the portal: loadEnv → refusal when a payment key is visible → listen
   main.ts                        composition root for the agent process
   hosted-main.ts                 composition root for the hosted agent service: loadEnv → INV-3 refusal → listen (L1-6)
@@ -536,6 +589,7 @@ test/
   ledger-lock.test.ts  infra.test.ts  images.test.ts  deploy-workflow.test.ts
   github-setup.test.ts  cleanup.test.ts   (L2-6, Azure, v1.5)
   users.test.ts  user-id.test.ts  portal.test.ts  card-vault.test.ts  openapi-portal.test.ts   (L2-8, v1.10)
+  admin.test.ts  portal-admin.test.ts   (the administration area, L2-8, v1.11)
   helpers/users.ts               in-process L2 with user accounts on, a movable clock, two users (v1.10)
   helpers/portal.ts              in-process portal against that L2, the dev issuer and the stand-in card vault (v1.10)
   helpers/card-vault-stub.ts     stand-in card vault: the six calls, test and live answers, failures (v1.10)
@@ -637,7 +691,30 @@ export interface UserView { userId: string; registered: boolean; enabled: boolea
   cards: string[]; policies: PolicyView[] }
 export interface PlatformView { platformId: string; digest: string; limits: PlatformLimits;
   sellers: { host: string; name: string; payees: string[] }[]; network: string; asset: string; decimals: number }
+
+// v1.11 (L2-8, specs/014): the escalation views, here because the portal reads them too, and the administration shapes
+export type DecisionChannel = "operator" | "backchannel" | "portal";
+export const REJECTION_REASON_CODES = ["not_expected", "amount_too_high", "wrong_seller", "duplicate", "other"] as const;
+export const ESCALATION_ID_RE = /^auth_[0-9a-f-]{36}$/;
+export interface EscalationView { authorizationId: string; sessionId: string; resourceKey: string; payTo: string;
+  amount: string; createdAt: string; expiresAt: string; referenceCode: string; approvalRequest?: ApprovalRequestState;
+  userId?: string }
+export interface BudgetLine { capAtomic: string; spentAtomic: string; remainingAtomic: string }
+export interface EscalationBudget { asset: string; decimals: number; applies: boolean;
+  notApplying?: "user_not_onboarded" | "user_disabled" | "no_active_policy"; autoApproveMaxAtomic: string;
+  hardCapPerPaymentAtomic: string; run: BudgetLine; day: BudgetLine; userDay?: BudgetLine; fits: boolean }
+export interface EscalationDecision { at: string; channel: DecisionChannel; decidedBy: string; approvalId?: string;
+  approvalExpiresAt?: string; rejectionId?: string; reasonCode?: RejectionReasonCode; reason?: string }
+export interface EscalationDetail extends EscalationView { state: "pending" | "approved" | "denied" | "expired";
+  decision?: EscalationDecision; budget: EscalationBudget }
+export interface EventPage { events: EscalationEvent[]; first: number; last: number; cursor: number; more: boolean }
+export type DecisionOutcome =
+  | { ok: true; state: "approved"; approvalId: string; expiresAt: string; already: boolean; channel: DecisionChannel; decidedBy: string }
+  | { ok: true; state: "denied"; rejectionId: string; rejectedAt: string; already: boolean; channel: DecisionChannel; decidedBy: string };
+export interface LedgerCheck { entries: number; ok: boolean; brokenAt?: number }
 ```
+
+`EscalationEvent` (L2-5) also lives there since v1.11, with one more optional field, `reasonCode`.
 
 All amounts are **decimal strings of atomic units**. Use `BigInt` for arithmetic, never `Number`.
 
@@ -796,8 +873,8 @@ Entry: `{ seq, ts (ISO), type, sessionId?, intentId?, authorizationId?, data, pr
 | `AUTHORIZED` | decision AUTHORIZED | `amount, asset, network, payTo, payer, validBefore, resourceUrl, mandateId, approvalRef` (the consumed approval's `approvalId`, or `null`; always present) |
 | `DENIED` | decision DENIED | `violations, resourceKey` |
 | `ESCALATED` | decision ESCALATE | `violations, resourceKey, payTo, amount, approvalRequest?` (v1.8: `requested`, `capped`, `operator_only` or `reevaluation`, only when backchannel approval is on) |
-| `HUMAN_APPROVAL` | operator approves, or (v1.8) a verified backchannel answer approves | `approvalId` (`apr_<uuid>`), `escalationId, resourceKey, payTo, amount, approver, expiresAtMs, channel` (v1.8: `operator` or `backchannel`; an older entry without it is `operator`), plus `requestId, evidence {issuer, subject, answerId, issuedAt, detailsSource}` for `backchannel` |
-| `HUMAN_REJECTION` | operator rejects a pending escalation (L2-4.3), or (v1.8) the approver refuses | `rejectionId` (`rej_<uuid>`), `escalationId, resourceKey, payTo, amount, channel`, plus `operator, reason?` for `operator` (untrusted free text, never a decision input), or `approver, issuer, requestId` for `backchannel` |
+| `HUMAN_APPROVAL` | operator approves, (v1.8) a verified backchannel answer approves, or (v1.11) an administrator approves in the portal | `approvalId` (`apr_<uuid>`), `escalationId, resourceKey, payTo, amount, approver, expiresAtMs, channel` (v1.8: `operator` or `backchannel`; v1.11: or `portal`; an older entry without it is `operator`), plus `requestId, evidence {issuer, subject, answerId, issuedAt, detailsSource}` for `backchannel`. For `portal` (v1.11): `approver` is the administrator's `usr_…` identifier, never a name; `expiresAtMs` is the append time plus 600 s; plus `identityConfirmedAtMs` |
+| `HUMAN_REJECTION` | operator rejects a pending escalation (L2-4.3), (v1.8) the approver refuses, or (v1.11) an administrator rejects in the portal | `rejectionId` (`rej_<uuid>`), `escalationId, resourceKey, payTo, amount, channel`, plus `operator, reason?` for `operator` (untrusted free text, never a decision input), or `approver, issuer, requestId` for `backchannel`, or (v1.11) `approver` (the administrator's `usr_…`) and `reasonCode` (`not_expected`, `amount_too_high`, `wrong_seller`, `duplicate` or `other`) for `portal`: no label and no text |
 | `APPROVAL_REQUESTED` | v1.8 (L2-7): the approval service accepted the request | `escalationId, resourceKey, payTo, amount, channel, requestId` (`apq_<uuid>`), `issuer, approver, referenceCode, bindingMessage, details, requestedExpirySec, requestExpiresAtMs, intervalSec, handleSealed, attempts` |
 | `APPROVAL_REQUEST_FAILED` | v1.8: a start, a poll or a resume failed for good | `escalationId, resourceKey, payTo, amount, channel, requestId?, phase, failure, httpStatus?, error?` (a whitelisted OAuth code or `other`), `attempts?` |
 | `APPROVAL_REQUEST_LAPSED` | v1.8: the request expired, or a refusal came within 5 s of its expiry | `escalationId, resourceKey, payTo, amount, channel, requestId, cause` (`expired` or `late_refusal`), `requestExpiresAtMs` |
@@ -844,6 +921,7 @@ An escalation is created by its `ESCALATED` entry at `createdMs = Date.parse(ts)
 3. `expired` when an `ESCALATION_EXPIRED` names it, or `nowMs ≥ expiresAtMs`.
 4. Otherwise `pending`.
 
+- **Decision paths (v1.11).** A `HUMAN_APPROVAL` or a `HUMAN_REJECTION` comes from one of three paths, recorded as `channel`: the operator's routes (`operator`), a verified backchannel answer (`backchannel`, L2-7) or the portal's administration routes (`portal`, L2-8). The operator's and the portal's routes call one decision core, `recordApproval` and `recordRejection` (`approval-routes.ts`): sweep, derive the state, return the existing outcome for an escalation that is no longer pending, run the path's own checks, append one entry, all in one synchronous block inside the serialized section. So an escalation gets exactly one final state whichever paths race for it (T-ADM-07).
 - **Final states.** `approved`, `denied` and `expired` are final and are never left. Approve and reject act only on a pending escalation. Repeating the deciding action returns the existing decision. The opposite action, or any action on an expired escalation, is 409 and appends nothing.
 - **Sweep.** `sweep(nowMs)` runs at the start of every serialized L2 operation and every 1 s from `main()` (an unreferenced timer; `createControlService` never starts one). It appends one `ESCALATION_EXPIRED` for each escalation still pending with `nowMs ≥ expiresAtMs`, and one `APPROVAL_LAPSED` for each approval past `expiresAtMs` that was not consumed and not already recorded. A restart sweeps whatever came due while L2 was down.
 - **One pending escalation per purchase.** A purchase is (session, resource key, payee lower-cased, exact amount string). While an escalation for a purchase is pending, an ESCALATE decision for the same purchase returns that escalation's `authorizationId` and is recorded as `ESCALATION_REPEATED`. A different amount or payee is a different purchase.
@@ -877,6 +955,12 @@ An escalation is created by its `ESCALATED` entry at `createdMs = Date.parse(ts)
 | `POST /v1/users/:userId/enable` | `PORTAL_TOKEN` | `{ identityConfirmedAtMs }` | `UserView`; one `POLICY_PAUSED` (cause `account_enabled`) per active policy, then `USER_ENABLED`; nothing if already enabled | 401, 403 `step_up_required`, 409 `not_registered` |
 | `PUT /v1/users/:userId/cards/:cardId` | `PORTAL_TOKEN` | — | `{ cards }`, and `CARD_ADDED` unless already present | 400 (`cardId` is not `card_<uuid>`), 401, 409 `not_registered`, `account_disabled` or `card_limit` |
 | `DELETE /v1/users/:userId/cards/:cardId` | `PORTAL_TOKEN` | — | `{ cards }`, and `CARD_REMOVED` if it was present; allowed while disabled | 401 |
+| `GET /v1/admin/escalations` (v1.11) | `PORTAL_ADMIN_TOKEN` | — | `{ pending, cursor, readAt }`: the pending list of `GET /v1/escalations` plus the time of the read. Derived from the entries and the clock; appends nothing (no sweep) | 401 |
+| `GET /v1/admin/escalations/events?after=<seq>\|before=<seq>&limit=<n>` (v1.11) | `PORTAL_ADMIN_TOKEN` | `after` or `before`: integer ≥ -1, not both; `limit`: 1–200, default 50 | `{ events, first, last, cursor, more }`: one page of the events of `GET /v1/escalations/events`, oldest first. `after`: the first `limit` with a higher `seq`; `before`: the `limit` just below; neither: the latest `limit`. Every event also carries `referenceCode` and, for a user's payment, `userId`. Appends nothing | 400 (a bad `limit` or cursor, both cursors, or any other query parameter), 401 |
+| `GET /v1/admin/escalations/:authorizationId` (v1.11) | `PORTAL_ADMIN_TOKEN` | — | `EscalationDetail`: the escalation in any state (`state`: `pending`, `approved`, `denied` or `expired`), `decision` (`at, channel, decidedBy`, and the IDs, `reasonCode` or the operator's `reason`) when a person ended it, and `budget`: `{ asset, decimals, applies, notApplying?, autoApproveMaxAtomic, hardCapPerPaymentAtomic, run, day, userDay?, fits }`, each line `{ capAtomic, spentAtomic, remainingAtomic }`, from the figures the decision itself uses, under the rules in force now. Appends nothing | 400 (not an escalation ID), 401, 404 |
+| `POST /v1/admin/escalations/:authorizationId/approve` (v1.11) | `PORTAL_ADMIN_TOKEN` | `{ decidedBy, identityConfirmedAtMs }` | Pending: `{ ok, state: "approved", approvalId, expiresAt, already: false, channel: "portal", decidedBy }` and one `HUMAN_APPROVAL` (`channel: "portal"`, `approver` = the administrator's `usr_…`, `identityConfirmedAtMs`), valid 600 s. Already approved on any path: the first approval with `already: true`; nothing is appended | 400 (the ID is not `auth_<uuid>`, `decidedBy` is not a user identifier, `identityConfirmedAtMs` is not an integer, or any other field), 401, 403 `own_payment` (the decider owns the escalation), 403 `step_up_required` with `maxAgeSec: 900` (the confirmation is older than 15 min, 60 s tolerance), 404, 409 `{ error: "not_pending", state, channel?, decidedBy?, rejectionId?, expiresAt? }` |
+| `GET /v1/admin/ledger/verify` (v1.11) | `PORTAL_ADMIN_TOKEN` | — | `{ entries, ok, brokenAt? }`, as `GET /v1/ledger/verify`. Read-only | 401 |
+| `POST /v1/admin/escalations/:authorizationId/reject` (v1.11) | `PORTAL_ADMIN_TOKEN` | `{ decidedBy, reasonCode }`; `reasonCode` is one of `not_expected`, `amount_too_high`, `wrong_seller`, `duplicate`, `other`; no text | Pending: `{ ok, state: "denied", rejectionId, rejectedAt, already: false, channel: "portal", decidedBy }` and one `HUMAN_REJECTION` (`channel: "portal"`, `approver`, `reasonCode`). Already denied on any path: the first rejection with `already: true` | 400, 401, 403 `own_payment`, 404, 409 `not_pending` |
 | `GET /docs` | none; only with `API_DOCS=1` | — | Swagger UI page (HTML) whose CSP limits scripts and requests to the L2 origin | — |
 | `GET /docs/:asset` | none; only with `API_DOCS=1` | — | `swagger-ui.css` or `swagger-ui-bundle.js` from `swagger-ui-dist`, or `swagger-initializer.js` | 404 any other name |
 | `GET /openapi.yaml` | none; only with `API_DOCS=1` | — | `docs/l2-control.openapi.yaml` with `servers` set to `/`, the L2 serving it | — |
@@ -973,8 +1057,8 @@ The portal (`src/portal/`, `specs/013` contracts/portal-api.md):
 
   | Method & path | Request | 200 response | Errors |
   |---|---|---|---|
-  | `GET /api/config` (no token) | — | `{ auth: { mode, tenantId, clientId, scope }, network, cards: { available, publishableKey? } }`: public values only | — |
-  | `GET /api/me` | — | `{ userId, enabled, onboarding: { profile, wallet, policy }, profile?: { displayName, contactEmail } }` | — |
+  | `GET /api/config` (no token) | — | `{ auth: { mode, tenantId, clientId, scope }, network, cards: { available, publishableKey? }, admin: { available } }`: public values only. v1.11: `admin.available` says whether the administration area is on | — |
+  | `GET /api/me` | — | `{ userId, enabled, onboarding: { profile, wallet, policy }, profile?: { displayName, contactEmail }, user: true, admin }`. v1.11: `user` and `admin` say what the person may use; a person who is only an administrator gets `{ userId, user: false, admin: true }` and L2 is not asked | — |
   | `PUT /api/profile` | `{ displayName, contactEmail, acknowledgedTestFunds? }` | the `/api/me` body. The first save needs `acknowledgedTestFunds: true` and registers the user at L2; later edits touch only the profile file | 400, 422 `invalid_profile` |
   | `GET /api/platform` | — | `{ limits, sellers: [{ host, name }], network, asset, decimals }`; never a payee address | — |
   | `GET /api/wallet` | — | `{ account?: { address, network, asset, decimals, balanceAtomic?, balanceReadAt?, balanceStale, committedAtomic, spent24hAtomic, dailyCeilingAtomic, dailyRemainingAtomic, lowBalance }, cards, cardsAvailable, disabled }` | 409 `profile_required` |
@@ -989,6 +1073,12 @@ The portal (`src/portal/`, `specs/013` contracts/portal-api.md):
   | `POST /api/policies/:policyId/pause`, `/resume`, `/remove` | — | the policy | 403 `step_up_required` (resume), 404, 409, 422 (resume) |
   | `POST /api/account/disable` | `{ confirm: true }` | the `/api/me` body | 400 |
   | `POST /api/account/enable` | — | the `/api/me` body | 403 `step_up_required` |
+  | `GET /api/admin/escalations/:authorizationId` (v1.11, `Portal.Admin`) | — | `AdminEscalation & { state, decision?, budget, readAt }`: L2's `EscalationDetail` without the session reference, with `mine` and the portal's clock at the read (the browser counts the time left from it) | 400 (a malformed ID), 404 |
+  | `POST /api/admin/escalations/:authorizationId/approve` (v1.11, `Portal.Admin`) | `{}` or none | `{ ok, state: "approved", approvalId, expiresAt, already, channel, decidedBy }`. The decider and `identityConfirmedAtMs` come from the token only | 400 (a malformed ID, or any body field), 403 `own_payment`, 403 `step_up_required` (`maxAgeSec`), 404, 409 `not_pending` (`state`, `channel?`, `decidedBy?`) |
+  | `POST /api/admin/escalations/:authorizationId/reject` (v1.11, `Portal.Admin`) | `{ reasonCode }` | `{ ok, state: "denied", rejectionId, rejectedAt, already, channel, decidedBy }` | 400 (a malformed ID, a reason outside the list, or any other field), 403 `own_payment`, 404, 409 `not_pending` |
+  | `GET /api/admin/escalations/events?after\|before&limit` (v1.11, `Portal.Admin`) | — | `{ events, first, last, cursor, more }`: L2's page, each event without its session reference and with `mine` | 400 (a bad value, both cursors, or any other query parameter) |
+  | `GET /api/admin/ledger/verify` (v1.11, `Portal.Admin`) | — | `{ entries, ok, brokenAt?, checkedAt }`. One check answers for 10 s, whoever asks; read-only | — |
+  | `GET /api/admin/escalations` (v1.11, `Portal.Admin`) | — | `{ pending: AdminEscalation[], readAt }`, oldest first. An item: `{ authorizationId, referenceCode, owner: { userId?, platformAccount }, mine, resourceKey, payTo, amountAtomic, createdAt, expiresAt, approvalRequest? }`; no session reference | — |
 
   Every row can also answer 401, 403 and 429, and 502 `control_unavailable` when L2 can't be reached. `GET /healthz` and `GET /readyz` report health; any other path serves the built web app. `endsOn` (`YYYY-MM-DD`) becomes `expiresAt` at the end of that day, UTC. L2's issues come back under the input's field names.
 - **Order of writes.** L2 first and the portal's own store second, so a failure in between never grants anything: a policy's name is kept only after L2 accepted the policy; a card is saved at the vault and then recorded at L2, and detached again if L2 refuses. The one exception is the first profile save, which writes the profile file before the registration, because the ledger entry is the one that can't be taken back; if the registration fails, the profile step stays not done and the next save retries.
@@ -998,6 +1088,15 @@ The portal (`src/portal/`, `specs/013` contracts/portal-api.md):
 - **API docs.** `docs/portal.openapi.yaml` describes these routes in OpenAPI 3.1; T-API-12..14 fail until it and the portal match. With `API_DOCS=1` the portal serves Swagger UI over it like the other services (SEC-13, T-API-15); the Azure deployment never sets it.
 
 The web app (`web/portal/`, `specs/013` contracts/portal-ui.md) calls only the portal API and holds no credential but the person's own sign-in, kept by the sign-in library in memory and session storage.
+
+**The administration area (v1.11, `specs/014`)**. Off unless `PORTAL_ADMIN=1` in L2 (which needs `USER_ACCOUNTS=1`) and in the portal; off, L2's `/v1/admin/*` and the portal's `/api/admin/*` are not mounted (404) and `Portal.Admin` counts for nothing.
+
+- **Who.** An administrator is a person whose token carries the app role `Portal.Admin`, a second role on the API app, assigned by the organization and separate from `Agent.Run`: holding one never gives the other. With the area on, the portal's access check admits a person with either role and notes which: every route of 1.10 except `GET /api/me` needs `Agent.Run` (403 otherwise), and `/api/admin/*` needs `Portal.Admin` (403, with the same body as any other refusal, before L2 is called). An administrator is not a super-user: they reach no other person's profile, wallet, cards or policies, and can't change the platform limits.
+- **What L2 keeps.** The portal says only who decided (`decidedBy`, the `usr_` identifier it derived from the verified token) and when they last entered their credentials (`identityConfirmedAtMs`, the token's `auth_time`); L2 never sees the person's token. Inside the serialized section, in this order, L2 checks that the escalation exists (404), that it is pending (the same decision returns the first one with `already: true`; any other final state is 409 `not_pending` with the state, the path and the decider), that the decider is not the escalation's owner (403 `own_payment`; an escalation of the platform account has no owner), and, for an approval only, that the identity confirmation is at most 15 minutes old with 60 s tolerance (403 `step_up_required`, as for a loosening policy change). Then it appends one entry. A refusal appends nothing.
+- **What an approval is.** Exactly an operator's: it lifts only R14, for one (session, resource, payee, amount), once, valid 600 s (a constant on this path), and the payment is evaluated again in full when the agent retries (INV-12). A rejection takes one of five reason codes and no text: nothing a person types in the portal reaches L2 or the ledger. The agent's R15 violation still carries only the rejection ID (SEC-12).
+- **Reads write nothing.** The pending list, one escalation, the events and the ledger check derive their answers from the entries and the clock and never sweep; L2's own 1 s timer records expiries. The budget behind an escalation comes from the function the decision itself uses for its context (`spendFigures` in `service.ts`), under the rules in force for the owner now: the run's line, the last 24 hours under the same rules, and for a user's payment the user daily ceiling. `fits` says whether the amount is within the per-payment cap and within every line's remainder; it is no promise.
+- **The portal's two halves.** A second client, `admin-client.ts`, is the only code in the portal that holds `PORTAL_ADMIN_TOKEN` and knows L2's administration paths; the administration routes never import the user-account client, and no user-account code path imports the administration one (rule A13). No administration route takes a user identifier, a session or any text: a user is reached only through an escalation's ID, and a body may carry `reasonCode` and nothing else. The browser gets each payment without its session reference, with `mine` set when it is the signed-in administrator's own. The ledger check's answer is kept for 10 s, whoever asks, because the check re-reads the whole ledger on L2's one thread. Each request is logged with the route template, the status, the administrator's `userId` and, for a decision, a fixed label; never the escalation's ID, a token or a body.
+- **The web app.** Four screens under `/admin` (`specs/014` contracts/portal-ui.md): the waiting list, refreshed every 3 s while the tab is visible, with a countdown in words; one payment in any state with its budget, and the two decisions behind a confirmation (an approval asks for "Confirm it's you" when the sign-in is old; a rejection offers five fixed reasons and no text field; one's own payment has no buttons); the activity trail, 50 events at a time, asking every 5 s for what came after the last read; and the ledger check, run only on a button. A person who is only an administrator sees nothing else; a person who is not sees "Not found" and nothing is asked of the administration API. The web app stores nothing of its own in the browser.
 
 - **Onboarding.** Three steps, each shown as done, next or later: the profile (name and email prefilled from the sign-in, and a required acknowledgement that the wallet holds test funds only), the wallet (one button; the address, the network and how to fund it), the first policy. A person lands on the first step not done, also from a deep link.
 - **Policy editor.** Where (a checklist of the seller list; never a free-text host), how much (four USDC amounts, each platform limit shown beside its field) and how (the crypto account; cards shown as not available yet; payments per minute; an end date). Before saving, `summarizePolicy` says in plain words what the policy allows; the list and the history show the same text.
@@ -1120,12 +1219,12 @@ With `cdp`, a missing or empty `CDP_API_KEY_ID` or `CDP_API_KEY_SECRET`, or a se
 |---|---|
 | `l1-agent.env` | `NETWORK, ANTHROPIC_API_KEY, ANTHROPIC_MODEL?, SELLER_URL, CONTROL_URL, SETTLEMENT_URL, CONTROL_TOKEN, VERIFIER_TOKEN, SESSION_ID?, SELLER_ALIAS_URL? (v1.5)` |
 | `l1-hosted.env` (v1.5) | `NETWORK, SELLER_URL, CONTROL_URL, SETTLEMENT_URL, CONTROL_TOKEN, VERIFIER_TOKEN, MODEL_PROVIDER, ANTHROPIC_MODEL?, ANTHROPIC_API_KEY? (anthropic only), FOUNDRY_BASE_URL? and AZURE_CLIENT_ID? (foundry only), AUTH_TENANT_ID, AUTH_AUDIENCE, AUTH_JWKS_FILE? (local only), SESSION_REF_SECRET, AGENT_PORT?, AGENT_BIND_HOST?, API_DOCS? (v1.6), PORTAL_CLIENT_ID? (v1.10: the portal web app's client ID, the `azp` the agent refuses), TRUSTED_PROXY_HOPS? (v1.10: a whole number 0–3, default 0; 1 behind the Azure ingress)` |
-| `l2-control.env` | `NETWORK, PAYER_PRIVATE_KEY, ALLOWED_PAYEES, ALLOWED_HOSTS, CONTROL_TOKEN, SETTLEMENT_TOKEN, OPERATOR_TOKEN, API_DOCS?`; v1.8 (L2-7): `CIBA_APPROVAL?` (`1` on), and when on `CIBA_ISSUER` (https), `CIBA_CLIENT_ID`, `CIBA_AUDIENCE`, `CIBA_APPROVER`, exactly one of `CIBA_CLIENT_KEY` (RSA 2048–4096, PKCS#8 PEM) and `CIBA_CLIENT_SECRET`, and `CIBA_CLIENT_KEY_ID?`; v1.10 (L2-8): `USER_ACCOUNTS?` (`1` on; otherwise off, and the next four are ignored and only named in one log line), and when on `PORTAL_TOKEN` (different from the other four tokens), `USER_WALLET_MNEMONIC` (24 words, read only by `signer.ts`), `PLATFORM_FILE?` (default `config/platform.json`) and `PLATFORM_SELLERS?` (a JSON array that replaces the file's `sellers`) |
+| `l2-control.env` | `NETWORK, PAYER_PRIVATE_KEY, ALLOWED_PAYEES, ALLOWED_HOSTS, CONTROL_TOKEN, SETTLEMENT_TOKEN, OPERATOR_TOKEN, API_DOCS?`; v1.8 (L2-7): `CIBA_APPROVAL?` (`1` on), and when on `CIBA_ISSUER` (https), `CIBA_CLIENT_ID`, `CIBA_AUDIENCE`, `CIBA_APPROVER`, exactly one of `CIBA_CLIENT_KEY` (RSA 2048–4096, PKCS#8 PEM) and `CIBA_CLIENT_SECRET`, and `CIBA_CLIENT_KEY_ID?`; v1.10 (L2-8): `USER_ACCOUNTS?` (`1` on; otherwise off, and the next four are ignored and only named in one log line), and when on `PORTAL_TOKEN` (different from the other four tokens), `USER_WALLET_MNEMONIC` (24 words, read only by `signer.ts`), `PLATFORM_FILE?` (default `config/platform.json`) and `PLATFORM_SELLERS?` (a JSON array that replaces the file's `sellers`); v1.11 (L2-8): `PORTAL_ADMIN?` (`1` on; it needs `USER_ACCOUNTS=1`), and when on `PORTAL_ADMIN_TOKEN` (the `portal-admin` role's token; a dev default on `local` only; it must differ from every other token) |
 | `l3-verifier.env` | `NETWORK, BASE_SEPOLIA_RPC_URL?, CONTROL_URL, VERIFIER_TOKEN, SETTLEMENT_TOKEN` |
 | `seller.env` | `NETWORK, SELLER_PAY_TO, FACILITATOR?, FACILITATOR_URL?, CDP_API_KEY_ID?, CDP_API_KEY_SECRET?, API_DOCS? (v1.6)` (the CDP pair is required when the choice is `cdp`) |
 | `facilitator.env` | `NETWORK=local, FACILITATOR_PRIVATE_KEY` |
 | `operator.env` | `CONTROL_URL, OPERATOR_TOKEN` |
-| `portal.env` (v1.10) | `NETWORK, CONTROL_URL, PORTAL_TOKEN, AUTH_TENANT_ID, AUTH_AUDIENCE, PORTAL_CLIENT_ID, PORTAL_SCOPE?, AUTH_JWKS_FILE? (local only), PROFILE_DIR? (default `.local/portal/profiles`), PORTAL_WEB_ROOT? (default `dist/portal-web`), CARD_VAULT? (`stripe` turns cards on), CARD_VAULT_KEY and CARD_VAULT_PUBLISHABLE_KEY (with `stripe`; test-mode keys only), BASE_SEPOLIA_RPC_URL?, PORTAL_PORT?, PORTAL_BIND_HOST?, TRUSTED_PROXY_HOPS?, API_DOCS?` |
+| `portal.env` (v1.10) | `NETWORK, CONTROL_URL, PORTAL_TOKEN, AUTH_TENANT_ID, AUTH_AUDIENCE, PORTAL_CLIENT_ID, PORTAL_SCOPE?, AUTH_JWKS_FILE? (local only), PROFILE_DIR? (default `.local/portal/profiles`), PORTAL_WEB_ROOT? (default `dist/portal-web`), CARD_VAULT? (`stripe` turns cards on), CARD_VAULT_KEY and CARD_VAULT_PUBLISHABLE_KEY (with `stripe`; test-mode keys only), BASE_SEPOLIA_RPC_URL?, PORTAL_PORT?, PORTAL_BIND_HOST?, TRUSTED_PROXY_HOPS?, API_DOCS?`; v1.11: `PORTAL_ADMIN?` (`1` turns the administration area on) and `PORTAL_ADMIN_TOKEN` (with it; the same value L2 verifies; a dev default on `local` only) |
 | `pre-deploy.<env>.bicepparam`, `main.<env>.bicepparam` (v1.5, in `infra/`) | Not env files: every value the two Azure deployments use. The target (`tenantId, subscriptionId, location`), every resource name (`names`, with the resource group), the GitHub repository and environment, the app and group IDs from `pre-deploy.bicep`'s outputs, public addresses and the Claude attestation. Only `unit, imageTag, seedIp, recoverVaults, agentStableRevision` come from `deploy.yml`'s environment. Only Bicep reads them (`bicep build-params`). No secret values |
 
 Token defaults (`dev-control-token`, `dev-settlement-token`, `dev-verifier-token`, `dev-operator-token`, and since v1.10 `dev-portal-token`) apply only when `NETWORK=local`. On any other network, a missing or empty token is a startup error. An empty token is always a startup error.
@@ -1135,6 +1234,7 @@ Token defaults (`dev-control-token`, `dev-settlement-token`, `dev-verifier-token
 - `npm run demo:local` gives each child only `PATH`, `HOME`, `NODE_*` and its own `ENV_FILE`. On `local`, if `env/l2-control.env` or `env/facilitator.env` is missing or the key is empty, the demo derives that key with `localDevKeys()`. It passes the payer key only to the L2 child and the facilitator key only to the facilitator child.
 - The demo spawns `node_modules/.bin/tsx` directly (not `npx`) and reads each child's env file with a minimal `KEY=value` reader for its fallback decisions; only `src/shared/config.ts` uses dotenv (architecture test). On `local`, when `SELLER_PAY_TO` or `ALLOWED_PAYEES` is empty, the demo sets it to account #3 (CP-5).
 - `src/portal-main.ts` (v1.10) loads `env/portal.env` and then exits 1 if `PAYER_PRIVATE_KEY` or `USER_WALLET_MNEMONIC` is visible, from the process environment or from the file, naming the variable and printing no value (as INV-3 does for L1). A missing or invalid portal setting stops it the same way.
+- `npm run stack:local -- --users --admin` (v1.11) also gives the L2 child `PORTAL_ADMIN=1`; `--admin` alone is refused. `demo:local` and the VS Code launch configurations never pass it.
 - `npm run stack:local -- --users` (v1.10) gives the L2 child `USER_ACCOUNTS=1` and a fixed local dev mnemonic (`scripts/demo-lib.ts`, local only). `npm run demo:local` never does, so its summary is unchanged.
 - `main.<env>.bicepparam` (v1.10) gains the `userAccounts` object; `pre-deploy.<env>.bicepparam` gains `names.portalApp` and `portalOrigin`. Neither holds a secret.
 - `npm run approve`, `npm run reject` and `npm run escalations` resolve their bearer token with `tokenFor("operator")`, so on `local` the dev operator token applies when `OPERATOR_TOKEN` is unset. They read only `env/operator.env` (or `ENV_FILE`).
@@ -1196,7 +1296,7 @@ Only use the SDK helpers to encode and decode these headers. Never hand-roll bas
 | SEC-5 | Forged or contradictory settlement reports | L2 cross-check of `verified` fields; CONFIRMED is sticky; separate L3 token | T-E2E-03, T-E2E-05, T-AUTH-01/02 |
 | SEC-6 | Concurrent burst bypasses limits | Serialized decisions (INV-8) | T-E2E-04 |
 | SEC-7 | Audit tampering | Hash chain; startup integrity check | T-LED-01 |
-| SEC-8 | Agent self-approves (or rejects) an escalation | Operator token only; single-use, exact-match approval; one final state per escalation | T-E2E-02, T-POL-13, T-E2E-07 |
+| SEC-8 | Agent self-approves (or rejects) an escalation | Only the operator's token, a verified backchannel answer (v1.8) or the portal's administration token (v1.11) records a decision, and the agent holds none of them: `CONTROL_TOKEN` is refused on every deciding route; single-use, exact-match approval; one final state per escalation | T-E2E-02, T-POL-13, T-E2E-07, T-ADM-02 |
 | SEC-9 | Stale signature settles late | Committed spend keeps counting until `validBefore` passes | T-LED-02 |
 | SEC-10 | The CDP API credential leaks to another process, a log or a response, or a misconfiguration silently uses an unauthenticated facilitator | Seller-only credential (A8, T-ARCH-ENV); fail-closed startup; no runtime fallback; redaction | T-ARCH-A8, T-CDP-02, T-CDP-07, T-CDP-08 |
 | SEC-11 | A facilitator reports failure for a transfer that actually settled, so the budget under-counts | L3 checks any reported hash on-chain (L3-1 step 2) | T-CDP-06 |
@@ -1213,6 +1313,9 @@ Only use the SDK helpers to encode and decode these headers. Never hand-roll bas
 | SEC-22 | Card details or the card vault key are exposed | Card numbers and codes go from the browser to the vault only; the ledger holds an identifier, the portal's views only brand, last four and expiry; the key is a restricted test-mode key confined to one file (A10); a live key stops the portal; whitelisted logs | T-CARD-01, T-CARD-06, T-ARCH-A10 |
 | SEC-23 | An intent carries a forged user, or omits it | `userId` is set by the hosted service from the verified token and nothing else; the tools take no user input; a named user who can't pay is denied and never falls back to the platform account; the platform limits bound every user and the platform mandate bounds a payment without one | T-AGT-06, T-USR-11, T-USR-06 |
 | SEC-24 | The wallet mnemonic leaks, or is replaced | Read only by `signer.ts` (A3, A11) and given only to L2's container; the portal refuses to start when it can see it; never logged, stored or returned; a different mnemonic stops L2 at startup, because recorded addresses no longer match | T-ARCH-A11, T-USR-08, T-PRT-09 |
+| SEC-25 | A person who is not an administrator, or someone with an administrator's stolen or left-open sign-in, decides an escalation (v1.11) | The administration routes need the app role `Portal.Admin`, checked by the portal before L2 is called; an approval needs credentials entered within 15 minutes, judged by L2; a rejection can only stop a payment; an approval releases at most one payment that the policy and the platform limits already allow with a person's approval; no route takes a user identifier or text | T-PRT-10, T-ADM-05, T-PRT-12, T-ADM-03 |
+| SEC-26 | A compromised portal approves in an administrator's name, or its user-account half reaches the administration routes (v1.11) | A separate role and token for administration, refused on every other route of L2 and held by one module of the portal (A13); `PORTAL_TOKEN` is refused on every administration route; only a pending escalation can be decided and INV-12 still holds; every decision is in the ledger with its path and decider. L2 trusts the portal to name the decider: an accepted residual risk | T-ADM-02, T-ARCH-A13, T-ADM-07, T-PRT-13 |
+| SEC-27 | An administrator approves a payment of their own agent run (v1.11) | L2 compares the decider with the escalation's owner, from the `ESCALATED` entry, and refuses both decisions with `own_payment` before anything else is asked of them; the portal marks such a payment and offers no way to decide it | T-ADM-06, T-PRT-12 |
 
 Residual risks (accepted in v1): bearer tokens over loopback instead of mTLS; key held in an env var; single-node JSONL ledger; facilitator trusted for liveness; no refund path.
 
@@ -1248,6 +1351,14 @@ Residual risks added in v1.10:
 - Names and emails are plain JSON files on the portal's share; the subscription's holders of that storage can read them.
 - The portal is a second public app. It has no key and no deciding route, and its limits are held in memory by its single replica.
 - The per-address limit assumes exactly one proxy, the Azure ingress, in front of each public service (`TRUSTED_PROXY_HOPS=1`); that hop count is not yet checked against a live environment. People behind one address share its 300 requests a minute.
+
+Residual risks added in v1.11:
+- L2 never sees an administrator's sign-in, so it trusts the portal to name who decided and when they confirmed their identity. A compromised portal could approve pending escalations in any administrator's name. It could release only payments that the policy and the platform limits already allow with approval, one per escalation, and each is in the ledger with its path.
+- A stolen administrator sign-in can approve pending escalations for as long as its last credential entry is under 15 minutes old, and reject them for as long as the session lasts.
+- The portal reads `Portal.Admin` from the person's token and asks no directory per request. Taking the permission away therefore takes effect at the person's next token: a token issued before still opens the administration area until it expires (Entra's access-token lifetime, about an hour by default). Within that time such a person can reject, and can approve only with a sign-in under 15 minutes old. To cut it short, revoke the person's sessions in Entra, or turn the area off (T-PRT-10).
+- Approvals rely on the same `auth_time` claim as loosening a policy does (v1.10). The administration area must not be turned on in an environment before that claim has been checked against its tenant (`specs/013` quickstart §5).
+- Administrators see every user's pending payments: the seller, the amount and the user's identifier, never a name. That is their purpose.
+- The portal holds two role tokens. They are separate at L2, and separate in the portal's code (A13), but one process holds both.
 - User state is derived by scanning the ledger. That is measured at 100 users with 10 policies each (T-USR-12); real growth needs EXT-6.
 - An escalation of a user's payment still goes to the operator and the one configured approver, not to the user.
 - In Azure the web app's redirect URI is registered after the portal's first deployment, so nobody can sign in until `pre-deploy.bicep` is applied again with `portalOrigin`.
@@ -1354,6 +1465,28 @@ Residual risks added in v1.4:
 | T-ARCH-A12 | architecture | rule A12 (v1.10) trips on its fixture and the tree is clean: no layer names the portal's token, and the portal names no other role's secret |
 | T-E2E-12 | e2e | two users on the local chain: each payment is signed by, and settles from, its own user's account, and the platform payer's balance is untouched; an account that can't cover a payment is refused by the facilitator and nothing is spent |
 | T-E2E-13 | e2e | disable and enable through the portal and the chain: an escalation approved after the disable is denied; after enable the policy is paused; after resume it pays once |
+| T-ADM-01 | admin | each administration route's answer and every listed error; 401 before 400, 403, 404 and 409; unknown body fields and query parameters refused; the ledger check equals the operator's and repairs nothing |
+| T-ADM-02 | admin | the sixth role: no other token opens an administration route, and `PORTAL_ADMIN_TOKEN` opens nothing else (authorize, budget, reconcile, the operator's routes, the user-account routes). **Must fail with `singlePortalRole`**: the user-account token reads the list |
+| T-ADM-03 | admin | a portal approval: the entry's exact fields; the effect of an operator's (one payment, once, 600 s); a paused policy, a disabled account or a used-up budget after it still denies (INV-12) |
+| T-ADM-04 | admin | a portal rejection: the entry's exact fields; R15 denies the same purchase and the agent sees only the rejection ID; the five reason codes and nothing else |
+| T-ADM-05 | admin | identity confirmation for approvals: the 15 min and 60 s boundaries to the millisecond; none for a rejection. **Must fail with `skipDecisionStepUp`** |
+| T-ADM-06 | admin | nobody decides their own payment, checked before the identity confirmation; a platform-account escalation has no owner. **Must fail with `skipOwnPaymentCheck`** |
+| T-ADM-07 | admin | one final state across the portal, the operator and the backchannel stand-in, in both orders; repeats; the 300 s boundary; 25 simultaneous pairs; a portal decision ends the 120 s wait. **Must fail with `skipPendingCheck`**: an approval is recorded after a rejection |
+| T-ADM-08 | admin | the reads: the pending list at the 300 s boundary without an expiry entry; the escalation in any state; budget lines equal to the ledger's own figures, the agent's budget read and the user's wallet view; `fits` at the limit and one unit over; `applies: false`; no read appends |
+| T-ADM-09 | admin | events in pages: `after`, `before`, neither; walking the trail both ways yields every event once, in order; the owner and reference on every event; bad queries refused |
+| T-ADM-10 | admin | configuration: `PORTAL_ADMIN=1` without `USER_ACCOUNTS=1`, without its token off `local`, or with a token equal to another role's refuses before the lock, naming the setting only; off, every route is 404 |
+| T-LED-07 | escalations | the portal channel in the derivations: `channelOf`, events with the decider and the reason code and no free text, `abandoned` phone requests, no secret-bearing key. Also in this file: the operator's two decision routes pinned field by field (FR-019 of `specs/014`) |
+| T-PRT-10 | portal-admin | access by role: a user without `Portal.Admin` is 403 with no call to L2; an administrator alone reaches only the area and `/api/me`; an agent-service token is refused whatever its roles; off, 404. **Must fail with `skipAdminCheck`**: an ordinary user approves |
+| T-PRT-11 | portal-admin | the reads through the portal: `mine`, the owner, no session reference; query whitelist; the detail's budget unchanged; text an operator typed returned as the same plain string; 502 when L2 is down; one ledger check per 10 s |
+| T-PRT-12 | portal-admin | decisions: the decider and `identityConfirmedAtMs` come from the token only; any other body field is 400 before L2 is called; `own_payment`, `step_up_required` and `not_pending` relayed with their fields |
+| T-PRT-13 | portal-admin | the log: the route template, the status, the administrator's `userId` and a fixed label per outcome; never an escalation ID, a token or a body |
+| T-PRT-14 | portal-admin | configuration and flags: off unless `PORTAL_ADMIN=1`; on without its token off `local` refuses, naming the variable; `/api/config` and `/api/me` |
+| T-WEB-09 | web/portal/test/admin | who sees the area: the link only for an administrator; an administrator alone has nothing else; anyone else gets "Not found" and no administration request; onboarding never stands in the way |
+| T-WEB-10 | web/portal/test/admin | the waiting list: the table, the countdown on the portal's clock in words, the 3 s refresh, nothing asked while hidden, the live region, outside text shown as text |
+| T-WEB-11 | web/portal/test/admin | one payment: what is decided repeated before sending; the step-up replay from a click; five fixed reasons and no text field; one's own payment; any state with its outcome; the budget table and its warnings |
+| T-WEB-12 | web/portal/test/admin | the activity trail (pages, polling, the "New" mark in memory, nothing stored in the browser), the ledger check, and an axe pass over the four screens. Also `poll.test.ts`: the visibility-aware interval |
+| T-ARCH-A13 | architecture | rule A13 (v1.11) trips on its fixture three ways and the tree is clean: the portal's two halves stay apart |
+| T-E2E-14 | e2e | an administrator approves through the portal's HTTP API and the agent's retry pays from the user's own account, confirmed by L3, within 2 s; a rejection denies and pays nothing; with the phone asked too, a portal approval ends the wait and the same fetch pays; a known-value scan for every token |
 | T-E2E-01 | e2e | scripted plan outcomes `[FREE, PAID, PAID, ESCALATED, DENIED, DENIED]`; on-chain delta exactly 6000; two CONFIRMED settlements; chain ok; budget `spentOrReserved = 6000` |
 | T-E2E-02 | e2e | HITL: escalate → agent-token approval returns 401 → operator approval → PAID+CONFIRMED → the same request escalates again |
 | T-E2E-03 | e2e | forged `PAYMENT-RESPONSE` → L3 returns MISMATCH; L2 keeps the first CONFIRMED and records an anomaly naming `amount` |
@@ -1429,9 +1562,12 @@ API_DOCS=1 npm run seller        # the seller plus Swagger UI at http://127.0.0.
 npm run dev-token -- [--subject <name>] [--no-role] [--expired] [--service]   # local dev issuer (NETWORK=local only)
 # v1.10 user accounts and the portal (L2-8):
 npm run stack:local -- --users   # the local stack with user accounts on in L2 (local dev mnemonic)
+npm run stack:local -- --users --admin   # v1.11: also L2's administration routes (PORTAL_ADMIN=1)
+PORTAL_ADMIN=1 npm run portal    # v1.11: the portal with its administration area on
 npm run build:web           # the portal's web app, to dist/portal-web
 npm run portal              # the portal on 127.0.0.1:4025 (env/portal.env); API_DOCS=1 adds /docs
 npm run dev-token -- --subject <name> --portal [--auth-age <seconds>]   # a portal token: paste it into the sign-in screen
+npm run dev-token -- --subject <name> --portal --admin [--no-role]      # v1.11: an administrator's (--no-role: an administrator only)
 npm run fund-user -- <address> [usdc]   # local only: mint test USDC to a user's account
 npm run wallet-mnemonic     # print one new 24-word mnemonic for USER_WALLET_MNEMONIC (never rotate one in place)
 npm run agent:scripted -- --check-baseline   # L1-4 plan; exit 2 unless the baseline matches

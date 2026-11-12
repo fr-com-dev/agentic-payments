@@ -390,3 +390,45 @@ td {
     max-width: 100%;
   }
 }
+
+/* 014 the administration area */
+.subnav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1rem;
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--line);
+}
+.subnav [aria-current="page"] {
+  font-weight: 700;
+}
+caption {
+  text-align: left;
+  font-weight: 600;
+  padding: 0.375rem 0.5rem;
+}
+td code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+/* Short values never break in the middle: a reference, an amount, a countdown, a column heading. */
+.admin-table th[scope="col"],
+.admin-table td[data-label="Reference"],
+.admin-table td[data-label="Amount"],
+.admin-table td[data-label="Time left"],
+.admin-table td[data-label="Spent"],
+.admin-table td[data-label="Limit"],
+.admin-table td[data-label="Left"] {
+  white-space: nowrap;
+}
+/* On a narrow screen a stacked table is a block, and its caption must be one too, or it shrinks to a letter's width. */
+@media (max-width: 34rem) {
+  .admin-table caption {
+    display: block;
+    width: 100%;
+    padding-left: 0;
+  }
+  .admin-table th[scope="row"] {
+    padding-bottom: 0;
+    border-top: 1px solid var(--line);
+  }
+}

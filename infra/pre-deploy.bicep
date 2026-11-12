@@ -46,6 +46,8 @@ param githubAuth0Environment string
 param agentUsers array
 @description('People who may start the operator job, by user principal name: the operators\' group members.')
 param operators array
+@description('014: people who may use the portal\'s administration area (Portal.Admin), by user principal name. Separate from agentUsers: holding one role never gives the other.')
+param portalAdmins array
 @description('013: the portal\'s public origin, https://<its app>.<the environment\'s default domain>, without a trailing slash. Empty until the portal is deployed: the web app then has its local redirect URI only.')
 param portalOrigin string
 
@@ -56,6 +58,9 @@ var target = tenant().tenantId == tenantId && subscription().subscriptionId == s
 
 // Stable IDs, so a redeployment updates the same role and scope instead of adding new ones.
 var agentRunRoleId = '5b2c3a7e-6f1d-4c55-9f0e-0a1b2c3d4e51'
+// 014: the portal administrator's role. A fixed ID, like the role and the scopes beside it, so a redeployment never
+// re-creates it and no assignment is lost.
+var portalAdminRoleId = '5b2c3a7e-6f1d-4c55-9f0e-0a1b2c3d4e54'
 var userImpersonationId = '5b2c3a7e-6f1d-4c55-9f0e-0a1b2c3d4e52'
 var portalAccessId = '5b2c3a7e-6f1d-4c55-9f0e-0a1b2c3d4e53'
 // The Azure CLI's well-known public client ID.
@@ -118,6 +123,16 @@ resource apiApp 'Microsoft.Graph/applications@v1.0' = {
       displayName: 'Agent.Run'
       description: 'Run the x402 purchasing agent (spends from the shared budget within the mandate)'
       allowedMemberTypes: ['User', 'Application']
+      isEnabled: true
+    }
+    // 014: decides escalated payments and reads the ledger check in the portal. People only: no application, and
+    // not the deploy app, can hold it.
+    {
+      id: portalAdminRoleId
+      value: 'Portal.Admin'
+      displayName: 'Portal.Admin'
+      description: 'Lets a person use the portal\'s administration area'
+      allowedMemberTypes: ['User']
       isEnabled: true
     }
   ]
@@ -194,6 +209,17 @@ resource agentUser 'Microsoft.Graph/users@v1.0' existing = [for upn in agentUser
 resource userAgentRun 'Microsoft.Graph/appRoleAssignedTo@v1.0' = [for (upn, i) in agentUsers: {
   appRoleId: agentRunRoleId
   principalId: agentUser[i].id
+  resourceId: apiSp.id
+}]
+
+// ---- Who may administer the portal (014) -----------------------------------------------------------------------
+resource portalAdminUser 'Microsoft.Graph/users@v1.0' existing = [for upn in portalAdmins: {
+  userPrincipalName: upn
+}]
+
+resource userPortalAdmin 'Microsoft.Graph/appRoleAssignedTo@v1.0' = [for (upn, i) in portalAdmins: {
+  appRoleId: portalAdminRoleId
+  principalId: portalAdminUser[i].id
   resourceId: apiSp.id
 }]
 

@@ -103,6 +103,39 @@ describe("T-WEB-07: the browser holds only the person's own sign-in", () => {
       expect(String(init.body ?? "").includes("the.access.token")).toBe(false);
       expect(/userId|usr_/.test(String(init.body ?? ""))).toBe(false);
     }
+    // 014 (FR-023): the six administration calls. A payment is named by its own ID and by nothing else: no user, no
+    // session, no decider and no text. The only body field ever sent is a rejection's reason code.
+    const ID = "auth_00000000-0000-4000-8000-000000000000";
+    const before = calls.length;
+    await api.adminEscalations();
+    await api.adminEscalation(ID);
+    await api.approveEscalation(ID);
+    await api.rejectEscalation(ID, "wrong_seller");
+    await api.adminEvents();
+    await api.adminEvents({ after: 41, limit: 200 });
+    await api.adminEvents({ before: 12 });
+    await api.adminLedgerCheck();
+    const admin = calls.slice(before);
+    expect(admin.map((c) => [c.init.method, c.url, c.init.body ?? null])).toEqual([
+      ["GET", "/api/admin/escalations", null],
+      ["GET", `/api/admin/escalations/${ID}`, null],
+      ["POST", `/api/admin/escalations/${ID}/approve`, "{}"],
+      ["POST", `/api/admin/escalations/${ID}/reject`, JSON.stringify({ reasonCode: "wrong_seller" })],
+      ["GET", "/api/admin/escalations/events", null],
+      ["GET", "/api/admin/escalations/events?after=41&limit=200", null],
+      ["GET", "/api/admin/escalations/events?before=12", null],
+      ["GET", "/api/admin/ledger/verify", null],
+    ]);
+    for (const { url, init } of admin) {
+      expect(/usr_|userId|sessionId|sess_|decidedBy|the\.access\.token/.test(url), url).toBe(false);
+      expect(/usr_|userId|sessionId|decidedBy|identityConfirmedAtMs|the\.access\.token/.test(String(init.body ?? "")), url).toBe(false);
+      expect((init.headers as Record<string, string>).authorization).toBe("Bearer the.access.token");
+    }
+    // An ID that is not a payment's can't put anything else into the path.
+    await api.adminEscalation("../../me?userId=usr_00000000000000000000000000000000");
+    expect(calls.at(-1)!.url.startsWith("/api/admin/escalations/")).toBe(true);
+    expect(/[?&]|\.\.\//.test(calls.at(-1)!.url), calls.at(-1)!.url).toBe(false);
+    calls.length = 13;
     const headers = calls.map((c) => (c.init.headers as Record<string, string>).authorization);
     // Every call but the public settings carries the bearer token.
     expect(headers.slice(0, 12).every((h) => h === "Bearer the.access.token")).toBe(true);

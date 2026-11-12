@@ -10,7 +10,9 @@
 //   (rule 4);
 // - secrets only from the portal vault, portal-token and card-vault-key, always referenced, so every environment
 //   seeds both (the placeholder off while user accounts or cards are off); the arrays stay literal (rule 21);
-// - no payment key and no token but PORTAL_TOKEN; it calls L2 only; the API docs switch is never set (rule 21).
+// - no payment key and no token but PORTAL_TOKEN; it calls L2 only; the API docs switch is never set (rule 21);
+// - 014 (rule 22): one more token, PORTAL_ADMIN_TOKEN, for L2's administration routes only: a reference to this
+//   vault's portal-admin-token, always referenced. PORTAL_ADMIN comes from userAccounts.administration.
 param location string
 @description('Every resource name (main.<environment>.bicepparam).')
 param names object
@@ -50,6 +52,7 @@ resource portal 'Microsoft.App/containerApps@2025-01-01' = {
       secrets: [
         { name: 'portal-token', keyVaultUrl: '${vaultPortal}secrets/portal-token', identity: idPortal.id }
         { name: 'card-vault-key', keyVaultUrl: '${vaultPortal}secrets/card-vault-key', identity: idPortal.id }
+        { name: 'portal-admin-token', keyVaultUrl: '${vaultPortal}secrets/portal-admin-token', identity: idPortal.id }
       ]
       identitySettings: [{ identity: idPortal.id, lifecycle: 'None' }]
     }
@@ -76,6 +79,8 @@ resource portal 'Microsoft.App/containerApps@2025-01-01' = {
             { name: 'CARD_VAULT_PUBLISHABLE_KEY', value: userAccounts.cardVaultPublishableKey }
             { name: 'PORTAL_TOKEN', secretRef: 'portal-token' }
             { name: 'CARD_VAULT_KEY', secretRef: 'card-vault-key' }
+            { name: 'PORTAL_ADMIN', value: userAccounts.administration ? '1' : '0' }
+            { name: 'PORTAL_ADMIN_TOKEN', secretRef: 'portal-admin-token' }
           ]
           volumeMounts: [{ volumeName: 'profiles', mountPath: '/app/.local/portal' }]
           probes: [

@@ -15,6 +15,9 @@
 //   vault's portal-token and user-wallet-mnemonic, always referenced like the CIBA credential (the placeholder off
 //   while userAccounts.enabled is false, when L2 ignores both). USER_ACCOUNTS comes from the userAccounts parameter,
 //   and PLATFORM_SELLERS is the one seller L2 allows: the same host as ALLOWED_HOSTS, never the alias.
+// - 014 (rule 22): the administration role's token reaches only the l2 container, as a reference to the l2 vault's
+//   portal-admin-token, always referenced (the placeholder off while userAccounts.administration is false, when L2
+//   ignores it). PORTAL_ADMIN comes from userAccounts.administration.
 param location string
 @description('Every resource name (main.<environment>.bicepparam).')
 param names object
@@ -62,6 +65,7 @@ resource control 'Microsoft.App/containerApps@2025-01-01' = {
         { name: 'ciba-client-credential', keyVaultUrl: '${vaultL2}secrets/ciba-client-credential', identity: idL2.id }
         { name: 'portal-token', keyVaultUrl: '${vaultL2}secrets/portal-token', identity: idL2.id }
         { name: 'user-wallet-mnemonic', keyVaultUrl: '${vaultL2}secrets/user-wallet-mnemonic', identity: idL2.id }
+        { name: 'portal-admin-token', keyVaultUrl: '${vaultL2}secrets/portal-admin-token', identity: idL2.id }
         // The proxy config is not a secret; Container Apps mounts files only through secret volumes.
         #disable-next-line use-secure-value-for-secure-inputs
         { name: 'nginx-conf', value: loadTextContent('../proxy/nginx-l2.conf') }
@@ -94,6 +98,8 @@ resource control 'Microsoft.App/containerApps@2025-01-01' = {
             { name: 'PLATFORM_SELLERS', value: string([{ host: sellerHost, name: userAccounts.sellerName, payees: [sellerPayTo] }]) }
             { name: 'PORTAL_TOKEN', secretRef: 'portal-token' }
             { name: 'USER_WALLET_MNEMONIC', secretRef: 'user-wallet-mnemonic' }
+            { name: 'PORTAL_ADMIN', value: userAccounts.administration ? '1' : '0' }
+            { name: 'PORTAL_ADMIN_TOKEN', secretRef: 'portal-admin-token' }
           ]
           volumeMounts: [{ volumeName: 'ledger', mountPath: '/app/.local' }]
         }

@@ -19,7 +19,7 @@ export const SELLER = { host: "127.0.0.1:4021", name: "Local demo seller" };
 export const SELLER_2 = { host: "api.example.test", name: "Example data" };
 export const ADDRESS = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8";
 
-export const CONFIG: Config = { auth: { mode: "entra", tenantId: "t", clientId: "c", scope: "api://x/Portal.Access" }, network: "eip155:31337", cards: { available: true, publishableKey: "pk_test_x" } };
+export const CONFIG: Config = { auth: { mode: "entra", tenantId: "t", clientId: "c", scope: "api://x/Portal.Access" }, network: "eip155:31337", cards: { available: true, publishableKey: "pk_test_x" }, admin: { available: false } };
 
 export const platform = (over: Partial<Platform> = {}): Platform => ({
   limits: { hardCapPerPaymentAtomic: "100000", sessionBudgetAtomic: "100000", userDailyCeilingAtomic: "500000", maxAuthorizationsPerMinute: 10, maxPolicyDays: 730 },
@@ -90,7 +90,7 @@ export interface World {
   platform: Platform;
 }
 
-const ME_NEW: Me = { userId: "usr_deeee4478bc01dab1b0afa3fbe31f010", enabled: true, onboarding: { profile: false, wallet: false, policy: false } };
+const ME_NEW: Me = { userId: "usr_deeee4478bc01dab1b0afa3fbe31f010", user: true, admin: false, enabled: true, onboarding: { profile: false, wallet: false, policy: false } };
 
 /** A person at a stage of onboarding: `new`, `profile` (profile saved), `wallet` (account created) or `done`. */
 export function world(stage: "new" | "profile" | "wallet" | "done" = "done", over: Partial<World> = {}): World {
@@ -189,6 +189,13 @@ export function fakeApi(w: World): FakeApi {
       w.policies = w.policies.map((p) => (p.state === "removed" ? p : { ...p, state: "paused", displayState: "paused" }));
       return ok(w.me);
     },
+    // 014: the administration area has its own fake (web/portal/test/admin.test.tsx); here nobody is an administrator.
+    adminEscalations: async () => refuse(403, "forbidden"),
+    adminEscalation: async () => refuse(403, "forbidden"),
+    approveEscalation: async () => refuse(403, "forbidden"),
+    rejectEscalation: async () => refuse(403, "forbidden"),
+    adminEvents: async () => refuse(403, "forbidden"),
+    adminLedgerCheck: async () => refuse(403, "forbidden"),
   };
   return Object.fromEntries(Object.entries(api).map(([k, fn]) => [k, vi.fn(fn as (...a: never[]) => unknown)])) as unknown as FakeApi;
 }

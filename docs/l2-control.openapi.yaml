@@ -11,12 +11,16 @@ info:
     mandate, signs the approved ones, and records everything in a hash-chained, append-only ledger.
 
     - **Loopback only.** L2 binds `127.0.0.1` (SPEC §3.1); `CONTROL_PORT` changes the port, never the host.
-    - **One bearer token per caller** (INV-13). Each `/v1` operation accepts exactly one of the four tokens,
+    - **One bearer token per caller** (INV-13). Each `/v1` operation accepts exactly one token,
       and a wrong or missing token gets 401 before the body is read, so it never appends a ledger entry.
     - **User accounts** (v1.10, L2-8). With `USER_ACCOUNTS=1`, L2 also serves the `portal` operations to the
       portal's own token, and an intent that names a user is decided against that user's policy and signed with
       that user's account. Off (the default), those operations are not mounted and answer 404, and
       `PaymentIntent.userId` is ignored.
+    - **Portal administration** (v1.11, L2-8). With `PORTAL_ADMIN=1` as well, L2 serves the `admin` operations
+      to the portal's second token: the pending escalations, the two decisions, the events, the budget behind an
+      escalation and the ledger check. Off (the default), they are not mounted and answer 404. The operator's
+      operations are separate and unchanged.
     - **Amounts** are decimal strings of atomic units (USDC has 6 decimals: `"1000"` is 0.001 USDC).
     - **Single writer.** Writes run in one serialized section; run one L2 per ledger file.
     - **API docs.** With `API_DOCS=1`, L2 also serves this document and Swagger UI at `/docs`. Those
@@ -36,6 +40,11 @@ tags:
       v1.10 user accounts (L2-8). Called by the portal process with `PORTAL_TOKEN`. Mounted only when
       `USER_ACCOUNTS=1`. No body carries text typed by a person: only identifiers, seller hosts, ISO dates and
       atomic amounts.
+  - name: admin
+    description: >-
+      v1.11 portal administration (L2-8). Called by the portal process with `PORTAL_ADMIN_TOKEN`, for a signed-in
+      administrator. Mounted only when `USER_ACCOUNTS=1` and `PORTAL_ADMIN=1`. Reads append nothing. No body
+      carries text typed by a person: only an identifier, a time and a code from a fixed list.
   - name: docs
     description: Swagger UI and this document. Mounted only when `API_DOCS=1`; no token.
 
@@ -300,6 +309,236 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /v1/admin/escalations:
+    get:
+      tags: [admin]
+      operationId: adminListPendingEscalations
+      summary: Pending escalations for the portal's administration area, oldest first
+      description: |
+        What `GET /v1/escalations` returns, for the administration role, plus the time of the read. It derives the
+        list from the entries and the clock and appends nothing (no sweep): an escalation leaves the list at
+        exactly 300 s, whether or not its expiry entry has been written yet.
+      security:
+        - portalAdminToken: []
+      responses:
+        "200":
+          description: Pending escalations, the ledger cursor and the time of the read.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminPendingEscalations"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /v1/admin/escalations/events:
+    get:
+      tags: [admin]
+      operationId: adminListEscalationEvents
+      summary: Escalation lifecycle events for the portal's administration area, in pages
+      description: |
+        The events of `GET /v1/escalations/events`, read one page at a time, oldest first. With `after`: the first
+        `limit` events with a higher `seq` (poll with the returned `cursor`, or continue from `last` while `more`).
+        With `before`: the `limit` events just below it. With neither: the latest `limit`. Every event here also
+        carries the payment's `referenceCode` and, for a user's payment, the owner's `userId`. Appends nothing.
+      security:
+        - portalAdminToken: []
+      parameters:
+        - name: after
+          in: query
+          required: false
+          description: Ledger `seq` to read after. Integer ≥ -1. Not together with `before`.
+          schema:
+            type: integer
+            minimum: -1
+        - name: before
+          in: query
+          required: false
+          description: Ledger `seq` to read before. Integer ≥ -1. Not together with `after`.
+          schema:
+            type: integer
+            minimum: -1
+        - name: limit
+          in: query
+          required: false
+          description: Page size, 1 to 200. Defaults to 50.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+      responses:
+        "200":
+          description: One page of events.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EventPage"
+        "400":
+          description: A bad `limit` or cursor, both cursors, or any other query parameter.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /v1/admin/escalations/{authorizationId}:
+    get:
+      tags: [admin]
+      operationId: adminGetEscalation
+      summary: One escalation in any state, with how it ended and the budget behind it
+      description: |
+        The escalation as its `ESCALATED` entry describes it, its state, the decision when a person ended it, and
+        the budget it counts against. The owner, the session and the resource come from the entry: the caller names a
+        payment, never a user or a session. The budget is computed from the ledger by the function the decision
+        itself uses, against the rules in force now. Appends nothing.
+      security:
+        - portalAdminToken: []
+      parameters:
+        - $ref: "#/components/parameters/EscalationId"
+      responses:
+        "200":
+          description: The escalation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EscalationDetail"
+        "400":
+          description: The ID is not an escalation ID.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/EscalationNotFound"
+
+  /v1/admin/escalations/{authorizationId}/approve:
+    post:
+      tags: [admin]
+      operationId: adminApproveEscalation
+      summary: Approve a pending escalation for an administrator of the portal
+      description: |
+        Appends one `HUMAN_APPROVAL` with `channel: "portal"`, the administrator's identifier as `approver` and the
+        time they confirmed their identity. The approval has exactly the effect of an operator's: it lifts only the
+        approval requirement, for one exact (session, resource, payee, amount), once, and never overrides a rule that
+        denies (INV-12). It is valid for 600 s; the request can't choose that.
+
+        Checked inside the serialized section, in this order: the escalation exists (404); it is pending (the same
+        decision returns the first one with `already: true`, any other final state is 409); the decider is not the
+        escalation's owner (403 `own_payment`); the identity confirmation is at most 15 minutes old, 60 s tolerance
+        (403 `step_up_required`). A refusal appends nothing.
+      security:
+        - portalAdminToken: []
+      parameters:
+        - $ref: "#/components/parameters/EscalationId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminApprovalRequest"
+      responses:
+        "200":
+          description: Approved now, or already approved on any path.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApprovedOutcome"
+        "400":
+          description: A malformed ID, decider or confirmation time, or any other body field. Nothing is appended.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: The decider owns this payment, or their identity confirmation is too old. Nothing is appended.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/OwnPayment"
+                  - $ref: "#/components/schemas/StepUpRequired"
+        "404":
+          $ref: "#/components/responses/EscalationNotFound"
+        "409":
+          description: The escalation was rejected or has expired. Nothing is appended.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotPending"
+
+  /v1/admin/escalations/{authorizationId}/reject:
+    post:
+      tags: [admin]
+      operationId: adminRejectEscalation
+      summary: Reject a pending escalation for an administrator of the portal
+      description: |
+        Appends one `HUMAN_REJECTION` with `channel: "portal"`, the administrator's identifier as `approver` and a
+        reason code from a fixed list. No text is accepted. Later requests for the same (session, resource) are
+        DENIED with `human_rejected` (R15); the agent learns only the rejection's ID. A rejection needs no identity
+        confirmation. The same checks as an approval otherwise.
+      security:
+        - portalAdminToken: []
+      parameters:
+        - $ref: "#/components/parameters/EscalationId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminRejectionRequest"
+      responses:
+        "200":
+          description: Rejected now, or already rejected on any path.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeniedOutcome"
+        "400":
+          description: A malformed ID or decider, a reason outside the list, or any other body field. Nothing is appended.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: The decider owns this payment. Nothing is appended.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OwnPayment"
+        "404":
+          $ref: "#/components/responses/EscalationNotFound"
+        "409":
+          description: The escalation was approved or has expired. Nothing is appended.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotPending"
+
+  /v1/admin/ledger/verify:
+    get:
+      tags: [admin]
+      operationId: adminVerifyLedger
+      summary: Re-read the ledger file and verify its hash chain, for the portal's administration area
+      description: What `GET /v1/ledger/verify` answers, for the administration role. Read-only; it repairs nothing.
+      security:
+        - portalAdminToken: []
+      responses:
+        "200":
+          description: Chain check result. `ok` is false and `brokenAt` set when an entry was altered.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChainCheck"
         "401":
           $ref: "#/components/responses/Unauthorized"
 
@@ -879,6 +1118,12 @@ components:
       type: http
       scheme: bearer
       description: "`PORTAL_TOKEN`, held by the portal process (v1.10). It reaches the `portal` operations only."
+    portalAdminToken:
+      type: http
+      scheme: bearer
+      description: >-
+        `PORTAL_ADMIN_TOKEN`, held by the portal process (v1.11). It reaches the `admin` operations only: no
+        user-account operation, and never authorize, budget, reconcile or the operator's operations.
 
   parameters:
     AuthorizationId:
@@ -888,6 +1133,15 @@ components:
       description: The `authorizationId` of the ESCALATE decision.
       schema:
         type: string
+        examples: [auth_009b55fe-307f-43ea-9014-a50e72f5576c]
+    EscalationId:
+      name: authorizationId
+      in: path
+      required: true
+      description: The `authorizationId` of the ESCALATE decision. Anything of another shape is a 400.
+      schema:
+        type: string
+        pattern: "^auth_[0-9a-f-]{36}$"
         examples: [auth_009b55fe-307f-43ea-9014-a50e72f5576c]
     UserId:
       name: userId
@@ -1353,6 +1607,126 @@ components:
           type: integer
           description: Last ledger `seq` (-1 when the ledger is empty). Pass it as `after` to the events feed.
 
+    RejectionReasonCode:
+      type: string
+      description: v1.11. Why an administrator rejected a payment. A fixed list; the portal sends no text.
+      enum: [not_expected, amount_too_high, wrong_seller, duplicate, other]
+
+    DecisionChannel:
+      type: string
+      description: Where a decision came from. `portal` is v1.11.
+      enum: [operator, backchannel, portal]
+
+    AdminApprovalRequest:
+      type: object
+      additionalProperties: false
+      required: [decidedBy, identityConfirmedAtMs]
+      properties:
+        decidedBy:
+          allOf:
+            - $ref: "#/components/schemas/UserId"
+          description: The administrator, as the portal derived them from the verified sign-in. Never a name.
+        identityConfirmedAtMs:
+          type: integer
+          description: When the administrator last entered their credentials, in ms. L2 judges whether it is recent enough.
+
+    AdminRejectionRequest:
+      type: object
+      additionalProperties: false
+      required: [decidedBy, reasonCode]
+      properties:
+        decidedBy:
+          allOf:
+            - $ref: "#/components/schemas/UserId"
+        reasonCode:
+          $ref: "#/components/schemas/RejectionReasonCode"
+
+    ApprovedOutcome:
+      type: object
+      additionalProperties: false
+      required: [ok, state, approvalId, expiresAt, already, channel, decidedBy]
+      properties:
+        ok:
+          const: true
+        state:
+          const: approved
+        approvalId:
+          type: string
+        expiresAt:
+          $ref: "#/components/schemas/IsoTime"
+        already:
+          type: boolean
+          description: True when the approval existed before this request, on any path. Nothing was appended.
+        channel:
+          $ref: "#/components/schemas/DecisionChannel"
+        decidedBy:
+          type: string
+
+    DeniedOutcome:
+      type: object
+      additionalProperties: false
+      required: [ok, state, rejectionId, rejectedAt, already, channel, decidedBy]
+      properties:
+        ok:
+          const: true
+        state:
+          const: denied
+        rejectionId:
+          type: string
+        rejectedAt:
+          $ref: "#/components/schemas/IsoTime"
+        already:
+          type: boolean
+        channel:
+          $ref: "#/components/schemas/DecisionChannel"
+        decidedBy:
+          type: string
+
+    OwnPayment:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          const: own_payment
+
+    NotPending:
+      type: object
+      additionalProperties: false
+      required: [error, state]
+      description: The escalation already ended another way. `channel` and `decidedBy` are present when a person ended it.
+      properties:
+        error:
+          const: not_pending
+        state:
+          type: string
+          enum: [approved, denied, expired]
+        channel:
+          $ref: "#/components/schemas/DecisionChannel"
+        decidedBy:
+          type: string
+        approvalId:
+          type: string
+        rejectionId:
+          type: string
+        expiresAt:
+          $ref: "#/components/schemas/IsoTime"
+
+    AdminPendingEscalations:
+      type: object
+      additionalProperties: false
+      required: [pending, cursor, readAt]
+      properties:
+        pending:
+          type: array
+          items:
+            $ref: "#/components/schemas/PendingEscalation"
+        cursor:
+          type: integer
+          description: Last ledger `seq` (-1 when the ledger is empty).
+        readAt:
+          $ref: "#/components/schemas/IsoTime"
+
     EscalationEvent:
       type: object
       additionalProperties: false
@@ -1409,11 +1783,15 @@ components:
           description: v1.8. On `escalated` events, when backchannel approval is on.
         channel:
           type: string
-          enum: [operator, backchannel]
-          description: v1.8. On `approved` and `denied` events, the path that decided.
+          enum: [operator, backchannel, portal]
+          description: v1.8. On `approved` and `denied` events, the path that decided. v1.11 adds `portal`.
         decidedBy:
           type: string
-          description: v1.8. The operator's label, or the approver's verified identity (`sub`).
+          description: >-
+            v1.8. The operator's label, or the approver's verified identity (`sub`). v1.11: for the portal channel,
+            the administrator's identifier (`usr_…`).
+        reasonCode:
+          $ref: "#/components/schemas/RejectionReasonCode"
         requestId:
           type: string
         requestExpiresAt:
@@ -1445,6 +1823,137 @@ components:
             $ref: "#/components/schemas/EscalationEvent"
         cursor:
           type: integer
+
+    BudgetLine:
+      type: object
+      additionalProperties: false
+      required: [capAtomic, spentAtomic, remainingAtomic]
+      description: v1.11. One budget a payment counts against. `remainingAtomic` is never below 0.
+      properties:
+        capAtomic:
+          $ref: "#/components/schemas/AtomicAmount"
+        spentAtomic:
+          $ref: "#/components/schemas/AtomicAmount"
+        remainingAtomic:
+          $ref: "#/components/schemas/AtomicAmount"
+
+    EscalationBudget:
+      type: object
+      additionalProperties: false
+      required: [asset, decimals, applies, autoApproveMaxAtomic, hardCapPerPaymentAtomic, run, day, fits]
+      description: >-
+        v1.11. The budget behind an escalation, as of the read, under the rules that apply to its owner now: the
+        same ledger-derived figures a decision uses. `fits: true` is no promise; the payment is decided again when
+        the agent retries.
+      properties:
+        asset:
+          type: string
+        decimals:
+          type: integer
+        applies:
+          type: boolean
+          description: False when no rule set applies to this purchase now. Every line is then zero.
+        notApplying:
+          type: string
+          enum: [user_not_onboarded, user_disabled, no_active_policy]
+        autoApproveMaxAtomic:
+          $ref: "#/components/schemas/AtomicAmount"
+        hardCapPerPaymentAtomic:
+          $ref: "#/components/schemas/AtomicAmount"
+        run:
+          $ref: "#/components/schemas/BudgetLine"
+        day:
+          $ref: "#/components/schemas/BudgetLine"
+        userDay:
+          $ref: "#/components/schemas/BudgetLine"
+        fits:
+          type: boolean
+          description: The amount is within the per-payment cap and within every remaining amount.
+
+    EscalationDecision:
+      type: object
+      additionalProperties: false
+      required: [at, channel, decidedBy]
+      description: v1.11. How a person ended an escalation.
+      properties:
+        at:
+          $ref: "#/components/schemas/IsoTime"
+        channel:
+          $ref: "#/components/schemas/DecisionChannel"
+        decidedBy:
+          type: string
+          description: "An identifier (`usr_…`) for the portal, the approver's subject for the phone, the operator's label for the command line (text someone typed)."
+        approvalId:
+          type: string
+        approvalExpiresAt:
+          $ref: "#/components/schemas/IsoTime"
+        rejectionId:
+          type: string
+        reasonCode:
+          $ref: "#/components/schemas/RejectionReasonCode"
+        reason:
+          type: string
+          description: An operator's own words, from the command line. Untrusted text.
+
+    EscalationDetail:
+      type: object
+      additionalProperties: false
+      required: [authorizationId, sessionId, resourceKey, payTo, amount, createdAt, expiresAt, referenceCode, state, budget]
+      description: v1.11. An escalation in any state.
+      properties:
+        authorizationId:
+          type: string
+        sessionId:
+          type: string
+        resourceKey:
+          type: string
+        payTo:
+          type: string
+        amount:
+          $ref: "#/components/schemas/AtomicAmount"
+        createdAt:
+          $ref: "#/components/schemas/IsoTime"
+        expiresAt:
+          $ref: "#/components/schemas/IsoTime"
+        referenceCode:
+          type: string
+          pattern: "^[0-9a-f]{8}$"
+        approvalRequest:
+          type: string
+          description: The phone request's state; once the escalation has ended it may also be `answered` or `abandoned`.
+          enum: [requested, capped, operator_only, reevaluation, failed, verification_failed, lapsed, answered, abandoned]
+        userId:
+          $ref: "#/components/schemas/UserId"
+        state:
+          type: string
+          enum: [pending, approved, denied, expired]
+        decision:
+          $ref: "#/components/schemas/EscalationDecision"
+        budget:
+          $ref: "#/components/schemas/EscalationBudget"
+
+    EventPage:
+      type: object
+      additionalProperties: false
+      required: [events, first, last, cursor, more]
+      description: v1.11. One page of escalation events, oldest first.
+      properties:
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/EscalationEvent"
+        first:
+          type: integer
+          description: "`seq` of the first event of the page, or -1 when it is empty."
+        last:
+          type: integer
+          description: "`seq` of the last event of the page, or -1 when it is empty."
+        cursor:
+          type: integer
+          description: The ledger's last `seq` at the read.
+        more:
+          type: boolean
+          description: Events exist beyond this page, in the direction asked.
 
     ChainCheck:
       type: object

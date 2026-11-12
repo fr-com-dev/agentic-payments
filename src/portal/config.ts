@@ -38,6 +38,8 @@ export interface PortalConfig {
   apiDocs: boolean;
   /** Absent: cards are off. */
   cardVault?: CardVaultConfig;
+  /** 014: the administration area. Absent: off (`PORTAL_ADMIN` is not `1`). The token is the `portal-admin` role's. */
+  admin?: { token: string };
 }
 
 const present = (v: string | undefined): v is string => v !== undefined && v !== "";
@@ -68,6 +70,15 @@ export function loadPortalConfig(env: Env = process.env): PortalConfig {
   } catch (err) {
     throw new ConfigError(err instanceof Error ? err.message : String(err));
   }
+  // 014: the administration area needs its own role token, never the user-account one.
+  let admin: { token: string } | undefined;
+  if (env.PORTAL_ADMIN === "1") {
+    try {
+      admin = { token: tokenFor("portal-admin", env) };
+    } catch {
+      throw new ConfigError("PORTAL_ADMIN_TOKEN is required with PORTAL_ADMIN=1 (env/portal.env)");
+    }
+  }
   return {
     network,
     rpcUrl: networkProfile(network, { env }).rpcUrl,
@@ -89,5 +100,6 @@ export function loadPortalConfig(env: Env = process.env): PortalConfig {
     trustedProxyHops: trustedProxyHops(env),
     apiDocs: apiDocsEnabled(env),
     ...(cardVault && { cardVault }),
+    ...(admin && { admin }),
   };
 }

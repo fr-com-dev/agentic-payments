@@ -81,6 +81,27 @@ export function issueMessage(issue: Issue, c: IssueContext): string {
   }
 }
 
+/** 014: why an administrator rejects a payment. A fixed list: there is no text field (FR-016). */
+export const REASON_LABELS: Record<string, string> = {
+  not_expected: "I didn't expect this payment",
+  amount_too_high: "The amount is too high",
+  wrong_seller: "It is the wrong seller",
+  duplicate: "It is a duplicate",
+  other: "Another reason",
+};
+
+/** 014: where a decision was made, in words. */
+export const CHANNEL_TEXT: Record<string, string> = { portal: "in the portal", operator: "from the command line", backchannel: "by phone" };
+
+/** 014: a decision arrived too late: how the payment actually ended, and on which path. Nothing was recorded. */
+export function notPendingMessage(e: Pick<ApiError, "state" | "channel">): string {
+  const where = e.channel !== undefined && CHANNEL_TEXT[e.channel] !== undefined ? `, ${CHANNEL_TEXT[e.channel]}` : "";
+  if (e.state === "approved") return `This payment was already approved${where}.`;
+  if (e.state === "denied") return `This payment was already rejected${where}.`;
+  if (e.state === "expired") return "This payment expired before it was decided.";
+  return "This payment is no longer waiting.";
+}
+
 /** One sentence for a failure that is not about a field. */
 export function errorMessage(e: ApiError): string {
   if (e.status === 0) return "The portal can't be reached. Check your connection and try again.";
@@ -89,6 +110,11 @@ export function errorMessage(e: ApiError): string {
       return "Your sign-in has ended. Sign in again.";
     case "forbidden":
       return "Your organization has not given you access to start agent runs.";
+    // 014 the administration area
+    case "own_payment":
+      return "You can't decide your own payment.";
+    case "not_pending":
+      return notPendingMessage(e);
     case "control_unavailable":
       return "The payment service can't be reached right now. Nothing was changed. Try again in a moment.";
     case "too many requests":

@@ -202,4 +202,166 @@ export interface PlatformView {
   decimals: number;
 }
 
+// ---------------------------------------------------------------------------
+// Escalation views (010, 012, 013), here since 014 because they cross the portal/L2 boundary
+// (SPEC.md §7; specs/014 contracts/control-api.md). `src/layer2-control/escalations.ts` builds them.
+// ---------------------------------------------------------------------------
+
+/** Where a decision came from: the operator's command line, the approver's phone (012), or the portal (014). */
+export type DecisionChannel = "operator" | "backchannel" | "portal";
+
+export type ApprovalRequestMark = "requested" | "capped" | "operator_only" | "reevaluation";
+export type ApprovalRequestState = ApprovalRequestMark | "failed" | "verification_failed" | "lapsed" | "answered" | "abandoned";
+
+/** 014: an escalation's ID is the `authorizationId` of its ESCALATE decision. The administration routes accept nothing else. */
+export const ESCALATION_ID_RE = /^auth_[0-9a-f-]{36}$/;
+
+/** 014: why an administrator rejected a payment. A fixed list: no text typed in the portal reaches L2 (FR-016). */
+export const REJECTION_REASON_CODES = ["not_expected", "amount_too_high", "wrong_seller", "duplicate", "other"] as const;
+export type RejectionReasonCode = (typeof REJECTION_REASON_CODES)[number];
+
+/** One pending escalation (GET /v1/escalations, GET /v1/admin/escalations). */
+export interface EscalationView {
+  authorizationId: string;
+  sessionId: string;
+  resourceKey: string;
+  payTo: string;
+  amount: string;
+  createdAt: string;
+  expiresAt: string;
+  /** 012: the first 8 hex characters of the ID, shown to the approver too. */
+  referenceCode: string;
+  /** 012: present when the escalation carries an approval-request mark (backchannel approval on). */
+  approvalRequest?: ApprovalRequestState;
+  /** 013 (FR-045): whose payment it is, when the escalation is a user's. An identifier only, never a name. */
+  userId?: string;
+}
+
+export type EscalationEventKind =
+  | "escalated"
+  | "approved"
+  | "denied"
+  | "expired"
+  | "approval_lapsed"
+  // 012 (L2-7): the approval request's own events
+  | "approval_requested"
+  | "approval_request_failed"
+  | "approval_request_lapsed"
+  | "approval_verification_failed";
+
+/**
+ * One lifecycle event (GET /v1/escalations/events). Built field by field from a whitelist, never by
+ * spreading entry data, so no token, payment header, `accepts` or `purpose` can leak (NFR-007).
+ */
+export interface EscalationEvent {
+  seq: number;
+  at: string;
+  kind: EscalationEventKind;
+  authorizationId: string;
+  sessionId: string;
+  resourceKey: string;
+  payTo: string;
+  amount: string;
+  expiresAt?: string;
+  approvalId?: string;
+  approver?: string;
+  approvalExpiresAt?: string;
+  rejectionId?: string;
+  operator?: string;
+  reason?: string;
+  // 012 (FR-029): whitelisted fields only. Never a token, a handle, details, the binding message or evidence.
+  referenceCode?: string;
+  approvalRequest?: string;
+  channel?: DecisionChannel;
+  decidedBy?: string;
+  requestId?: string;
+  requestExpiresAt?: string;
+  failure?: string;
+  error?: string;
+  cause?: string;
+  check?: string;
+  /** 013 (FR-045): on `escalated` events of a user's payment. */
+  userId?: string;
+  /** 014: on a `denied` event of the portal channel. */
+  reasonCode?: RejectionReasonCode;
+}
+
+// ---------------------------------------------------------------------------
+// 014 portal administration (SPEC.md §8.2 L2-5, L2-8; specs/014 data-model.md "Derived views")
+// ---------------------------------------------------------------------------
+
+/** One budget an escalation counts against. Atomic-unit decimal strings; `remainingAtomic` is never below 0. */
+export interface BudgetLine {
+  capAtomic: string;
+  spentAtomic: string;
+  remainingAtomic: string;
+}
+
+/** The budget behind an escalation, as of the read, against the rules that apply now (INV-12). */
+export interface EscalationBudget {
+  asset: string;
+  decimals: number;
+  /** False when no rule set applies to this purchase now. The lines are then zeros. */
+  applies: boolean;
+  /** Why not, when `applies` is false. */
+  notApplying?: "user_not_onboarded" | "user_disabled" | "no_active_policy";
+  autoApproveMaxAtomic: string;
+  hardCapPerPaymentAtomic: string;
+  /** The agent run's budget: the policy's run budget, or the mandate's session budget. */
+  run: BudgetLine;
+  /** The last 24 hours under the same policy, or under the mandate. */
+  day: BudgetLine;
+  /** A user's payment only: the user daily ceiling across all their policies. */
+  userDay?: BudgetLine;
+  /** `applies`, and the amount is within the per-payment cap and within every `remainingAtomic`. */
+  fits: boolean;
+}
+
+/** How an escalation ended, when a person ended it. */
+export interface EscalationDecision {
+  at: string;
+  channel: DecisionChannel;
+  /** `usr_…` for the portal; the approver's subject for the backchannel; the operator's label (untrusted text). */
+  decidedBy: string;
+  approvalId?: string;
+  approvalExpiresAt?: string;
+  rejectionId?: string;
+  /** Portal rejections. */
+  reasonCode?: RejectionReasonCode;
+  /** Operator rejections: untrusted text, shown as text only. */
+  reason?: string;
+}
+
+/** An escalation in any state, with its decision and its budget (GET /v1/admin/escalations/:authorizationId). */
+export interface EscalationDetail extends EscalationView {
+  state: "pending" | "approved" | "denied" | "expired";
+  decision?: EscalationDecision;
+  budget: EscalationBudget;
+}
+
+/** One page of escalation events, oldest first (GET /v1/admin/escalations/events). */
+export interface EventPage {
+  events: EscalationEvent[];
+  /** `seq` of the first event of the page, or -1 when it is empty. */
+  first: number;
+  /** `seq` of the last event of the page, or -1 when it is empty. */
+  last: number;
+  /** The ledger's last `seq` at the read. */
+  cursor: number;
+  /** Events exist beyond this page, in the direction asked. */
+  more: boolean;
+}
+
+/** The answer to an administrator's decision. `already` is true when the same decision existed, on any path. */
+export type DecisionOutcome =
+  | { ok: true; state: "approved"; approvalId: string; expiresAt: string; already: boolean; channel: DecisionChannel; decidedBy: string }
+  | { ok: true; state: "denied"; rejectionId: string; rejectedAt: string; already: boolean; channel: DecisionChannel; decidedBy: string };
+
+/** The ledger's hash chain (GET /v1/ledger/verify, GET /v1/admin/ledger/verify). */
+export interface LedgerCheck {
+  entries: number;
+  ok: boolean;
+  brokenAt?: number;
+}
+
 export type { PaymentRequired, PaymentRequirements };

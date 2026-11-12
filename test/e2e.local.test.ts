@@ -929,3 +929,151 @@ describe("013 user accounts end to end", () => {
     expect((await ledgerVerify(h)).ok).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// 014 portal administration end to end (specs/014 quickstart §2, §5): a real escalation, decided by an administrator
+// through the portal's HTTP API, with the real orchestrator, chain and L3. One harness: user accounts, the
+// administration routes and the stand-in approval service, so the phone path runs beside the portal's.
+// ---------------------------------------------------------------------------
+describe("014 portal administration end to end", () => {
+  let h: Harness;
+  let stub: CibaStub;
+  let portal: import("./helpers/portal.js").PortalTestApp;
+  beforeAll(async () => {
+    stub = await startCibaStub({ approver: APPROVER, clientId: CLIENT_ID, audience: AUDIENCE, clientPublicKeyPem: CLIENT_KEY.publicPem });
+    const settings: CibaSettings = { issuer: stub.issuer, clientId: CLIENT_ID, audience: AUDIENCE, approver: APPROVER, credential: { kind: "key", keyPem: CLIENT_KEY.privatePem } };
+    h = await startHarness({
+      users: {},
+      admin: true,
+      controlBackchannel: {
+        port: new CibaClient(settings, { allowInsecureLoopback: true }),
+        issuer: stub.issuer,
+        clientId: CLIENT_ID,
+        audience: AUDIENCE,
+        approver: APPROVER,
+        keys: issuerKeys(stub.issuer, { allowInsecureLoopback: true }),
+        decimals: 6,
+        waitMs: 20_000,
+        pollDelayMs: (s) => s * 50,
+        log: () => {},
+      },
+    });
+    // The real portal app, with its two clients pointed at the harness's L2 and that L2's own two tokens.
+    const { startPortal } = await import("./helpers/portal.js");
+    const l2 = { url: h.urls.control, clock: { now: Date.now }, ledger: {}, requestCount: () => 0, close: async () => {} };
+    portal = await startPortal({ l2: l2 as never, admin: true, env: { PORTAL_TOKEN: h.tokens.portal, PORTAL_ADMIN_TOKEN: h.tokens.portalAdmin } });
+  }, 60_000);
+  afterAll(async () => {
+    await portal?.close();
+    await h?.close();
+    await stub?.close();
+  });
+
+  const ERIN = userIdFor("dev", "erin");
+  const CAROL = userIdFor("dev", "carol");
+  const premium = () => `${h.urls.seller}/api/premium-report`;
+  /** A run of erin's. `operatorApprovalOnly` keeps the phone out of it, so the call returns ESCALATED at once. */
+  const run = (sessionId: string, o: { phone?: boolean } = {}) =>
+    new PaidResourceOrchestrator({
+      gate: new HttpAuthorizationGate(h.urls.control, h.tokens.control),
+      settlement: new HttpSettlementVerifier(h.urls.settlement, h.tokens.verifier),
+      sessionId,
+      userId: ERIN,
+      ...(!o.phone && { operatorApprovalOnly: true }),
+    });
+  const carol = () => portal.adminAs("carol", { user: false });
+  let erinAddress: `0x${string}`;
+
+  it("T-E2E-14 an administrator approves in the portal: the agent's retry pays from the user's own account, and L3 confirms it", async () => {
+    expect((await h.portal("PUT", `/v1/users/${ERIN}/registration`, { acknowledgedTestFunds: true })).status).toBe(200);
+    erinAddress = (await h.portal<{ wallet: { address: `0x${string}` } }>("PUT", `/v1/users/${ERIN}/wallet`)).body.wallet.address;
+    await h.fund(erinAddress, 1_000_000n);
+    const policy = await h.portal("POST", `/v1/users/${ERIN}/policies`, {
+      sellers: [new URL(h.urls.seller).host],
+      autoApproveMaxAtomic: "20000",
+      hardCapPerPaymentAtomic: "100000",
+      sessionBudgetAtomic: "100000",
+      dailyBudgetAtomic: "500000",
+      maxAuthorizationsPerMinute: 10,
+      expiresAt: new Date(Date.now() + 30 * 86_400_000).toISOString(),
+      paymentMethod: "crypto_account",
+      identityConfirmedAtMs: Date.now(),
+    });
+    expect(policy.status).toBe(201);
+
+    const orchestrator = run("sess_e2e14a");
+    const escalated = await orchestrator.fetchPaid(premium(), "premium report");
+    expect(escalated.outcome).toBe("ESCALATED");
+    const id = String(escalated.authorizationId);
+
+    // The administrator sees it, by the user's identifier, and it is not theirs.
+    const listed = await carol()<{ pending: Array<Record<string, unknown>> }>("GET", "/api/admin/escalations");
+    expect(listed.body.pending.map((e) => [e.authorizationId, e.owner, e.mine, e.amountAtomic])).toEqual([[id, { userId: ERIN, platformAccount: false }, false, "50000"]]);
+
+    const t0 = Date.now();
+    const approved = await carol()("POST", `/api/admin/escalations/${id}/approve`, {});
+    // NFR-007: the outcome of a decision within 2 s.
+    expect(Date.now() - t0).toBeLessThan(2000);
+    expect(approved.body).toMatchObject({ ok: true, state: "approved", already: false, channel: "portal", decidedBy: CAROL });
+
+    const paid = await orchestrator.fetchPaid(premium(), "premium report, approved");
+    expect(paid.outcome, JSON.stringify(paid.violations ?? paid.error)).toBe("PAID");
+    expect(paid.payment?.settlement?.status).toBe("CONFIRMED");
+    expect(paid.payment!.settlement!.verified.payer.toLowerCase()).toBe(erinAddress.toLowerCase());
+    expect(await h.balanceOf(erinAddress)).toBe(1_000_000n - 50_000n);
+
+    // The ledger alone says which path decided and who (SC-007), and the approval paid exactly once.
+    const approval = h.ledgerEntries().find((e) => e.type === "HUMAN_APPROVAL" && e.data.escalationId === id)!;
+    expect(approval.data).toMatchObject({ channel: "portal", approver: CAROL, payTo: h.addresses.payTo, amount: "50000" });
+    const authorized = h.ledgerEntries().filter((e) => e.type === "AUTHORIZED" && e.sessionId === "sess_e2e14a");
+    expect(authorized.map((e) => e.data.approvalRef)).toEqual([approval.data.approvalId]);
+    expect((await carol()<{ pending: unknown[] }>("GET", "/api/admin/escalations")).body.pending).toEqual([]);
+  }, 60_000);
+
+  it("T-E2E-14 an administrator rejects in the portal: the retry is denied, nothing is paid, and the agent learns nothing of why", async () => {
+    const orchestrator = run("sess_e2e14b");
+    const escalated = await orchestrator.fetchPaid(premium(), "premium report");
+    expect(escalated.outcome).toBe("ESCALATED");
+    const balance = await h.balanceOf(erinAddress);
+    const rejected = await carol()("POST", `/api/admin/escalations/${String(escalated.authorizationId)}/reject`, { reasonCode: "amount_too_high" });
+    expect(rejected.body).toMatchObject({ ok: true, state: "denied", channel: "portal", decidedBy: CAROL });
+    const denied = await orchestrator.fetchPaid(premium(), "premium report, rejected");
+    expect([denied.outcome, rulesOf(denied)]).toEqual(["DENIED", ["human_rejected"]]);
+    expect(await h.balanceOf(erinAddress)).toBe(balance);
+    const seen = JSON.stringify(denied);
+    for (const hidden of ["amount_too_high", CAROL, "portal"]) expect(seen, hidden).not.toContain(hidden);
+    // An approval can't revive it, from the portal or from the command line.
+    expect((await carol()("POST", `/api/admin/escalations/${String(escalated.authorizationId)}/approve`, {})).status).toBe(409);
+  }, 60_000);
+
+  it("T-E2E-14 with the phone asked too, a portal approval ends the wait: the same fetch pays", async () => {
+    const before = stub.authReqIds.length;
+    stub.setAnswersFor(before, "pending");
+    const fetching = run("sess_e2e14c", { phone: true }).fetchPaid(premium(), "premium report");
+    // The administrator's list shows it, with the phone request open.
+    let item: Record<string, unknown> | undefined;
+    for (let i = 0; i < 200 && item?.approvalRequest !== "requested"; i++) {
+      await new Promise((r) => setTimeout(r, 25));
+      item = (await carol()<{ pending: Array<Record<string, unknown>> }>("GET", "/api/admin/escalations")).body.pending[0];
+    }
+    expect(item?.approvalRequest).toBe("requested");
+    const approved = await carol()("POST", `/api/admin/escalations/${String(item!.authorizationId)}/approve`, {});
+    expect(approved.body).toMatchObject({ state: "approved", already: false });
+    const paid = await fetching;
+    expect(paid.outcome, JSON.stringify(paid.violations ?? paid.error)).toBe("PAID");
+    expect(paid.payment?.settlement?.status).toBe("CONFIRMED");
+    expect(stub.authReqIds.length - before).toBe(1);
+    const approvals = h.ledgerEntries().filter((e) => e.type === "HUMAN_APPROVAL" && e.sessionId === "sess_e2e14c");
+    expect(approvals.map((e) => e.data.channel)).toEqual(["portal"]);
+  }, 60_000);
+
+  it("T-E2E-14 no token, key or sign-in reaches the ledger, the portal's log or its answers (NFR-003)", async () => {
+    const token = await portal.adminToken("carol", { user: false });
+    const answer = await portal.call("GET", "/api/admin/escalations", { token });
+    const everything = [readFileSync(h.ledgerPath, "utf8"), portal.rawLogs.join("\n"), answer.text].join("\n");
+    for (const secret of [...Object.values(h.tokens), token, ...HARNESS_USER_MNEMONIC.split(" ").filter((w) => w.length > 5)]) {
+      expect(everything.includes(secret), secret.slice(0, 6)).toBe(false);
+    }
+    expect((await ledgerVerify(h)).ok).toBe(true);
+  });
+});

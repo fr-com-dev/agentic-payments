@@ -8,7 +8,7 @@ A Claude agent buys HTTP resources with x402 (protocol v2, scheme `exact`, EIP-3
 | L2 Control | `src/layer2-control/` | Pure policy engine, sole signer, hash-chained ledger, human approvals | 4020 (loopback) |
 | L3 Settlement | `src/layer3-settlement/` | Read-only on-chain verification, reconciles into L2 | 4023 (loopback) |
 | Counterparty | `src/counterparty/`, `scripts/facilitator.ts` | Seller API and local facilitator | 4021, 4022 |
-| Portal (optional) | `src/portal/`, `src/portal-main.ts`, `web/portal/` | Web portal for user accounts: profile, wallet and expense policies. No keys, decides nothing. | 4025 |
+| Portal (optional) | `src/portal/`, `src/portal-main.ts`, `web/portal/` | Web portal for user accounts: profile, wallet and expense policies. Optionally an administration area, where administrators approve or reject escalated payments. No keys; it never signs, and L2 checks and records every decision. | 4025 |
 
 `SPEC.md` (v1.10) is normative. Feature specs, plans and task lists live under `specs/` (spec-kit). Agent guidance is in `CLAUDE.md`.
 
@@ -134,6 +134,24 @@ npm run build:web && npm run portal   # the portal on http://127.0.0.1:4025
 ```
 
 Then follow the three steps on screen. `npm run fund-user -- <address> 1` mints 1 test USDC to the new account. To pay as that person, start `npm run agent:hosted` and send a run with an agent token (`npm run -s dev-token -- --subject alice`, without `--portal`): the two services refuse each other's tokens. The full walk-through, the isolation checks, cards and Azure are in [specs/013 quickstart](specs/013-l2-portal-onboarding/quickstart.md). It is off by default, and the local demo never uses it.
+
+### Portal administration (optional)
+
+With `PORTAL_ADMIN=1` in L2 and in the portal as well (SPEC L2-8, `specs/014`), a person the organization names an administrator (the `Portal.Admin` role, separate from the permission to start agent runs) gets an administration area in the portal:
+
+- **Waiting.** Every payment that is waiting for a person, for every user and for the platform account, with a countdown. Users are shown by identifier only.
+- **One payment.** What would be approved, the budget it counts against, and two buttons. An approval lets the agent make that one payment once, if it still fits the rules; it needs a sign-in at most 15 minutes old. A rejection takes one of five fixed reasons. Nobody can decide a payment of their own agent run.
+- **Activity** and **Ledger check.** What happened to each escalation, on which path and by whom; and whether the ledger's hash chain still verifies.
+
+The operator's command line (`npm run approve`, `npm run reject`, `npm run escalations`) and the approver's phone keep working beside it. Requesting a payment and reporting a settlement stay with the agent and L3: the portal can do neither.
+
+```bash
+npm run stack:local -- --users --admin     # the stack, with user accounts and the administration routes on in L2
+npm run -s dev-token -- --subject carol --portal --admin --no-role   # an administrator's sign-in token
+PORTAL_ADMIN=1 npm run portal              # the portal with its administration area, on http://127.0.0.1:4025/admin
+```
+
+[specs/014 quickstart](specs/014-portal-l2-control-api/quickstart.md) walks through it.
 
 ## Base Sepolia
 
@@ -310,10 +328,12 @@ A milestone must pass its exit check before the next one starts.
 | File | Covers |
 |---|---|
 | `test/vscode-local.test.ts` | T-DEV-01..03: every VS Code configuration runs locally through the runner and resolves its role, tasks and inputs; each process gets its own env file and local key, NETWORK=local, and nothing else from VS Code but the debugger's attach hook; `local: stack` reuses, waits for or starts each stack process |
-| `test/architecture.test.ts` | INV-1..4 and rules A1–A12 (static import and identifier scan), env templates |
+| `test/architecture.test.ts` | INV-1..4 and rules A1–A13 (static import and identifier scan), env templates |
+| `test/admin.test.ts`, `test/portal-admin.test.ts` | T-ADM-01..10 and T-PRT-10..14: the portal's administration area: L2's administration routes and their own role, the two decisions and the checks L2 keeps, the reads that write nothing; the portal's access by role, what it takes from the token only, its log |
 | `test/users.test.ts`, `test/user-id.test.ts` | T-USR-01..12: user accounts in L2: the portal routes, role isolation, ownership, step-up, the keyring, policy validation, the effective mandate, decisions per user and isolation between users, with their must-fail proofs |
 | `test/portal.test.ts`, `test/card-vault.test.ts` | T-PRT-01..09 and T-CARD-01..06: the portal's access rules, profile, wallet, policies, headers and log; cards against a stand-in vault |
 | `test/openapi-portal.test.ts` | T-API-12..14: `docs/portal.openapi.yaml` matches the portal's routes, auth, statuses and response shapes; T-API-15: its Swagger UI routes |
+| `web/portal/test/admin.test.tsx`, `poll.test.ts` | T-WEB-09..12: the administration screens: who sees them, the waiting list and its countdown, deciding, the activity trail, the ledger check, an accessibility pass |
 | `web/portal/test/` | T-WEB-01..08: the web app in jsdom with a fake API: routing, forms, exact money, the policy summary, step-up, version conflicts, cards, text never rendered as HTML, an accessibility pass |
 | `test/auth.test.ts` | per-role bearer guard `requireRole` (INV-13), token resolution, `loadEnv` |
 | `test/policy.test.ts` | mandate, T-POL-01..15, signer, authorize/budget API, approvals, rejections and escalation reads in-process, operator CLIs |

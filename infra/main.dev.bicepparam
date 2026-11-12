@@ -83,6 +83,9 @@ param ciba = {
 // portal-token and card-vault-key, either way: the placeholder off now, the real values once enabled.
 param userAccounts = {
   enabled: false
+  // 014: the portal's administration area (the Portal.Admin role). It needs enabled: true, and a real
+  // portal-admin-token in the l2 vault and in the portal's (the placeholder off until then).
+  administration: false
   portalClientId: ''
   sellerName: 'x402 demo seller'
   cardVault: 'off'

@@ -7,15 +7,17 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PaymentRequired, PaymentRequirements } from "@x402/core/types";
+import type { AdminDeps } from "../../src/layer2-control/admin-routes.js";
 import { issuerKeys } from "../../src/layer2-control/approval-evidence.js";
 import type { BackchannelDeps } from "../../src/layer2-control/backchannel.js";
 import { CibaClient, type CibaClientOptions, type CibaPort, type CibaSettings } from "../../src/layer2-control/ciba-client.js";
 import { AuditLedger, type LedgerEntry } from "../../src/layer2-control/ledger.js";
 import { buildMandate, type SpendingMandate } from "../../src/layer2-control/mandate.js";
 import { createControlService, type ControlService } from "../../src/layer2-control/service.js";
-import type { PaymentSignerLike } from "../../src/layer2-control/signer.js";
+import { WalletKeyring, type PaymentSignerLike } from "../../src/layer2-control/signer.js";
 import type { AuthorizationDecision, PaymentIntent } from "../../src/shared/contracts.js";
 import { type CibaStub, startCibaStub, testRsaKeyPair, type TestRsaKeyPair } from "./ciba-stub.js";
+import { TEST_MNEMONIC, testPlatform } from "./users.js";
 
 export const APPROVER = "auth0|approver-1";
 export const CLIENT_ID = "client-l2";
@@ -25,7 +27,7 @@ export const CAIP2 = "eip155:31337";
 export const ASSET = "0xAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAa";
 export const PAY_TO = "0xcccccccccccccccccccccccccccccccccccccccc";
 export const SELLER = "http://127.0.0.1:4021";
-export const TOKENS = { control: "b-control", settlement: "b-settlement", operator: "b-operator" };
+export const TOKENS = { control: "b-control", settlement: "b-settlement", operator: "b-operator", portal: "b-portal", portalAdmin: "b-portal-admin" };
 /** One client key for the whole run; restart tests reuse it (a different key cannot open sealed handles). */
 export const CLIENT_KEY: TestRsaKeyPair = testRsaKeyPair();
 
@@ -68,6 +70,11 @@ export interface BackchannelL2Options {
   signer?: PaymentSignerLike;
   /** Overrides on the CibaClient options (default: 400 ms timeouts). */
   clientOptions?: Partial<CibaClientOptions>;
+  /**
+   * 014: user accounts and the portal's administration routes on (`true`, or with must-fail switches), so a test
+   * can decide from the portal's path beside the phone and the operator. Absent: both off, exactly as before.
+   */
+  admin?: true | AdminDeps;
 }
 
 export interface BackchannelL2 {
@@ -84,6 +91,8 @@ export interface BackchannelL2 {
   authorize(intent: PaymentIntent, o?: { signal?: AbortSignal }): Promise<{ status: number; body: AuthorizationDecision & { error?: string } }>;
   approve(id: string, body?: Record<string, unknown>): Promise<{ status: number; body: Record<string, unknown> }>;
   reject(id: string, body?: Record<string, unknown>): Promise<{ status: number; body: Record<string, unknown> }>;
+  /** 014: an administration route, with the administration role's token (needs the `admin` option). */
+  admin(method: string, path: string, body?: unknown): Promise<{ status: number; body: Record<string, unknown> }>;
   pending(): Promise<{ pending: Record<string, unknown>[]; cursor: number }>;
   events(after?: number): Promise<{ events: Record<string, unknown>[]; cursor: number }>;
   budget(sessionId: string): Promise<{ status: number; body: Record<string, unknown> }>;
@@ -142,6 +151,11 @@ export async function startBackchannelL2(o: BackchannelL2Options = {}): Promise<
     tokens: TOKENS,
     now: clock.now,
     ...(o.off !== true && { backchannel: deps }),
+    ...(o.admin !== undefined && {
+      users: { platform: testPlatform(), keyring: new WalletKeyring(TEST_MNEMONIC, { caip2: CAIP2, asset: ASSET }) },
+      net: { caip2: CAIP2, asset: ASSET, decimals: 6 },
+      admin: o.admin === true ? {} : o.admin,
+    }),
   });
   const server = await new Promise<Server>((r) => {
     const s = service.app.listen(0, "127.0.0.1", () => r(s));
@@ -184,6 +198,7 @@ export async function startBackchannelL2(o: BackchannelL2Options = {}): Promise<
     authorize: (intent, ao = {}) => call("POST", "/v1/authorize", TOKENS.control, intent, ao.signal),
     approve: (id, body = {}) => call("POST", `/v1/approvals/${id}`, TOKENS.operator, body),
     reject: (id, body = {}) => call("POST", `/v1/rejections/${id}`, TOKENS.operator, body),
+    admin: (method, path, body) => call(method, path, TOKENS.portalAdmin, body),
     pending: async () => (await call("GET", "/v1/escalations", TOKENS.operator)).body,
     events: async (after = -1) => (await call("GET", `/v1/escalations/events?after=${after}`, TOKENS.operator)).body,
     budget: (sessionId) => call("GET", `/v1/budget/${sessionId}`, TOKENS.control),

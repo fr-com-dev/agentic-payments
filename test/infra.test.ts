@@ -9,6 +9,8 @@
 // names are resolved with the dev files' values, and rule 15 checks each one against the naming standard.
 // 013 (specs/013 contracts/config-and-secrets.md "T-IAC-01 changes"): the portal unit joins the tables, rules 2, 3, 4,
 // 8 and 16 are extended for it, and rule 21 covers user accounts.
+// 014 (specs/014 contracts/config-and-secrets.md "T-IAC-01 changes"): rule 16 knows the API app's second role,
+// Portal.Admin, and rule 22 covers the portal's administration area.
 import { cpSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -164,6 +166,8 @@ const BLOB_CONTRIBUTOR = "ba92f5b4-2d11-453d-a403-e96b0029c9fe";
 const AGENT_RUN = "5b2c3a7e-6f1d-4c55-9f0e-0a1b2c3d4e51";
 const USER_IMPERSONATION = "5b2c3a7e-6f1d-4c55-9f0e-0a1b2c3d4e52";
 const PORTAL_ACCESS = "5b2c3a7e-6f1d-4c55-9f0e-0a1b2c3d4e53";
+/** 014: the fixed ID of the API app's second role, Portal.Admin (people only). */
+const PORTAL_ADMIN = "5b2c3a7e-6f1d-4c55-9f0e-0a1b2c3d4e54";
 const AZURE_CLI = "04b07795-8ddb-461a-bbee-02f9e1bf7b46";
 /** The web app's local redirect URI (the portal on its default port); the deployed one comes from portalOrigin. */
 const LOCAL_REDIRECT = "http://localhost:4025/redirect.html";
@@ -651,8 +655,14 @@ export function violations(arms: Templates, params: Params, infraFiles: Record<s
   if (JSON.stringify(((apiApp?.properties.identifierUris ?? []) as string[]).flatMap((u) => resolved(u, apiApp!.vars, devParams["pre-deploy"]!))) !== JSON.stringify([`api://${PN.apiApp}`])) {
     v.push(`rule 16: the API app's identifier URI must be api://${PN.apiApp}`);
   }
-  if (appRoles.length !== 1 || appRoles[0]!.value !== "Agent.Run" || !withVars(appRoles[0]!.id, apiApp!.vars).includes(AGENT_RUN) || JSON.stringify(appRoles[0]!.allowedMemberTypes) !== '["User","Application"]') {
-    v.push("rule 16: the API app's only role must be Agent.Run, for users and applications");
+  // 014: exactly two roles, each with its fixed ID. Agent.Run for people and applications; Portal.Admin for people only.
+  const roleFacts = appRoles.map((r) => [String(r.value), (withVars(r.id, apiApp!.vars).match(GUID) ?? []).join(), JSON.stringify(r.allowedMemberTypes), r.isEnabled === true]);
+  const wantRoles = [
+    ["Agent.Run", AGENT_RUN, '["User","Application"]', true],
+    ["Portal.Admin", PORTAL_ADMIN, '["User"]', true],
+  ];
+  if (JSON.stringify(roleFacts.sort()) !== JSON.stringify(wantRoles.sort())) {
+    v.push("rule 16: the API app's roles must be Agent.Run (users and applications) and Portal.Admin (users only), each with its fixed ID");
   }
   const scopeIds = Object.fromEntries(scopes.map((s) => [String(s.value), s.type === "Admin" ? (withVars(s.id, apiApp?.vars ?? {}).match(GUID) ?? []).join() : "not admin consent only"]));
   if (scopes.length !== 2 || JSON.stringify(Object.entries(scopeIds).sort()) !== JSON.stringify([["Portal.Access", PORTAL_ACCESS], ["user_impersonation", USER_IMPERSONATION]])) {
@@ -706,13 +716,18 @@ export function violations(arms: Templates, params: Params, infraFiles: Record<s
   ) {
     v.push(FIC_PROBLEM);
   }
+  // Who gets which role: Agent.Run to the deploy app and agentUsers; Portal.Admin (014) to portalAdmins, people only.
   const assigned = graph("appRoleAssignedTo");
-  const principals = assigned.map((r) => String(r.properties.principalId)).sort();
+  const appRoleOf = (r: Res) => (withVars(r.properties.appRoleId, r.vars).match(GUID) ?? []).join();
+  const principalsOf = (roleId: string) => assigned.filter((r) => appRoleOf(r) === roleId).map((r) => String(r.properties.principalId)).sort();
   if (
-    assigned.some((r) => !withVars(r.properties.appRoleId, r.vars).includes(AGENT_RUN) || r.properties.resourceId !== "[reference('apiSp').id]") ||
-    JSON.stringify(principals) !== JSON.stringify(["[reference('deploySp').id]", "[reference(format('agentUser[{0}]', copyIndex())).id]"].sort())
+    assigned.some((r) => (appRoleOf(r) !== AGENT_RUN && appRoleOf(r) !== PORTAL_ADMIN) || r.properties.resourceId !== "[reference('apiSp').id]") ||
+    JSON.stringify(principalsOf(AGENT_RUN)) !== JSON.stringify(["[reference('deploySp').id]", "[reference(format('agentUser[{0}]', copyIndex())).id]"].sort())
   ) {
     v.push("rule 16: Agent.Run must go to the deploy app and agentUsers only");
+  }
+  if (JSON.stringify(principalsOf(PORTAL_ADMIN)) !== JSON.stringify(["[reference(format('portalAdminUser[{0}]', copyIndex())).id]"])) {
+    v.push("rule 16: Portal.Admin must go to portalAdmins only, never to the deploy app or another application");
   }
   const group = graph("groups")[0]?.properties ?? {};
   if (group.securityEnabled !== true || group.mailEnabled !== false || !JSON.stringify(group.members ?? {}).includes("operatorUser")) {
@@ -844,6 +859,8 @@ export function violations(arms: Templates, params: Params, infraFiles: Record<s
   const UA = "parameters('userAccounts')";
   const L2_USER_SECRETS: Record<string, string> = { PORTAL_TOKEN: "portal-token", USER_WALLET_MNEMONIC: "user-wallet-mnemonic" };
   const PORTAL_SECRETS: Record<string, string> = { PORTAL_TOKEN: "portal-token", CARD_VAULT_KEY: "card-vault-key" };
+  /** 014 (rule 22): the administration role's token, in L2 and in the portal, each from its own vault. */
+  const ADMIN_SECRET: Record<string, string> = { PORTAL_ADMIN_TOKEN: "portal-admin-token" };
   /** Each env name's secret is referenced, from the app's own vault, in arrays no flag can empty. */
   const alwaysReferenced = (a: Res, container: string, want: Record<string, string>, vaultKey: string): boolean => {
     const env = containersOf(a).find((c) => c.name === container)?.env;
@@ -885,12 +902,12 @@ export function violations(arms: Templates, params: Params, infraFiles: Record<s
         if ((e.name === "PORTAL_TOKEN" || e.secretRef === "portal-token") && !((isL2 && c.name === "l2") || isPortal)) v.push(`rule 21: ${e.name} in ${label(a)}/${c.name}`);
         if ((/^CARD_VAULT/.test(e.name) || e.secretRef === "card-vault-key") && !isPortal) v.push(`rule 21: ${e.name} in ${label(a)}/${c.name}`);
         if (/^(USER_ACCOUNTS|PLATFORM_SELLERS|PLATFORM_FILE)$/.test(e.name) && !(isL2 && c.name === "l2")) v.push(`rule 21: ${e.name} in ${label(a)}/${c.name}`);
-        if (isPortal && (PAYMENT_KEYS.includes(e.name) || (/TOKEN/.test(e.name) && e.name !== "PORTAL_TOKEN"))) v.push(`rule 21: ${e.name} in ${label(a)}/${c.name}`);
+        if (isPortal && (PAYMENT_KEYS.includes(e.name) || (/TOKEN/.test(e.name) && e.name !== "PORTAL_TOKEN" && e.name !== "PORTAL_ADMIN_TOKEN"))) v.push(`rule 21: ${e.name} in ${label(a)}/${c.name}`);
       }
     }
   }
   if (portal) {
-    if (!alwaysReferenced(portal, "portal", PORTAL_SECRETS, "portal") || secretsOf(portal).length !== Object.keys(PORTAL_SECRETS).length) {
+    if (!alwaysReferenced(portal, "portal", PORTAL_SECRETS, "portal") || secretsOf(portal).some((s) => !Object.values({ ...PORTAL_SECRETS, ...ADMIN_SECRET }).includes(String(s.name)))) {
       v.push(`rule 21: ${MN.apps.portal}/portal must always reference the portal vault's ${Object.values(PORTAL_SECRETS).join(" and ")}, as ${Object.keys(PORTAL_SECRETS).join(" and ")}, and hold no other secret`);
     }
     const env = containersOf(portal).find((c) => c.name === "portal")?.env ?? [];
@@ -922,6 +939,40 @@ export function violations(arms: Templates, params: Params, infraFiles: Record<s
       v.push("rule 21: main must refuse (fail()) a userAccounts whose cardVault is not off or stripe, that is enabled without a 36-character portalClientId, or whose cardVault is stripe without a pk_test_ publishable key");
       break;
     }
+  }
+
+  // Rule 22 (014, SPEC L2-8; specs/014 contracts/config-and-secrets.md): the portal's administration area. L2's
+  // control container and the portal each always reference portal-admin-token, each from its own vault, so every
+  // environment seeds it (the placeholder off while userAccounts.administration is false). PORTAL_ADMIN in both
+  // comes from that one parameter. No other app holds the secret or the variable, and main refuses (fail())
+  // administration without user accounts.
+  const ADMIN_FLAG = `[if(${UA}.administration, '1', '0')]`;
+  if (l2) {
+    if (!alwaysReferenced(l2, "l2", ADMIN_SECRET, "l2")) v.push(`rule 22: ${MN.apps.l2}/l2 must always reference the l2 vault's portal-admin-token, as PORTAL_ADMIN_TOKEN`);
+    if (l2Env.find((e) => e.name === "PORTAL_ADMIN")?.value !== ADMIN_FLAG) v.push("rule 22: L2's PORTAL_ADMIN must come from userAccounts.administration");
+  }
+  if (portal) {
+    if (!alwaysReferenced(portal, "portal", ADMIN_SECRET, "portal")) v.push(`rule 22: ${MN.apps.portal}/portal must always reference the portal vault's portal-admin-token, as PORTAL_ADMIN_TOKEN`);
+    const portalEnv = containersOf(portal).find((c) => c.name === "portal")?.env ?? [];
+    if (portalEnv.find((e) => e.name === "PORTAL_ADMIN")?.value !== ADMIN_FLAG) v.push("rule 22: the portal's PORTAL_ADMIN must come from userAccounts.administration");
+  }
+  for (const a of apps(main)) {
+    const isL2 = namesOf(a).includes(MN.apps.l2);
+    const isPortal = namesOf(a).includes(MN.apps.portal);
+    for (const s of secretsOf(a)) {
+      if (s.name === "portal-admin-token" && !isL2 && !isPortal) v.push(`rule 22: ${label(a)} has the portal administration token`);
+    }
+    for (const c of containersOf(a)) {
+      for (const e of c.env ?? []) {
+        const mine = (isL2 && c.name === "l2") || isPortal;
+        if ((/^PORTAL_ADMIN(_TOKEN)?$/.test(e.name) || e.secretRef === "portal-admin-token") && !mine) v.push(`rule 22: ${e.name} in ${label(a)}/${c.name}`);
+        // One secret, one variable: the administration token never arrives under another name, nor another secret under its name.
+        if (mine && (e.name === "PORTAL_ADMIN_TOKEN") !== (e.secretRef === "portal-admin-token")) v.push(`rule 22: ${e.name} in ${label(a)}/${c.name} must be the portal-admin-token secret and nothing else`);
+      }
+    }
+  }
+  if (!userAccountsChecked.includes(`not(${UA}.administration)`) && !userAccountsChecked.includes(`or(not(${UA}.administration), ${UA}.enabled)`)) {
+    v.push("rule 22: main must refuse (fail()) userAccounts.administration without userAccounts.enabled");
   }
 
   // Rule 18: each module is deployed by exactly one unit's runs: the platform's modules by the platform's
@@ -1267,6 +1318,55 @@ resource extraRead 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
     expect(web).toContain("rule 16: the portal web app must have no web");
   }, 180_000);
 
+  it("T-IAC-01 must-fail rule 16 (014): a third role, Portal.Admin for applications, or Portal.Admin for the deploy app, is reported", async () => {
+    const roles = "rule 16: the API app's roles must be Agent.Run (users and applications) and Portal.Admin (users only), each with its fixed ID";
+    const forApps = await mutant("pre-deploy.bicep", "      allowedMemberTypes: ['User']\n", "      allowedMemberTypes: ['User', 'Application']\n");
+    expect(forApps).toContain(roles);
+    const renamed = await mutant("pre-deploy.bicep", "      value: 'Portal.Admin'", "      value: 'Portal.Owner'");
+    expect(renamed).toContain(roles);
+    const toDeploy = await mutant("pre-deploy.bicep", "  principalId: portalAdminUser[i].id", "  principalId: deploySp.id");
+    expect(toDeploy).toContain("rule 16: Portal.Admin must go to portalAdmins only, never to the deploy app or another application");
+    // A third role, with a new ID of its own: the API app has exactly the two.
+    const third = await mutant(
+      "pre-deploy.bicep",
+      "      allowedMemberTypes: ['User']\n      isEnabled: true\n    }\n",
+      "      allowedMemberTypes: ['User']\n      isEnabled: true\n    }\n    {\n      id: '5b2c3a7e-6f1d-4c55-9f0e-0a1b2c3d4e5f'\n      value: 'Portal.Operator'\n      displayName: 'Portal.Operator'\n      description: 'A third role'\n      allowedMemberTypes: ['User']\n      isEnabled: true\n    }\n",
+    );
+    expect(third).toContain(roles);
+  }, 240_000);
+
+  it("T-IAC-01 must-fail rule 22: the administration token as a literal, missing, read from L2's vault by the portal, under another secret, on another app, or a flag written in a template, is reported", async () => {
+    const l2Always = `rule 22: ${N.main.apps.l2}/l2 must always reference the l2 vault's portal-admin-token, as PORTAL_ADMIN_TOKEN`;
+    const portalAlways = `rule 22: ${N.main.apps.portal}/portal must always reference the portal vault's portal-admin-token, as PORTAL_ADMIN_TOKEN`;
+    const missing = await mutant("modules/l2-apps.bicep", "            { name: 'PORTAL_ADMIN_TOKEN', secretRef: 'portal-admin-token' }\n", "");
+    expect(missing).toContain(l2Always);
+    const literal = await mutant(
+      "modules/portal-apps.bicep",
+      "        { name: 'portal-admin-token', keyVaultUrl: '${vaultPortal}secrets/portal-admin-token', identity: idPortal.id }",
+      "        #disable-next-line use-secure-value-for-secure-inputs\n        { name: 'portal-admin-token', value: 'off' }",
+    );
+    expect(literal).toContain(portalAlways);
+    // The portal's copy comes from the portal's own vault: read from L2's, it is not "its own" (and rule 2 sees the vault).
+    const fromL2 = await mutant(
+      "modules/portal-apps.bicep",
+      "keyVaultUrl: '${vaultPortal}secrets/portal-admin-token'",
+      "keyVaultUrl: 'https://${names.vaults.l2}${az.environment().suffixes.keyvaultDns}/secrets/portal-admin-token'",
+    );
+    expect(fromL2).toContain(portalAlways);
+    expect(fromL2).toContain(`rule 2: ${N.main.apps.portal} reads the l2 vault`);
+    const sameAsUser = await mutant("modules/portal-apps.bicep", "            { name: 'PORTAL_ADMIN_TOKEN', secretRef: 'portal-admin-token' }", "            { name: 'PORTAL_ADMIN_TOKEN', secretRef: 'portal-token' }");
+    expect(sameAsUser).toContain(portalAlways);
+    expect(sameAsUser).toContain(`rule 22: PORTAL_ADMIN_TOKEN in ${N.main.apps.portal}/portal must be the portal-admin-token secret and nothing else`);
+    const flag = await mutant("modules/l2-apps.bicep", "            { name: 'PORTAL_ADMIN', value: userAccounts.administration ? '1' : '0' }", "            { name: 'PORTAL_ADMIN', value: '1' }");
+    expect(flag).toContain("rule 22: L2's PORTAL_ADMIN must come from userAccounts.administration");
+    const portalFlag = await mutant("modules/portal-apps.bicep", "            { name: 'PORTAL_ADMIN', value: userAccounts.administration ? '1' : '0' }", "            { name: 'PORTAL_ADMIN', value: userAccounts.enabled ? '1' : '0' }");
+    expect(portalFlag).toContain("rule 22: the portal's PORTAL_ADMIN must come from userAccounts.administration");
+    const onL3 = await mutant("modules/l3-apps.bicep", "            { name: 'VERIFIER_TOKEN', secretRef: 'verifier-token' }\n", "            { name: 'VERIFIER_TOKEN', secretRef: 'verifier-token' }\n            { name: 'PORTAL_ADMIN_TOKEN', secretRef: 'verifier-token' }\n");
+    expect(onL3).toContain(`rule 22: PORTAL_ADMIN_TOKEN in ${N.main.apps.l3}/l3`);
+    const unchecked = await mutant("main.bicep", " && (!userAccounts.administration || userAccounts.enabled)", "");
+    expect(unchecked).toContain("rule 22: main must refuse (fail()) userAccounts.administration without userAccounts.enabled");
+  }, 300_000);
+
   it("T-IAC-01 must-fail rule 21: L2 without one of its always-referenced secrets, with one behind the flag's value, or with a literal USER_ACCOUNTS, is reported", async () => {
     const always = `rule 21: ${N.main.apps.l2}/l2 must always reference the l2 vault's portal-token and user-wallet-mnemonic, as PORTAL_TOKEN and USER_WALLET_MNEMONIC`;
     const missing = await mutant("modules/l2-apps.bicep", "            { name: 'PORTAL_TOKEN', secretRef: 'portal-token' }\n", "");
@@ -1315,8 +1415,9 @@ resource extraRead 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
     expect(agent).toContain("rule 21: the agent's PORTAL_CLIENT_ID (the azp it refuses) must come from the userAccounts parameter");
     const flagged = await mutant(
       "modules/portal-apps.bicep",
-      "      secrets: [\n        { name: 'portal-token', keyVaultUrl: '${vaultPortal}secrets/portal-token', identity: idPortal.id }\n        { name: 'card-vault-key', keyVaultUrl: '${vaultPortal}secrets/card-vault-key', identity: idPortal.id }\n      ]",
-      "      secrets: concat([{ name: 'portal-token', keyVaultUrl: '${vaultPortal}secrets/portal-token', identity: idPortal.id }], userAccounts.cardVault == 'stripe' ? [{ name: 'card-vault-key', keyVaultUrl: '${vaultPortal}secrets/card-vault-key', identity: idPortal.id }] : [])",
+      // 014: the block has a third secret, the administration token (rule 22); the mutation is the same one.
+      "      secrets: [\n        { name: 'portal-token', keyVaultUrl: '${vaultPortal}secrets/portal-token', identity: idPortal.id }\n        { name: 'card-vault-key', keyVaultUrl: '${vaultPortal}secrets/card-vault-key', identity: idPortal.id }\n        { name: 'portal-admin-token', keyVaultUrl: '${vaultPortal}secrets/portal-admin-token', identity: idPortal.id }\n      ]",
+      "      secrets: concat([{ name: 'portal-token', keyVaultUrl: '${vaultPortal}secrets/portal-token', identity: idPortal.id }, { name: 'portal-admin-token', keyVaultUrl: '${vaultPortal}secrets/portal-admin-token', identity: idPortal.id }], userAccounts.cardVault == 'stripe' ? [{ name: 'card-vault-key', keyVaultUrl: '${vaultPortal}secrets/card-vault-key', identity: idPortal.id }] : [])",
     );
     expect(flagged.some((m) => m.startsWith(`rule 21: ${N.main.apps.portal}/portal must always reference the portal vault's portal-token and card-vault-key`))).toBe(true);
     const part = await mutant("main.bicep", "    ciba: ciba\n    userAccounts: userAccounts\n", "    ciba: ciba\n    userAccounts: { enabled: userAccounts.enabled, sellerName: userAccounts.sellerName }\n");

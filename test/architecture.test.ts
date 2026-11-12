@@ -10,7 +10,7 @@ import { describe, expect, it } from "vitest";
 // Scanner core (T004–T006)
 // ---------------------------------------------------------------------------
 
-export type Rule = "A1" | "A2" | "A3" | "A4" | "A5" | "A6" | "A7" | "A8" | "A9" | "A10" | "A11" | "A12";
+export type Rule = "A1" | "A2" | "A3" | "A4" | "A5" | "A6" | "A7" | "A8" | "A9" | "A10" | "A11" | "A12" | "A13";
 export interface ArchViolation {
   rule: Rule;
   file: string;
@@ -324,7 +324,8 @@ export function checkMnemonicConfinement(path: string, source: string): ArchViol
 // code names the portal's token; no portal code names the payer key or another role's token. src/** only.
 // ---------------------------------------------------------------------------
 
-const A12_PORTAL_TOKEN = /\bPORTAL_TOKEN\b/;
+// 014: the administration role's token is the portal's too, and just as foreign to L1, L3 and the counterparty.
+const A12_PORTAL_TOKEN = /\bPORTAL_(?:ADMIN_)?TOKEN\b/;
 const A12_OTHERS = /\b(?:PAYER_PRIVATE_KEY|CONTROL_TOKEN|OPERATOR_TOKEN|SETTLEMENT_TOKEN|VERIFIER_TOKEN)\b/;
 
 export function checkPortalIsolation(path: string, source: string): ArchViolation[] {
@@ -334,6 +335,32 @@ export function checkPortalIsolation(path: string, source: string): ArchViolatio
   if (area === "L1" || area === "L3" || area === "CP") return hits(A12_PORTAL_TOKEN);
   if (area === "PORTAL") return hits(A12_OTHERS);
   return [];
+}
+
+// ---------------------------------------------------------------------------
+// A13 (014, SPEC v1.11 §4.1, INV-13, FR-028): the portal's two halves stay apart. The administration role and its
+// token are named only where the config is read and in the one client that uses it; only the administration routes
+// and the server that mounts them import that client; and the administration half never imports the user-account
+// client. So no user-account code path can reach an approval, and no administration code path a policy.
+// ---------------------------------------------------------------------------
+
+const A13_NAMES = /\bportal-admin\b|\bPORTAL_ADMIN_TOKEN\b/;
+const A13_NAME_FILES = new Set(["src/portal/config.ts", "src/portal/admin-client.ts"]);
+const A13_ADMIN_CLIENT = /["']\.\/admin-client\.js["']/;
+const A13_ADMIN_IMPORTERS = new Set(["src/portal/admin-routes.ts", "src/portal/server.ts"]);
+const A13_USER_CLIENT = /["']\.\/control-client\.js["']/;
+const A13_ADMIN_HALF = new Set(["src/portal/admin-routes.ts", "src/portal/admin-client.ts"]);
+
+export function checkPortalHalves(path: string, source: string): ArchViolation[] {
+  if (classify(path) !== "PORTAL") return [];
+  const text = lex(source).noComments;
+  const hits = (re: RegExp, detail: (found: string) => string) =>
+    matches(text, re).map((off) => ({ rule: "A13" as const, file: path, line: lineAt(source, off), detail: detail(text.slice(off).match(/^["']?[\w./-]+/)![0].replace(/^["']/, "")) }));
+  return [
+    ...(A13_NAME_FILES.has(path) ? [] : hits(A13_NAMES, (f) => f)),
+    ...(A13_ADMIN_IMPORTERS.has(path) || path === "src/portal/admin-client.ts" ? [] : hits(A13_ADMIN_CLIENT, () => "imports ./admin-client.js")),
+    ...(A13_ADMIN_HALF.has(path) ? hits(A13_USER_CLIENT, () => "imports ./control-client.js") : []),
+  ];
 }
 
 // ---------------------------------------------------------------------------
@@ -511,6 +538,9 @@ const TEMPLATES: Record<string, TemplateSpec> = {
       "USER_WALLET_MNEMONIC",
       "PLATFORM_FILE",
       "PLATFORM_SELLERS",
+      // 014 portal administration (CFG-2)
+      "PORTAL_ADMIN",
+      "PORTAL_ADMIN_TOKEN",
     ],
   },
   "l3-verifier": {
@@ -539,6 +569,9 @@ const TEMPLATES: Record<string, TemplateSpec> = {
       "PORTAL_BIND_HOST",
       "TRUSTED_PROXY_HOPS",
       "API_DOCS",
+      // 014: the administration area, and its own role token
+      "PORTAL_ADMIN",
+      "PORTAL_ADMIN_TOKEN",
     ],
   },
 };
@@ -721,6 +754,51 @@ describe("T-ARCH-ENV per-process env templates (US4)", () => {
     expect(walk("src/portal").length).toBeGreaterThan(8);
   });
 
+  // ---- 014: A12 extended, A13 new ----------------------------------------------------------------------------
+
+  it("T-ARCH-A12 (014) no layer names the administration role's token either", () => {
+    for (const layer of ["src/layer1-intent/x.ts", "src/layer3-settlement/x.ts", "src/counterparty/x.ts"]) {
+      expect(checkPortalIsolation(layer, "export const t = process.env.PORTAL_ADMIN_TOKEN;").map((v) => [v.rule, v.detail]), layer).toEqual([["A12", "PORTAL_ADMIN_TOKEN"]]);
+    }
+    expect(checkPortalIsolation("src/layer2-control/x.ts", "PORTAL_ADMIN_TOKEN")).toEqual([]);
+    // The switch's own name is not a secret and is not the token's name.
+    expect(checkPortalIsolation("src/layer1-intent/x.ts", "export const on = process.env.PORTAL_ADMIN;")).toEqual([]);
+  });
+
+  it("T-ARCH-A13 fixture trips A13 three ways, and no other rule catches it", () => {
+    const { path, source } = fixture(13);
+    expect(other13(path, source)).toEqual([]);
+    expect([...checkCardVaultConfinement(path, source), ...checkMnemonicConfinement(path, source), ...checkPortalIsolation(path, source)]).toEqual([]);
+    expect(checkPortalHalves(path, source).map((v) => [v.rule, v.detail])).toEqual([
+      ["A13", "portal-admin"],
+      ["A13", "PORTAL_ADMIN_TOKEN"],
+      ["A13", "imports ./admin-client.js"],
+    ]);
+  });
+
+  it("T-ARCH-A13 repository is clean: the portal's two halves stay apart", () => {
+    expect(walk("src").flatMap((f) => checkPortalHalves(f, readFileSync(f, "utf8"))).map(format)).toEqual([]);
+    // Not vacuous: the config really names the role and its token, and the allowed importers really import the client.
+    const config = checkPortalHalves("src/portal/routes.ts", readFileSync("src/portal/config.ts", "utf8")).map((v) => v.detail);
+    expect(new Set(config)).toEqual(new Set(["portal-admin", "PORTAL_ADMIN_TOKEN"]));
+    for (const importer of ["src/portal/admin-routes.ts", "src/portal/server.ts"]) {
+      expect(checkPortalHalves("src/portal/routes.ts", readFileSync(importer, "utf8")).map((v) => v.detail), importer).toContain("imports ./admin-client.js");
+    }
+    // The user-account half imports its own client, and that is what the administration half may not do.
+    expect(readFileSync("src/portal/routes.ts", "utf8")).toContain('"./control-client.js"');
+    for (const half of ["src/portal/admin-routes.ts", "src/portal/admin-client.ts"]) {
+      expect(checkPortalHalves(half, 'import { ControlClient } from "./control-client.js";').map((v) => v.detail), half).toEqual(["imports ./control-client.js"]);
+    }
+  });
+
+  it("T-ARCH-A13 comments, the switch's name and other areas never trip it", () => {
+    expect(checkPortalHalves("src/portal/routes.ts", "// the portal-admin role and PORTAL_ADMIN_TOKEN belong to admin-client.ts\nexport {};\n")).toEqual([]);
+    expect(checkPortalHalves("src/portal/server.ts", 'export const on = env.PORTAL_ADMIN === "1";')).toEqual([]);
+    expect(checkPortalHalves("src/layer2-control/admin-routes.ts", 'requireRole("portal-admin")')).toEqual([]);
+    expect(checkPortalHalves("src/shared/config.ts", readFileSync("src/shared/config.ts", "utf8"))).toEqual([]);
+    expect(checkPortalHalves("src/portal/cards.ts", 'tokenFor("portal-admin")').map((v) => v.rule)).toEqual(["A13"]);
+  });
+
   it("T-ARCH-A1 and A4 cover the portal: it imports only shared and itself, no layer imports it, and it can't sign", () => {
     expect(checkFile("src/portal/x.ts", 'import { AuditLedger } from "../layer2-control/ledger.js";').map((v) => v.rule)).toEqual(["A1"]);
     expect(checkFile("src/portal/x.ts", 'import { requesterAuth } from "../layer1-intent/hosted/requester-auth.js";').map((v) => v.rule)).toEqual(["A1"]);
@@ -777,8 +855,8 @@ function missingIds(rows: { sec: string; ids: string[] }[], titles: string[]): s
 describe("T-ARCH-TRACE threat matrix → test titles (007 T051)", () => {
   // SEC-10 and SEC-11 were added by 009 (SPEC v1.2), SEC-12 by 010 (v1.3), SEC-13 by the API docs (v1.4),
   // SEC-14..16 by 011 (v1.5, hosted agent service), SEC-17..18 by 012 (v1.8, backchannel approval),
-  // SEC-19..24 by 013 (v1.10, user accounts and the portal).
-  const SEC_ROWS = Array.from({ length: 24 }, (_, i) => `SEC-${i + 1}`);
+  // SEC-19..24 by 013 (v1.10, user accounts and the portal), SEC-25..27 by 014 (v1.11, the portal's administration area).
+  const SEC_ROWS = Array.from({ length: 27 }, (_, i) => `SEC-${i + 1}`);
   it(`every ${SEC_ROWS[0]}..${SEC_ROWS.at(-1)} row names at least one test, and each named ID is a test title`, () => {
     const rows = matrixRows(readFileSync(THREAT_MATRIX, "utf8"));
     expect(rows.map((r) => r.sec)).toEqual(SEC_ROWS);

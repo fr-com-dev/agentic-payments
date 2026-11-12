@@ -2,6 +2,8 @@
 // signed-in person only: the user is `res.locals.person.userId`, set by the access check from the verified token, and
 // no route reads a user identifier from a path, a query or a body (FR-004). Writes go to L2 first and to the portal's
 // own store second, so a failure in between never grants anything.
+// 014: every route here except /api/me is for a person who may start agent runs (`requireUser`, applied in
+// server.ts); /api/me also answers an administrator, with nothing but who they are.
 import express, { type Express, type Request, type Response } from "express";
 import { parseUsdc } from "../shared/config.js";
 import type { PlatformView, PolicyIssue, PolicyValues, PolicyView, UserView } from "../shared/contracts.js";
@@ -143,13 +145,17 @@ export function mountPortalRoutes(r: Express, d: RoutesDeps): void {
       }
     };
 
-  const me = (userId: string, user: UserView) => {
+  /** The body of /api/me for a person who may start agent runs. 014: `user` and `admin` say what they may use. */
+  const me = (res: Response, user: UserView) => {
+    const { userId, admin } = person(res);
     const profile = d.profiles.get(userId);
     return {
       userId,
       enabled: user.enabled,
       onboarding: user.onboarding,
       ...(profile && { profile: { displayName: profile.displayName, contactEmail: profile.contactEmail } }),
+      user: true,
+      admin,
     };
   };
 
@@ -158,8 +164,13 @@ export function mountPortalRoutes(r: Express, d: RoutesDeps): void {
   r.get(
     "/api/me",
     handle(async (_req, res) => {
-      const { userId } = person(res);
-      res.json(me(userId, await d.control.user(userId)));
+      const { userId, user, admin } = person(res);
+      // 014: an administrator who may not start agent runs has no profile, wallet or policy: L2 is not asked.
+      if (!user) {
+        res.json({ userId, user: false, admin });
+        return;
+      }
+      res.json(me(res, await d.control.user(userId)));
     }),
   );
 
@@ -195,7 +206,7 @@ export function mountPortalRoutes(r: Express, d: RoutesDeps): void {
         ...(current?.cardVaultCustomer !== undefined && { cardVaultCustomer: current.cardVaultCustomer }),
         updatedAt: new Date(d.now()).toISOString(),
       });
-      res.json(me(userId, user.registered ? user : await d.control.register(userId)));
+      res.json(me(res, user.registered ? user : await d.control.register(userId)));
     }),
   );
 
@@ -420,7 +431,7 @@ export function mountPortalRoutes(r: Express, d: RoutesDeps): void {
         res.status(400).json({ error: "confirm must be true" });
         return;
       }
-      res.json(me(userId, await d.control.disable(userId)));
+      res.json(me(res, await d.control.disable(userId)));
     }),
   );
 
@@ -428,7 +439,7 @@ export function mountPortalRoutes(r: Express, d: RoutesDeps): void {
     "/api/account/enable",
     handle(async (_req, res) => {
       const { userId, identityConfirmedAtMs } = person(res);
-      res.json(me(userId, await d.control.enable(userId, identityConfirmedAtMs)));
+      res.json(me(res, await d.control.enable(userId, identityConfirmedAtMs)));
     }),
   );
 }

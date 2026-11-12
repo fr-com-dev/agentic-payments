@@ -81,11 +81,11 @@ var cibaChecked = contains(['key', 'secret'], ciba.credential) && (!ciba.enabled
 
 // 013: an enabled userAccounts must name the portal web app's client ID (a GUID), and so must any deployment of the
 // portal itself, enabled or not: the portal doesn't start without it. A stripe card vault needs a test-mode
-// publishable key (T-IAC-01 rule 21).
+// publishable key (T-IAC-01 rule 21). 014: the portal's administration area needs user accounts on (rule 22).
 #disable-next-line no-unused-vars
-var userAccountsChecked = contains(['off', 'stripe'], userAccounts.cardVault) && ((!userAccounts.enabled && unit != 'portal') || length(userAccounts.portalClientId) == 36) && (userAccounts.cardVault != 'stripe' || startsWith(userAccounts.cardVaultPublishableKey, 'pk_test_'))
+var userAccountsChecked = contains(['off', 'stripe'], userAccounts.cardVault) && ((!userAccounts.enabled && unit != 'portal') || length(userAccounts.portalClientId) == 36) && (userAccounts.cardVault != 'stripe' || startsWith(userAccounts.cardVaultPublishableKey, 'pk_test_')) && (!userAccounts.administration || userAccounts.enabled)
   ? userAccounts.enabled
-  : fail('main: userAccounts.cardVault must be off or stripe, userAccounts.enabled and the portal unit each need a 36-character portalClientId, and cardVault stripe needs a cardVaultPublishableKey that starts with pk_test_ (specs/013 contracts/config-and-secrets.md)')
+  : fail('main: userAccounts.cardVault must be off or stripe, userAccounts.enabled and the portal unit each need a 36-character portalClientId, cardVault stripe needs a cardVaultPublishableKey that starts with pk_test_, and userAccounts.administration needs userAccounts.enabled (specs/013 and specs/014 contracts/config-and-secrets.md)')
 
 // The identity and vault matrix (contracts/cloud-topology.md "Role assignments"): one identity and one
 // vault per runtime unit, and each identity reads only its own vault. The key names the unit's identity

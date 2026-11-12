@@ -4,6 +4,8 @@
 // every second from a ledger cursor, so it resumes exactly after an L2 restart; SIGINT/SIGTERM exit 0.
 // 012 (L2-7): also prints the reference code, the approval request's state and events, and who decided, by which
 // channel. Every field comes from L2's whitelisted views; none can hold a token, a handle or Auth0 text.
+// 014 (L2-8): a decision made in the portal shows as channel=portal with the administrator's identifier, and a
+// rejection's reason code.
 import { pathToFileURL } from "node:url";
 import { loadEnv, serviceUrls, tokenFor } from "../src/shared/config.js";
 
@@ -46,6 +48,8 @@ interface Event {
   cause?: string;
   check?: string;
   userId?: string;
+  /** 014: on a rejection made in the portal: a code from a fixed list, never text. */
+  reasonCode?: string;
 }
 
 /** `key=value` for each present field, in order. */
@@ -69,6 +73,7 @@ export function formatEvent(e: Event): string {
     extra.push(`rejectionId=${e.rejectionId}`);
     if (e.operator !== undefined) extra.push(`operator=${e.operator}`);
     if (e.reason !== undefined) extra.push(`reason=${JSON.stringify(e.reason)}`);
+    extra.push(...fields(e, ["reasonCode"]));
   }
   if (e.kind === "approved" || e.kind === "denied") extra.push(...fields(e, ["channel", "decidedBy"]));
   if (e.kind === "approval_lapsed") extra.push(`approvalId=${e.approvalId}`);

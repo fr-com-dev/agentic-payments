@@ -22,3 +22,8 @@ the vault's API host to `src/portal/card-vault.ts` and `env/portal.env.example`.
 mnemonic (`USER_WALLET_MNEMONIC`) to the signer, the portal's refusal, the local development value and L2's template.
 A12 keeps the portal's token out of the agent, the verifier and the counterparty, and every other role's secret out
 of `src/portal/`. Each test asserts that no other rule catches its fixture.
+
+`a13-violation.ts` (014) is checked with `checkPortalHalves`. A13 keeps the portal's two halves apart: the
+administration role (`portal-admin`) and its token (`PORTAL_ADMIN_TOKEN`) are named only in `src/portal/config.ts`
+and `src/portal/admin-client.ts`; only `admin-routes.ts` and `server.ts` import that client; and the administration
+half never imports the user-account client. The test asserts that no other rule catches its fixture.

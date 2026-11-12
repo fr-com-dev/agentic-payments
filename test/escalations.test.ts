@@ -488,3 +488,239 @@ describe("012 approval request derivations", () => {
     expect(requestsToResume(l.entries(), T0 + ESCALATION_TTL_MS)).toEqual({ open: [], stale: [], interrupted: [] });
   });
 });
+
+// 014 (SPEC v1.11 L2-4, L2-4.3): a decision can also come from the portal. Same entry types, a third channel.
+describe("T-LED-07 the portal channel in the derivations (014)", () => {
+  const ADMIN = "usr_0123456789abcdef0123456789abcdef";
+  const portalApproval = (l: AuditLedger, id: string, at = T0 + 1) =>
+    l.append(
+      {
+        type: "HUMAN_APPROVAL",
+        sessionId: "sess_a",
+        authorizationId: id,
+        data: { approvalId: `apr_${id}`, escalationId: id, resourceKey: KEY, payTo: PAY_TO, amount: "50000", expiresAtMs: at + 600_000, channel: "portal", approver: ADMIN, identityConfirmedAtMs: at - 1_000 },
+      },
+      at,
+    );
+  const portalRejection = (l: AuditLedger, id: string, reasonCode: unknown = "amount_too_high", at = T0 + 1) =>
+    l.append(
+      {
+        type: "HUMAN_REJECTION",
+        sessionId: "sess_a",
+        authorizationId: id,
+        data: { rejectionId: `rej_${id}`, escalationId: id, resourceKey: KEY, payTo: PAY_TO, amount: "50000", channel: "portal", approver: ADMIN, reasonCode },
+      },
+      at,
+    );
+
+  it("T-LED-07 channelOf: portal, backchannel, operator, and operator for an entry with no channel", () => {
+    const l = new AuditLedger(file);
+    escalate(l, "auth_p");
+    escalate(l, "auth_o");
+    expect(channelOf(portalApproval(l, "auth_p"))).toBe("portal");
+    expect(channelOf(approveEntry(l, "auth_o", "apr_o"))).toBe("operator");
+    const back = l.append({ type: "HUMAN_REJECTION", sessionId: "sess_a", authorizationId: "auth_b", data: { rejectionId: "rej_b", escalationId: "auth_b", channel: "backchannel", approver: "auth0|x" } }, T0 + 2);
+    expect(channelOf(back)).toBe("backchannel");
+    const unknown = l.append({ type: "HUMAN_REJECTION", sessionId: "sess_a", authorizationId: "auth_u", data: { rejectionId: "rej_u", escalationId: "auth_u", channel: "something-else", operator: "x" } }, T0 + 3);
+    expect(channelOf(unknown)).toBe("operator");
+  });
+
+  it("T-LED-07 the state machine needs no new case: a portal decision is final like any other", () => {
+    const l = new AuditLedger(file);
+    escalate(l, "auth_a");
+    escalate(l, "auth_d");
+    portalApproval(l, "auth_a");
+    portalRejection(l, "auth_d");
+    expect(escalationState(l.entries(), "auth_a", T0 + ESCALATION_TTL_MS + 1)).toBe("approved");
+    expect(escalationState(l.entries(), "auth_d", T0 + ESCALATION_TTL_MS + 1)).toBe("denied");
+    expect(pendingEscalations(l.entries(), T0 + 5)).toEqual([]);
+    expect(findRejection(l.entries(), "sess_a", KEY)?.data.rejectionId).toBe("rej_auth_d");
+  });
+
+  it("T-LED-07 escalationEvents: a portal approval names the channel and the decider's identifier", () => {
+    const l = new AuditLedger(file);
+    escalate(l, "auth_a");
+    portalApproval(l, "auth_a");
+    const ev = escalationEvents(l.entries(), -1).find((e) => e.kind === "approved")!;
+    expect(ev).toMatchObject({ channel: "portal", decidedBy: ADMIN, approvalId: "apr_auth_a", approver: ADMIN });
+  });
+
+  it("T-LED-07 escalationEvents: a portal rejection has its reason code and the identifier, and no operator label or free text", () => {
+    const l = new AuditLedger(file);
+    escalate(l, "auth_d");
+    portalRejection(l, "auth_d");
+    const ev = escalationEvents(l.entries(), -1).find((e) => e.kind === "denied")!;
+    expect(ev).toMatchObject({ channel: "portal", decidedBy: ADMIN, rejectionId: "rej_auth_d", reasonCode: "amount_too_high" });
+    expect(Object.keys(ev)).not.toContain("operator");
+    expect(Object.keys(ev)).not.toContain("reason");
+  });
+
+  it("T-LED-07 escalationEvents: a reason code outside the fixed list never reaches a view; an operator rejection has none", () => {
+    const l = new AuditLedger(file);
+    escalate(l, "auth_x");
+    escalate(l, "auth_o");
+    portalRejection(l, "auth_x", "<b>free text</b>");
+    rejectEntry(l, "auth_o", "rej_o");
+    const events = escalationEvents(l.entries(), -1).filter((e) => e.kind === "denied");
+    expect(events.map((e) => "reasonCode" in e)).toEqual([false, false]);
+    expect(events[1]).toMatchObject({ channel: "operator", decidedBy: "operator", operator: "operator" });
+  });
+
+  it("T-LED-07 approvalRequestState: a portal decision while the phone request is open leaves it abandoned", () => {
+    const l = new AuditLedger(file);
+    for (const id of ["auth_r1", "auth_r2"]) {
+      l.append({ type: "ESCALATED", sessionId: "sess_a", authorizationId: id, data: { violations: [], resourceKey: KEY, payTo: PAY_TO, amount: "50000", approvalRequest: "requested" } }, T0);
+      l.append(
+        { type: "APPROVAL_REQUESTED", sessionId: "sess_a", authorizationId: id, data: { escalationId: id, resourceKey: KEY, payTo: PAY_TO, amount: "50000", channel: "backchannel", requestId: `apq_${id}`, requestExpiresAtMs: T0 + 300_000, handleSealed: "v1.a.b.c" } },
+        T0 + 10,
+      );
+    }
+    portalApproval(l, "auth_r1", T0 + 20);
+    portalRejection(l, "auth_r2", "duplicate", T0 + 20);
+    expect(approvalRequestState(l.entries(), "auth_r1")).toBe("abandoned");
+    expect(approvalRequestState(l.entries(), "auth_r2")).toBe("abandoned");
+    expect(openApprovalRequest(l.entries(), "auth_r1", T0 + 30)).toBeUndefined();
+  });
+
+  it("T-LED-07 no view carries a secret-bearing or internal key", () => {
+    const l = new AuditLedger(file);
+    escalate(l, "auth_a");
+    escalate(l, "auth_d");
+    escalate(l, "auth_p");
+    portalApproval(l, "auth_a");
+    portalRejection(l, "auth_d");
+    const text = JSON.stringify([escalationEvents(l.entries(), -1), pendingEscalations(l.entries(), T0 + 5)]);
+    for (const key of ["identityConfirmedAtMs", "purpose", "accepts", "details", "bindingMessage", "handleSealed", "evidence"]) {
+      expect(text, key).not.toContain(`"${key}"`);
+    }
+  });
+});
+
+// 014 (FR-019): the operator's two decision routes are pinned here before their logic moves into a shared core
+// (research R4). Every body and every recorded field must be what it was in v1.10.
+describe("014 the operator's decisions are unchanged (FR-019)", () => {
+  const OPERATOR = "pin-operator-token";
+  let now = T0;
+
+  async function startOperatorRoutes(l: AuditLedger) {
+    const { default: express } = await import("express");
+    const { mountApprovalRoutes } = await import("../src/layer2-control/approval-routes.js");
+    const { createSerializer } = await import("../src/layer2-control/service.js");
+    const app = express();
+    mountApprovalRoutes(app, { ledger: l, serialize: createSerializer(), now: () => now, tokens: { operator: OPERATOR } });
+    const server = app.listen(0, "127.0.0.1");
+    await new Promise<void>((r) => server.once("listening", () => r()));
+    const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+    const call = async (path: string, body?: unknown, token = OPERATOR) => {
+      const res = await fetch(`${base}${path}`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify(body ?? {}),
+      });
+      return { status: res.status, body: (await res.json()) as Record<string, unknown> };
+    };
+    return { call, close: () => new Promise<void>((r) => server.close(() => r())) };
+  }
+  const iso = (ms: number) => new Date(ms).toISOString();
+  const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+  beforeEach(() => {
+    now = T0 + 1_000;
+  });
+
+  it("014 operator approval: the entry's data, and every answer by state", async () => {
+    const l = new AuditLedger(file);
+    for (const id of ["auth_p", "auth_d", "auth_e"]) escalate(l, id);
+    rejectEntry(l, "auth_d", "rej_d");
+    const s = await startOperatorRoutes(l);
+    try {
+      expect(await s.call("/v1/approvals/auth_p", {}, "wrong")).toEqual({ status: 401, body: { error: "unauthorized" } });
+      expect(await s.call("/v1/approvals/auth_p", { ttlSeconds: 0 })).toEqual({ status: 400, body: { error: "ttlSeconds must be a positive integer" } });
+      expect(await s.call("/v1/approvals/auth_none")).toEqual({ status: 404, body: { error: "not found" } });
+      const before = l.entries().length;
+
+      const first = await s.call("/v1/approvals/auth_p", { approver: "ops-jane", ttlSeconds: 120 });
+      expect(first.status).toBe(200);
+      const approvalId = first.body.approvalId as string;
+      expect(approvalId.replace(/^apr_/, "")).toMatch(UUID);
+      expect(first.body).toEqual({ ok: true, approvalId, expiresAt: iso(now + 120_000) });
+      const entry = l.entries().at(-1)!;
+      expect(l.entries()).toHaveLength(before + 1);
+      expect({ type: entry.type, sessionId: entry.sessionId, authorizationId: entry.authorizationId, ts: entry.ts, data: entry.data }).toEqual({
+        type: "HUMAN_APPROVAL",
+        sessionId: "sess_a",
+        authorizationId: "auth_p",
+        ts: iso(now),
+        data: { approvalId, escalationId: "auth_p", resourceKey: KEY, payTo: PAY_TO, amount: "50000", approver: "ops-jane", expiresAtMs: now + 120_000, channel: "operator" },
+      });
+
+      // A repeat returns the first approval; its own ttl and approver are ignored and nothing is appended.
+      expect(await s.call("/v1/approvals/auth_p", { approver: "someone-else", ttlSeconds: 5 })).toEqual({
+        status: 200,
+        body: { ok: true, approvalId, expiresAt: iso(now + 120_000), alreadyApproved: true },
+      });
+      expect(await s.call("/v1/approvals/auth_d")).toEqual({ status: 409, body: { error: "escalation is denied", state: "denied", rejectionId: "rej_d" } });
+      now = T0 + ESCALATION_TTL_MS;
+      expect(await s.call("/v1/approvals/auth_e")).toEqual({
+        status: 409,
+        body: { error: "escalation is expired", state: "expired", expiresAt: iso(T0 + ESCALATION_TTL_MS) },
+      });
+      // The sweep ran inside the section: the expiry is recorded, and no approval was.
+      expect(l.entries().filter((e) => e.type === "HUMAN_APPROVAL")).toHaveLength(1);
+      expect(l.entries().some((e) => e.type === "ESCALATION_EXPIRED" && e.data.escalationId === "auth_e")).toBe(true);
+    } finally {
+      await s.close();
+    }
+  });
+
+  it("014 operator rejection: the entry's data, and every answer by state", async () => {
+    const l = new AuditLedger(file);
+    for (const id of ["auth_p", "auth_q", "auth_a", "auth_e"]) escalate(l, id);
+    approveEntry(l, "auth_a", "apr_a");
+    const s = await startOperatorRoutes(l);
+    try {
+      expect(await s.call("/v1/rejections/auth_p", {}, "wrong")).toEqual({ status: 401, body: { error: "unauthorized" } });
+      expect((await s.call("/v1/rejections/auth_p", { operator: "" })).status).toBe(400);
+      expect((await s.call("/v1/rejections/auth_p", { reason: "x".repeat(281) })).status).toBe(400);
+      expect(await s.call("/v1/rejections/auth_none")).toEqual({ status: 404, body: { error: "not found" } });
+
+      const first = await s.call("/v1/rejections/auth_p", { operator: "ops-jane", reason: "not expected" });
+      const rejectionId = first.body.rejectionId as string;
+      expect(rejectionId.replace(/^rej_/, "")).toMatch(UUID);
+      expect(first).toEqual({ status: 200, body: { ok: true, rejectionId, rejectedAt: iso(now), alreadyRejected: false } });
+      const entry = l.entries().at(-1)!;
+      expect({ type: entry.type, sessionId: entry.sessionId, authorizationId: entry.authorizationId, data: entry.data }).toEqual({
+        type: "HUMAN_REJECTION",
+        sessionId: "sess_a",
+        authorizationId: "auth_p",
+        data: { rejectionId, escalationId: "auth_p", resourceKey: KEY, payTo: PAY_TO, amount: "50000", operator: "ops-jane", reason: "not expected", channel: "operator" },
+      });
+
+      // Without a label or a reason: the default label, and no `reason` key at all.
+      const plain = await s.call("/v1/rejections/auth_q");
+      expect(l.entries().at(-1)!.data).toEqual({
+        rejectionId: plain.body.rejectionId,
+        escalationId: "auth_q",
+        resourceKey: KEY,
+        payTo: PAY_TO,
+        amount: "50000",
+        operator: "operator",
+        channel: "operator",
+      });
+
+      expect(await s.call("/v1/rejections/auth_p", { reason: "again" })).toEqual({
+        status: 200,
+        body: { ok: true, rejectionId, rejectedAt: iso(now), alreadyRejected: true },
+      });
+      expect(await s.call("/v1/rejections/auth_a")).toEqual({ status: 409, body: { error: "escalation is approved", state: "approved", approvalId: "apr_a" } });
+      now = T0 + ESCALATION_TTL_MS;
+      expect(await s.call("/v1/rejections/auth_e")).toEqual({
+        status: 409,
+        body: { error: "escalation is expired", state: "expired", expiresAt: iso(T0 + ESCALATION_TTL_MS) },
+      });
+      expect(l.entries().filter((e) => e.type === "HUMAN_REJECTION")).toHaveLength(2);
+    } finally {
+      await s.close();
+    }
+  });
+});

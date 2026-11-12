@@ -36,3 +36,5 @@ param portalOrigin = ''
 // People: who may run the agent (Agent.Run), and who may start the operator job (the operators' group).
 param agentUsers = ['me@fabriciorojas.com']
 param operators = ['me@fabriciorojas.com']
+// 014: who may use the portal's administration area (Portal.Admin). Nobody until the area is turned on.
+param portalAdmins = []

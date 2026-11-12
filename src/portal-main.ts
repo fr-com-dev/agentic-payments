@@ -26,6 +26,7 @@ async function main(): Promise<void> {
   const { loadPortalConfig } = await import("./portal/config.js");
   const { keysFor } = await import("./shared/entra-token.js");
   const { ControlClient } = await import("./portal/control-client.js");
+  const { AdminClient } = await import("./portal/admin-client.js");
   const { ProfileStore } = await import("./portal/profile-store.js");
   const { createBalanceCache, rpcBalanceReader } = await import("./portal/balance.js");
   const { CardVault } = await import("./portal/card-vault.js");
@@ -39,10 +40,12 @@ async function main(): Promise<void> {
     profiles: new ProfileStore(config.profileDir),
     balance: createBalanceCache(rpcBalanceReader(config.rpcUrl)),
     ...(config.cardVault && { vault: new CardVault(config.cardVault) }),
+    // 014: the administration area, with its own role token. Off unless PORTAL_ADMIN=1.
+    ...(config.admin && { admin: new AdminClient(config.controlUrl, config.admin.token) }),
   });
   const server: Server = app.listen(config.port, config.bindHost, () => {
     console.log(
-      `portal listening on http://${config.bindHost}:${config.port} (network ${config.network}, sign-in ${config.auth.mode}, cards ${config.cardVault ? "on (test mode)" : "off"})`,
+      `portal listening on http://${config.bindHost}:${config.port} (network ${config.network}, sign-in ${config.auth.mode}, cards ${config.cardVault ? "on (test mode)" : "off"}, administration ${config.admin ? "on" : "off"})`,
     );
     if (config.apiDocs) console.log(`portal API docs on http://${config.bindHost}:${config.port}/docs (API_DOCS=1, no token)`);
     markReady();

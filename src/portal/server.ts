@@ -6,7 +6,9 @@ import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import express, { type Express, type NextFunction, type Request, type Response } from "express";
 import type { JWTVerifyGetKey } from "jose";
-import { portalAccess, type Person } from "./access.js";
+import { portalAccess, requireAdmin, requireUser, type Person } from "./access.js";
+import type { AdminPort } from "./admin-client.js";
+import { mountPortalAdminRoutes } from "./admin-routes.js";
 import { mountPortalApiDocs } from "./api-docs.js";
 import type { BalanceCache } from "./balance.js";
 import { CARD_VAULT_CSP, type CardVault } from "./card-vault.js";
@@ -30,6 +32,10 @@ export interface PortalDeps {
   balance: BalanceCache;
   /** The card vault client. Absent: cards are off. */
   vault?: CardVault;
+  /** 014: the administration client. Absent: the administration area is off and /api/admin is not mounted. */
+  admin?: AdminPort;
+  /** 014 test hook (T-PRT-10 must-fail): see requireAdmin. Never set by the entry point. */
+  skipAdminCheck?: boolean;
   now?: () => number;
   /** Where log lines go (default: stdout, one JSON line each). */
   log?: (line: string) => void;
@@ -114,6 +120,8 @@ export function createPortalApp(deps: PortalDeps): PortalApp {
       auth: { mode: config.auth.mode, tenantId: config.auth.tenantId, clientId: config.auth.clientId, scope: config.auth.scope },
       network: config.network,
       cards: { available: deps.vault !== undefined, ...(deps.vault && { publishableKey: deps.vault.publishableKey }) },
+      // 014: whether the administration area is on. Who may use it is decided from the person's token, not here.
+      admin: { available: deps.admin !== undefined },
     });
   });
 
@@ -124,6 +132,7 @@ export function createPortalApp(deps: PortalDeps): PortalApp {
     keys: deps.keys,
     clientId: config.auth.clientId,
     now,
+    ...(deps.admin !== undefined && { adminEnabled: true }),
     ...(deps.bypassAuth && { bypassAuth: true }),
   });
 
@@ -148,6 +157,16 @@ export function createPortalApp(deps: PortalDeps): PortalApp {
   // Then access and the per-person limit, before every /api route below (the routes carry their full paths).
   if (!deps.skipAddressLimit) app.use("/api", addressLimit({ ...(deps.maxRequestsPerAddress !== undefined && { max: deps.maxRequestsPerAddress }) }));
   app.use("/api", access, limit);
+  // 014: the administration half first, behind its own permission. Off: nothing is mounted and /api/admin is 404.
+  if (deps.admin !== undefined) {
+    app.use("/api/admin", requireAdmin({ ...(deps.skipAdminCheck && { skip: true }) }));
+    mountPortalAdminRoutes(app, { admin: deps.admin, now });
+  }
+  // Everything else under /api, except "who am I", is for a person who may start agent runs.
+  app.use("/api", (req, res, next) => {
+    if (req.path === "/me" || req.path === "/admin" || req.path.startsWith("/admin/")) next();
+    else requireUser(req, res, next);
+  });
   mountPortalRoutes(app, { control: deps.control, profiles: deps.profiles, balance: deps.balance, ...(cards && { cards }), now });
   app.use("/api", (_req, res) => {
     res.status(404).json({ error: "not found" });

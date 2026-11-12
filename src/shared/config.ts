@@ -271,7 +271,7 @@ export function serviceUrls(env: Env = process.env) {
 // INV-13 role tokens (007)
 // ---------------------------------------------------------------------------
 
-export type Role = "agent-control" | "agent-verifier" | "verifier-control" | "operator" | "portal-control";
+export type Role = "agent-control" | "agent-verifier" | "verifier-control" | "operator" | "portal-control" | "portal-admin";
 
 export const ROLE_TOKEN_VAR: Record<Role, string> = {
   "agent-control": "CONTROL_TOKEN",
@@ -280,6 +280,8 @@ export const ROLE_TOKEN_VAR: Record<Role, string> = {
   operator: "OPERATOR_TOKEN",
   // 013: the portal's role (INV-13). It reaches only the user-account routes.
   "portal-control": "PORTAL_TOKEN",
+  // 014: the portal's administration role (INV-13). It reaches only the /v1/admin routes.
+  "portal-admin": "PORTAL_ADMIN_TOKEN",
 };
 
 export const DEV_TOKENS: Record<string, string> = {
@@ -288,6 +290,7 @@ export const DEV_TOKENS: Record<string, string> = {
   SETTLEMENT_TOKEN: "dev-settlement-token",
   OPERATOR_TOKEN: "dev-operator-token",
   PORTAL_TOKEN: "dev-portal-token",
+  PORTAL_ADMIN_TOKEN: "dev-portal-admin-token",
 };
 
 /**
