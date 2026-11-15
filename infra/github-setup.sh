@@ -12,10 +12,11 @@
 # secrets and variables a workflow reads are the Auth0 environment's. Its secrets (the Auth0 Management API
 # credential) are never set or read here: an administrator sets them by hand (auth0/README.md). Its variables
 # (Terraform's, none a secret) are created here when missing, never changed: the four without a default as the
-# placeholder REPLACE_ME, which provision-auth0.yml refuses to plan with, and the two optional ones as the default
-# of auth0/variables.tf. An administrator then replaces the placeholders by hand. AUTH0_PORTAL_ORIGIN (013) is not
-# created: it has no value until the portal is deployed, and a GitHub variable can't be empty. Unset, Terraform's
-# default (no deployed origin) holds; an administrator sets it then (auth0/README.md).
+# placeholder REPLACE_ME, which provision-auth0.yml refuses to plan with, and the three optional ones as the default
+# of auth0/variables.tf (AUTH0_MACHINE_CALLER_KEYS, 016, as {}: no machine caller). An administrator then replaces
+# the placeholders by hand. AUTH0_PORTAL_ORIGIN (013) and AUTH0_AGENT_ORIGIN (016) are not created: neither has a
+# value until the portal or the agent is deployed, and a GitHub variable can't be empty. Unset, Terraform's default
+# (no deployed origin) holds; an administrator sets each one then (auth0/README.md).
 #
 # usage: infra/github-setup.sh [--environment dev] [--dry-run]
 # needs: gh, signed in with admin rights on the repository (creating an environment needs them); az with Bicep
@@ -84,8 +85,8 @@ echo "environment $GH_AUTH0_ENV: ready in $REPO. Give it required reviewers, and
   "gh secret set AUTH0_CLIENT_ID --repo $REPO --env $GH_AUTH0_ENV, and AUTH0_CLIENT_SECRET the same way (auth0/README.md)."
 
 # Terraform's variables for provision-auth0.yml, as variables of the Auth0 environment. Only the missing ones are
-# created: one that exists keeps its value, whatever it is. AUTH0_PORTAL_ORIGIN is set by hand, after the portal's
-# first deployment.
+# created: one that exists keeps its value, whatever it is. AUTH0_PORTAL_ORIGIN and AUTH0_AGENT_ORIGIN are set by
+# hand, after the portal's and the agent's first deployment.
 PLACEHOLDER="REPLACE_ME"
 AUTH0_VARIABLES=(
   "AUTH0_TENANT_DOMAIN=$PLACEHOLDER"
@@ -94,6 +95,7 @@ AUTH0_VARIABLES=(
   "AUTH0_CLIENT_PUBLIC_KEY=$PLACEHOLDER"
   "AUTH0_MANAGE_GUARDIAN=true"
   "AUTH0_GUARDIAN_POLICY=never"
+  "AUTH0_MACHINE_CALLER_KEYS={}"
 )
 HELD=$(gh variable list --repo "$REPO" --env "$GH_AUTH0_ENV" --json name --jq '.[].name')
 TO_REPLACE=()

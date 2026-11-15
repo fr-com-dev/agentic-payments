@@ -1,16 +1,19 @@
 // L1's apps in names.environments.x402 (specs/011 contracts/cloud-topology.md "Apps and jobs", "Non-secret env",
-// "Secrets"): the hosted agent (names.apps.l1) and the regression job (names.jobs.l1), both from L1's image. Deployed by
-// main.bicep. The platform's resources it uses are looked up by their names (the names parameter), never passed in
+// "Secrets"; specs/016 contracts/tenant-and-config.md "Azure"): the hosted agent (names.apps.l1), the regression job
+// (names.jobs.l1) and the smoke job (names.jobs.smoke), all three from L1's image. Deployed by main.bicep. The platform's resources it uses are looked up by their names (the names parameter), never passed in
 // as another module's outputs: what-if skips a module whose parameters hold runtime values, so this keeps the module
 // in the preview of a first deployment. main.bicep deploys it after the platform (dependsOn).
 // T-IAC-01 asserts on the compiled form of this file:
 // - secrets come only from the l1 vault, as Key Vault references;
-// - identity lifecycle is Main only for the agent (Foundry tokens), None for the regression job;
-// - the agent's SERVICE_AUDIENCE, the audience of system identities' Entra tokens, comes from the authAudience
-//   parameter (rule 11);
-// - 013 (rule 21, research R20): the Auth0 tenant has no client for the agent service, so in Azure it accepts system
-//   identities only: it gets none of the people's settings (AUTH_ISSUER, AUTH_AUDIENCE, AGENT_CLIENT_IDS,
-//   PORTAL_CLIENT_ID) and takes neither the identity nor the userAccounts parameter.
+// - identity lifecycle is Main only for the agent (Foundry tokens), None for the two jobs;
+// - 016 (rule 23): the agent accepts the sign-in tenant's callers only. It gets AUTH_ISSUER and AUTH_AUDIENCE from
+//   the identity parameter and AGENT_CLIENT_IDS from agent.clientId, the same values L2 gets, and nothing of the
+//   directory (no AUTH_TENANT_ID, no SERVICE_AUDIENCE). It is the only container with API_DOCS, which is
+//   agent.apiDocs and nothing else;
+// - 016 (rule 23): the two jobs call as the pipeline's machine caller. Each gets the tenant, the machine client's ID
+//   and its key's ID from the parameters, and the key itself as a reference to the l1 vault's machine-client-key,
+//   which every environment seeds (the placeholder off until the tenant has the client). The agent's container gets
+//   none of it, and the smoke job holds no role token: it calls the agent's public API only.
 param location string
 @description('Every resource name (main.<environment>.bicepparam).')
 param names object
@@ -18,10 +21,10 @@ param names object
 param image string
 @description('The registry\'s login server.')
 param acrServer string
-@description('The Entra tenant of system identities\' tokens.')
-param authTenantId string
-@description('The Entra API app\'s client ID: the audience of system identities\' tokens.')
-param authAudience string
+@description('The sign-in tenant (main.<environment>.bicepparam): its issuer and the API\'s identifier.')
+param identity object
+@description('016: the agent\'s client, the docs switch, and the machine caller\'s client and key ID (main.<environment>.bicepparam).')
+param agent object
 @description('The Foundry model deployment, named exactly the model id: the agent\'s ANTHROPIC_MODEL.')
 param modelDeployment string
 @description('The agent revision that keeps serving until the new one passes the regression (empty on the first deployment).')
@@ -38,11 +41,15 @@ var sellerDomain = sellerEnv.properties.defaultDomain
 var controlUrl = 'http://${names.apps.l2}.internal.${mainDomain}'
 var settlementUrl = 'http://${names.apps.l3}.internal.${mainDomain}'
 var sellerUrl = 'https://${names.apps.seller}.${sellerDomain}'
+// The agent's public address, and the one of its `candidate` label: the revision an L1 deployment starts at 0% of
+// the traffic (the ingress below). The smoke job can't be passed a value when it is started, so it gets both.
+var agentUrl = 'https://${names.apps.l1}.${mainDomain}'
+var agentCandidateUrl = 'https://${names.apps.l1}---candidate.${mainDomain}'
 
 // ---------------------------------------------------------------------------------------------
 // Hosted agent service (L1-6): public ingress, multiple revisions, 0–1 replicas, identity lifecycle Main.
 // ---------------------------------------------------------------------------------------------
-resource agent 'Microsoft.App/containerApps@2025-01-01' = {
+resource agentApp 'Microsoft.App/containerApps@2025-01-01' = {
   name: names.apps.l1
   location: location
   identity: { type: 'UserAssigned', userAssignedIdentities: { '${idL1.id}': {} } }
@@ -84,10 +91,15 @@ resource agent 'Microsoft.App/containerApps@2025-01-01' = {
             { name: 'ANTHROPIC_MODEL', value: modelDeployment }
             { name: 'FOUNDRY_BASE_URL', value: 'https://${ais.properties.customSubDomainName}.services.ai.azure.com/anthropic/v1' }
             { name: 'AZURE_CLIENT_ID', value: idL1.properties.clientId }
-            // System identities only (Entra, app-only tokens): the tenant and the API app's client ID. No person's
-            // token is accepted here: the sign-in tenant has no client for this service (research R20).
-            { name: 'AUTH_TENANT_ID', value: authTenantId }
-            { name: 'SERVICE_AUDIENCE', value: authAudience }
+            // The sign-in tenant's callers only (016): a person who signed in through the agent's client, or a
+            // machine caller. L2 gets the same three values and verifies the forwarded token again.
+            { name: 'AUTH_ISSUER', value: identity.issuer }
+            { name: 'AUTH_AUDIENCE', value: identity.audience }
+            { name: 'AGENT_CLIENT_IDS', value: agent.clientId }
+            // The docs page, where this environment's parameter file turns it on: it signs people in through the
+            // agent's own client.
+            { name: 'API_DOCS', value: agent.apiDocs ? '1' : '0' }
+            { name: 'API_DOCS_CLIENT_ID', value: agent.apiDocs ? agent.clientId : '' }
             { name: 'AGENT_BIND_HOST', value: '0.0.0.0' }
             // One proxy, the environment's ingress, is in front: the per-address request limit reads the client's
             // address from X-Forwarded-For (T-IAC-01 rule 3).
@@ -112,7 +124,8 @@ resource agent 'Microsoft.App/containerApps@2025-01-01' = {
 // ---------------------------------------------------------------------------------------------
 // Regression job: the L1-4 scripted plan through the deployed environment, gated by --check-baseline
 // (FR-024). L1 credentials from the l1 vault only; no operator token (the chain check runs in L2's operator job).
-// Start rights on it equal holding L1's credentials: only the deploy identity gets them.
+// Start rights on it equal holding L1's credentials: only the deploy identity gets them. 016: it calls L2 as the
+// pipeline's machine caller, with a token it gets from the sign-in tenant itself.
 // ---------------------------------------------------------------------------------------------
 resource regressionJob 'Microsoft.App/jobs@2025-01-01' = {
   name: names.jobs.l1
@@ -130,6 +143,7 @@ resource regressionJob 'Microsoft.App/jobs@2025-01-01' = {
       secrets: [
         { name: 'control-token', keyVaultUrl: '${vaultL1}secrets/control-token', identity: idL1.id }
         { name: 'verifier-token', keyVaultUrl: '${vaultL1}secrets/verifier-token', identity: idL1.id }
+        { name: 'machine-client-key', keyVaultUrl: '${vaultL1}secrets/machine-client-key', identity: idL1.id }
       ]
       identitySettings: [{ identity: idL1.id, lifecycle: 'None' }]
     }
@@ -146,8 +160,13 @@ resource regressionJob 'Microsoft.App/jobs@2025-01-01' = {
             { name: 'SELLER_ALIAS_URL', value: 'https://${names.apps.sellerAlias}.${sellerDomain}' }
             { name: 'CONTROL_URL', value: controlUrl }
             { name: 'SETTLEMENT_URL', value: settlementUrl }
+            { name: 'AUTH_ISSUER', value: identity.issuer }
+            { name: 'AUTH_AUDIENCE', value: identity.audience }
+            { name: 'MACHINE_CLIENT_ID', value: agent.machineClientId }
+            { name: 'MACHINE_CLIENT_KEY_ID', value: agent.machineKeyId }
             { name: 'CONTROL_TOKEN', secretRef: 'control-token' }
             { name: 'VERIFIER_TOKEN', secretRef: 'verifier-token' }
+            { name: 'MACHINE_CLIENT_KEY', secretRef: 'machine-client-key' }
           ]
         }
       ]
@@ -155,4 +174,52 @@ resource regressionJob 'Microsoft.App/jobs@2025-01-01' = {
   }
 }
 
-output agentFqdn string = agent.properties.configuration.ingress.fqdn
+// ---------------------------------------------------------------------------------------------
+// Smoke job (016, research R9): one goal through the agent's public API, as the pipeline's machine caller
+// (src/smoke-main.ts). It gets its own token from the sign-in tenant, so the pipeline holds none, and it exits 0
+// only when the run completed, both purchases were paid and confirmed, nothing escalated and it took 120 s or
+// less. It probes the candidate address and uses it while it answers (an L1 deployment in progress), the agent's
+// own otherwise. No role token: it calls neither L2 nor L3.
+// ---------------------------------------------------------------------------------------------
+resource smokeJob 'Microsoft.App/jobs@2025-01-01' = {
+  name: names.jobs.smoke
+  location: location
+  identity: { type: 'UserAssigned', userAssignedIdentities: { '${idL1.id}': {} } }
+  properties: {
+    environmentId: mainEnv.id
+    workloadProfileName: 'Consumption'
+    configuration: {
+      triggerType: 'Manual'
+      replicaTimeout: 900
+      replicaRetryLimit: 0
+      manualTriggerConfig: { parallelism: 1, replicaCompletionCount: 1 }
+      registries: [{ server: acrServer, identity: idL1.id }]
+      secrets: [
+        { name: 'machine-client-key', keyVaultUrl: '${vaultL1}secrets/machine-client-key', identity: idL1.id }
+      ]
+      identitySettings: [{ identity: idL1.id, lifecycle: 'None' }]
+    }
+    template: {
+      containers: [
+        {
+          name: 'smoke'
+          image: image
+          command: ['node', 'dist/src/smoke-main.js']
+          resources: { cpu: json('0.25'), memory: '0.5Gi' }
+          env: [
+            { name: 'NETWORK', value: 'base-sepolia' }
+            { name: 'AUTH_ISSUER', value: identity.issuer }
+            { name: 'AUTH_AUDIENCE', value: identity.audience }
+            { name: 'MACHINE_CLIENT_ID', value: agent.machineClientId }
+            { name: 'MACHINE_CLIENT_KEY_ID', value: agent.machineKeyId }
+            { name: 'MACHINE_CLIENT_KEY', secretRef: 'machine-client-key' }
+            { name: 'AGENT_URL', value: agentUrl }
+            { name: 'AGENT_CANDIDATE_URL', value: agentCandidateUrl }
+          ]
+        }
+      ]
+    }
+  }
+}
+
+output agentFqdn string = agentApp.properties.configuration.ingress.fqdn

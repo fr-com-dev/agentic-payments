@@ -35,7 +35,7 @@ import type {
 const rulesOf = (r: PaidFetchResult) => (r.violations ?? []).map((v) => v.rule);
 
 function l1(h: Harness, sessionId: string) {
-  const gate = new HttpAuthorizationGate(h.urls.control, h.tokens.control);
+  const gate = h.gateFor(); // 016: a machine caller where L2 verifies callers, no token where it does not
   const orchestrator = new PaidResourceOrchestrator({
     gate,
     settlement: new HttpSettlementVerifier(h.urls.settlement, h.tokens.verifier),
@@ -584,7 +584,9 @@ describe("T-E2E-08 expiry and re-escalation", () => {
 describe("T-E2E-09 hosted agent", () => {
   let h: Harness;
   beforeAll(async () => {
-    h = await startHarness();
+    // 016: the hosted agent always forwards its caller's token, so this L2 verifies callers. No user accounts here:
+    // the runs are a machine caller's, as the deployment's smoke run is, and the platform account pays.
+    h = await startHarness({ callers: true });
   }, 120_000);
   afterAll(async () => {
     await h?.close();
@@ -609,6 +611,8 @@ describe("T-E2E-09 hosted agent", () => {
       SETTLEMENT_URL: h.urls.settlement,
       CONTROL_TOKEN: h.tokens.control,
       VERIFIER_TOKEN: h.tokens.verifier,
+      // 016: this L2 verifies callers, so the scripted run calls as a machine caller (locally, a ready-made token).
+      CALLER_TOKEN: await h.callers!.machine(),
     }, ["--scripted", "--check-baseline"]);
     expect(r.out).toContain("baseline: ok");
     expect(r.code).toBe(0);
@@ -635,7 +639,7 @@ describe("T-E2E-09 hosted agent", () => {
     ]);
     const a = await startHostedApp({ harness: h, model });
     try {
-      const r = await a.run("alice", { goal: "Get today's weather for Lima and a short market brief" });
+      const r = await a.run("x402-checks-dev", { goal: "Get today's weather for Lima and a short market brief" }, { service: true });
       expect(r.status).toBe(200);
       expect(r.body.status).toBe("completed");
       const steps = r.body.steps as Step[];
@@ -646,9 +650,7 @@ describe("T-E2E-09 hosted agent", () => {
       expect(h.ledgerEntries().some((e) => e.type === "AUTHORIZED" && e.authorizationId === escalated)).toBe(false);
 
       const sessionId = sessionOf(r.body.sessionRef);
-      const budget = (await (await fetch(`${h.urls.control}/v1/budget/${sessionId}`, { headers: { authorization: `Bearer ${h.tokens.control}` } })).json()) as {
-        spentOrReservedAtomic: string;
-      };
+      const budget = await h.gateFor().budget(sessionId);
       expect(budget.spentOrReservedAtomic).toBe("6000");
     } finally {
       await a.close();
@@ -661,7 +663,7 @@ describe("T-E2E-09 hosted agent", () => {
     const model = mockModel([report(), text("needs approval"), report(), text("bought it")]);
     const a = await startHostedApp({ harness: h, model });
     try {
-      const run1 = await a.run("carol", { goal: "Buy the premium report" });
+      const run1 = await a.run("x402-checks-dev", { goal: "Buy the premium report" }, { service: true });
       const step1 = (run1.body.steps as Step[])[0]!;
       expect(step1.result.outcome).toBe("ESCALATED");
       const authorizationId = step1.result.authorizationId!;
@@ -673,7 +675,7 @@ describe("T-E2E-09 hosted agent", () => {
       });
       expect(approved.status).toBe(200);
 
-      const run2 = await a.run("carol", { goal: "Buy the premium report", sessionRef: run1.body.sessionRef });
+      const run2 = await a.run("x402-checks-dev", { goal: "Buy the premium report", sessionRef: run1.body.sessionRef }, { service: true });
       expect(run2.status).toBe(200);
       const step2 = (run2.body.steps as Step[])[0]!;
       expect(step2.result.outcome).toBe("PAID");
@@ -684,7 +686,7 @@ describe("T-E2E-09 hosted agent", () => {
       expect((paid[0]!.data as { approvalRef: string | null }).approvalRef).toMatch(/^apr_/);
 
       const before = h.ledgerEntries().length;
-      const stolen = await a.run("mallory", { goal: "Buy the premium report", sessionRef: run1.body.sessionRef });
+      const stolen = await a.run("another-machine-caller", { goal: "Buy the premium report", sessionRef: run1.body.sessionRef }, { service: true });
       expect(stolen.status).toBe(404);
       expect(h.ledgerEntries().length).toBe(before);
     } finally {
@@ -710,6 +712,8 @@ describe("012 backchannel approval end to end", () => {
     const settings: CibaSettings = { issuer: stub.issuer, clientId: CLIENT_ID, audience: AUDIENCE, credential: { kind: "key", keyPem: CLIENT_KEY.privatePem } };
     h = await startHarness({
       users: {},
+      // 016: people sign in at the tenant that asks their phone, so callers' tokens name the stand-in as issuer.
+      callers: { issuer: stub.issuer },
       controlBackchannel: {
         port: new CibaClient(settings, { allowInsecureLoopback: true }),
         issuer: stub.issuer,
@@ -723,7 +727,8 @@ describe("012 backchannel approval end to end", () => {
       },
     });
     // Pat: profile, a crypto account with 1 local test USDC, and one policy (0.02 without asking, 0.10 per payment).
-    const userId = userIdFor(stub.issuer, PAT_SUB);
+    const userId = h.callers!.register(PAT_SUB);
+    expect(userId).toBe(userIdFor(stub.issuer, PAT_SUB));
     expect((await h.portal("PUT", `/v1/users/${userId}/registration`, { acknowledgedTestFunds: true })).status).toBe(200);
     const address = (await h.portal<{ wallet: { address: `0x${string}` } }>("PUT", `/v1/users/${userId}/wallet`)).body.wallet.address;
     await h.fund(address, 1_000_000n);
@@ -750,14 +755,12 @@ describe("012 backchannel approval end to end", () => {
     const text = JSON.stringify(r);
     return [...stub.tokensIssued, ...stub.authReqIds, PLANTED_ERROR_TEXT, PAT_SUB].filter((s) => text.includes(s));
   };
-  /** L1 for a run of pat's: the orchestrator names the user and carries their subject, as the hosted agent service does. */
+  /** L1 for a run of pat's: the gate forwards pat's token, as the hosted agent service does (016); the intents name nobody. */
   const patsRun = (sessionId: string) =>
     new PaidResourceOrchestrator({
-      gate: new HttpAuthorizationGate(h.urls.control, h.tokens.control),
+      gate: h.gateFor(pat.userId),
       settlement: new HttpSettlementVerifier(h.urls.settlement, h.tokens.verifier),
       sessionId,
-      userId: pat.userId,
-      approvalSubject: PAT_SUB,
     });
 
   it("T-E2E-10 backchannel approval within the wait pays in the same fetch", async () => {
@@ -787,7 +790,7 @@ describe("012 backchannel approval end to end", () => {
   it("T-E2E-10 the scripted plan never asks the approver (operator-only), and matches the baseline", async () => {
     const before = stub.authReqIds.length;
     const orchestrator = new PaidResourceOrchestrator({
-      gate: new HttpAuthorizationGate(h.urls.control, h.tokens.control),
+      gate: h.gateFor(), // 016: the scripted plan is a machine caller's, so the platform account pays
       settlement: new HttpSettlementVerifier(h.urls.settlement, h.tokens.verifier),
       sessionId: "sess_e2e10s",
       operatorApprovalOnly: true, // as src/main.ts builds it for --scripted
@@ -813,6 +816,49 @@ describe("012 backchannel approval end to end", () => {
     const trail = h.ledgerEntries().filter((e) => e.sessionId === "sess_e2e11" && e.seq > esc.seq).map((e) => e.type);
     expect(trail).toEqual(["APPROVAL_REQUESTED", "HUMAN_REJECTION", "INTENT", "DENIED"]);
     expect(leaks(r)).toEqual([]);
+  }, 60_000);
+
+  it("T-E2E-15 through the hosted agent: a person's escalated run asks that person's own phone, from the token L2 verified, and their approval pays from their account (016 FR-041)", async () => {
+    const premium = () => toolCall("fetch_resource", { url: `${h.urls.seller}/api/premium-report`, purpose: "premium report" });
+    const a = await startHostedApp({ harness: h, model: mockModel([premium(), text("done"), premium(), text("done")]) });
+    try {
+      type Paid = { result: { outcome: string; authorizationId: string | null } };
+      const before = stub.authReqIds.length;
+      stub.setAnswersFor(before, "pending", { approve: {} });
+      const payer0 = await h.balanceOf(pat.address);
+      const platform0 = await h.balanceOf(h.addresses.payer);
+      // Pat signs in at the tenant and sends a goal; nothing in the request names pat or pat's phone.
+      const jwt = await a.token("pat", { sub: PAT_SUB });
+      const res = await fetch(`${a.base}/v1/runs`, { method: "POST", headers: { authorization: `Bearer ${jwt}`, "content-type": "application/json" }, body: JSON.stringify({ goal: "Buy the premium report" }) });
+      const answer = await res.text();
+      expect(res.status).toBe(200);
+      const step = (JSON.parse(answer) as { steps: Paid[] }).steps[0]!.result;
+      expect(step.outcome).toBe("PAID");
+      // One request, addressed to the subject of pat's token, and pat's own account paid.
+      expect(stub.authReqIds.length - before).toBe(1);
+      expect(JSON.parse(stub.startForms().at(-1)!.login_hint!)).toEqual({ format: "iss_sub", iss: stub.issuer, sub: PAT_SUB });
+      expect(payer0 - (await h.balanceOf(pat.address))).toBe(50000n);
+      expect(await h.balanceOf(h.addresses.payer)).toBe(platform0);
+      const escalated = h.ledgerEntries().filter((e) => e.type === "ESCALATED").at(-1)!;
+      expect(escalated.data).toMatchObject({ approvalRequest: "requested", userId: pat.userId });
+      const approval = h.ledgerEntries().filter((e) => e.type === "HUMAN_APPROVAL").at(-1)!;
+      expect(approval.data).toMatchObject({ channel: "backchannel", approver: pat.userId });
+      // The token and the subject are in no entry and not in the answer.
+      const ledger = JSON.stringify(h.ledgerEntries());
+      for (const needle of [jwt, PAT_SUB]) {
+        expect(ledger.includes(needle)).toBe(false);
+        expect(answer.includes(needle)).toBe(false);
+      }
+
+      // A machine caller's escalation has no owner: nobody is asked, and it returns at once (015 T025).
+      const asked = stub.authReqIds.length;
+      const machine = await a.run("x402-checks-dev", { goal: "Buy the premium report" }, { service: true });
+      expect((machine.body.steps as Paid[])[0]!.result.outcome).toBe("ESCALATED");
+      expect(h.ledgerEntries().filter((e) => e.type === "ESCALATED").at(-1)!.data.approvalRequest).toBe("no_owner");
+      expect(stub.authReqIds.length).toBe(asked);
+    } finally {
+      await a.close();
+    }
   }, 60_000);
 });
 
@@ -857,13 +903,12 @@ describe("013 user accounts end to end", () => {
     return { address, policyId: policy.body.policyId };
   }
 
-  /** L1 for one person's run: the orchestrator names the user, as the hosted agent service does. */
+  /** L1 for one person's run: the gate forwards that person's token, as the hosted agent service does (016). */
   function l1For(sessionId: string, userId: string) {
     return new PaidResourceOrchestrator({
-      gate: new HttpAuthorizationGate(h.urls.control, h.tokens.control),
+      gate: h.gateFor(userId),
       settlement: new HttpSettlementVerifier(h.urls.settlement, h.tokens.verifier),
       sessionId,
-      userId,
     });
   }
 
@@ -969,8 +1014,9 @@ describe("013 user accounts end to end", () => {
     expect((await ledgerVerify(h)).ok).toBe(true);
   });
 
-  it("T-E2E-12 through the hosted agent service: a person's token pays from that person's account, a system identity's from the platform's (013 research R19)", async () => {
-    // The whole chain with the sign-in's token shape: the service derives the user from the issuer and `sub`.
+  it("T-E2E-12, T-E2E-16 through the hosted agent service: a person's token pays from that person's account, a machine caller's from the platform's (016 SEC-32, SEC-33)", async () => {
+    // The whole chain with the sign-in's token shape: the agent forwards the token, and L2 derives the user from
+    // its issuer and `sub`. Nothing the agent sends names the person.
     const erin = devUserId("erin");
     const { address, policyId } = await onboard(erin, 1_000_000n);
     const weather = () => toolCall("fetch_resource", { url: `${h.urls.seller}/api/weather?city=Lima`, purpose: "weather" });
@@ -988,7 +1034,7 @@ describe("013 user accounts end to end", () => {
       const entry = h.ledgerEntries().find((e) => e.type === "AUTHORIZED" && e.authorizationId === paid.authorizationId)!;
       expect([entry.data.userId, entry.data.policyId, String(entry.data.payer).toLowerCase()]).toEqual([erin, policyId, address.toLowerCase()]);
 
-      // A system identity names no user: the platform account pays, and the person's account is untouched (FR-002).
+      // A machine caller names no user: the platform account pays, and the person's account is untouched (FR-002).
       const system = await a.run("svc-app-id", { goal: "Get the weather for Lima" }, { service: true });
       expect((system.body.steps as Paid[])[0]!.result.outcome).toBe("PAID");
       expect(platform0 - (await h.balanceOf(h.addresses.payer))).toBe(1_000n);
@@ -999,6 +1045,28 @@ describe("013 user accounts end to end", () => {
       expect(portalToken.status).toBe(403);
       expect(await h.balanceOf(address)).toBe(999_000n);
       expect((await ledgerVerify(h)).ok).toBe(true);
+    } finally {
+      await a.close();
+    }
+  }, 120_000);
+
+  it("T-E2E-16 a person with the role and no account: the run starts, nothing is paid, and the answer says why; a session carries over, and is nobody else's", async () => {
+    const weather = () => toolCall("fetch_resource", { url: `${h.urls.seller}/api/weather?city=Lima`, purpose: "weather" });
+    const a = await startHostedApp({ harness: h, model: mockModel([weather(), text("done"), weather(), text("done"), weather(), text("done")]) });
+    try {
+      type Step = { result: { outcome: string; violations?: { rule: string }[] | null } };
+      const platform0 = await h.balanceOf(h.addresses.payer);
+      // Frank holds the role and never onboarded at the portal: no account, so no payment, and never the platform's.
+      const frank = await a.run("frank", { goal: "Get the weather for Lima" });
+      expect(frank.status).toBe(200);
+      const denied = (frank.body.steps as Step[])[0]!.result;
+      expect([denied.outcome, (denied.violations ?? []).map((v) => v.rule)]).toEqual(["DENIED", ["user_not_onboarded"]]);
+      expect(await h.balanceOf(h.addresses.payer)).toBe(platform0);
+      // The same person continues their session; another person's reference is unknown to them.
+      const again = await a.run("frank", { goal: "Get the weather for Lima", sessionRef: frank.body.sessionRef });
+      expect(again.status).toBe(200);
+      expect((await a.run("erin", { goal: "Get the weather for Lima", sessionRef: frank.body.sessionRef })).status).toBe(404);
+      expect((await a.run("x402-checks-dev", { goal: "Get the weather for Lima", sessionRef: frank.body.sessionRef }, { service: true })).status).toBe(404);
     } finally {
       await a.close();
     }
@@ -1022,6 +1090,7 @@ describe("014 portal administration end to end", () => {
     h = await startHarness({
       users: {},
       admin: true,
+      callers: { issuer: stub.issuer },
       controlBackchannel: {
         port: new CibaClient(settings, { allowInsecureLoopback: true }),
         issuer: stub.issuer,
@@ -1034,6 +1103,7 @@ describe("014 portal administration end to end", () => {
         log: () => {},
       },
     });
+    h.callers!.register(ERIN_SUB);
     // The real portal app, with its two clients pointed at the harness's L2 and that L2's own two tokens.
     const { startPortal } = await import("./helpers/portal.js");
     const l2 = { url: h.urls.control, clock: { now: Date.now }, ledger: {}, requestCount: () => 0, close: async () => {} };
@@ -1050,16 +1120,15 @@ describe("014 portal administration end to end", () => {
   const CAROL = devUserId("carol");
   const premium = () => `${h.urls.seller}/api/premium-report`;
   /**
-   * A run of erin's. `operatorApprovalOnly` keeps the phone out of it, so the call returns ESCALATED at once. With
-   * `phone`, the run carries her subject (015), so her own phone is asked.
+   * A run of erin's: the gate forwards her token (016). `operatorApprovalOnly` keeps the phone out of it, so the
+   * call returns ESCALATED at once. With `phone` it is left off, so her own phone is asked (015).
    */
   const run = (sessionId: string, o: { phone?: boolean } = {}) =>
     new PaidResourceOrchestrator({
-      gate: new HttpAuthorizationGate(h.urls.control, h.tokens.control),
+      gate: h.gateFor(ERIN),
       settlement: new HttpSettlementVerifier(h.urls.settlement, h.tokens.verifier),
       sessionId,
-      userId: ERIN,
-      ...(o.phone ? { approvalSubject: ERIN_SUB } : { operatorApprovalOnly: true }),
+      ...(!o.phone && { operatorApprovalOnly: true }),
     });
   const carol = () => portal.adminAs("carol");
   let erinAddress: `0x${string}`;

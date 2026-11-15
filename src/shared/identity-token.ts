@@ -1,34 +1,26 @@
-// Verification of the access tokens the hosted agent service and the portal accept (SPEC.md §8.1 L1-6, §8.2 L2-8,
-// §11 SEC-14, SEC-19, SEC-20; specs/013 research R19). Two kinds, from two issuers:
-// - a person's token, from the Auth0 tenant (`verifyPersonToken`), accepted by both services;
-// - a system identity's token, from the organization's directory, Microsoft Entra ID (`verifyServiceToken`),
-//   accepted by the agent service only.
-// Both services share the basic checks here so they can never drift apart. What each requires beyond them (the
-// client allow-list, the permission, the sign-in time, the app role) stays in that service. No layer code is
-// imported here (rule A2).
+// Verification of the access tokens the hosted agent service, L2 and the portal accept (SPEC.md §8.1 L1-6, §8.2
+// L2-5 and L2-8, §11 SEC-14, SEC-19, SEC-20, SEC-32, SEC-33; specs/013 research R19; specs/016 research R2). One
+// issuer, the sign-in tenant (Auth0), and two checks:
+// - `verifyPersonToken`: a person's token. The portal uses it and adds its own client, its sign-in time and the
+//   administrator's permission.
+// - `verifyCaller`: whoever calls the hosted agent, a person with the permission `agent:run` from a client on the
+//   agent's list, or a machine caller (client credentials) with that permission. The agent runs it on the request,
+//   and L2 runs it again on the token the agent forwards, so the two can never drift apart.
+// No layer code is imported here (rule A2).
 import { readFileSync } from "node:fs";
-import { createLocalJWKSet, createRemoteJWKSet, decodeJwt, jwtVerify, type JWTVerifyGetKey } from "jose";
+import { createLocalJWKSet, createRemoteJWKSet, decodeJwt, errors, jwtVerify, type JWTVerifyGetKey } from "jose";
 
-/** The local dev issuer (`npm run dev-token`), for people. Only valid with NETWORK=local. */
+/** The local dev issuer (`npm run dev-token`), for people and for machine callers. Only valid with NETWORK=local. */
 export const DEV_ISSUER = "urn:x402:dev-issuer";
-/** The local dev issuer's stand-in for the organization's directory: it signs `--service` tokens. Local only. */
-export const DEV_DIRECTORY_ISSUER = "urn:x402:dev-directory";
-export const DEV_TENANT = "dev";
-/** The one permission a person needs, at the portal and at the agent service (013, clarified 2026-11-10). */
+/** The permission a caller of the agent service needs: a person through the role, a machine caller through its grant. */
 export const AGENT_RUN_PERMISSION = "agent:run";
 /** 014: the permission of an administrator of the portal. Only the portal reads it; the agent service ignores it. */
 export const PORTAL_ADMIN_PERMISSION = "portal:admin";
-/** The app role a system identity needs at the agent service. */
-export const SERVICE_ROLE = "Agent.Run";
 /** The access-token claim the tenant's post-login Action sets to the time of the person's last sign-in. */
 export const DEFAULT_AUTH_TIME_CLAIM = "https://x402.dev/auth_time";
-/** An Entra application (client) ID or object ID. */
-export const GUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** An Auth0 issuer as its tokens carry it: `https://<domain>/`, with the final slash and nothing after it. */
 export const PERSON_ISSUER_RE = /^https:\/\/[a-z0-9]([a-z0-9.-]*[a-z0-9])?\/$/;
 export const CLOCK_TOLERANCE_SEC = 60;
-
-export const entraIssuer = (tenantId: string) => `https://login.microsoftonline.com/${tenantId}/v2.0`;
 
 /** Keys to verify with, and the signature algorithms accepted with them. */
 export interface TokenKeys {
@@ -52,12 +44,6 @@ function localKeys(jwksFile: string): TokenKeys {
 export function personKeys(auth: { issuer: string; jwksFile?: string }): TokenKeys {
   if (auth.jwksFile !== undefined) return localKeys(auth.jwksFile);
   return { keys: createRemoteJWKSet(new URL(".well-known/jwks.json", auth.issuer)), algorithms: ["RS256"] };
-}
-
-/** The Entra tenant's JWKS (RS256), or the dev issuer's file when one is given. */
-export function serviceKeys(auth: { tenantId: string; jwksFile?: string }): TokenKeys {
-  if (auth.jwksFile !== undefined) return localKeys(auth.jwksFile);
-  return { keys: createRemoteJWKSet(new URL(`https://login.microsoftonline.com/${auth.tenantId}/discovery/v2.0/keys`)), algorithms: ["RS256"] };
 }
 
 /** `Authorization: Bearer <token>` → the token, or null. */
@@ -178,34 +164,59 @@ export function signInTimeOf(person: Pick<PersonToken, "signInTime">, nowMs: num
 }
 
 // ---------------------------------------------------------------------------
-// A system identity (Entra)
+// A caller of the hosted agent: a person or a machine caller (016)
 // ---------------------------------------------------------------------------
 
-export type ServiceCheckName = "tenant" | "appOnly";
+export type CallerCheckName = "permission" | "client" | "machineSubject";
 
-export interface ServiceVerifyOptions extends TokenKeys {
-  tenantId: string;
-  /** The Entra API app's client ID: v2.0 tokens carry it as `aud`. */
-  audience: string;
+export interface CallerVerifyOptions extends TokenKeys {
+  /** Exactly the token's `iss`. */
   issuer: string;
+  /** People's API's identifier; the token's `aud` must contain it. */
+  audience: string;
+  /** The clients a person's token may come from. Machine callers are not listed: their grant at the tenant is the list. */
+  clientIds: readonly string[];
   clockToleranceSec?: number;
-  /** Test hook (must-fail cases in test/identity-token.test.ts): leave these checks out. Never set by a service. */
-  skipChecks?: readonly ServiceCheckName[];
+  /** Test hook (must-fail cases): leave these checks out. Never set by a service. */
+  skipChecks?: readonly CallerCheckName[];
 }
 
-export interface ServiceToken {
-  tenantId: string;
-  objectId: string;
-  /** The app roles the identity holds (`roles`). */
-  roles: string[];
+/** Who a verified token is: a person (`sub` is theirs) or a machine caller (`sub` is `<client>@clients`). */
+export interface Caller {
+  kind: "person" | "machine";
+  issuer: string;
+  subject: string;
+  client: string;
 }
 
 /**
- * Checks the signature, issuer, audience and validity (60 s tolerance by default), then the tenant and a usable
- * `oid`: 401 for any failure. Then the token must be app-only (`idtyp` exactly `app`): a person's token from the
- * directory is refused with 403, because people sign in with the other issuer.
+ * Refused: 401 when the token is not valid here (`expired` when its validity period is the only thing wrong,
+ * `invalid` otherwise), 403 when it is valid and its holder may not call the agent (`forbidden`).
  */
-export async function verifyServiceToken(token: string, o: ServiceVerifyOptions): Promise<TokenCheck<ServiceToken>> {
+export type CallerCheck = { ok: true; caller: Caller } | { ok: false; status: 401 | 403; reason: "expired" | "invalid" | "forbidden" };
+
+const unverified = (reason: "expired" | "invalid"): CallerCheck => ({ ok: false, status: 401, reason });
+const FORBIDDEN: CallerCheck = { ok: false, status: 403, reason: "forbidden" };
+
+const textList = (v: unknown): string[] => (Array.isArray(v) ? v.filter((p): p is string => typeof p === "string") : []);
+
+/**
+ * Whether a machine token carries a permission. The tenant writes a client grant's scopes to `scope`, and may also
+ * list them in `permissions` (specs/016 research R2): either counts, because both come from the grant and a client
+ * without a grant gets no token for the API. A person's `scope` is what the client asked for, so it never counts.
+ */
+function machineHolds(claims: Record<string, unknown>, permission: string): boolean {
+  if (textList(claims.permissions).includes(permission)) return true;
+  return typeof claims.scope === "string" && claims.scope.split(" ").includes(permission);
+}
+
+/**
+ * The one check of a caller of the hosted agent, run by the agent on the request and by L2 on the forwarded token.
+ * Signature (the accepted algorithms only), exact issuer, audience, validity (60 s tolerance by default) and a
+ * usable `sub`: 401. Then, for a machine token: `sub` is `<client>@clients` for the client the token names (401),
+ * and it holds `agent:run` (403). For a person's: it holds `agent:run` and comes from a client on the list (403).
+ */
+export async function verifyCaller(token: string, o: CallerVerifyOptions): Promise<CallerCheck> {
   const skip = new Set(o.skipChecks ?? []);
   let claims: Record<string, unknown>;
   try {
@@ -217,15 +228,19 @@ export async function verifyServiceToken(token: string, o: ServiceVerifyOptions)
       requiredClaims: ["exp"],
     });
     claims = payload as Record<string, unknown>;
-  } catch {
-    return refused(401);
+  } catch (e) {
+    return unverified(e instanceof errors.JWTExpired ? "expired" : "invalid");
   }
-  const { tid, oid } = claims;
-  if (!skip.has("tenant") && tid !== o.tenantId) return refused(401);
-  if (typeof oid !== "string" || oid.length === 0 || hasLineBreak(oid)) return refused(401);
-  if (!skip.has("appOnly") && claims.idtyp !== "app") return refused(403);
-  return {
-    ok: true,
-    token: { tenantId: o.tenantId, objectId: oid, roles: Array.isArray(claims.roles) ? claims.roles.filter((r): r is string => typeof r === "string") : [] },
-  };
+  const subject = claims.sub;
+  if (typeof subject !== "string" || subject.length === 0 || hasLineBreak(subject)) return unverified("invalid");
+  const client = clientOf(claims);
+  if (isMachineToken(claims, subject)) {
+    if (client === null) return unverified("invalid");
+    if (!skip.has("machineSubject") && subject !== `${client}@clients`) return unverified("invalid");
+    if (!skip.has("permission") && !machineHolds(claims, AGENT_RUN_PERMISSION)) return FORBIDDEN;
+    return { ok: true, caller: { kind: "machine", issuer: o.issuer, subject, client } };
+  }
+  if (!skip.has("permission") && !textList(claims.permissions).includes(AGENT_RUN_PERMISSION)) return FORBIDDEN;
+  if (!skip.has("client") && (client === null || !o.clientIds.includes(client))) return FORBIDDEN;
+  return { ok: true, caller: { kind: "person", issuer: o.issuer, subject, client: client ?? "" } };
 }

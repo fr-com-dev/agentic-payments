@@ -67,7 +67,7 @@ describe("T-AGT-05 run", () => {
     expect(r.status).toBe(200);
     expect(r.body).toMatchObject({ status: "stopped", stopReason: "deadline" });
     expect(r.body.steps).toEqual([expect.objectContaining({ index: 1, tool: "fetch_resource", result: expect.objectContaining({ outcome: "FREE", body: { slow: true } }) })]);
-    expect(model.doGenerateCalls).toHaveLength(1);
+    expect(model.doStreamCalls).toHaveLength(1);
   });
 
   it("a model that always calls a tool stops at the step limit", async () => {
@@ -85,7 +85,7 @@ describe("T-AGT-05 run", () => {
       expect((await a.run("alice", body)).status, JSON.stringify(body).slice(0, 40)).toBe(400);
     }
     expect((await a.run("alice", { goal: "x".repeat(17 * 1024) })).status).toBe(413);
-    expect(model.doGenerateCalls).toHaveLength(0);
+    expect(model.doStreamCalls).toHaveLength(0);
     expect((await a.run("alice", { goal: "x".repeat(4000) })).status).toBe(200);
   });
 

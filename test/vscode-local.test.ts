@@ -4,8 +4,8 @@
 // says, and nothing else from VS Code's environment.
 import { existsSync, readFileSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
-import { parseEnvFile, type EnvFile } from "../scripts/demo-lib.js";
-import { localRunEnv, PASSTHROUGH, RUN_ROLES, runWarnings, stackAction, userAccountsOn, type RunRole } from "../scripts/vscode-local.js";
+import { childEnv, DEV_SIGN_IN, parseEnvFile, type EnvFile } from "../scripts/demo-lib.js";
+import { callerTokenNeeded, localRunEnv, PASSTHROUGH, RUN_ROLES, runWarnings, stackAction, userAccountsOn, type RunRole } from "../scripts/vscode-local.js";
 
 /** VS Code's JSON with comments: these files use whole-line `//` comments only. */
 const jsonc = (path: string) => JSON.parse(readFileSync(path, "utf8").replace(/^\s*\/\/.*$/gm, "")) as Record<string, unknown>;
@@ -202,6 +202,42 @@ describe("T-DEV-02 each process gets its own env file, its own local key and NET
     expect(runWarnings("agent", agent, ["Get the weather"])).toEqual([
       "env/l1-agent.env has no ANTHROPIC_API_KEY: the Claude agent needs one (the scripted plan doesn't)",
     ]);
+  });
+});
+
+describe("016 local sign-in: L2 verifies callers' tokens only when the stack is started for it", () => {
+  const SIGN_IN_KEYS = Object.keys(DEV_SIGN_IN);
+  const l2 = RUN_ROLES.l2;
+
+  it("016 with user accounts, or with sign-in alone, L2 gets the dev issuer's four settings; the demo's L2 gets none", () => {
+    const base = { network: "local", sessionId: "s" };
+    expect(childEnv(l2, null, { ...base, users: true })).toMatchObject(DEV_SIGN_IN);
+    expect(childEnv(l2, null, { ...base, signIn: true })).toMatchObject(DEV_SIGN_IN);
+    expect(childEnv(l2, null, { ...base, signIn: true }).USER_ACCOUNTS).toBeUndefined();
+    // demo:local and a plain stack: no sign-in, so the scripted agent's requests need no caller's token.
+    const plain = childEnv(l2, null, base);
+    for (const key of SIGN_IN_KEYS) expect(plain[key], key).toBeUndefined();
+    // Never off the local network, and never to another process.
+    for (const key of SIGN_IN_KEYS) expect(childEnv(l2, null, { network: "base-sepolia", sessionId: "s", users: true })[key], key).toBeUndefined();
+    for (const role of ["facilitator", "seller", "l3", "agent"] as const) {
+      for (const key of SIGN_IN_KEYS) expect(childEnv(RUN_ROLES[role], null, { ...base, users: true })[key], `${role} ${key}`).toBeUndefined();
+    }
+  });
+
+  it("016 an issuer in L2's own env file wins: the stack adds none of its own", () => {
+    const file: EnvFile = { path: "env/l2-control.env", values: { AUTH_ISSUER: "https://x402-test.eu.auth0.com/" } };
+    const env = childEnv(l2, file, { network: "local", sessionId: "s", users: true });
+    for (const key of SIGN_IN_KEYS) expect(env[key], key).toBeUndefined();
+  });
+
+  it("016 the CLI agent is given a dev machine token only for an L2 that asks for a caller's token", () => {
+    expect(callerTokenNeeded(401, "caller_token_required")).toBe(true);
+    // An L2 without sign-in answers the budget; a wrong control token is another 401; an L2 that is down is neither.
+    expect(callerTokenNeeded(200, undefined)).toBe(false);
+    expect(callerTokenNeeded(401, "unauthorized")).toBe(false);
+    expect(callerTokenNeeded(0, undefined)).toBe(false);
+    const runner = readFileSync("scripts/vscode-local.ts", "utf8");
+    expect(runner).toMatch(/r === "agent" && !file\?\.values\.CALLER_TOKEN && !file\?\.values\.MACHINE_CLIENT_ID/);
   });
 });
 

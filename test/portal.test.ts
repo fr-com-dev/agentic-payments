@@ -12,7 +12,8 @@ import { LOG_KEYS } from "../src/portal/log.js";
 import { endOfDayUtc, parsePolicyInput } from "../src/portal/routes.js";
 import { ProfileStore, validDisplayName, validEmail, validPolicyName } from "../src/portal/profile-store.js";
 import { contentSecurityPolicy, MAX_REQUESTS_PER_MINUTE, signInOriginOf } from "../src/portal/server.js";
-import { DEV_DIRECTORY_ISSUER } from "../src/shared/identity-token.js";
+/** The organization's directory as an issuer: the portal never knew it, and since 016 neither does the agent. */
+const DIRECTORY_ISSUER = "https://login.microsoftonline.com/00000000-0000-4000-8000-000000000000/v2.0";
 import { userIdFor } from "../src/shared/user-id.js";
 import { OTHER_HOST, SELLER_HOST, STEP_UP_AGE, T0, TEST_MNEMONIC, TOKENS } from "./helpers/users.js";
 import { startPortal, type PortalTestApp, type StartPortalOptions } from "./helpers/portal.js";
@@ -170,7 +171,7 @@ describe("T-PRT-01 access (FR-003, FR-005, SEC-19, SEC-20)", () => {
       ["wrong audience", { audience: "api://someone-else" }, 401],
       ["another sign-in tenant", { issuer: SIGN_IN_ISSUER }, 401],
       ["the organization's directory as issuer", { issuer: "https://login.microsoftonline.com/11111111-2222-4333-8444-555555555555/v2.0" }, 401],
-      ["the dev directory as issuer", { issuer: DEV_DIRECTORY_ISSUER }, 401],
+      ["the organization's directory as issuer", { issuer: DIRECTORY_ISSUER }, 401],
       ["no subject", { sub: null }, 401],
       ["an empty subject", { sub: "" }, 401],
       // 403: valid, but not allowed here.
@@ -247,14 +248,13 @@ describe("T-PRT-01 access (FR-003, FR-005, SEC-19, SEC-20)", () => {
     expect(existsSync(p.profilesDir)).toBe(false);
   });
 
-  it("T-PRT-01 a token of the organization's directory is not valid here at all: a system identity's or a person's (401)", async () => {
+  it("T-PRT-01 a token of the organization's directory is not valid here at all, whatever it claims (401)", async () => {
     const p = await start();
     const before = p.l2.entries().length;
     const tokens = [
-      await p.agentToken("svc-app-id", { service: true }),
-      // Even made to look as much like the portal's own token as the directory could.
-      await p.agentToken("alice", { service: true, audience: DEV_AUDIENCE, claims: { azp: DEV_PORTAL_CLIENT, permissions: ["agent:run"], "https://x402.dev/auth_time": Math.floor(p.l2.clock.now() / 1000) } }),
-      await p.agentToken("alice", { service: true, idtyp: "user", claims: { scp: "Portal.Access", roles: ["Agent.Run"], auth_time: Math.floor(p.l2.clock.now() / 1000) } }),
+      // Made to look as much like the portal's own token as another issuer could.
+      await p.agentToken("alice", { issuer: DIRECTORY_ISSUER, azp: DEV_PORTAL_CLIENT, claims: { "https://x402.dev/auth_time": Math.floor(p.l2.clock.now() / 1000) } }),
+      await p.agentToken("alice", { issuer: DIRECTORY_ISSUER, claims: { idtyp: "user", scp: "Portal.Access", roles: ["Agent.Run"], auth_time: Math.floor(p.l2.clock.now() / 1000) } }),
     ];
     for (const token of tokens) {
       for (const [method, path] of [["GET", "/api/me"], ["PUT", "/api/profile"], ["POST", "/api/policies"]] as const) {
@@ -262,6 +262,27 @@ describe("T-PRT-01 access (FR-003, FR-005, SEC-19, SEC-20)", () => {
         expect([res.status, res.body], `${method} ${path}`).toEqual([401, { error: "unauthorized" }]);
       }
     }
+    expect(p.l2.entries().length).toBe(before);
+    expect(existsSync(p.profilesDir)).toBe(false);
+  });
+
+  it("016 a machine caller's token is refused by the portal, with or without the agent's permission, and so is the agent role alone (FR-027)", async () => {
+    const p = await start();
+    const before = p.l2.entries().length;
+    const tokens = [
+      // The pipeline's checks: a client-credentials token of the same tenant and API, with `agent:run`.
+      await p.agentToken("x402-checks-dev", { service: true }),
+      // The same, naming the portal's own client and carrying a sign-in time.
+      await p.agentToken(DEV_PORTAL_CLIENT, { service: true, claims: { "https://x402.dev/auth_time": Math.floor(p.l2.clock.now() / 1000) } }),
+    ];
+    for (const token of tokens) {
+      for (const [method, path] of [["GET", "/api/me"], ["PUT", "/api/profile"], ["POST", "/api/policies"]] as const) {
+        const res = await p.call(method, path, { token, ...(method !== "GET" && { body: PROFILE }) });
+        expect([res.status, res.body], `${method} ${path}`).toEqual([403, { error: "forbidden" }]);
+      }
+    }
+    // The agent role gives nothing here: a person's token from the agent's client is still the agent's token.
+    expect((await p.call("GET", "/api/me", { token: await p.agentToken("alice", { permissions: ["agent:run"] }) })).status).toBe(403);
     expect(p.l2.entries().length).toBe(before);
     expect(existsSync(p.profilesDir)).toBe(false);
   });
@@ -960,9 +981,8 @@ describe("T-PRT-08 the log holds route templates and identifiers only (NFR-003, 
 
 describe("T-PRT-09 the local dev issuer must exist before a service that trusts it starts", () => {
   it("T-PRT-09 a missing AUTH_JWKS_FILE says how to create it, instead of a bare file error", async () => {
-    const { personKeys, serviceKeys } = await import("../src/shared/identity-token.js");
+    const { personKeys } = await import("../src/shared/identity-token.js");
     expect(() => personKeys({ issuer: "urn:x402:dev-issuer", jwksFile: ".local/no-such-issuer/jwks.json" })).toThrow(/AUTH_JWKS_FILE: no file at .*npm run dev-token/);
-    expect(() => serviceKeys({ tenantId: "dev", jwksFile: ".local/no-such-issuer/jwks.json" })).toThrow(/AUTH_JWKS_FILE: no file at .*npm run dev-token/);
   });
 });
 

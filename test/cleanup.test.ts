@@ -2,10 +2,10 @@
 // and a fake `gh` (test/fixtures/fake-gh.mjs), with the target and names from infra/pre-deploy.<environment>.bicepparam,
 // compiled by the real Bicep CLI (needs BICEP_PATH). A
 // confirmed run must delete the GitHub environment, the deploy app's role assignments (none left orphaned), the
-// resource group, both app registrations (the API app and the deploy app) and the operators' group, and nothing
-// else: another resource group, app (also one named like 013's retired portal web app, which the script no longer knows),
-// group, role assignment or a GitHub secret stays. With --purge it purges the Foundry account and the app
-// registrations; the vaults stay soft-deleted (purge protection) and are reported. --dry-run, a refusal or an
+// resource group, the deploy app's registration and the operators' group, and nothing else: another resource group,
+// app (also one named like 011's API app for the agent's callers or 013's portal web app, both retired, which the
+// script no longer knows: specs/016 research R12), group, role assignment or a GitHub secret stays. With --purge it
+// purges the Foundry account and the app registration; the vaults stay soft-deleted (purge protection) and are reported. --dry-run, a refusal or an
 // unconfirmed run changes nothing, and so does a pre-deploy file whose resource group main's file doesn't deploy to.
 import { spawnSync } from "node:child_process";
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -21,9 +21,11 @@ const P = (BICEP_PATH ? buildParams("infra/pre-deploy.dev.bicepparam").names : {
 const SUB = "33333333-3333-4333-8333-333333333333";
 const TENANT = "22222222-2222-4222-8222-222222222222";
 const DEPLOY = "11111111-1111-4111-8111-111111111111";
-const API = "44444444-4444-4444-8444-444444444444";
-/** An app registration that isn't in the parameter file: named like the web app 013 first registered in Entra. */
+/** App registrations that aren't in the parameter file: named like the API app 011 registered in Entra for the agent's callers, and like the web app 013 first registered there. */
+const RETIRED_API = "44444444-4444-4444-8444-444444444444";
 const RETIRED_PORTAL = "55555555-5555-4555-8555-555555555555";
+/** The standard name another app of the environment would have (`l1`: the retired API app's; `portal`: the retired web app's). */
+const appNamed = (app: string) => P.deployApp.replace("-deploy-", `-${app}-`);
 const OTHER_APP = "77777777-7777-4777-8777-777777777777";
 const PARAMS = readFileSync("infra/pre-deploy.dev.bicepparam", "utf8")
   .replace(/^param tenantId = '.*'$/m, `param tenantId = '${TENANT}'`)
@@ -60,13 +62,13 @@ function deployed(): State {
     },
     apps: [
       { appId: DEPLOY, id: "obj-deploy", displayName: P.deployApp },
-      { appId: API, id: "obj-api", displayName: P.apiApp },
-      { appId: RETIRED_PORTAL, id: "obj-portal", displayName: P.deployApp.replace("-deploy-", "-portal-") },
+      { appId: RETIRED_API, id: "obj-api", displayName: appNamed("l1") },
+      { appId: RETIRED_PORTAL, id: "obj-portal", displayName: appNamed("portal") },
       { appId: OTHER_APP, id: "obj-other", displayName: "someone-elses-app" },
     ],
     sps: [
       { appId: DEPLOY, id: "sp-deploy" },
-      { appId: API, id: "sp-api" },
+      { appId: RETIRED_API, id: "sp-api" },
       { appId: OTHER_APP, id: "sp-other" },
     ],
     entraGroups: [
@@ -138,7 +140,7 @@ function tenant(state: State, opts: { mutate?: [string, string]; params?: string
   };
 }
 
-const OURS = new Set([DEPLOY, API]);
+const OURS = new Set([DEPLOY]);
 /** Calls that change something. */
 const changes = (r: Run) => [
   ...r.az.filter((a) => a.includes("delete") || a.includes("purge") || a.includes("DELETE")),
@@ -154,7 +156,7 @@ function problems(r: Run, purge: boolean): string[] {
   if (P.resourceGroup in r.state.groups) p.push(`${P.resourceGroup} still exists`);
   if (!("rg-someone-else" in r.state.groups)) p.push("a resource group that isn't ours was deleted");
   for (const a of r.state.apps) if (OURS.has(a.appId)) p.push(`the app registration ${a.displayName} still exists`);
-  for (const id of [OTHER_APP, RETIRED_PORTAL]) if (!r.state.apps.some((a) => a.appId === id)) p.push("an app registration that isn't ours was deleted");
+  for (const id of [OTHER_APP, RETIRED_API, RETIRED_PORTAL]) if (!r.state.apps.some((a) => a.appId === id)) p.push("an app registration that isn't ours was deleted");
   if (r.state.entraGroups.some((g) => g.displayName === P.operators)) p.push(`${P.operators} still exists`);
   if (!r.state.entraGroups.some((g) => g.id === "grp-other")) p.push("a group that isn't ours was deleted");
   const principals = new Set(r.state.sps.map((s) => s.id));
@@ -162,7 +164,7 @@ function problems(r: Run, purge: boolean): string[] {
   if (!r.state.roleAssignments.some((ra) => ra.principalId === "sp-other")) p.push("a role assignment that isn't ours was deleted");
   const softApps = r.state.deletedApps.filter((a) => OURS.has(a.appId)).length;
   if (purge && (softApps > 0 || r.state.deletedAccounts.length > 0)) p.push("--purge left soft-deleted app registrations or Foundry accounts");
-  if (!purge && (softApps !== OURS.size || r.state.deletedAccounts.length !== 1)) p.push("without --purge, the app registrations and the Foundry account must stay soft-deleted");
+  if (!purge && (softApps !== OURS.size || r.state.deletedAccounts.length !== 1)) p.push("without --purge, the app registration and the Foundry account must stay soft-deleted");
   for (const v of Object.values(M.vaults)) if (!r.out.includes(`soft-deleted: the vault ${v}`)) p.push(`the soft-deleted vault ${v} was not reported`);
   if (r.az.some((a) => a[0] === "keyvault" && a[1] === "purge")) p.push("tried to purge a vault with purge protection");
   return p;
@@ -170,7 +172,7 @@ function problems(r: Run, purge: boolean): string[] {
 
 // Each run spawns node once per `az` and `gh` call, and the Bicep CLI twice, so a test takes seconds.
 describe.skipIf(!BICEP_PATH)("T-E2E-AZ clean-up (infra/cleanup.sh against a fake tenant and gh)", { timeout: 60_000 }, () => {
-  it("T-E2E-AZ cleanup.sh deletes the GitHub environment, the deploy app's role assignments, the resource group, both app registrations and the operators' group, and nothing else", () => {
+  it("T-E2E-AZ cleanup.sh deletes the GitHub environment, the deploy app's role assignments, the resource group, the deploy app's registration and the operators' group, and nothing else", () => {
     const r = tenant(deployed())(["--yes"]);
     expect(problems(r, false)).toEqual([]);
     expect(r.out).toContain("kept: the GitHub secrets LEFTOVER_SECRET");
@@ -189,15 +191,17 @@ describe.skipIf(!BICEP_PATH)("T-E2E-AZ clean-up (infra/cleanup.sh against a fake
       `role assignment of ${P.deployApp}: Contributor on /subscriptions/${SUB}/resourceGroups/${P.resourceGroup}`,
       `resource group ${P.resourceGroup}: 40 resources, with the vaults ${M.vaults.l1}`,
       `app registration ${P.deployApp} (${DEPLOY})`,
-      `app registration ${P.apiApp} (${API})`,
       `group ${P.operators} (grp-ours), for good`,
       "dry run: nothing was deleted",
     ]) {
       expect(r.out).toContain(line);
     }
+    // 016: the retired API app is not ours any more, so it is not in the plan.
+    expect(r.out).not.toContain(appNamed("l1"));
+    expect(r.az.some((a) => a.join(" ").includes(appNamed("l1")))).toBe(false);
   });
 
-  it("T-E2E-AZ cleanup.sh --purge also purges the Foundry account and the app registrations; the vaults stay (purge protection)", () => {
+  it("T-E2E-AZ cleanup.sh --purge also purges the Foundry account and the app registration; the vaults stay (purge protection)", () => {
     const r = tenant(deployed())(["--yes", "--purge"]);
     expect(problems(r, true)).toEqual([]);
     expect(r.state.deletedVaults.map((v) => v.name).sort()).toEqual(Object.values(M.vaults).sort());
@@ -243,10 +247,13 @@ describe.skipIf(!BICEP_PATH)("T-E2E-AZ clean-up (infra/cleanup.sh against a fake
     expect(problems(r, false)).toContain("the role assignment ra-sub is left orphaned (its principal was deleted)");
   });
 
-  it("T-E2E-AZ must-fail: a clean-up that doesn't look for the API app leaves its registration, and one that takes any app of the environment's name deletes one that isn't ours; both are reported", () => {
-    const missed = tenant(deployed(), { mutate: ['for name in "$APP_L1" "$APP_DEPLOY"; do', 'for name in "$APP_DEPLOY"; do'] })(["--yes"]);
-    expect(problems(missed, false)).toContain(`the app registration ${P.apiApp} still exists`);
-    const greedy = tenant(deployed(), { mutate: ['for name in "$APP_L1" "$APP_DEPLOY"; do', `for name in "$APP_L1" "$APP_DEPLOY" "${P.deployApp.replace("-deploy-", "-portal-")}"; do`] })(["--yes"]);
+  it("T-E2E-AZ must-fail: a clean-up that doesn't look for the deploy app leaves its registration, and one that still looks for the retired API app, or takes any app of the environment's name, deletes one that isn't ours; each is reported", () => {
+    const LOOP = 'for name in "$APP_DEPLOY"; do';
+    const missed = tenant(deployed(), { mutate: [LOOP, "for name in; do"] })(["--yes"]);
+    expect(problems(missed, false)).toContain(`the app registration ${P.deployApp} still exists`);
+    const api = tenant(deployed(), { mutate: [LOOP, `for name in "$APP_DEPLOY" "${appNamed("l1")}"; do`] })(["--yes"]);
+    expect(problems(api, false)).toContain("an app registration that isn't ours was deleted");
+    const greedy = tenant(deployed(), { mutate: [LOOP, `for name in "$APP_DEPLOY" "${appNamed("portal")}"; do`] })(["--yes"]);
     expect(problems(greedy, false)).toContain("an app registration that isn't ours was deleted");
   });
 

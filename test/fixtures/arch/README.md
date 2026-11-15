@@ -27,3 +27,10 @@ of `src/portal/`. Each test asserts that no other rule catches its fixture.
 administration role (`portal-admin`) and its token (`PORTAL_ADMIN_TOKEN`) are named only in `src/portal/config.ts`
 and `src/portal/admin-client.ts`; only `admin-routes.ts` and `server.ts` import that client; and the administration
 half never imports the user-account client. The test asserts that no other rule catches its fixture.
+
+`a14-violation.ts` and `a15-violation.ts` (016) are checked with `checkCallerTokenPath` and
+`checkMachineCallerConfinement`. A14 keeps the caller's token on one path: the header it travels in
+(`X-Caller-Authorization`) is named only in `src/layer1-intent/ports-http.ts` and `src/layer2-control/caller.ts`, and
+a gate for a caller (`forCaller`) is taken only in `src/layer1-intent/hosted/server.ts` and `src/main.ts`. A15
+confines a machine caller's key (`MACHINE_CLIENT_KEY`, `MACHINE_CLIENT_KEY_ID`) to `src/machine-caller/token.ts`,
+which only `src/main.ts` and `src/smoke-main.ts` import. Each test asserts that no other rule catches its fixture.

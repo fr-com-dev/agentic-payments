@@ -123,7 +123,7 @@ With user accounts on (`USER_ACCOUNTS=1` in L2's env file, SPEC L2-8), each pers
 - **Wallet.** One crypto account per person on the test network. L2 derives it from one mnemonic and is the only process that can sign with it; nobody ever sees a key, and nothing in the portal moves funds out. Cards can be registered at a card vault (Stripe, test mode) for later; an agent can't pay with a card.
 - **Expense policies.** Where the agent may pay (sellers from the operator's list), how much (without asking, per payment, per run, per day) and how (payments per minute, an end date). The operator's platform limits (`config/platform.json`) bound every policy, and one daily ceiling bounds each person across all their policies.
 
-A run started by a person through the hosted agent pays from that person's account under that person's policy. A person who has not finished setting up, or disabled their account, is denied; they never fall back to the platform account. A system identity, the scripted agent and `demo:local` use the platform account, as before. Raising a limit, adding a seller, resuming a policy or enabling an account asks the person to sign in again if their last sign-in is older than 15 minutes.
+A run started by a person through the hosted agent pays from that person's account under that person's policy. A person who has not finished setting up, or disabled their account, is denied; they never fall back to the platform account. A machine caller, the scripted agent and `demo:local` use the platform account, as before. Who a run pays for is decided by L2 from the caller's token, which the agent forwards: the agent itself names nobody. Raising a limit, adding a seller, resuming a policy or enabling an account asks the person to sign in again if their last sign-in is older than 15 minutes.
 
 Locally, in three terminals:
 
@@ -238,20 +238,30 @@ A CDP JWT is valid for 120 s, so a skewed clock on the seller host shows up as `
 
 ## Hosted agent service (Azure)
 
-The agent can also run as an HTTP service (SPEC L1-6, `specs/011`): `POST /v1/runs` takes a goal from a requester with a token: a person's from the sign-in tenant (Auth0) with the permission `agent:run`, or a system identity's from Entra ID with the `Agent.Run` role. It uses the same two tools, prompt and limits as the command-line agent, and gains no payment authority:
+The agent can also run as an HTTP service (SPEC L1-6, `specs/011`): `POST /v1/runs` takes a goal from a caller with a token of the sign-in tenant (Auth0): a person's, with the permission `agent:run` (a tenant administrator assigns the role `x402-agent`), or a machine caller's (client credentials, with `agent:run` from its grant). It uses the same two tools, prompt and limits as the command-line agent, and gains no payment authority:
 - it refuses to start if it can see the payer key;
 - it never calls operator routes;
-- it never forwards the requester's token to L2 or L3.
+- it forwards the caller's token to L2 only, beside its own role token, on the payment and budget calls of that run. L2 verifies the token itself and takes the user from it, so the agent's word names nobody (SPEC v1.17, `specs/016`). The token never goes to L3, the seller or the model.
+
+With `Accept: text/event-stream` the answer is a stream of server-sent events instead of one JSON object: `run` (the run's identifier, at once), `text` (as the model writes it), `step` (each finished tool call) and `result` (the same object the JSON answer carries, last):
+
+```bash
+curl -N -H "Authorization: Bearer $TOKEN" -H 'accept: text/event-stream' -H 'content-type: application/json' \
+  -d '{"goal":"Get the weather for Lima"}' http://127.0.0.1:4024/v1/runs
+```
+
+With `API_DOCS=1` the agent serves Swagger UI at `/docs`. Started with the tenant's settings and `API_DOCS_CLIENT_ID`, the page's Authorize button signs you in at the tenant (authorization code with PKCE, no secret), so a run can be tried from the page without pasting a token.
 
 Sessions are bound to their requester by a signed `sessionRef`, so a requester can continue a session after an operator approves an escalation.
 
 Locally, against the local stack:
 
 ```bash
-npm run stack:local                                 # terminal 1: chain, facilitator, seller, L2, L3
+npm run stack:local -- --sign-in                    # terminal 1: chain, facilitator, seller, L2 (verifying callers' tokens), L3
 cp env/l1-hosted.env.example env/l1-hosted.env     # set ANTHROPIC_API_KEY and SESSION_REF_SECRET (openssl rand -hex 32)
 npm run agent:hosted                                # 127.0.0.1:4024
-TOKEN=$(npm run -s dev-token -- --subject alice)    # local dev issuer, NETWORK=local only
+TOKEN=$(npm run -s dev-token -- --service)          # a machine caller of the local dev issuer: the platform account pays
+                                                    # (--subject alice for a person, with `stack:local -- --users` and an account made in the portal)
 curl -s -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
   -d '{"goal":"Get the weather for Lima"}' http://127.0.0.1:4024/v1/runs | jq '.status, [.steps[].result.outcome]'
 ```
@@ -266,16 +276,16 @@ To run the agent's container image instead, see [quickstart §3](specs/011-l1-ho
 - The ledger lives on an NFS share. L2 holds a lock on it (L2-6), so only one L2 writes during a revision update.
 - The sellers run in a separate environment.
 - Every resource is named `{type}-{app}-{location}-{env}`, such as `ca-l1-eastus2-dev`; the parameter files' `names` hold them all. `infra/` has two scripts only: `infra/github-setup.sh` and `infra/cleanup.sh`, which deletes all of an environment (`--dry-run` first).
-- Azure is provisioned by Bicep only. `infra/pre-deploy.bicep` makes the resource group, the Entra app registrations, the operators' group and the deploy app's roles; an administrator deploys it by hand. `infra/main.bicep` makes everything in the resource group, the Claude model deployment included.
+- Azure is provisioned by Bicep only. `infra/pre-deploy.bicep` makes the resource group, the deploy app's Entra registration, the operators' group and the deploy app's roles; an administrator deploys it by hand. `infra/main.bicep` makes everything in the resource group, the Claude model deployment included.
 - Every value is in a parameter file: `infra/pre-deploy.<env>.bicepparam` and `infra/main.<env>.bicepparam`, the tenant, subscription and resource group included. Each template refuses to run anywhere else.
-- A deployed agent accepts system identities only (SPEC v1.13): the Auth0 tenant in `auth0/` has two applications, the portal's and L2's, and none that gives a person an agent token. Runs as a person work locally, with the dev issuer. System identities, the deploy pipeline included, use Entra ID (the API app `app-l1-<location>-<env>`, role `Agent.Run`); an Entra token never names a user.
+- A deployed agent accepts callers from the Auth0 tenant in `auth0/` only (SPEC v1.17): people who hold the role `x402-agent`, through the agent's public client, and machine callers, each with a confidential client of its own. Entra ID issues nothing for the agent's callers. The deploy pipeline's two checks (the scripted regression and the hosted smoke run) are jobs that call as the machine caller `checks`; its key is in the l1 vault, never in GitHub. An environment's parameter file can turn the agent's docs page on (`agent.apiDocs`).
 
 **Deployment**: one GitHub Actions pipeline per unit, each run by hand or on its own tag, one at a time:
 
 | Pipeline | Tag | Deploys |
 |---|---|---|
 | `deploy-infra.yml` | `deploy-infra-*` | the platform: network, logs, identities, registry, vaults, storage, Foundry, the environments |
-| `deploy-l1.yml` | `deploy-l1-*` | `x402-l1-agent`: the agent and the regression job |
+| `deploy-l1.yml` | `deploy-l1-*` | `x402-l1-agent`: the agent, the regression job and the smoke job |
 | `deploy-l2.yml` | `deploy-l2-*` | `x402-l2-control`: the control service |
 | `deploy-l3.yml` | `deploy-l3-*` | `x402-l3-verifier`: the verifier |
 | `deploy-operator.yml` | `deploy-operator-*` | `x402-operator`: the operator job |

@@ -10,7 +10,7 @@ import { describe, expect, it } from "vitest";
 // Scanner core (T004–T006)
 // ---------------------------------------------------------------------------
 
-export type Rule = "A1" | "A2" | "A3" | "A4" | "A5" | "A6" | "A7" | "A8" | "A9" | "A10" | "A11" | "A12" | "A13";
+export type Rule = "A1" | "A2" | "A3" | "A4" | "A5" | "A6" | "A7" | "A8" | "A9" | "A10" | "A11" | "A12" | "A13" | "A14" | "A15";
 export interface ArchViolation {
   rule: Rule;
   file: string;
@@ -364,6 +364,48 @@ export function checkPortalHalves(path: string, source: string): ArchViolation[]
 }
 
 // ---------------------------------------------------------------------------
+// A14 (016, SPEC v1.17 §4.1, INV-13, SEC-32): the caller's token has one way through the code. The header it
+// travels in is named only by the L1 port that sends it and the L2 module that verifies it; and a gate for a caller
+// is taken only where a caller was verified (the hosted agent's run route) or is configured (the CLI agent's
+// composition root). So no other L1 code can forward a token, and no other L2 code can read one.
+// ---------------------------------------------------------------------------
+
+const A14_HEADER = /x-caller-authorization/i;
+const A14_HEADER_FILES = new Set(["src/layer1-intent/ports-http.ts", "src/layer2-control/caller.ts"]);
+const A14_FOR_CALLER = /\.forCaller\(/;
+const A14_FOR_CALLER_FILES = new Set(["src/layer1-intent/hosted/server.ts", "src/main.ts"]);
+
+export function checkCallerTokenPath(path: string, source: string): ArchViolation[] {
+  if (!path.startsWith("src/")) return [];
+  const text = lex(source).noComments;
+  const hits = (re: RegExp, detail: string) => matches(text, re).map((off) => ({ rule: "A14" as const, file: path, line: lineAt(source, off), detail }));
+  return [
+    ...(A14_HEADER_FILES.has(path) ? [] : hits(A14_HEADER, "names the caller's header")),
+    ...(A14_FOR_CALLER_FILES.has(path) ? [] : hits(A14_FOR_CALLER, "takes a gate for a caller")),
+  ];
+}
+
+// ---------------------------------------------------------------------------
+// A15 (016, SPEC v1.17 §4.1, SEC-33): a machine caller's key is an authentication credential confined to one module.
+// The two variables that carry it are named only in src/machine-caller/token.ts, and no layer imports that module:
+// it is used by the two entry points that call as a machine (the CLI agent and the smoke client). So the hosted
+// agent's own code, L2, L3 and the portal never hold a way to mint a machine caller's token.
+// ---------------------------------------------------------------------------
+
+const A15_NAMES = /\bMACHINE_CLIENT_KEY(_ID)?\b/;
+const A15_MODULE = "src/machine-caller/token.ts";
+const A15_IMPORT = /["'][./]*\/machine-caller\/[\w./-]+["']/;
+const A15_IMPORTERS = new Set(["src/main.ts", "src/smoke-main.ts"]);
+
+export function checkMachineCallerConfinement(path: string, source: string): ArchViolation[] {
+  if (!path.startsWith("src/") || path === A15_MODULE) return [];
+  const text = lex(source).noComments;
+  const hits = (re: RegExp, detail: (found: string) => string) =>
+    matches(text, re).map((off) => ({ rule: "A15" as const, file: path, line: lineAt(source, off), detail: detail(text.slice(off).match(/^\w+/)?.[0] ?? "") }));
+  return [...hits(A15_NAMES, (found) => found), ...(A15_IMPORTERS.has(path) ? [] : hits(A15_IMPORT, () => "imports the machine caller's module"))];
+}
+
+// ---------------------------------------------------------------------------
 // Repository walk
 // ---------------------------------------------------------------------------
 
@@ -512,24 +554,25 @@ interface TemplateSpec {
 const TEMPLATES: Record<string, TemplateSpec> = {
   "l1-agent": {
     required: ["NETWORK", "ANTHROPIC_API_KEY", "SELLER_URL", "CONTROL_URL", "SETTLEMENT_URL", "CONTROL_TOKEN", "VERIFIER_TOKEN"],
-    optional: ["ANTHROPIC_MODEL", "SESSION_ID", "SELLER_ALIAS_URL"],
+    // 016 (CFG-2): where L2 verifies callers, the CLI agent calls as a machine caller: a ready-made dev token
+    // locally, or the machine caller's client, its key and the tenant. The key is an authentication credential (A15).
+    optional: ["ANTHROPIC_MODEL", "SESSION_ID", "SELLER_ALIAS_URL", "CALLER_TOKEN", "MACHINE_CLIENT_ID", "MACHINE_CLIENT_KEY_ID", "MACHINE_CLIENT_KEY", "AUTH_ISSUER", "AUTH_AUDIENCE"],
   },
   "l1-hosted": {
-    // 013 (research R19, R20): a person's token is checked by issuer, audience and client list. Only the local dev issuer
-    // has a client for the agent (the Auth0 tenant has none); the directory covers system identities.
+    // 016 (SPEC L1-6): every caller comes from the sign-in tenant; a person's token is checked by issuer, audience,
+    // permission and client list, a machine caller's by issuer, audience and permission. Nothing of the directory.
     required: ["NETWORK", "SELLER_URL", "CONTROL_URL", "SETTLEMENT_URL", "CONTROL_TOKEN", "VERIFIER_TOKEN", "MODEL_PROVIDER", "AUTH_ISSUER", "AUTH_AUDIENCE", "AGENT_CLIENT_IDS", "SESSION_REF_SECRET"],
     optional: [
       "ANTHROPIC_MODEL",
       "ANTHROPIC_API_KEY",
       "FOUNDRY_BASE_URL",
       "AZURE_CLIENT_ID",
-      "AUTH_TENANT_ID",
-      "SERVICE_AUDIENCE",
       "AUTH_JWKS_FILE",
       "AGENT_PORT",
       "AGENT_BIND_HOST",
       "TRUSTED_PROXY_HOPS",
       "API_DOCS",
+      "API_DOCS_CLIENT_ID",
       "PORTAL_CLIENT_ID",
     ],
   },
@@ -546,6 +589,12 @@ const TEMPLATES: Record<string, TemplateSpec> = {
       "CIBA_CLIENT_KEY",
       "CIBA_CLIENT_SECRET",
       "CIBA_CLIENT_KEY_ID",
+      // 016 sign-in (CFG-2): the caller's token. Public settings only; L2 holds no credential for it.
+      "AUTH_ISSUER",
+      "AUTH_AUDIENCE",
+      "AGENT_CLIENT_IDS",
+      "AUTH_JWKS_FILE",
+      "PORTAL_CLIENT_ID",
       // 013 user accounts (CFG-2)
       "USER_ACCOUNTS",
       "PORTAL_TOKEN",
@@ -813,6 +862,70 @@ describe("T-ARCH-ENV per-process env templates (US4)", () => {
     expect(checkPortalHalves("src/portal/cards.ts", 'tokenFor("portal-admin")').map((v) => v.rule)).toEqual(["A13"]);
   });
 
+  // ---- 016: A14, the caller's token has one way through the code ---------------------------------------------
+
+  it("T-ARCH-A14 fixture trips A14 two ways, and no other rule catches it", () => {
+    const { path, source } = fixture(14);
+    expect(checkFile(path, source)).toEqual([]);
+    expect(checkCallerTokenPath(path, source).map((v) => [v.rule, v.detail])).toEqual([
+      ["A14", "names the caller's header"],
+      ["A14", "takes a gate for a caller"],
+    ]);
+  });
+
+  it("T-ARCH-A14 repository is clean: only L1's port and L2's caller module name the header, and only two roots take a gate for a caller", () => {
+    expect(walk("src").flatMap((f) => checkCallerTokenPath(f, readFileSync(f, "utf8"))).map(format)).toEqual([]);
+    // Not vacuous: the two files really name the header, and the hosted agent's run route really takes the gate.
+    for (const file of ["src/layer1-intent/ports-http.ts", "src/layer2-control/caller.ts"]) {
+      expect(checkCallerTokenPath("src/shared/x.ts", readFileSync(file, "utf8")).map((v) => v.detail), file).toContain("names the caller's header");
+    }
+    expect(checkCallerTokenPath("src/shared/x.ts", readFileSync("src/layer1-intent/hosted/server.ts", "utf8")).map((v) => v.detail)).toEqual(["takes a gate for a caller"]);
+    // L3 and the portal can't be given the token either.
+    expect(checkCallerTokenPath("src/layer3-settlement/service.ts", 'headers["x-caller-authorization"] = t;').map((v) => v.rule)).toEqual(["A14"]);
+    expect(checkCallerTokenPath("src/portal/control-client.ts", "gate.forCaller(token)").map((v) => v.rule)).toEqual(["A14"]);
+  });
+
+  it("T-ARCH-A14 comments, the method's own definition and tests never trip it", () => {
+    expect(checkCallerTokenPath("src/layer1-intent/orchestrator.ts", "// L2 reads X-Caller-Authorization; see forCaller(token)\nexport {};\n")).toEqual([]);
+    expect(checkCallerTokenPath("src/shared/contracts.ts", "export interface CallerGates { forCaller(callerToken: string): AuthorizationGatePort }")).toEqual([]);
+    expect(checkCallerTokenPath("test/helpers/caller-tokens.ts", '({ "x-caller-authorization": t })')).toEqual([]);
+  });
+
+  // ---- 016: A15, the machine caller's key is confined to one module ------------------------------------------
+
+  it("T-ARCH-A15 fixture trips A15 two ways, and no other rule catches it", () => {
+    const { path, source } = fixture(15);
+    expect(checkFile(path, source)).toEqual([]);
+    expect(checkCallerTokenPath(path, source)).toEqual([]);
+    // The hosted agent's entry point: A1 already keeps the layers out; this is what keeps the other entry points out.
+    expect(checkMachineCallerConfinement(path, source).map((v) => [v.rule, v.detail])).toEqual([
+      ["A15", "MACHINE_CLIENT_KEY"],
+      ["A15", "imports the machine caller's module"],
+    ]);
+  });
+
+  it("T-ARCH-A15 repository is clean: only the machine caller's module names its key, and only the two machine entry points import it", () => {
+    expect(walk("src").flatMap((f) => checkMachineCallerConfinement(f, readFileSync(f, "utf8"))).map(format)).toEqual([]);
+    // Not vacuous: the module really names both variables, and both entry points really import it.
+    const names = checkMachineCallerConfinement("src/shared/x.ts", readFileSync("src/machine-caller/token.ts", "utf8")).map((v) => v.detail);
+    expect(new Set(names)).toEqual(new Set(["MACHINE_CLIENT_KEY", "MACHINE_CLIENT_KEY_ID"]));
+    for (const entry of ["src/main.ts", "src/smoke-main.ts"]) {
+      expect(checkMachineCallerConfinement("src/hosted-main.ts", readFileSync(entry, "utf8")).map((v) => v.detail), entry).toEqual(["imports the machine caller's module"]);
+    }
+    // The hosted agent, L2, L3 and the portal can't import it, and the module itself imports only shared code.
+    for (const file of ["src/hosted-main.ts", "src/layer1-intent/hosted/server.ts", "src/layer2-control/caller.ts", "src/layer3-settlement/service.ts", "src/portal/server.ts"]) {
+      expect(checkMachineCallerConfinement(file, 'import { MachineCaller } from "../machine-caller/token.js";').map((v) => v.rule), file).toEqual(["A15"]);
+    }
+    const imports = [...readFileSync("src/machine-caller/token.ts", "utf8").matchAll(/from "([^"]+)"/g)].map((m) => m[1]);
+    expect(imports.filter((i) => i!.startsWith("."))).toEqual(["../shared/config.js", "../shared/identity-token.js"]);
+  });
+
+  it("T-ARCH-A15 comments, the client's public ID and the caller's ready-made token never trip it", () => {
+    expect(checkMachineCallerConfinement("src/main.ts", "// MACHINE_CLIENT_KEY stays in src/machine-caller/token.ts\nexport {};\n")).toEqual([]);
+    expect(checkMachineCallerConfinement("src/smoke-main.ts", 'console.error("MACHINE_CLIENT_ID is required"); const t = process.env.CALLER_TOKEN;')).toEqual([]);
+    expect(checkMachineCallerConfinement("scripts/x.ts", "process.env.MACHINE_CLIENT_KEY")).toEqual([]);
+  });
+
   it("T-ARCH-A1 and A4 cover the portal: it imports only shared and itself, no layer imports it, and it can't sign", () => {
     expect(checkFile("src/portal/x.ts", 'import { AuditLedger } from "../layer2-control/ledger.js";').map((v) => v.rule)).toEqual(["A1"]);
     expect(checkFile("src/portal/x.ts", 'import { requesterAuth } from "../layer1-intent/hosted/requester-auth.js";').map((v) => v.rule)).toEqual(["A1"]);
@@ -871,8 +984,9 @@ describe("T-ARCH-TRACE threat matrix → test titles (007 T051)", () => {
   // SEC-14..16 by 011 (v1.5, hosted agent service), SEC-17..18 by 012 (v1.8, backchannel approval),
   // SEC-19..24 by 013 (v1.10, user accounts and the portal), SEC-25 by 012's convergence (v1.11, the Auth0 pipeline),
   // SEC-26 by 013 (v1.14, a portal that asks for no role), SEC-27..29 by 014 (v1.15, the portal's administration area),
-  // SEC-30 by 015 (v1.16, approval by the person the run is for).
-  const SEC_ROWS = Array.from({ length: 30 }, (_, i) => `SEC-${i + 1}`);
+  // SEC-30 by 015 (v1.16, approval by the person the run is for); SEC-31 is reserved by 015's open tasks;
+  // SEC-32..34 by 016 (v1.17: L1's word names no user, machine callers, the docs page's sign-in).
+  const SEC_ROWS = [...Array.from({ length: 30 }, (_, i) => `SEC-${i + 1}`), "SEC-32", "SEC-33", "SEC-34"];
   it(`every ${SEC_ROWS[0]}..${SEC_ROWS.at(-1)} row names at least one test, and each named ID is a test title`, () => {
     const rows = matrixRows(readFileSync(THREAT_MATRIX, "utf8"));
     expect(rows.map((r) => r.sec)).toEqual(SEC_ROWS);

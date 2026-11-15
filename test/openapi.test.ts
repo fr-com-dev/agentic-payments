@@ -19,6 +19,7 @@ import { AuditLedger } from "../src/layer2-control/ledger.js";
 import { buildMandate } from "../src/layer2-control/mandate.js";
 import { createControlService } from "../src/layer2-control/service.js";
 import { WalletKeyring, type PaymentSignerLike } from "../src/layer2-control/signer.js";
+import { callerHeader, createTestIssuer, type TestIssuer } from "./helpers/caller-tokens.js";
 import { OTHER_HOST, policyValues, SELLER_HOST, TEST_MNEMONIC, testPlatform, UNLISTED_HOST } from "./helpers/users.js";
 import {
   conformance,
@@ -76,8 +77,10 @@ afterEach(async () => {
  * User accounts (v1.10) are on unless `users: false`, which is main() without USER_ACCOUNTS=1; the administration
  * routes (v1.15) are on with them unless `admin: false`, which is main() without PORTAL_ADMIN=1.
  */
-async function startService(opts: { apiDocs?: boolean; users?: boolean; admin?: boolean } = { apiDocs: true }) {
+async function startService(opts: { apiDocs?: boolean; users?: boolean; admin?: boolean; callerChecks?: number } = { apiDocs: true }) {
   let t = NOW;
+  // 016: with user accounts on, sign-in is configured (main() requires it), so the two agent routes need a caller's token.
+  const callers: TestIssuer | undefined = opts.users !== false ? await createTestIssuer() : undefined;
   const mandate = buildMandate(
     {
       mandateId: "mandate-openapi",
@@ -106,6 +109,8 @@ async function startService(opts: { apiDocs?: boolean; users?: boolean; admin?: 
       users: { platform: testPlatform(), keyring: new WalletKeyring(TEST_MNEMONIC, { caip2: CAIP2, asset: ASSET }) },
       net: { caip2: CAIP2, asset: ASSET, decimals: 6 },
     }),
+    // `callerChecks`: a low bound on token checks, so a scenario reaches the two agent routes' documented 429.
+    ...(callers && { caller: { ...callers.deps, ...(opts.callerChecks !== undefined && { maxChecksPerMinute: opts.callerChecks }) } }),
     // A low limit for the ledger check, so the scenario reaches its documented 429 in a few requests.
     ...(opts.users !== false && opts.admin !== false && { admin: { maxLedgerChecksPerMinute: 3 } }),
   });
@@ -115,6 +120,7 @@ async function startService(opts: { apiDocs?: boolean; users?: boolean; admin?: 
   servers.push(server);
   return {
     app: svc.app,
+    callers,
     base: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
     advance: (ms: number) => {
       t += ms;
@@ -127,14 +133,18 @@ async function startService(opts: { apiDocs?: boolean; users?: boolean; admin?: 
  * For each operation and each caller (no token, then each scheme's token): passes the guard iff documented.
  * `security: []` documents a route with no token, which every caller passes.
  */
-async function authMismatches(doc: OpenApiDoc, base: string): Promise<string[]> {
+async function authMismatches(doc: OpenApiDoc, base: string, callers?: TestIssuer): Promise<string[]> {
   const out: string[] = [];
+  // 016: an operation that documents the caller's header gets a machine caller's token with every request, so what
+  // is compared is the role token alone, as before. The header never changes a 401 for a wrong role token.
+  const caller = callers ? callerHeader(await callers.machine()) : {};
   for (const [method, path, op] of operations(doc)) {
     const open = op.security?.length === 0;
     const documented = Object.keys(op.security?.[0] ?? {});
     const concrete = path.replace(/\{\w+\}/g, "x");
+    const takesCaller = JSON.stringify((op as { parameters?: unknown }).parameters ?? []).includes("CallerAuthorization");
     for (const [scheme, token] of [["none", undefined], ...Object.entries(SCHEME_TOKENS)] as [string, string | undefined][]) {
-      const { status } = await send(base, method, concrete, token);
+      const { status } = await send(base, method, concrete, token, undefined, takesCaller ? caller : {});
       const passedGuard = status !== 401;
       if (passedGuard !== (open || documented.includes(scheme))) out.push(`${method} ${path} ${scheme}: ${status}`);
     }
@@ -204,27 +214,41 @@ describe("T-API-01 every L2 route is documented, and every documented route is m
 
 describe("T-API-02 each operation's security scheme is the only token its guard accepts", () => {
   it("T-API-02 no token and the other three tokens get 401; the documented token passes the guard", async () => {
-    const { base } = await startService();
-    expect(await authMismatches(loadDoc(), base)).toEqual([]);
+    const { base, callers } = await startService();
+    expect(await authMismatches(loadDoc(), base, callers)).toEqual([]);
+  });
+
+  it("T-API-02 the caller's header is documented on exactly the two operations the agent calls, and on no other (v1.17)", () => {
+    const withCaller = operations(loadDoc())
+      .filter(([, , op]) => JSON.stringify((op as { parameters?: unknown }).parameters ?? []).includes("CallerAuthorization"))
+      .map(([m, p]) => `${m} ${p}`);
+    expect(withCaller.sort()).toEqual(["GET /v1/budget/{sessionId}", "POST /v1/authorize"]);
+    const intentSchema = (loadDoc() as unknown as { components: { schemas: { PaymentIntent: { properties: Record<string, unknown> } } } }).components.schemas.PaymentIntent;
+    expect(Object.keys(intentSchema.properties)).not.toContain("userId");
+    expect(Object.keys(intentSchema.properties)).not.toContain("approvalSubject");
   });
 
   it("T-API-02 must-fail: a document naming the wrong token is reported", async () => {
-    const { base } = await startService();
+    const { base, callers } = await startService();
     const doc = loadDoc();
     doc.paths["/v1/authorize"]!.post!.security = [{ operatorToken: [] }];
-    expect(await authMismatches(doc, base)).toEqual(["POST /v1/authorize controlToken: 400", "POST /v1/authorize operatorToken: 401"]);
+    expect(await authMismatches(doc, base, callers)).toEqual(["POST /v1/authorize controlToken: 400", "POST /v1/authorize operatorToken: 401"]);
   });
 });
 
 describe("T-API-03 live responses match the documented status and schema", () => {
   it("T-API-03 a scenario reaching every documented status (except 500) conforms to the document", async () => {
     const doc = loadDoc();
-    const { base, advance, now } = await startService();
+    const { base, advance, now, callers } = await startService();
     const seen = new Set<string>();
     const errors: string[] = [];
-    const call = async (method: string, path: string, opts: { token?: string; params?: Record<string, string>; query?: string; body?: unknown } = {}) => {
+    const call = async (
+      method: string,
+      path: string,
+      opts: { token?: string; params?: Record<string, string>; query?: string; body?: unknown; caller?: string; base?: string } = {},
+    ) => {
       const concrete = path.replace(/\{(\w+)\}/g, (_, k: string) => opts.params?.[k] ?? "x") + (opts.query ?? "");
-      const res = await send(base, method, concrete, opts.token, opts.body);
+      const res = await send(opts.base ?? base, method, concrete, opts.token, opts.body, opts.caller !== undefined ? callerHeader(opts.caller) : {});
       seen.add(`${method} ${path} ${res.status}`);
       const content = responseContent(doc, method, path, res.status);
       const schema = content?.[res.type]?.schema;
@@ -238,18 +262,31 @@ describe("T-API-03 live responses match the documented status and schema", () =>
     };
     const C = { token: TOKENS.control };
     const O = { token: TOKENS.operator };
-    const authorize = (i: PaymentIntent) => call("POST", "/v1/authorize", { ...C, body: i });
+    // 016: the agent's two calls carry a caller's token: the person the test names with `userId` (taken off the
+    // body, which may not carry it), or a machine caller.
+    const machine = await callers!.machine();
+    const authorize = async (i: PaymentIntent) => {
+      const { userId, ...body } = i;
+      return call("POST", "/v1/authorize", { ...C, body, caller: userId !== undefined ? await callers!.forUser(userId) : machine });
+    };
     const approve = (id: string, body?: unknown) => call("POST", "/v1/approvals/{authorizationId}", { ...O, params: { authorizationId: id }, body });
     const reject = (id: string, body?: unknown) => call("POST", "/v1/rejections/{authorizationId}", { ...O, params: { authorizationId: id }, body });
 
     // agent: budget and the three decisions, plus a malformed intent
-    await call("GET", "/v1/budget/{sessionId}", { ...C, params: { sessionId: "sess_a" } });
+    await call("GET", "/v1/budget/{sessionId}", { ...C, params: { sessionId: "sess_a" }, caller: machine });
     const paid = await authorize(intent("sess_a", "/api/weather", "1000"));
     expect(paid.status).toBe("AUTHORIZED");
     const e1 = await authorize(intent("sess_a", "/api/premium-report", "50000"));
     expect(e1.status).toBe("ESCALATE");
     expect((await authorize(intent("sess_a", "/api/dataset-export", "200000"))).status).toBe("DENIED");
-    await call("POST", "/v1/authorize", { ...C, body: { sessionId: "sess_a" } });
+    await call("POST", "/v1/authorize", { ...C, body: { sessionId: "sess_a" }, caller: machine });
+    // v1.17 the caller's token: none (401), without the permission (403), and a body that names a user (400)
+    await call("POST", "/v1/authorize", { ...C, body: intent("sess_a", "/api/weather", "1000") });
+    await call("GET", "/v1/budget/{sessionId}", { ...C, params: { sessionId: "sess_a" } });
+    const noGrant = await callers!.machine({ scope: null });
+    await call("POST", "/v1/authorize", { ...C, body: intent("sess_a", "/api/weather", "1000"), caller: noGrant });
+    await call("GET", "/v1/budget/{sessionId}", { ...C, params: { sessionId: "sess_a" }, caller: noGrant });
+    await call("POST", "/v1/authorize", { ...C, body: { ...intent("sess_a", "/api/weather", "1000"), userId: devUserId("alice") }, caller: machine });
 
     // v1.10 user accounts: the agent's calls for a user, then every portal operation and each of its statuses
     const P = { token: TOKENS.portal };
@@ -299,8 +336,8 @@ describe("T-API-03 live responses match the documented status and schema", () =>
     // the agent, for this user: a payment under the policy and the user view of the budget
     const mine = await authorize({ ...intent("sess_user", "/api/weather", "1000"), userId: U });
     expect(mine.status).toBe("AUTHORIZED");
-    expect((await call("GET", "/v1/budget/{sessionId}", { ...C, params: { sessionId: "sess_user" }, query: `?userId=${U}` })).scope).toBe("user_daily");
-    await call("GET", "/v1/budget/{sessionId}", { ...C, params: { sessionId: "sess_user" }, query: "?userId=alice" });
+    expect((await call("GET", "/v1/budget/{sessionId}", { ...C, params: { sessionId: "sess_user" }, caller: await callers!.forUser(U) })).scope).toBe("user_daily");
+    await call("GET", "/v1/budget/{sessionId}", { ...C, params: { sessionId: "sess_user" }, query: `?userId=${U}`, caller: machine });
     // cards: identifiers only
     const card = "card_00000000-0000-4000-8000-000000000001";
     const cardCall = (method: string, userId: string, cardId: string) => call(method, "/v1/users/{userId}/cards/{cardId}", { ...P, params: { userId, cardId } });
@@ -433,6 +470,14 @@ describe("T-API-03 live responses match the documented status and schema", () =>
     expect([...seen].filter((s) => s.startsWith("GET /docs/{asset} "))).toEqual(["GET /docs/{asset} 200"]);
 
     for (const [method, path] of operations(doc)) await call(method, path);
+
+    // v1.17 the caller check's bound: a second L2 with a bound of one, so the next request on either route is 429
+    const limited = await startService({ callerChecks: 1 });
+    const theirs = await limited.callers!.machine();
+    await call("GET", "/v1/budget/{sessionId}", { ...C, base: limited.base, params: { sessionId: "sess_a" }, caller: theirs });
+    await call("GET", "/v1/budget/{sessionId}", { ...C, base: limited.base, params: { sessionId: "sess_a" }, caller: theirs });
+    await call("POST", "/v1/authorize", { ...C, base: limited.base, body: intent("sess_a", "/api/weather", "1000"), caller: theirs });
+    expect(seen.has("GET /v1/budget/{sessionId} 429") && seen.has("POST /v1/authorize 429")).toBe(true);
 
     expect(errors).toEqual([]);
     const documented = operations(doc).flatMap(([m, p, op]) => Object.keys(op.responses).map((s) => `${m} ${p} ${s}`));

@@ -4,11 +4,16 @@
 # machine token can request the payment details. Users, passwords and private keys are never managed here.
 #
 # And what people's sign-in needs (SPEC L2-8, specs/013 research R19), further down: one API, the portal's public
-# client and the post-login Action that dates the sign-in. The tenant has two applications, L2's and the portal's:
-# none for the hosted agent service (research R20). There is no permission and no role (research R21): the portal
-# asks for none, so whoever signs in through the portal's client may use it, for their own account only. No user
-# is created here. To keep one person out, block that user in Auth0; to keep strangers out, turn sign-ups off on
-# the tenant's connection.
+# client and the post-login Action that dates the sign-in. Using the portal needs no permission and no role (research
+# R21): whoever signs in through the portal's client may use it, for their own account only.
+#
+# And what the hosted agent's callers need (specs/016 research R9, R10), last: the agent's public client, through
+# which the agent's docs page signs a person in, and one confidential client per machine caller, with a key and no
+# secret. The tenant's applications are exactly L2's, the portal's, the agent's and the machine callers' (T-IAC-02
+# fails on any other). People's API has two permissions, portal:admin (014) and agent:run (016), each held by one
+# role. A tenant administrator assigns a role per person, by hand: nobody is assigned here, and no user is created
+# here. To keep one person out, block that user in Auth0; to keep strangers out, turn sign-ups off on the tenant's
+# connection.
 
 locals {
   # Must equal DETAILS_TYPE in src/layer2-control/payment-details.ts (T-IAC-02): Auth0's Guardian schema, the only
@@ -16,13 +21,19 @@ locals {
   details_type = "urn:auth0:schemas:authorization-details:v1:x402-payment"
   issuer       = "https://${var.tenant_domain}/"
 
-  # People's sign-in. The API's identifier is the portal's AUTH_AUDIENCE; it can't change
+  # People's sign-in. The API's identifier is the services' AUTH_AUDIENCE; it can't change
   # once created. The claim is the services' default AUTH_TIME_CLAIM, and the one sign-in-time.js writes (T-IAC-02).
   identity_audience = "https://x402-api/${var.environment}"
   admin_permission  = "portal:admin"
-  auth_time_claim   = "https://x402.dev/auth_time"
+  # Must equal AGENT_RUN_PERMISSION in src/shared/identity-token.ts (T-IAC-02): what the agent and L2 look for.
+  agent_permission = "agent:run"
+  auth_time_claim  = "https://x402.dev/auth_time"
   # The local portal (its default port), and the deployed one once var.portal_origin is set.
   portal_origins = concat(["http://localhost:4025"], var.portal_origin == "" ? [] : [var.portal_origin])
+  # The agent's docs page: the local agent (its default port, under both names a browser may use), and the deployed
+  # one once var.agent_origin is set. The page's sign-in returns to one address under each origin, and nowhere else.
+  agent_origins   = concat(["http://localhost:4024", "http://127.0.0.1:4024"], var.agent_origin == "" ? [] : [var.agent_origin])
+  agent_callbacks = [for origin in local.agent_origins : "${origin}/docs/oauth2-redirect.html"]
 }
 
 # The approver must already exist (plan fails otherwise). Their Guardian enrollment is theirs to do, on their phone.
@@ -132,10 +143,11 @@ resource "auth0_guardian" "this" {
 
 # ---- People's sign-in (specs/013 research R19) ---------------------------------------------------------------------
 
-# People's API: its identifier is the portal's AUTH_AUDIENCE. The token profile is the one the sign-in was verified
-# with (it names the client as azp, and carries an empty permissions list: RBAC stays enforced with no permission
-# defined, so no token can be given one). The portal verifies the token offline. Refresh tokens are allowed, for
-# the web app's rotation. Tokens live an hour.
+# People's API: its identifier is AUTH_AUDIENCE for the portal, the hosted agent and L2. The token profile is the one
+# the sign-in was verified with: it names the client as azp and carries a permissions list. RBAC is enforced, so
+# that list holds only the permissions of the person's roles (or of a machine caller's grant), and nobody can ask
+# for one. Each service verifies the token offline. Refresh tokens are allowed, for the portal web app's rotation.
+# Tokens live an hour.
 resource "auth0_resource_server" "identity" {
   name                                            = "api-x402-${var.environment}"
   identifier                                      = local.identity_audience
@@ -155,17 +167,25 @@ resource "auth0_resource_server" "identity" {
   }
 }
 
-# 014: the one permission of people's API, and the one role, which holds exactly it. Using the portal needs neither
-# (research R21): they are for the portal's administration area only, where a person decides other people's escalated
-# payments. An administrator of the tenant assigns the role per person, by hand, in Auth0: nobody is assigned here.
-# Taking it away takes effect when the person's access token expires (an hour at most, above). The hosted agent
-# service never reads this permission, so it starts no run.
+# The two permissions of people's API, and the two roles, each of which holds exactly one. Using the portal needs
+# neither (research R21). portal:admin (014) opens the portal's administration area, where a person decides other
+# people's escalated payments. agent:run (016, research R10) lets its holder start a run at the hosted agent: a
+# person through the role below, a machine caller through its grant. A person's token carries the permissions of
+# their roles whichever client they signed in through, and each service reads only its own: the portal never reads
+# agent:run, and the agent and L2 never read portal:admin. An administrator of the tenant assigns a role per person,
+# by hand, in Auth0: nobody is assigned here. Taking a role away takes effect when the person's access token expires
+# (an hour at most, above).
 resource "auth0_resource_server_scopes" "identity" {
   resource_server_identifier = auth0_resource_server.identity.identifier
 
   scopes {
     name        = local.admin_permission
     description = "Use the x402 portal's administration area: decide escalated payments"
+  }
+
+  scopes {
+    name        = local.agent_permission
+    description = "Start a run at the x402 hosted agent"
   }
 }
 
@@ -185,10 +205,27 @@ resource "auth0_role_permissions" "admin" {
   depends_on = [auth0_resource_server_scopes.identity]
 }
 
+resource "auth0_role" "agent" {
+  name        = "x402-agent"
+  description = "May start runs at the x402 hosted agent, for their own account (${var.environment})."
+}
+
+resource "auth0_role_permissions" "agent" {
+  role_id = auth0_role.agent.id
+
+  permissions {
+    name                       = local.agent_permission
+    resource_server_identifier = auth0_resource_server.identity.identifier
+  }
+
+  depends_on = [auth0_resource_server_scopes.identity]
+}
+
 # The portal's web app: a public single-page client. Authorization code with PKCE (a public client has no other way
 # to use the code), and the refresh_token grant only because its refresh tokens rotate. Its client ID is
-# PORTAL_CLIENT_ID: the only client whose tokens the portal accepts. It is the only client for people: none exists for
-# the hosted agent service, so no person's token from this tenant starts a run there (specs/013 research R20).
+# PORTAL_CLIENT_ID: the only client whose tokens the portal accepts. The hosted agent and L2 never accept it: the
+# agent's callers have a client of their own, further down, and both refuse to start with this one on
+# AGENT_CLIENT_IDS.
 resource "auth0_client" "portal" {
   name            = "app-portal-${var.environment}"
   description     = "x402 portal (${var.environment}): people sign in to it to see and change their own profile, account and expense policy."
@@ -250,4 +287,83 @@ resource "auth0_action" "sign_in_time" {
 resource "auth0_trigger_action" "sign_in_time" {
   trigger   = "post-login"
   action_id = auth0_action.sign_in_time.id
+}
+
+# ---- The hosted agent's callers (specs/016 research R9, R10) -------------------------------------------------------
+
+# The agent's client: a public single-page client, for the agent's docs page. Authorization code with PKCE and no
+# other grant: no refresh token exists, so a person signs in again when their token expires (an hour). Its client ID
+# is API_DOCS_CLIENT_ID and the one entry of AGENT_CLIENT_IDS, for the agent and for L2. The sign-in returns to the
+# docs page's redirect address only, and only the docs origins may call the tenant from a browser. Signing in
+# through it gives a person nothing by itself: the agent and L2 also require agent:run, from the role above.
+resource "auth0_client" "agent" {
+  name            = "app-agent-${var.environment}"
+  description     = "x402 hosted agent (${var.environment}): people sign in to it from the agent's docs page, to start runs for their own account."
+  app_type        = "spa"
+  is_first_party  = true
+  oidc_conformant = true
+  grant_types     = ["authorization_code"]
+
+  callbacks       = local.agent_callbacks
+  allowed_origins = local.agent_origins
+  web_origins     = local.agent_origins
+
+  jwt_configuration {
+    alg = "RS256"
+  }
+}
+
+# No secret and no key: a browser can't keep one.
+resource "auth0_client_credentials" "agent" {
+  client_id             = auth0_client.agent.client_id
+  authentication_method = "none"
+}
+
+# One confidential client per machine caller (var.machine_caller_keys: its name and the public half of its key). Its
+# only grant type is client credentials, so it can't sign a person in, and it has no callback. The first one is
+# `checks`: the deployment pipeline's smoke run and scripted regression (research R9).
+resource "auth0_client" "machine" {
+  for_each = var.machine_caller_keys
+
+  name            = "app-machine-${each.key}-${var.environment}"
+  description     = "x402 machine caller ${each.key} (${var.environment}): a system that starts runs at the hosted agent, for the platform account. No person signs in to it."
+  app_type        = "non_interactive"
+  is_first_party  = true
+  oidc_conformant = true
+  grant_types     = ["client_credentials"]
+
+  jwt_configuration {
+    alg = "RS256"
+  }
+}
+
+# How a machine caller authenticates: private_key_jwt with the public half of its key, and nothing else. No secret
+# exists, so none is in the state or in GitHub (FR-022); the private half is held where the caller runs (the l1
+# vault's machine-client-key for `checks`). RS256 only: Auth0's private_key_jwt never takes ES256.
+resource "auth0_client_credentials" "machine" {
+  for_each = var.machine_caller_keys
+
+  client_id             = auth0_client.machine[each.key].client_id
+  authentication_method = "private_key_jwt"
+
+  private_key_jwt {
+    credentials {
+      name            = "machine-${each.key}-${var.environment}"
+      credential_type = "public_key"
+      pem             = each.value
+      algorithm       = "RS256"
+    }
+  }
+}
+
+# A machine caller's one grant: client credentials for people's API, with agent:run and nothing else. It never gets
+# portal:admin, and it has no grant for the approval API (whose policy refuses every machine token anyway).
+resource "auth0_client_grant" "machine" {
+  for_each = var.machine_caller_keys
+
+  client_id = auth0_client.machine[each.key].client_id
+  audience  = auth0_resource_server.identity.identifier
+  scopes    = [local.agent_permission]
+
+  depends_on = [auth0_resource_server_scopes.identity]
 }

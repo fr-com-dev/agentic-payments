@@ -1,8 +1,8 @@
 // x402 three-layer agent payments in Azure (SPEC.md §3.1; specs/011 contracts/cloud-topology.md): everything in
 // the resource group that pre-deploy.bicep creates. The platform (network, logs, identities, registry, vaults,
 // storage, Foundry and its model, the two Container Apps environments), and each unit's apps, each from its own
-// image: L1 (the agent and the regression job), L2 (the control service), L3 (the verifier), the operator (the
-// operator job), the portal (013: the web portal) and the sellers. One deployment deploys one of them, chosen by
+// image: L1 (the agent, the regression job and the smoke job), L2 (the control service), L3 (the verifier), the
+// operator (the operator job), the portal (013: the web portal) and the sellers. One deployment deploys one of them, chosen by
 // `unit`: the platform by .github/workflows/deploy-infra.yml, each unit by its own pipeline (deploy-l1.yml,
 // deploy-l2.yml, deploy-l3.yml, deploy-operator.yml, deploy-portal.yml, deploy-seller.yml), all through the shared
 // deploy.yml. What a deployment leaves out stays as it
@@ -14,7 +14,7 @@ targetScope = 'resourceGroup'
 
 // Every value comes from main.<environment>.bicepparam, the target and every name included: the pipelines sign in to
 // this tenant and deploy to this subscription and resource group, and a deployment anywhere else fails validation.
-@description('The Entra tenant: the deploy app\'s, and the one system identities\' tokens come from (the agent\'s AUTH_TENANT_ID). People sign in with Auth0 (identity).')
+@description('The Entra tenant of the deploy app and of the subscription: the pipelines sign in to it, and the target check below compares it. No service verifies its tokens: every caller, a person or a machine, gets its token from the sign-in tenant (identity).')
 param tenantId string
 param subscriptionId string
 param location string
@@ -35,10 +35,6 @@ param imageTag string
 param seedIp string = ''
 @description('Recover the soft-deleted vaults of a cleaned-up environment (infra/cleanup.sh), with their secrets, instead of creating them: one platform run, within 90 days of the clean-up.')
 param recoverVaults bool = false
-@description('The Entra API app\'s client ID (pre-deploy.bicep): the audience of system identities\' tokens, the agent\'s SERVICE_AUDIENCE. Entra v2.0 tokens carry it as aud, never the api:// URI, so there is no default.')
-@minLength(36)
-@maxLength(36)
-param authAudience string
 @description('The operators\' group (pre-deploy.bicep): the only principal that may start the operator job.')
 @minLength(36)
 @maxLength(36)
@@ -59,12 +55,18 @@ param ciba object
 // user-defined type, as for ciba.
 @description('013: user accounts and the portal. The secrets are the l2 vault\'s portal-token and user-wallet-mnemonic and the portal vault\'s portal-token and card-vault-key, seeded by hand in every environment (the placeholder off while enabled is false).')
 param userAccounts object
-// 013 people's sign-in at the portal (SPEC L2-8; specs/013 research R19 and R20): the Auth0 tenant's values, from
+// The sign-in tenant (SPEC L2-8; specs/013 research R19; specs/016 research R11): the Auth0 tenant's values, from
 // Terraform's output bicepparam_identity (auth0/), { issuer, audience }. None is a secret. A plain object, not a
-// user-defined type, as for ciba. The agent service gets none of it: the tenant has no client for it, so in Azure
-// it accepts system identities only.
-@description('013: people\'s sign-in with Auth0, at the portal: the tenant\'s issuer (https://<domain>/) and the API\'s identifier.')
+// user-defined type, as for ciba. The portal, the agent and L2 verify tokens against it, and the two jobs that call
+// as the machine caller ask it for theirs.
+@description('The sign-in tenant (Auth0), for the portal, the agent, L2 and the machine caller: its issuer (https://<domain>/) and the API\'s identifier.')
 param identity object
+// 016 the agent's callers (specs/016 contracts/tenant-and-config.md "Azure"): non-secret values only,
+// { clientId, apiDocs, machineClientId, machineKeyId }. clientId, machineClientId and machineKeyId are Terraform's
+// output bicepparam_agent (auth0/); apiDocs is the environment's own choice. A plain object, not a user-defined
+// type, as for ciba.
+@description('016: the agent\'s client at the sign-in tenant (the only one whose people\'s tokens the agent and L2 accept), whether the agent serves its docs page, and the client and key ID of the pipeline\'s machine caller. Its private key is the l1 vault\'s machine-client-key, seeded by hand (the placeholder off until the tenant has the client).')
+param agent object
 @description('Who uses Claude, declared to Anthropic with the model deployment, which accepts Anthropic\'s Azure Marketplace terms: the legal entity\'s name.')
 param claudeOrganizationName string
 @description('The organization\'s two-letter country code.')
@@ -98,11 +100,20 @@ var userAccountsChecked = contains(['off', 'stripe'], userAccounts.cardVault) &&
   : fail('main: userAccounts.cardVault must be off or stripe, userAccounts.enabled and the portal unit each need a portalClientId, cardVault stripe needs a cardVaultPublishableKey that starts with pk_test_, and userAccounts.administration needs userAccounts.enabled (specs/013 and specs/014 contracts/config-and-secrets.md)')
 
 // 013: with user accounts on, people's sign-in at the portal must be usable: an issuer of the form https://…/ and
-// an audience (T-IAC-01 rule 21). There is no list of clients for the agent service: the tenant has none.
+// an audience (T-IAC-01 rule 21). The agent's client is not part of identity: it is agent.clientId, checked below.
 #disable-next-line no-unused-vars
 var identityChecked = !userAccounts.enabled || (startsWith(identity.issuer, 'https://') && endsWith(identity.issuer, '/') && !empty(identity.audience))
   ? userAccounts.enabled
   : fail('main: userAccounts.enabled needs an identity.issuer of the form https://<domain>/ and an identity.audience (specs/013 contracts/config-and-secrets.md)')
+
+// 016: the agent and L2 verify every caller's token against the sign-in tenant, so a deployment of either needs a
+// usable identity and the agent's client; neither starts without them. An agent that serves its docs page signs
+// people in through that client. L1's two jobs call as the machine caller, so its deployment needs that client's
+// ID and its key's ID (T-IAC-01 rule 23). The other units read none of this, so they deploy while agent is empty.
+#disable-next-line no-unused-vars
+var agentChecked = (!contains(['l1', 'l2'], unit) || (startsWith(identity.issuer, 'https://') && endsWith(identity.issuer, '/') && !empty(identity.audience) && !empty(agent.clientId))) && (unit != 'l1' || !agent.apiDocs || !empty(agent.clientId)) && (unit != 'l1' || (!empty(agent.machineClientId) && !empty(agent.machineKeyId)))
+  ? agent.apiDocs
+  : fail('main: the l1 and l2 units need an identity.issuer of the form https://<domain>/, an identity.audience and an agent.clientId; agent.apiDocs needs an agent.clientId; the l1 unit needs an agent.machineClientId and an agent.machineKeyId (specs/016 contracts/tenant-and-config.md)')
 
 // The identity and vault matrix (contracts/cloud-topology.md "Role assignments"): one identity and one
 // vault per runtime unit, and each identity reads only its own vault. The key names the unit's identity
@@ -190,8 +201,8 @@ module l1 'modules/l1-apps.bicep' = if (unit == 'l1') {
     names: names
     image: '${acrServer}/x402-l1-agent:${imageTag}'
     acrServer: acrServer
-    authTenantId: tenantId
-    authAudience: authAudience
+    identity: identity
+    agent: agent
     modelDeployment: modelDeployment
     agentStableRevision: agentStableRevision
   }
@@ -210,6 +221,8 @@ module l2 'modules/l2-apps.bicep' = if (unit == 'l2') {
     sellerPayTo: sellerPayTo
     ciba: ciba
     userAccounts: userAccounts
+    identity: identity
+    agent: agent
   }
   dependsOn: [ids, registry, vaults, envs]
 }
@@ -239,7 +252,7 @@ module l3 'modules/l3-apps.bicep' = if (unit == 'l3') {
 }
 
 // 013: the portal, the second public app. It calls L2 only, with its own token, and mounts its own share. People
-// sign in to it with Auth0 (identity); it accepts no Entra token, so it gets neither the tenant nor the API app.
+// sign in to it with Auth0 (identity), through its own client: it gets nothing of the agent's (agent).
 module portal 'modules/portal-apps.bicep' = if (unit == 'portal') {
   name: 'portal-apps'
   params: {

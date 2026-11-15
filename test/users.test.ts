@@ -1,7 +1,7 @@
 // Feature 013: user accounts in L2 (SPEC.md §8.2 L2-8; specs/013 data-model.md, contracts/control-api.md).
 // T-USR-01..12. Pure tests run over hand-built entries; route and decision tests run an in-process L2 with a real
 // keyring and ledger (test/helpers/users.ts). Every must-fail switch is a dep, never an environment variable.
-import { devUserId } from "../scripts/dev-issuer-lib.js";
+import { devSubject, devUserId } from "../scripts/dev-issuer-lib.js";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -591,20 +591,25 @@ describe("T-USR-06 off by default (FR-001)", () => {
     }
   });
 
-  it("T-USR-06 off, a userId on an intent changes nothing: same decision, same entries, the platform payer signs", async () => {
+  it("T-USR-06 off, no payment names a user: the platform payer signs, and a request that tries to name one is refused (016)", async () => {
     const off = await start({ off: true });
     const plain = await off.authorize(off.intentFor("/api/weather", "1000", { sessionId: "sess_1" }));
-    const named = await off.authorize(off.intentFor("/api/weather", "1000", { sessionId: "sess_2", userId: ALICE }));
     expect(plain.body.status).toBe("AUTHORIZED");
-    expect(named.body.status).toBe("AUTHORIZED");
-    expect((named.body as { payer: string }).payer).toBe(PLATFORM_PAYER);
-    const [a, b] = [off.entries("AUTHORIZED")[0]!, off.entries("AUTHORIZED")[1]!];
-    expect(Object.keys(b.data).sort()).toEqual(Object.keys(a.data).sort());
+    expect((plain.body as { payer: string }).payer).toBe(PLATFORM_PAYER);
+    // 016 (SEC-32): the user comes from the caller's token alone. With no sign-in configured there is no token and
+    // no user, and a `userId` in the request is refused, not ignored.
+    const named = await off.authorize(off.intentFor("/api/weather", "1000", { sessionId: "sess_2", userId: ALICE }));
+    expect([named.status, named.body.error]).toEqual([400, "malformed PaymentIntent"]);
+    expect(off.entries("INTENT")).toHaveLength(1);
     expect(JSON.stringify(off.entries())).not.toContain(ALICE);
     expect(off.entries("PLATFORM_CONFIG")).toEqual([]);
-    // The budget query is ignored too.
+    // The budget query names nobody either.
     const budget = await off.call("GET", `/v1/budget/sess_2?userId=${ALICE}`, { token: TOKENS.control });
-    expect(budget.body.scope).toBeUndefined();
+    expect([budget.status, budget.body.error]).toEqual([400, "userId is not accepted: the user comes from the caller's token"]);
+    expect((await off.budget("sess_1")).body.scope).toBeUndefined();
+    // And a caller's token is not accepted where sign-in is not configured.
+    const withToken = await off.authorize(off.intentFor("/api/weather", "1000", { sessionId: "sess_3" }), { caller: await off.callers.forUser(ALICE) });
+    expect([withToken.status, withToken.body.error]).toEqual([400, "caller_token_not_accepted"]);
   });
 
   it("T-USR-06 a malformed userId is a 400 whether user accounts are on or off", async () => {
@@ -617,85 +622,38 @@ describe("T-USR-06 off by default (FR-001)", () => {
   });
 });
 
-describe("015 authorize approvalSubject (L2-5, L2-7, FR-009)", () => {
+describe("016 a payment request names nobody: userId and approvalSubject are refused (L2-5, SEC-32)", () => {
   const SUBJECT = "auth0|planted-subject-4be1";
 
-  it.each<[string, unknown]>([
-    ["a number", 42],
-    ["an object", { sub: SUBJECT }],
-    ["an empty string", ""],
-    ["256 characters", "a".repeat(256)],
-    ["a space", "auth0|a b"],
-    ["a tab", "auth0|a\tb"],
-    ["a line break", "auth0|a\nb"],
-    ["a control character", "auth0|a\u0000b"],
-    ["a non-breaking space", "auth0|a\u00a0b"],
-  ])("015 authorize approvalSubject that is %s is 400, with user accounts on or off, and nothing is recorded", async (_label, value) => {
+  it.each<[string, Record<string, unknown>]>([
+    ["approvalSubject (015's field, retired)", { approvalSubject: SUBJECT }],
+    ["approvalSubject, empty", { approvalSubject: "" }],
+    ["userId, well-formed, of another person", { userId: BOB }],
+    ["userId, of the caller themself", { userId: ALICE }],
+    ["userId, null", { userId: null }],
+    ["both", { userId: BOB, approvalSubject: SUBJECT }],
+  ])("016 a body with %s is 400, with user accounts on or off, and nothing is recorded or echoed", async (_label, extra) => {
     for (const o of [{}, { off: true }]) {
       const l2 = await start(o);
+      if (!o.off) await l2.onboard(ALICE);
       const before = l2.entries().length;
-      const res = await l2.authorize({ ...l2.intentFor("/api/weather", "1000", { userId: ALICE }), approvalSubject: value });
-      expect(res.status).toBe(400);
-      expect(res.body.error).toBe("malformed PaymentIntent");
-      expect(JSON.stringify(res.body)).not.toContain("auth0|a");
-      expect(l2.entries().length).toBe(before);
-    }
-  });
-
-  it("015 authorize approvalSubject is never without userId: present with no userId is 400", async () => {
-    for (const o of [{}, { off: true }]) {
-      const l2 = await start(o);
-      const before = l2.entries().length;
-      const res = await l2.authorize({ ...l2.intentFor("/api/weather", "1000"), approvalSubject: SUBJECT });
-      expect(res.status).toBe(400);
+      const caller = o.off ? null : await l2.callers.forUser(ALICE);
+      const res = await l2.authorize({ ...l2.intentFor("/api/weather", "1000"), ...extra }, { caller });
+      expect([res.status, res.body.error]).toEqual([400, "malformed PaymentIntent"]);
       expect(JSON.stringify(res.body)).not.toContain(SUBJECT);
+      expect(JSON.stringify(res.body)).not.toContain("usr_");
       expect(l2.entries().length).toBe(before);
+      expect(JSON.stringify(l2.entries())).not.toContain(SUBJECT);
     }
   });
 
-  it("015 authorize approvalSubject: 401 precedes 400", async () => {
+  it("016 the role token still comes first: 401 precedes the caller's token and the body", async () => {
     const l2 = await start();
-    const bad = { ...l2.intentFor("/api/weather", "1000", { userId: ALICE }), approvalSubject: "" };
+    const bad = { ...l2.intentFor("/api/weather", "1000"), approvalSubject: SUBJECT };
     for (const token of [null, TOKENS.portal, TOKENS.operator]) {
-      expect((await l2.call("POST", "/v1/authorize", { token, body: bad })).status).toBe(401);
+      const res = await l2.call("POST", "/v1/authorize", { token, body: bad, caller: await l2.callers.forUser(ALICE) });
+      expect([res.status, res.body.error]).toEqual([401, "unauthorized"]);
     }
-  });
-
-  it("015 authorize approvalSubject of 1 and of 255 characters is accepted", async () => {
-    const l2 = await start();
-    await l2.onboard(ALICE);
-    for (const value of ["a", "a".repeat(255)]) {
-      const res = await l2.authorize({ ...l2.intentFor("/api/weather", "1000", { userId: ALICE }), approvalSubject: value });
-      expect(res.status).toBe(200);
-    }
-  });
-
-  it("015 authorize approvalSubject, valid: the same decisions and violations as without it, and it is in no entry and no response", async () => {
-    const l2 = await start();
-    await l2.onboard(ALICE);
-    const bodies: unknown[] = [];
-    const decide = async (path: string, amount: string, sessionId: string, withSubject: boolean) => {
-      const res = await l2.authorize({ ...l2.intentFor(path, amount, { userId: ALICE, sessionId }), ...(withSubject && { approvalSubject: SUBJECT }) });
-      bodies.push(res.body);
-      return [res.status, res.body.status, ((res.body as { violations?: { rule: string }[] }).violations ?? []).map((v) => v.rule)];
-    };
-    // An auto-approved payment, an escalation and a denial (above the hard cap), each without and with the field.
-    for (const [path, amount] of [["/api/weather", "1000"], ["/api/premium-report", "50000"], ["/api/too-much", "200000"]] as const) {
-      expect(await decide(path, amount, `sess_with_${amount}`, true)).toEqual(await decide(path, amount, `sess_without_${amount}`, false));
-    }
-    const keysOf = (sessionId: string) => l2.entries().filter((e) => e.sessionId === sessionId).map((e) => [e.type, Object.keys(e.data).sort()]);
-    for (const amount of ["1000", "50000", "200000"]) expect(keysOf(`sess_with_${amount}`)).toEqual(keysOf(`sess_without_${amount}`));
-    expect(readFileSync(l2.ledgerFile, "utf8")).not.toContain(SUBJECT);
-    expect(JSON.stringify(bodies)).not.toContain(SUBJECT);
-    expect(JSON.stringify(bodies)).not.toContain("approvalSubject");
-  });
-
-  it("015 authorize approvalSubject with user accounts off is ignored, as userId is: the platform payer signs and nothing names it", async () => {
-    const off = await start({ off: true });
-    const res = await off.authorize({ ...off.intentFor("/api/weather", "1000", { userId: ALICE }), approvalSubject: SUBJECT });
-    expect(res.body.status).toBe("AUTHORIZED");
-    expect((res.body as { payer: string }).payer).toBe(PLATFORM_PAYER);
-    expect(JSON.stringify(off.entries())).not.toContain(SUBJECT);
   });
 });
 
@@ -935,13 +893,17 @@ describe("T-USR-11 decisions for a user (US3, FR-029..FR-033)", () => {
     const l2 = await start();
     await l2.onboard(ALICE);
     await l2.authorize(l2.intentFor("/api/weather", "1000", { userId: ALICE }));
-    const mine = await l2.call("GET", `/v1/budget/sess_u?userId=${ALICE}`, { token: TOKENS.control });
+    // 016: the view is for the person the caller's token proves; the query that named one is refused.
+    const mine = await l2.budget("sess_u", { userId: ALICE });
     expect(mine.body).toEqual({ sessionId: "sess_u", asset: ASSET, decimals: 6, sessionCapAtomic: "500000", spentOrReservedAtomic: "1000", remainingAtomic: "499000", perPaymentCapAtomic: "20000", scope: "user_daily" });
-    const nobody = await l2.call("GET", `/v1/budget/sess_u?userId=${BOB}`, { token: TOKENS.control });
+    const nobody = await l2.budget("sess_u", { userId: BOB });
     expect(nobody.body).toMatchObject({ sessionCapAtomic: "0", spentOrReservedAtomic: "0", remainingAtomic: "0", perPaymentCapAtomic: "0", scope: "user_daily" });
-    expect((await l2.call("GET", "/v1/budget/sess_u?userId=alice", { token: TOKENS.control })).status).toBe(400);
-    // Without the query: the platform account's session view, untouched by the user's payment.
-    const platform = await l2.call("GET", "/v1/budget/sess_u", { token: TOKENS.control });
+    for (const query of ["alice", ALICE, BOB]) {
+      const refused = await l2.call("GET", `/v1/budget/sess_u?userId=${query}`, { token: TOKENS.control, caller: await l2.callers.forUser(ALICE) });
+      expect([refused.status, refused.body.error], query).toEqual([400, "userId is not accepted: the user comes from the caller's token"]);
+    }
+    // A machine caller: the platform account's session view, untouched by the user's payment.
+    const platform = await l2.budget("sess_u");
     expect(platform.body).toMatchObject({ sessionCapAtomic: "100000", spentOrReservedAtomic: "0" });
     expect(platform.body.scope).toBeUndefined();
   });
@@ -1370,7 +1332,7 @@ describe("T-USR-01 the account, T-USR-11 a disabled user (US7, FR-037..FR-040)",
     expect(view.policies.map((p) => [p.policyId, p.state, p.displayState])).toEqual([[policyId, "active", "disabled"]]);
     expect((await l2.portal<PolicyView>("GET", `/v1/users/${ALICE}/policies/${policyId}`)).body.history?.map((h) => h.kind)).toEqual(["created"]);
     // The budget view reports zeros while disabled.
-    expect((await l2.call("GET", `/v1/budget/sess_u?userId=${ALICE}`, { token: TOKENS.control })).body).toMatchObject({ remainingAtomic: "0", perPaymentCapAtomic: "0" });
+    expect((await l2.budget("sess_u", { userId: ALICE })).body).toMatchObject({ remainingAtomic: "0", perPaymentCapAtomic: "0" });
   });
 
   it("T-USR-01 while disabled: no wallet, policy or card-add write; removing a card still works", async () => {
@@ -1602,7 +1564,8 @@ describe("013 NFR-005 a user's payment decision depends on neither the portal no
 describe("T-USR-12 scale (NFR-010)", () => {
   it("T-USR-12 with 100 users and 10 policies each, a user decision adds under 50 ms to a platform one", async () => {
     const l2 = await start();
-    const users = Array.from({ length: 100 }, (_, i) => devUserId(`user-${i}`));
+    // 016: each is a person the test issuer knows, so a payment for them carries their own token.
+    const users = Array.from({ length: 100 }, (_, i) => l2.callers.register(devSubject(`user-${i}`)));
     const sellers = Array.from({ length: 10 }, (_, i) => ({ host: `s${i}.example`, name: `S${i}`, payees: [] }));
     const wide = testPlatform({ sellers: [...l2.platform.sellers, ...sellers] });
     // Written straight to the ledger: 100 users, each with a wallet and 10 policies at five versions.

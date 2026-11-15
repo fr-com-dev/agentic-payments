@@ -224,8 +224,9 @@ describe("T-CIBA-14 extended: every outcome shows the owner, the request's state
     { name: "capped", owner: "alice", mark: "capped", state: "capped", escalation: "pending", opts: { backchannel: { approvalRequestCap: 0 } }, run: async (l2) => void (await l2.authorize(PREMIUM_INTENT(l2))) },
     { name: "no_owner", owner: "platform", mark: "no_owner", state: "no_owner", escalation: "pending", run: async (l2) => void (await l2.authorize(PREMIUM_INTENT(l2, { as: "platform" }))) },
     {
-      name: "identity_mismatch", owner: "alice", mark: "identity_mismatch", state: "identity_mismatch", escalation: "pending",
-      run: async (l2) => void (await l2.authorize({ ...PREMIUM_INTENT(l2), approvalSubject: BOB_SUB })),
+      // 016: alice signed in at another tenant than the approval service's, so her subject there is not its user.
+      name: "identity_mismatch", owner: "alice", mark: "identity_mismatch", state: "identity_mismatch", escalation: "pending", opts: { callerIssuer: "https://other-tenant.example/" },
+      run: async (l2) => void (await l2.authorize(PREMIUM_INTENT(l2))),
     },
   ];
 

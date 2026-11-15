@@ -464,6 +464,10 @@ Checked 2026-11-10.
 
 ## R19. Auth0 as the identity provider for people
 
+> **2026-11-15, extended by feature 016** (`specs/016-agent-auth0-streaming/research.md` R1, R2, SPEC v1.17): Auth0
+> is now the identity provider for every caller of the hosted agent, machine callers included; system identities
+> of the organization's directory are no longer accepted there.
+
 Added 2026-11-10, after the first build ran against Microsoft Entra ID (clarifications, "identity provider"
 session). It replaces R2 and R5 for people, and the sign-in library of R10.
 
@@ -547,6 +551,11 @@ session). It replaces R2 and R5 for people, and the sign-in library of R10.
 - People who onboarded under Entra can't reach their earlier wallets. Test funds left there stay there.
 
 ## R20. Two applications in Auth0: no client for the agent service
+
+> **2026-11-15, reversed by feature 016** (`specs/016-agent-auth0-streaming/research.md` R1, R10, SPEC v1.17), by
+> the owner's decision: the tenant now has a public client for the agent's callers, the permission `agent:run`
+> with the role `x402-agent`, and one confidential client per machine caller. The portal's client still never
+> starts a run.
 
 Added 2026-11-11 (clarifications, "two applications" session). It amends R19, whose other decisions stand.
 

@@ -1,5 +1,9 @@
 # Contract: hosted agent HTTP API (proposed SPEC L1-6)
 
+> **2026-11-15, extended by feature 016** (`specs/016-agent-auth0-streaming/contracts/hosted-agent-api.md`, SPEC
+> v1.17): one issuer for every caller, an event-stream form of the answer (`Accept: text/event-stream`), and a
+> docs page that can sign a person in at the tenant.
+
 **Names**: SPEC calls this unit the *hosted agent service*. Its env role is `l1-hosted`, its
 Azure app is `ca-l1-eastus2-dev`, and its code lives in `src/layer1-intent/hosted/`.
 

@@ -3,11 +3,12 @@
 // agent service: `sub` dev|<name>, the `agent:run` permission, the agent CLI's client. With --portal the same person's
 // token from the portal's client, with a fresh sign-in time; --auth-age backdates that time, to try the "confirm
 // it's you" step. --admin (014, with --portal only) adds the `portal:admin` permission; with --no-role the token
-// carries that permission alone: an administrator who is not a user. With --service a system identity's token, in
-// the shape of the organization's directory (app-only, the Agent.Run role). --no-role leaves the permission (or the
-// role) out. Exit codes: 0 printed; 2 NETWORK is not local or a bad argument.
+// carries that permission alone: an administrator who is not a user. With --service (016) a machine caller's token,
+// in the shape of the tenant's client-credentials tokens (`sub` <client>@clients, `agent:run` in `scope`), for the
+// dev machine client or the client named by --subject. --no-role leaves the permission out of either kind.
+// Exit codes: 0 printed; 2 NETWORK is not local or a bad argument.
 import { pathToFileURL } from "node:url";
-import { DEV_ADMIN_PERMISSION, DEV_PERMISSION, DEV_PORTAL_CLIENT, loadOrCreateDevIssuer, signDevToken } from "./dev-issuer-lib.js";
+import { DEV_ADMIN_PERMISSION, DEV_MACHINE_CLIENT, DEV_PERMISSION, DEV_PORTAL_CLIENT, loadOrCreateDevIssuer, signDevToken } from "./dev-issuer-lib.js";
 
 /** A person's `permissions` claim for the flags given, or an error. Pure, so the flag rules are tested without a key. */
 export function permissionsFor(argv: readonly string[]): { permissions?: string[] } | { error: string } {
@@ -24,7 +25,7 @@ async function main(argv: string[]): Promise<number> {
     return 2;
   }
   const at = argv.indexOf("--subject");
-  const subject = at >= 0 && argv[at + 1] ? argv[at + 1]! : "dev-user";
+  const named = at >= 0 && argv[at + 1] ? argv[at + 1]! : undefined;
   const ageAt = argv.indexOf("--auth-age");
   const ageRaw = ageAt >= 0 ? argv[ageAt + 1] : undefined;
   if (ageAt >= 0 && (ageRaw === undefined || !/^\d+$/.test(ageRaw))) {
@@ -33,7 +34,7 @@ async function main(argv: string[]): Promise<number> {
   }
   const portal = argv.includes("--portal");
   if (portal && argv.includes("--service")) {
-    console.error("dev-token: --portal and --service can't be combined (the portal refuses system identities)");
+    console.error("dev-token: --portal and --service can't be combined (the portal refuses machine callers)");
     return 2;
   }
   const permissions = permissionsFor(argv);
@@ -45,10 +46,10 @@ async function main(argv: string[]): Promise<number> {
   const service = argv.includes("--service");
   const noRole = argv.includes("--no-role");
   const token = await signDevToken(issuer, {
-    subject,
+    subject: named ?? (service ? DEV_MACHINE_CLIENT : "dev-user"),
     ...(service && { service: true }),
     ...(portal && { azp: DEV_PORTAL_CLIENT, authTime: Math.floor(Date.now() / 1000) - Number(ageRaw ?? 0) }),
-    ...(service ? noRole && { roles: [] } : permissions),
+    ...(service ? noRole && { scope: null } : permissions),
     ...(argv.includes("--expired") && { exp: Math.floor(Date.now() / 1000) - 120 }),
   });
   process.stdout.write(token + "\n");

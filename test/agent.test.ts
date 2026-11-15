@@ -743,26 +743,45 @@ describe("012 FR-007 operator-only intents", () => {
     }
   });
 
-  it("015 an orchestrator built with a user and their approvalSubject sends both on its intents; the subject never travels without a user", async () => {
-    const SUBJECT = "auth0|alice-1";
-    const USER = "usr_0123456789abcdef0123456789abcdef";
-    const build = async (deps: { userId?: string; approvalSubject?: string }) => {
-      const { intents, gate } = capture();
-      const o = new PaidResourceOrchestrator({ gate, settlement: fakeVerifier(), sessionId: "s", fetchImpl: fakeSeller().fetchImpl, ...deps });
-      await o.fetchPaid(URL_W, "p");
-      expect(intents).toHaveLength(1);
-      return intents;
-    };
-    for (const i of await build({ userId: USER, approvalSubject: SUBJECT })) expect(i).toMatchObject({ userId: USER, approvalSubject: SUBJECT });
-    for (const i of await build({ userId: USER })) expect("approvalSubject" in i).toBe(false);
-    // Without a user there is nobody the subject could belong to: it is not sent (L2 would answer 400).
-    for (const i of await build({ approvalSubject: SUBJECT })) expect("approvalSubject" in i || "userId" in i).toBe(false);
-    for (const i of await build({})) expect("approvalSubject" in i).toBe(false);
-    // Neither the command-line agent, the scripted agent, their composition root, the HTTP ports nor a tool names it.
-    for (const f of ["src/main.ts", "src/layer1-intent/agent.ts", "src/layer1-intent/scripted.ts", "src/layer1-intent/ports-http.ts"]) {
-      expect(readFileSync(f, "utf8"), f).not.toContain("approvalSubject");
+  it("016 an orchestrator's intents name nobody: no user and no approval subject; L1 has no field for either (SEC-32)", async () => {
+    const { intents, gate } = capture();
+    const o = new PaidResourceOrchestrator({ gate, settlement: fakeVerifier(), sessionId: "s", fetchImpl: fakeSeller().fetchImpl });
+    await o.fetchPaid(URL_W, "p");
+    expect(intents).toHaveLength(1);
+    expect(Object.keys(intents[0]!).sort()).toEqual(["createdAt", "intentId", "paymentRequired", "purpose", "resourceUrl", "sessionId"]);
+    // Who a payment is for is L2's to read from the caller's token. Nothing in L1 can say it: not the orchestrator,
+    // the two agents, their composition roots, the hosted agent or a tool.
+    const l1 = readdirSync("src/layer1-intent", { recursive: true })
+      .map(String)
+      .filter((f) => f.endsWith(".ts"))
+      .map((f) => `src/layer1-intent/${f}`);
+    for (const f of ["src/main.ts", "src/hosted-main.ts", ...l1]) {
+      const code = readFileSync(f, "utf8");
+      expect(code, f).not.toContain("approvalSubject");
+      expect(code, f).not.toMatch(/\buserId\b/);
+      expect(code, f).not.toContain("userIdFor");
     }
-    expect(JSON.stringify(AGENT_TOOLS)).not.toContain("approvalSubject");
+    expect(JSON.stringify(AGENT_TOOLS)).not.toMatch(/approvalSubject|userId/);
+  });
+
+  it("016 L2's refusal of the caller reaches the tool as words it can pass on, and is never retried", async () => {
+    const calls: string[] = [];
+    const refusing = (status: number, error: string): AuthorizationGatePort => ({
+      authorize: async () => {
+        calls.push(error);
+        throw new PortHttpError("POST", "http://l2/v1/authorize", status, JSON.stringify({ error }));
+      },
+      budget: async () => {
+        throw new Error("not used");
+      },
+    });
+    const fetchVia = (gate: AuthorizationGatePort) => new PaidResourceOrchestrator({ gate, settlement: fakeVerifier(), sessionId: "s", fetchImpl: fakeSeller().fetchImpl }).fetchPaid(URL_W, "p");
+    expect(await fetchVia(refusing(401, "caller_token_expired"))).toMatchObject({ outcome: "ERROR", error: "the sign-in has expired: sign in again" });
+    expect(await fetchVia(refusing(401, "caller_token_invalid"))).toMatchObject({ outcome: "ERROR", error: "the caller was refused by the control layer" });
+    expect(await fetchVia(refusing(403, "caller_forbidden"))).toMatchObject({ outcome: "ERROR", error: "the caller was refused by the control layer" });
+    // Anything else is reported as before, and a role-token failure is not a caller's.
+    expect((await fetchVia(refusing(401, "unauthorized"))).error).toMatch(/^authorization failed: POST http:\/\/l2\/v1\/authorize -> 401/);
+    expect(calls).toHaveLength(4);
   });
 
   it("src/main.ts sets it only for --scripted, and no other L1 file or tool schema names it", () => {

@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Express } from "express";
 import { createLocalJWKSet } from "jose";
-import { DEV_ADMIN_PERMISSION, DEV_AUDIENCE, DEV_PORTAL_CLIENT, devUserId, loadOrCreateDevIssuer, signDevToken, type DevTokenOptions } from "../../scripts/dev-issuer-lib.js";
+import { DEV_ADMIN_PERMISSION, DEV_AUDIENCE, DEV_PORTAL_CLIENT, devSubject, devUserId, loadOrCreateDevIssuer, signDevToken, type DevTokenOptions } from "../../scripts/dev-issuer-lib.js";
 import { AdminClient } from "../../src/portal/admin-client.js";
 import { createBalanceCache, type BalanceReader } from "../../src/portal/balance.js";
 import { CardVault } from "../../src/portal/card-vault.js";
@@ -17,6 +17,7 @@ import { ControlClient } from "../../src/portal/control-client.js";
 import { ProfileStore } from "../../src/portal/profile-store.js";
 import { createPortalApp, type PortalDeps } from "../../src/portal/server.js";
 import { DEV_ISSUER } from "../../src/shared/identity-token.js";
+import type { TestIssuer } from "./caller-tokens.js";
 import type { CardVaultStub } from "./card-vault-stub.js";
 import { startUsersL2, TOKENS, type UsersL2, type UsersL2Options } from "./users.js";
 
@@ -44,6 +45,12 @@ export interface StartPortalOptions {
   webRoot?: string;
   /** Call markReady() after building the app (default true). */
   ready?: boolean;
+  /**
+   * 016: sign people in with this issuer (an end-to-end harness's) instead of a dev issuer of the helper's own, so
+   * the portal, the agent and L2 all verify one tenant's tokens and a person is the same user at each. With it,
+   * `token`, `agentToken` and `userId` take the person's whole `sub` in `o.sub` (default `dev|<subject>`).
+   */
+  callers?: TestIssuer;
 }
 
 export interface Reply<T = Record<string, unknown>> {
@@ -105,12 +112,14 @@ export async function startPortal(o: StartPortalOptions = {}): Promise<PortalTes
     ...(o.admin && { PORTAL_ADMIN: "1", PORTAL_ADMIN_TOKEN: TOKENS.portalAdmin }),
     ...o.env,
   });
+  const callers = o.callers;
+  if (callers) config.auth = { ...config.auth, issuer: callers.issuer, audience: callers.audience };
   const rawLogs: string[] = [];
   const profiles = new ProfileStore(profilesDir);
   const reader: BalanceReader = o.balance ?? { balanceOf: async () => 0n };
   const deps: PortalDeps = {
     config,
-    keys: { keys: createLocalJWKSet(issuer.jwks), algorithms: ["ES256"] },
+    keys: callers ? { keys: callers.deps.keys, algorithms: callers.deps.algorithms } : { keys: createLocalJWKSet(issuer.jwks), algorithms: ["ES256"] },
     control: new ControlClient(config.controlUrl, config.portalToken),
     profiles,
     balance: createBalanceCache(reader, { now: l2.clock.now }),
@@ -133,7 +142,14 @@ export async function startPortal(o: StartPortalOptions = {}): Promise<PortalTes
   const responses: string[] = [];
   const issued: string[] = [];
   const sign = async (options: DevTokenOptions): Promise<string> => {
-    const signed = await signDevToken(issuer, options);
+    let signed: string;
+    if (callers) {
+      // One tenant for everything: the harness's issuer signs the portal's tokens and the agent's.
+      const { subject, sub, service: _service, issuer: _issuer, audience: _audience, ...rest } = options;
+      signed = await callers.person(sub ?? devSubject(subject), rest);
+    } else {
+      signed = await signDevToken(issuer, options);
+    }
     issued.push(signed);
     return signed;
   };
@@ -179,7 +195,7 @@ export async function startPortal(o: StartPortalOptions = {}): Promise<PortalTes
         call(method, path, { token: await adminToken(subject, to), ...(body !== undefined && { body }) }),
     l2Calls: () => l2.requestCount(),
     agentToken: (subject, to = {}) => sign({ subject, ...to }),
-    userId: devUserId,
+    userId: (subject: string) => (callers ? callers.register(subject.includes("|") ? subject : devSubject(subject)) : devUserId(subject)),
     call,
     as:
       (subject, to = {}) =>

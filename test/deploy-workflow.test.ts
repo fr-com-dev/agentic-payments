@@ -13,6 +13,9 @@
 // - Azure provisioned by Bicep only: every az command is a Bicep deployment (each previewed with what-if), a read,
 //   a job start, an image copy or (in infra/cleanup.sh) a deletion, and infra/ holds two scripts only
 //   (github-setup.sh, cleanup.sh);
+// - 016: no workflow asks for an access token: the pipeline holds no caller's token. The hosted smoke run is a job
+//   (the smoke job, src/smoke-main.ts on L1's image) that gets its own from the sign-in tenant; the step only starts
+//   it and reads its outcome, and the checks of its answer are unit-tested in test/smoke-client.test.ts (T-AGT-13);
 // - the gate order: nothing is promoted before the regression, chain check, smoke run, portal smoke (013) and log
 //   scan pass; a step is skipped only by a platform run (the image steps, the promotion, the rollback) or a first
 //   deployment (the checks through the other units; the portal smoke runs on the portal's own); a failure inside a
@@ -80,8 +83,11 @@ const PIPELINES: Record<string, { unit: Unit; inputs: string[] }> = {
 const AUTH0 = "provision-auth0.yml";
 /** The only GitHub secrets a workflow reads: the Auth0 pipeline's, from its own GitHub environment. */
 const AUTH0_SECRETS = ["AUTH0_CLIENT_ID", "AUTH0_CLIENT_SECRET"];
-/** The only GitHub variables a workflow reads: the Auth0 pipeline's Terraform variables, from the same environment. */
-const AUTH0_VARIABLES = /^AUTH0_(TENANT_DOMAIN|API_IDENTIFIER|APPROVER_USER_ID|CLIENT_PUBLIC_KEY|MANAGE_GUARDIAN|GUARDIAN_POLICY|PORTAL_ORIGIN)$/;
+/**
+ * The only GitHub variables a workflow reads: the Auth0 pipeline's Terraform variables, from the same environment.
+ * 016 adds the deployed agent's origin and the machine callers' public keys (never a private one: T-IAC-02).
+ */
+const AUTH0_VARIABLES = /^AUTH0_(TENANT_DOMAIN|API_IDENTIFIER|APPROVER_USER_ID|CLIENT_PUBLIC_KEY|MANAGE_GUARDIAN|GUARDIAN_POLICY|PORTAL_ORIGIN|AGENT_ORIGIN|MACHINE_CALLER_KEYS)$/;
 const FILES = [SHARED, AUTH0, ...Object.keys(PIPELINES)].sort();
 /** The image each unit's run builds, promotes and rolls back; the platform has none. */
 const UNIT_IMAGES: Record<Exclude<Unit, "platform">, ImageName> = { l1: "l1-agent", l2: "l2-control", l3: "l3-verifier", operator: "operator", portal: "portal", seller: "seller" };
@@ -129,13 +135,19 @@ const SIGN_IN = [
   "",
 ].join("\n");
 /** What the target step reads from the compiled parameter file: its outputs, the sign-in, and the names the steps use. */
-const TARGET_OUTPUTS = ["authAudience", "payerAddress"];
+const TARGET_OUTPUTS = ["payerAddress"];
 const TARGET_SIGN_IN = [
   ["TENANT_ID", "tenantId"],
   ["SUBSCRIPTION_ID", "subscriptionId"],
   ["DEPLOY_CLIENT_ID", "deployClientId"],
 ];
-const TARGET_NAMES = ["RG=", "LOG_X402=", "CR_X402=", "CA_L1=", "CA_L3=", "CA_PORTAL=", "CA_SELLER=", "CA_SELLER_ALIAS=", "CAJ_L1=", "CAJ_L2="];
+const TARGET_NAMES = ["RG=", "LOG_X402=", "CR_X402=", "CA_L1=", "CA_L3=", "CA_PORTAL=", "CA_SELLER=", "CA_SELLER_ALIAS=", "CAJ_L1=", "CAJ_L2=", "CAJ_SMOKE="];
+/**
+ * 016: the whole hosted smoke step. It signs in, defines run_job and starts the smoke job with the job's own command
+ * (src/smoke-main.ts, T-IAC-01 rule 23): the job gets its own token and checks the agent's answer itself.
+ */
+const SMOKE_RUN = 'eval "$SIGN_IN"\neval "$RUN_JOB"\nrun_job "$CAJ_SMOKE"\n';
+const SMOKE_PROBLEM = 'the smoke step must be the sign-in, RUN_JOB and run_job "$CAJ_SMOKE", and nothing else: the smoke job gets its own token and checks the agent\'s answer itself (src/smoke-main.ts)';
 /** Step 2b's pattern: an assignment of a key, a secret, a token, or (013) a mnemonic or the card vault key, in the image. */
 const IMAGE_SCAN = "grep -E 'PRIVATE_KEY[=]|_SECRET[=]|_TOKEN[=]|_MNEMONIC[=]|CARD_VAULT_KEY[=]'";
 /** The inputs step 0's guard reads, as environment variables: an input is never pasted into a script. */
@@ -159,9 +171,10 @@ const INFRA_SCRIPTS = ["cleanup.sh", "github-setup.sh"];
 /**
  * The az commands a workflow or infra script may run: Bicep deployments, reads, job runs, image copies, the
  * runner's sign-in (login, and the CLI's own account cache: set, clear), and (in infra/cleanup.sh only) deletions.
- * Anything that creates or changes a resource otherwise is provisioning outside Bicep.
+ * Anything that creates or changes a resource otherwise is provisioning outside Bicep. Asking for an access token is
+ * not among them (016: tokenProblems names it).
  */
-const AZ_READS = /^az (account (show|get-access-token|set|clear)|login|bicep build-params|acr (login|show|repository show-tags|import)|containerapp (show|revision (list|show)|job (show|start|execution show|logs show))|monitor log-analytics (query|workspace show)|deployment group (what-if|create)|group exists|resource list|keyvault (list|list-deleted)|cognitiveservices account (list|list-deleted)|ad (app|sp|group) list|role assignment list|rest --method GET)\b/;
+const AZ_READS = /^az (account (show|set|clear)|login|bicep build-params|acr (login|show|repository show-tags|import)|containerapp (show|revision (list|show)|job (show|start|execution show|logs show))|monitor log-analytics (query|workspace show)|deployment group (what-if|create)|group exists|resource list|keyvault (list|list-deleted)|cognitiveservices account (list|list-deleted)|ad (app|sp|group) list|role assignment list|rest --method GET)\b/;
 const AZ_DELETIONS = /^az (group delete|role assignment delete|ad (app|group) delete|cognitiveservices account purge|rest --method DELETE)\b/;
 
 /** Every `az …` command line in a script, from the `az` on (comments and echoed text excluded). */
@@ -172,11 +185,25 @@ function azCommands(text: string): string[] {
     .flatMap((l) => [...l.matchAll(/(?:^|[\s$(|;&])(az [a-z][^|;)"]*)/g)].map((m) => m[1]!.trim()));
 }
 
+/** An az command that asks for an access token (016: tokenProblems reports it, not provisioningOutsideBicep). */
+const AZ_TOKEN = /^az account get-access-token\b/;
+
 /** Provisioning outside Bicep: an az command that isn't a deployment, a read, a job run, an image copy or an allowed deletion. */
 export function provisioningOutsideBicep(file: string, text: string, deletions = false): string[] {
   return azCommands(text)
-    .filter((c) => !AZ_READS.test(c) && !(deletions && AZ_DELETIONS.test(c)))
+    .filter((c) => !AZ_READS.test(c) && !AZ_TOKEN.test(c) && !(deletions && AZ_DELETIONS.test(c)))
     .map((c) => `${file} runs "${c.split(" ").slice(0, 4).join(" ")}": Azure is provisioned by Bicep only`);
+}
+
+/**
+ * 016 (FR-022, FR-023): no workflow or infra script asks for an access token. The deploy identity is not a caller of
+ * the agent, and the pipeline never holds a caller's token: the checks that need one are jobs, which get their own
+ * from the sign-in tenant.
+ */
+export function tokenProblems(file: string, text: string): string[] {
+  return azCommands(text)
+    .filter((c) => AZ_TOKEN.test(c))
+    .map((c) => `${file} asks for an access token (${c.split(" ").slice(0, 5).join(" ")}): the pipeline holds no caller's token; the smoke job and the regression job get their own`);
 }
 
 /** The folder holds the seven pipelines and deploy.yml, and the pipelines' units build every image exactly once. */
@@ -275,11 +302,12 @@ export function workflowProblems(w: Workflow): string[] {
     const defined = s.run?.indexOf('eval "$RUN_JOB"\n') ?? -1;
     if (s.run?.includes("run_job ") && (defined < 0 || defined > s.run.indexOf("run_job "))) out.push(`${s.id} must define run_job before calling it (eval "$RUN_JOB")`);
   }
-  if (!step("smoke")?.run?.includes('az account get-access-token --resource "${{ steps.target.outputs.authAudience }}"')) out.push("the smoke run's token must be for the API app's client ID (authAudience), the audience the agent accepts");
-  // 012 (research R14): the hosted smoke run buys only auto-approved items; any escalation fails it.
-  if (!step("smoke")?.run?.includes(`jq -e '[.steps[] | select(.result.outcome == "ESCALATED")] | length == 0'`)) out.push("the smoke run must fail when any step escalated (a deployment check never asks the approver)");
-  // 013: the portal smoke. The pipeline's identity is an Entra application, and the portal accepts no Entra token, so
-  // the check sends no token: the portal answers, verifies Auth0 tokens (not the dev issuer's), and refuses without one.
+  // 016: the hosted smoke run is the smoke job, started with its own command. The step asks for no token and makes no
+  // request itself: the job's exit code is the check (012 research R14: any escalation fails it, inside the job).
+  if (step("smoke")?.run !== SMOKE_RUN) out.push(SMOKE_PROBLEM);
+  for (const s of steps) for (const p of tokenProblems(s.id ?? s.uses ?? "a step", s.run ?? "")) out.push(p);
+  // 013: the portal smoke. The pipeline holds no token, and the portal accepts only a person's from its own client, so
+  // the check sends none: the portal answers, verifies Auth0 tokens (not the dev issuer's), and refuses without one.
   const portal = step("portal-smoke")?.run ?? "";
   if (!portal.includes('az containerapp show -n "$CA_PORTAL" -g "$RG" --query properties.configuration.ingress.fqdn')) out.push("the portal smoke must go to the portal's own address ($CA_PORTAL)");
   if (!portal.includes('curl -fsS -m 10 -o /dev/null "https://$PORTAL/healthz"')) out.push("the portal smoke must wait for /healthz to answer 200");
@@ -464,12 +492,43 @@ describe("T-E2E-AZ deployment workflow gates", () => {
     );
   });
 
-  it("T-E2E-AZ the workflows read no GitHub secret or variable, hold no secret-shaped literal, and start every job with its own command", () => {
+  it("T-E2E-AZ the workflows read no GitHub secret or variable, hold no secret-shaped literal, ask for no access token, and start every job with its own command", () => {
     for (const [file, t] of Object.entries(texts)) {
       expect(secretProblems(file, t)).toEqual([]);
       expect(findSecretShapes(t)).toEqual([]);
+      expect(tokenProblems(file, t)).toEqual([]);
       expect(jobStartProblems(file, t)).toEqual([]);
     }
+    for (const script of INFRA_SCRIPTS) expect(tokenProblems(script, readFileSync(`infra/${script}`, "utf8"))).toEqual([]);
+  });
+
+  it("T-E2E-AZ 016 must-fail: a step that asks for an access token, a smoke step that calls the agent itself or checks its answer itself, or one that starts another job, is reported", () => {
+    const smoke = (run: string) => withSteps(w, stepsOf(w).map((s) => (s.id === "smoke" ? { ...s, run } : s)));
+    // 011's step: a token for the directory's API app, then the request and the checks, in the workflow.
+    const old = [
+      'eval "$SIGN_IN"',
+      'AGENT=$(az containerapp show -n "$CA_L1" -g "$RG" --query properties.configuration.ingress.fqdn -o tsv)',
+      'ACCESS=$(az account get-access-token --resource "$AUDIENCE" --query accessToken -o tsv)',
+      'curl -fsS -m 210 -X POST "https://$AGENT/v1/runs" -H "authorization: Bearer $ACCESS" -H "content-type: application/json" -d \'{"goal":"x"}\' > "$RUNNER_TEMP/smoke.json"',
+      "jq -e '.status == \"completed\"' \"$RUNNER_TEMP/smoke.json\" > /dev/null",
+      "",
+    ].join("\n");
+    const TOKEN = "asks for an access token (az account get-access-token --resource): the pipeline holds no caller's token; the smoke job and the regression job get their own";
+    expect(workflowProblems(smoke(old))).toEqual([SMOKE_PROBLEM, `smoke ${TOKEN}`]);
+    // In any step, and in any workflow's text.
+    const inWait = withSteps(w, stepsOf(w).map((s) => (s.id === "wait" ? { ...s, run: s.run!.replace('eval "$RUN_JOB"\n', 'eval "$RUN_JOB"\nACCESS=$(az account get-access-token --resource "$AUDIENCE" --query accessToken -o tsv)\n') } : s)));
+    expect(workflowProblems(inWait)).toEqual([`wait ${TOKEN}`]);
+    expect(tokenProblems(SHARED, text.replace('run_job "$CAJ_SMOKE"', 'az account get-access-token --resource "$AUDIENCE"'))).toEqual([`${SHARED} ${TOKEN}`]);
+    expect(provisioningOutsideBicep(SHARED, 'az account get-access-token --scope "api://x/.default"')).toEqual([]);
+    expect(tokenProblems(SHARED, 'az account get-access-token --scope "api://x/.default"')).toHaveLength(1);
+    // The job is the check: a step that adds a request of its own, drops RUN_JOB, or starts another job is not it.
+    expect(workflowProblems(smoke(`${SMOKE_RUN}curl -fsS "https://agent.example/healthz"\n`))).toEqual([SMOKE_PROBLEM]);
+    expect(workflowProblems(smoke('eval "$SIGN_IN"\neval "$RUN_JOB"\nrun_job "$CAJ_L1"\n'))).toEqual([SMOKE_PROBLEM]);
+    expect(workflowProblems(smoke('eval "$SIGN_IN"\neval "$RUN_JOB"\nrun_job "$CAJ_SMOKE" || true\n'))).toEqual([SMOKE_PROBLEM]);
+    const noName = stepsOf(w).map((s) => (s.id === "target" ? { ...s, run: s.run!.replace('"CAJ_SMOKE=\\(v(["jobs", "smoke"]))"', '"X=1"') } : s));
+    expect(workflowProblems(withSteps(w, noName))).toEqual(["the target step must read CAJ_SMOKE from the parameter file's names"]);
+    // The step 0 of 011 read the directory's audience for that token: nothing reads one now.
+    expect(text).not.toMatch(/authAudience|get-access-token|Bearer/);
   });
 
   it.skipIf(!BICEP_PATH)("T-E2E-AZ the workflows name no resource themselves: every name comes from the parameter file", () => {
@@ -615,8 +674,8 @@ describe("T-E2E-AZ deployment workflow gates", () => {
     for (const id of ["build", "deploy", "wait", "regression", "chain", "smoke", "portal-smoke", "log-scan", "promote", "rollback"]) {
       expect(problems).toContain(`${id} calls Azure, so it must sign in first (eval "$SIGN_IN"): GitHub's token is valid for 5 minutes`);
     }
-    const late = stepsOf(w).map((s) => (s.id === "smoke" ? { ...s, run: s.run!.replace('eval "$SIGN_IN"\n', "") + 'eval "$SIGN_IN"\n' } : s));
-    expect(workflowProblems(withSteps(w, late))).toEqual([`smoke calls Azure, so it must sign in first (eval "$SIGN_IN"): GitHub's token is valid for 5 minutes`]);
+    const late = stepsOf(w).map((s) => (s.id === "chain" ? { ...s, run: s.run!.replace('eval "$SIGN_IN"\n', "") + 'eval "$SIGN_IN"\n' } : s));
+    expect(workflowProblems(withSteps(w, late))).toEqual([`chain calls Azure, so it must sign in first (eval "$SIGN_IN"): GitHub's token is valid for 5 minutes`]);
   });
 
   it("T-E2E-AZ must-fail: provisioning outside Bicep (a resource group made with az, traffic moved with az) is reported", () => {
@@ -660,24 +719,9 @@ describe("T-E2E-AZ deployment workflow gates", () => {
     expect(workflowProblems({ ...w, defaults: undefined })).toContain("every step must run with pipefail (defaults.run.shell: bash), so a failure inside a pipe fails its gate");
   });
 
-  it("T-E2E-AZ must-fail: a rollback that redeploys the new image instead of last-good, or a smoke token for another audience, is reported", () => {
-    const steps = stepsOf(w).map((s) =>
-      s.id === "rollback"
-        ? { ...s, run: s.run!.replace("IMAGE_TAG=last-good ", "") }
-        : s.id === "smoke"
-          ? { ...s, run: s.run!.replace('--resource "${{ steps.target.outputs.authAudience }}"', '--resource "api://x402-agent"') }
-          : s,
-    );
-    const problems = workflowProblems(withSteps(w, steps));
-    expect(problems).toContain("rollback must redeploy the unit's last-good, with the agent's traffic left on its previous revision");
-    expect(problems).toContain("the smoke run's token must be for the API app's client ID (authAudience), the audience the agent accepts");
-  });
-
-  it("T-E2E-AZ 012 must-fail: a smoke run that lets an escalation pass is reported", () => {
-    const steps = stepsOf(w).map((s) =>
-      s.id === "smoke" ? { ...s, run: s.run!.replace(`jq -e '[.steps[] | select(.result.outcome == "ESCALATED")] | length == 0' "$RUNNER_TEMP/smoke.json" > /dev/null\n`, "") } : s,
-    );
-    expect(workflowProblems(withSteps(w, steps))).toEqual(["the smoke run must fail when any step escalated (a deployment check never asks the approver)"]);
+  it("T-E2E-AZ must-fail: a rollback that redeploys the new image instead of last-good is reported", () => {
+    const steps = stepsOf(w).map((s) => (s.id === "rollback" ? { ...s, run: s.run!.replace("IMAGE_TAG=last-good ", "") } : s));
+    expect(workflowProblems(withSteps(w, steps))).toEqual(["rollback must redeploy the unit's last-good, with the agent's traffic left on its previous revision"]);
   });
 
   it.skipIf(!BICEP_PATH)("T-E2E-AZ must-fail: a hard-coded resource name is reported", () => {

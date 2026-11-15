@@ -1,5 +1,10 @@
 # Contract: L2's control API (delta to SPEC L2-5, L2-7 and §7)
 
+> **2026-11-15, superseded in part by feature 016** (`specs/016-agent-auth0-streaming/contracts/control-api.md`, SPEC
+> v1.17): `PaymentIntent.approvalSubject` no longer exists. The person to ask is the subject of the caller's token,
+> which the hosted agent forwards and L2 verifies; a request that carries `approvalSubject` or `userId` is 400.
+> `GET /v1/users/:userId/escalations` below is unchanged and still to be built by 015.
+
 **Feature**: [../spec.md](../spec.md) | **Data model**: [../data-model.md](../data-model.md)
 
 What changes on L2's HTTP API. Everything not named here is unchanged. `docs/l2-control.openapi.yaml` changes

@@ -1,29 +1,30 @@
-// 013 the shared token verifier (specs/013 research R19; contracts/portal-api.md "Access"). A person's token comes
-// from the Auth0 tenant, a system identity's from the organization's directory. Each check has a refused case, and
-// the checks this file owns (issuer, audience, subject, machine token; tenant, app-only) have a must-fail: with the
-// check left out by the test-only `skipChecks`, the same token is accepted. The signature and the expiry are the
-// library's and have refused cases only. The checks each service adds (client, permission, sign-in time, app role)
-// have their must-fails in test/portal.test.ts and test/hosted-access.test.ts.
+// 013 and 016: the shared token verifier (specs/013 research R19; contracts/portal-api.md "Access"; specs/016
+// research R2). Every token comes from the sign-in tenant. `verifyPersonToken` is the portal's base check;
+// `verifyCaller` is the one check of a caller of the hosted agent, run by the agent and again by L2: a person with
+// the permission from a listed client, or a machine caller with the permission. Each check has a refused case, and
+// the checks this file owns (issuer, audience, subject, machine token; permission, client, a machine token's
+// subject) have a must-fail: with the check left out by the test-only `skipChecks`, the same token is accepted.
+// The signature and the expiry are the library's and have refused cases only. The checks the portal adds (its
+// client, the sign-in time, the administrator's permission) have their must-fails in test/portal.test.ts.
 import { createLocalJWKSet, exportJWK, generateKeyPair, SignJWT, type JWK } from "jose";
 import { beforeAll, describe, expect, it } from "vitest";
 import {
   bearerToken,
   DEFAULT_AUTH_TIME_CLAIM,
-  entraIssuer,
   issuerOf,
   PERSON_ISSUER_RE,
   signInTimeOf,
+  verifyCaller,
   verifyPersonToken,
-  verifyServiceToken,
+  type CallerVerifyOptions,
   type PersonVerifyOptions,
-  type ServiceVerifyOptions,
   type TokenKeys,
 } from "../src/shared/identity-token.js";
 
 const ISSUER = "https://x402-test.eu.auth0.com/";
 const AUDIENCE = "https://x402.example/api";
-const TENANT = "11111111-2222-4333-8444-555555555555";
-const SERVICE_AUDIENCE = "99999999-8888-4777-8666-555555555555";
+/** The organization's directory as an issuer: since 016 just another issuer, refused like any other. */
+const DIRECTORY_ISSUER = "https://login.microsoftonline.com/11111111-2222-4333-8444-555555555555/v2.0";
 const now = () => Math.floor(Date.now() / 1000);
 
 type Key = Awaited<ReturnType<typeof generateKeyPair>>["privateKey"];
@@ -140,7 +141,7 @@ describe("013 verifyPersonToken (an Auth0 access token)", () => {
       ["an algorithm that is not on the list, from a key that is in the set", () => sign(personClaims(), { alg: "ES256" })],
       ["another issuer", () => sign(personClaims(), { iss: "https://evil.eu.auth0.com/" })],
       ["the issuer without its final slash", () => sign(personClaims(), { iss: ISSUER.slice(0, -1) })],
-      ["the organization's directory as issuer", () => sign(personClaims(), { iss: entraIssuer(TENANT) })],
+      ["the organization's directory as issuer", () => sign(personClaims(), { iss: DIRECTORY_ISSUER })],
       ["no issuer", () => sign(personClaims(), { iss: null })],
       ["another audience", () => sign(personClaims(), { aud: "https://other.example/api" })],
       ["only the tenant's userinfo audience", () => sign(personClaims(), { aud: `${ISSUER}userinfo` })],
@@ -222,66 +223,112 @@ describe("013 signInTimeOf", () => {
   });
 });
 
-describe("013 verifyServiceToken (an Entra app-only token)", () => {
-  const service = (over: Partial<ServiceVerifyOptions> = {}): ServiceVerifyOptions => ({
-    tenantId: TENANT,
-    audience: SERVICE_AUDIENCE,
-    issuer: entraIssuer(TENANT),
-    ...keys,
-    ...over,
-  });
-  const OID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
-  const appClaims = (over: Record<string, unknown> = {}) => ({ tid: TENANT, oid: OID, idtyp: "app", roles: ["Agent.Run"], ...over });
-  const entra: SignOptions = { iss: entraIssuer(TENANT), aud: SERVICE_AUDIENCE, sub: OID };
+describe("016 verifyCaller (a caller of the hosted agent: the agent's check, and L2's)", () => {
+  const AGENT_CLIENT = "agent-client";
+  const MACHINE_CLIENT = "checks-client";
+  const caller = (over: Partial<CallerVerifyOptions> = {}): CallerVerifyOptions => ({ issuer: ISSUER, audience: AUDIENCE, clientIds: [AGENT_CLIENT], ...keys, ...over });
+  const personOf = (over: Record<string, unknown> = {}) => personClaims({ azp: AGENT_CLIENT, ...over });
+  const machineOf = (over: Record<string, unknown> = {}) => ({ gty: "client-credentials", azp: MACHINE_CLIENT, scope: "agent:run", ...over });
+  const machine: SignOptions = { sub: `${MACHINE_CLIENT}@clients` };
+  const invalid = { ok: false, status: 401, reason: "invalid" };
+  const forbidden = { ok: false, status: 403, reason: "forbidden" };
 
-  it("accepts an app-only token and returns the tenant, the object ID and the roles", async () => {
-    expect(await verifyServiceToken(await sign(appClaims({ roles: ["Agent.Run", 5] }), entra), service())).toEqual({
+  it("accepts a person with the permission from a listed client, and says who they are", async () => {
+    expect(await verifyCaller(await sign(personOf()), caller())).toEqual({
       ok: true,
-      token: { tenantId: TENANT, objectId: OID, roles: ["Agent.Run"] },
+      caller: { kind: "person", issuer: ISSUER, subject: "auth0|6543210fedcba", client: AGENT_CLIENT },
     });
-    const noRoles = await verifyServiceToken(await sign(appClaims({ roles: undefined }), entra), service());
-    expect(noRoles.ok && noRoles.token.roles).toEqual([]);
+    // The tenant's other token dialect names the client as `client_id`.
+    expect((await verifyCaller(await sign(personOf({ azp: undefined, client_id: AGENT_CLIENT })), caller())).ok).toBe(true);
+  });
+
+  it("accepts a machine caller whose grant gives the permission, in `scope` or in `permissions`", async () => {
+    const subject = `${MACHINE_CLIENT}@clients`;
+    const expected = { ok: true, caller: { kind: "machine", issuer: ISSUER, subject, client: MACHINE_CLIENT } };
+    expect(await verifyCaller(await sign(machineOf(), machine), caller())).toEqual(expected);
+    expect(await verifyCaller(await sign(machineOf({ scope: "other agent:run" }), machine), caller())).toEqual(expected);
+    expect(await verifyCaller(await sign(machineOf({ scope: undefined, permissions: ["agent:run"] }), machine), caller())).toEqual(expected);
+    // No `gty` (the tenant's other dialect): the subject alone marks it, and the client is not on any list.
+    expect(await verifyCaller(await sign(machineOf({ gty: undefined, azp: undefined, client_id: MACHINE_CLIENT }), machine), caller({ clientIds: [] }))).toEqual(expected);
   });
 
   describe("refuses with 401", () => {
     const cases: Array<[string, () => Promise<string>]> = [
-      ["a token signed by another key", () => sign(appClaims(), { ...entra, key: otherRsa })],
-      ["an algorithm that is not on the list", () => sign(appClaims(), { ...entra, alg: "ES256" })],
-      ["a person's Auth0 token", () => sign(personClaims())],
-      ["another tenant's issuer", () => sign(appClaims(), { ...entra, iss: entraIssuer("00000000-0000-4000-8000-000000000000") })],
-      ["another audience", () => sign(appClaims(), { ...entra, aud: "api://x402-l1-agent" })],
-      ["an expired token", () => sign(appClaims(), { ...entra, exp: now() - 120 })],
-      ["another tenant in `tid`", () => sign(appClaims({ tid: "00000000-0000-4000-8000-000000000000" }), entra)],
-      ["no object ID", () => sign(appClaims({ oid: undefined }), entra)],
-      ["an empty object ID", () => sign(appClaims({ oid: "" }), entra)],
+      ["text that is not a token", async () => "not-a-token"],
+      ["a token signed by another key with the same key ID", () => sign(personOf(), { key: otherRsa })],
+      ["an algorithm that is not on the list", () => sign(personOf(), { alg: "ES256" })],
+      ["another issuer", () => sign(personOf(), { iss: "https://evil.eu.auth0.com/" })],
+      ["the organization's directory as issuer", () => sign(personOf(), { iss: DIRECTORY_ISSUER })],
+      ["another audience", () => sign(personOf(), { aud: "https://other.example/api" })],
+      ["a token that is not valid yet, beyond the tolerance", () => sign(personOf(), { nbf: now() + 120 })],
+      ["no expiry", () => sign(personOf(), { exp: null })],
+      ["no subject", () => sign(personOf(), { sub: null })],
+      ["a subject with a line break", () => sign(personOf(), { sub: "auth0|a\nb" })],
+      ["a machine token that names no client", () => sign(machineOf({ azp: undefined }), machine)],
+      ["a machine token whose subject is another client's", () => sign(machineOf(), { sub: "other-client@clients" })],
+      ["a client-credentials token with a person's subject", () => sign(machineOf(), { sub: "auth0|6543210fedcba" })],
     ];
     for (const [name, make] of cases) {
       it(name, async () => {
-        expect(await verifyServiceToken(await make(), service())).toEqual({ ok: false, status: 401 });
+        expect(await verifyCaller(await make(), caller())).toEqual(invalid);
       });
     }
+
+    it("an expired token is told apart, so the agent can say the sign-in expired", async () => {
+      expect(await verifyCaller(await sign(personOf(), { exp: now() - 120 }), caller())).toEqual({ ok: false, status: 401, reason: "expired" });
+      expect(await verifyCaller(await sign(machineOf(), { ...machine, exp: now() - 120 }), caller())).toEqual({ ok: false, status: 401, reason: "expired" });
+      // Expired and from another issuer: the issuer is what is wrong with it.
+      expect(await verifyCaller(await sign(personOf(), { exp: now() - 120, key: otherRsa }), caller())).toEqual(invalid);
+      // Inside the tolerance it is still valid.
+      expect((await verifyCaller(await sign(personOf(), { exp: now() - 30 }), caller())).ok).toBe(true);
+    });
   });
 
-  describe("refuses a person's token from the directory with 403", () => {
-    for (const [name, idtyp] of [["idtyp user", "user"], ["no idtyp", undefined], ["idtyp in another case", "App"], ["idtyp as a list", ["app"]]] as const) {
+  describe("refuses with 403", () => {
+    const cases: Array<[string, () => Promise<string>]> = [
+      ["a person without the permission", () => sign(personOf({ permissions: [] }))],
+      ["a person with another permission only", () => sign(personOf({ permissions: ["portal:admin"] }))],
+      ["a person whose permission is only in `scope` (what the client asked for)", () => sign(personOf({ permissions: [], scope: "openid agent:run" }))],
+      ["a person from a client that is not on the list (the portal's)", () => sign(personOf({ azp: "portal-client" }))],
+      ["a person whose token names no client", () => sign(personOf({ azp: undefined }))],
+      ["a person whose token names two clients", () => sign(personOf({ client_id: "other-client" }))],
+      ["a machine caller whose grant lacks the permission", () => sign(machineOf({ scope: "other:thing" }), machine)],
+      ["a machine caller with no scope and no permissions", () => sign(machineOf({ scope: undefined }), machine)],
+      ["a machine caller whose scope only contains the permission's name inside another word", () => sign(machineOf({ scope: "xagent:run agent:runner" }), machine)],
+    ];
+    for (const [name, make] of cases) {
       it(name, async () => {
-        const token = await sign(appClaims({ idtyp, scp: "user_impersonation" }), entra);
-        expect(await verifyServiceToken(token, service())).toEqual({ ok: false, status: 403 });
+        expect(await verifyCaller(await make(), caller())).toEqual(forbidden);
       });
     }
   });
 
   describe("must-fail: without the check, the same token is accepted", () => {
-    it("tenant", async () => {
-      const token = await sign(appClaims({ tid: "00000000-0000-4000-8000-000000000000" }), entra);
-      expect((await verifyServiceToken(token, service())).ok).toBe(false);
-      expect((await verifyServiceToken(token, service({ skipChecks: ["tenant"] }))).ok).toBe(true);
+    it("permission, for a person and for a machine caller", async () => {
+      const person = await sign(personOf({ permissions: [] }));
+      expect(await verifyCaller(person, caller())).toEqual(forbidden);
+      expect((await verifyCaller(person, caller({ skipChecks: ["permission"] }))).ok).toBe(true);
+      const m = await sign(machineOf({ scope: undefined }), machine);
+      expect(await verifyCaller(m, caller())).toEqual(forbidden);
+      expect((await verifyCaller(m, caller({ skipChecks: ["permission"] }))).ok).toBe(true);
     });
-    it("app-only", async () => {
-      const token = await sign(appClaims({ idtyp: "user" }), entra);
-      expect((await verifyServiceToken(token, service())).ok).toBe(false);
-      expect((await verifyServiceToken(token, service({ skipChecks: ["appOnly"] }))).ok).toBe(true);
+    it("client: a portal token would be a caller's", async () => {
+      const token = await sign(personOf({ azp: "portal-client" }));
+      expect(await verifyCaller(token, caller())).toEqual(forbidden);
+      expect((await verifyCaller(token, caller({ skipChecks: ["client"] }))).ok).toBe(true);
     });
+    it("a machine token's subject: one client would pass for another", async () => {
+      const token = await sign(machineOf(), { sub: "other-client@clients" });
+      expect(await verifyCaller(token, caller())).toEqual(invalid);
+      expect(await verifyCaller(token, caller({ skipChecks: ["machineSubject"] }))).toEqual({
+        ok: true,
+        caller: { kind: "machine", issuer: ISSUER, subject: "other-client@clients", client: MACHINE_CLIENT },
+      });
+    });
+  });
+
+  it("the portal's check still refuses every machine token, with or without the permission", async () => {
+    expect(await verifyPersonToken(await sign(machineOf(), machine), person())).toEqual({ ok: false, status: 403 });
   });
 });
 
@@ -311,7 +358,7 @@ describe("013 issuerOf, bearerToken and the issuer pattern", () => {
       "https://X402.eu.auth0.com/",
       "https://a b/",
       "urn:x402:dev-issuer",
-      entraIssuer(TENANT),
+      DIRECTORY_ISSUER,
     ]) {
       expect(PERSON_ISSUER_RE.test(bad), bad).toBe(false);
     }

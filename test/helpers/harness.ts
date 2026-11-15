@@ -21,6 +21,10 @@ import { PaymentSigner, WalletKeyring } from "../../src/layer2-control/signer.js
 import { createControlService, recordPlatformConfig } from "../../src/layer2-control/service.js";
 import type { UserAccountsDeps } from "../../src/layer2-control/users.js";
 import type { BackchannelDeps } from "../../src/layer2-control/backchannel.js";
+import type { CallerDeps } from "../../src/layer2-control/caller.js";
+import { HttpAuthorizationGate } from "../../src/layer1-intent/ports-http.js";
+import type { AuthorizationGatePort } from "../../src/shared/contracts.js";
+import { createTestIssuer, type TestIssuer } from "./caller-tokens.js";
 import { ChainSettlementVerifier, type ReadOnlyChainClient } from "../../src/layer3-settlement/verifier.js";
 import { createSettlementService, HttpReconciler } from "../../src/layer3-settlement/service.js";
 import DEFAULT_MANDATE from "../../config/mandate.json" with { type: "json" };
@@ -47,6 +51,12 @@ export interface HarnessOptions {
    * seller. `limits` and the must-fail switches are optional. Default: off, as before.
    */
   users?: { limits?: Partial<PlatformConfig["limits"]>; switches?: Partial<UserAccountsDeps> };
+  /**
+   * 016: sign-in on L2. On by default with `users` (a user is whoever a verified caller's token names); `true`
+   * turns it on without users (machine callers only). `issuer` names the test issuer (default the dev issuer's
+   * name; 012's tests pass the stand-in's, so people are its users); `switches` are L2's must-fail switches.
+   */
+  callers?: true | { issuer?: string; switches?: Partial<CallerDeps> };
   /** 014: L2's administration routes (needs `users`), for the portal's administration area. Default: off. */
   admin?: boolean;
 }
@@ -64,6 +74,14 @@ export interface Harness {
   fund(address: `0x${string}`, amountAtomic: bigint): Promise<bigint>;
   /** 013: the user wallets' keyring, when `users` is on. */
   keyring?: WalletKeyring;
+  /** 016: the issuer of the callers' tokens L2 verifies, when sign-in is on. */
+  callers?: TestIssuer;
+  /**
+   * 016: L1's gate to this L2 for one caller: a person by user identifier (registered with `callers`), or a
+   * machine caller when none is given. The caller's token is made on first use. Without sign-in the gate carries
+   * no caller's token.
+   */
+  gateFor(userId?: string): AuthorizationGatePort;
   addresses: { payer: `0x${string}`; payTo: `0x${string}`; asset: `0x${string}` };
   balanceOf(addr: `0x${string}`): Promise<bigint>;
   /** Fresh temp file per harness. */
@@ -156,6 +174,8 @@ export async function startHarness(opts: HarnessOptions = {}): Promise<Harness> 
         })
       : undefined;
     if (platform) recordPlatformConfig(ledger, platform);
+    const callerOpts = opts.callers === true ? {} : opts.callers;
+    const callers = platform || opts.callers ? await createTestIssuer({ ...(callerOpts?.issuer !== undefined && { issuer: callerOpts.issuer }) }) : undefined;
     const control = createControlService({
       mandate,
       signer,
@@ -163,6 +183,7 @@ export async function startHarness(opts: HarnessOptions = {}): Promise<Harness> 
       asset: { address: net.asset, decimals: net.decimals },
       tokens: { control: TOKENS.control, settlement: TOKENS.settlement, operator: TOKENS.operator, portal: TOKENS.portal, portalAdmin: TOKENS.portalAdmin },
       ...(platform && keyring && { users: { platform, keyring, ...opts.users?.switches }, net }),
+      ...(callers && { caller: { ...callers.deps, ...callerOpts?.switches } }),
       ...(platform && opts.admin && { admin: {} }),
       ...(opts.signerLatencyMs !== undefined && { signerLatencyMs: opts.signerLatencyMs }),
       ...(opts.controlNow !== undefined && { now: opts.controlNow }),
@@ -206,6 +227,14 @@ export async function startHarness(opts: HarnessOptions = {}): Promise<Harness> 
       },
       fund: (address, amountAtomic) => mintLocalUsdc(chain!.rpcUrl, net.asset, address, amountAtomic),
       ...(keyring && { keyring }),
+      ...(callers && { callers }),
+      gateFor: (userId) => {
+        const plain = new HttpAuthorizationGate(controlUrl, TOKENS.control);
+        if (!callers) return plain;
+        let made: Promise<AuthorizationGatePort> | undefined;
+        const gate = () => (made ??= (userId !== undefined ? callers.forUser(userId) : callers.machine()).then((token) => plain.forCaller(token)));
+        return { authorize: async (intent) => (await gate()).authorize(intent), budget: async (sessionId) => (await gate()).budget(sessionId) };
+      },
       ledgerPath,
       ledgerEntries: () =>
         (existsSync(ledgerPath) ? readFileSync(ledgerPath, "utf8") : "")

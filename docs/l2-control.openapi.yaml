@@ -58,8 +58,18 @@ paths:
         Runs the policy over the x402 challenge and answers AUTHORIZED (with signed payment headers),
         DENIED or ESCALATE. Every call appends an `INTENT` entry and one outcome entry. `purpose` is
         recorded for audit only and is never an input to the decision (INV-5).
+
+        v1.17: who the payment is for comes from the caller's token (`X-Caller-Authorization`), which L2
+        verifies itself: a person's token decides under that person's policy and signs with that person's
+        account, never the platform account; a machine caller's token names no user, and the platform account
+        pays. Checks run in this order: the control token (401), the caller's token (401, 400, 403), then the
+        body (400). A refusal decides nothing, signs nothing and appends nothing. Verifying a token costs a
+        signature check, so the requests one address sends to this route and to the budget route are counted
+        between the first two checks: 429 beyond 600 a minute.
       security:
         - controlToken: []
+      parameters:
+        - $ref: "#/components/parameters/CallerAuthorization"
       requestBody:
         required: true
         content:
@@ -76,15 +86,19 @@ paths:
         "400":
           description: >-
             Malformed intent (missing ids, `paymentRequired.accepts` not an array, non-http(s) URL, a non-boolean
-            `operatorApprovalOnly`, a `userId` that is not a user identifier, or, v1.16, an `approvalSubject` that
-            is malformed or sent without `userId`), or a body that is not JSON. The answer never repeats a value,
-            and L2 logs nothing of the body.
+            `operatorApprovalOnly`, or, v1.17, a `userId` or an `approvalSubject`: a request names nobody), or a
+            body that is not JSON. Also `caller_token_not_accepted`: a caller's token was sent to an L2 with no
+            sign-in configured. The answer never repeats a value, and L2 logs nothing of the body.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
         "401":
-          $ref: "#/components/responses/Unauthorized"
+          $ref: "#/components/responses/UnauthorizedOrCaller"
+        "403":
+          $ref: "#/components/responses/CallerForbidden"
+        "429":
+          $ref: "#/components/responses/TooManyCallerChecks"
         "500":
           description: Unexpected failure inside the decision.
           content:
@@ -98,10 +112,11 @@ paths:
       operationId: getBudget
       summary: Session budget, derived from the ledger
       description: |
-        An unknown session returns 200 with zero spend. v1.10: with user accounts on, `?userId=` returns the user
-        view instead (`scope: user_daily`): the user daily ceiling, the user's committed spend over the last 24
-        hours, and the highest auto-approve limit among the user's active policies. A user who has not finished
-        onboarding or is disabled gets zeros.
+        An unknown session returns 200 with zero spend. v1.17: for a person's token (`X-Caller-Authorization`)
+        the answer is the user view (`scope: user_daily`): the user daily ceiling, that person's committed spend
+        over the last 24 hours, and the highest auto-approve limit among their active policies. A person who has
+        not finished onboarding or is disabled gets zeros. For a machine caller's token, or with no sign-in
+        configured, it is the session view. The `userId` query of v1.10 is no longer accepted.
       security:
         - controlToken: []
       parameters:
@@ -110,12 +125,7 @@ paths:
           required: true
           schema:
             type: string
-        - name: userId
-          in: query
-          required: false
-          description: v1.10. A user identifier. Ignored when user accounts are off.
-          schema:
-            $ref: "#/components/schemas/UserId"
+        - $ref: "#/components/parameters/CallerAuthorization"
       responses:
         "200":
           description: Budget status.
@@ -124,13 +134,19 @@ paths:
               schema:
                 $ref: "#/components/schemas/BudgetStatus"
         "400":
-          description: v1.10. `userId` is not a user identifier (user accounts on only).
+          description: >-
+            v1.17. A `userId` query, whatever its value: the user comes from the caller's token. Also
+            `caller_token_not_accepted`: a caller's token was sent to an L2 with no sign-in configured.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
         "401":
-          $ref: "#/components/responses/Unauthorized"
+          $ref: "#/components/responses/UnauthorizedOrCaller"
+        "403":
+          $ref: "#/components/responses/CallerForbidden"
+        "429":
+          $ref: "#/components/responses/TooManyCallerChecks"
 
   /v1/reconcile:
     post:
@@ -1141,6 +1157,20 @@ components:
         user-account operation, and never authorize, budget, reconcile or the operator's operations.
 
   parameters:
+    CallerAuthorization:
+      name: X-Caller-Authorization
+      in: header
+      required: false
+      description: >-
+        v1.17 (SEC-32). `Bearer <token>`: the access token the hosted agent's caller presented, forwarded
+        unchanged beside the control token. L2 verifies it itself (signature, issuer, audience, validity, the
+        permission `agent:run`, and for a person the agent's client) and takes the user from it. Required where
+        sign-in is configured at L2 (`AUTH_ISSUER`, `AUTH_AUDIENCE`, `AGENT_CLIENT_IDS`), which user accounts
+        need; not accepted where it is not. It opens nothing by itself and no other operation reads it. It is
+        never stored, logged or returned.
+      schema:
+        type: string
+        pattern: "^Bearer \\S+$"
     AuthorizationId:
       name: authorizationId
       in: path
@@ -1185,6 +1215,39 @@ components:
   responses:
     Unauthorized:
       description: Missing or wrong bearer token. Nothing is appended.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    UnauthorizedOrCaller:
+      description: >-
+        Missing or wrong bearer token (`unauthorized`). Or, v1.17, with the control token accepted, the caller's
+        token: `caller_token_required` (sign-in is configured and none was forwarded), `caller_token_expired`
+        (only its validity period is wrong) or `caller_token_invalid` (anything else about it). Nothing is
+        appended.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    TooManyCallerChecks:
+      description: >-
+        v1.17. Where sign-in is configured: more than 600 requests in a minute from one address on the two routes
+        that take a caller's token, counted together, after the control token was accepted and before the caller's
+        token is verified. `Retry-After` says when to ask again. Nothing was verified, read, decided or appended.
+      headers:
+        Retry-After:
+          description: Seconds until the next request is accepted.
+          schema:
+            type: integer
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    CallerForbidden:
+      description: >-
+        v1.17. `caller_forbidden`: the caller's token is valid and its holder may not call the agent: no
+        `agent:run`, a person's token from a client that is not the agent's (the portal's included), or a
+        person's token while user accounts are off. Nothing is appended.
       content:
         application/json:
           schema:
@@ -1330,26 +1393,6 @@ components:
             v1.8 (L2-7, FR-007). true marks the intent operator-only: an escalation it creates sends no backchannel
             approval request and returns at once. It can only remove an approval path. Set by the L1-4 scripted
             agent; the hosted agent never sets it. A non-boolean value is 400.
-        userId:
-          $ref: "#/components/schemas/UserId"
-          description: >-
-            v1.10 (L2-8, FR-033). The verified person who started the run, set by the hosted agent service and never
-            from model text or a tool input. With user accounts on, the intent is decided against this user's
-            policy and signed with this user's account. Absent: the platform account. Ignored when user accounts
-            are off.
-        approvalSubject:
-          type: string
-          minLength: 1
-          maxLength: 255
-          pattern: "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$"
-          description: >-
-            v1.16 (L2-7). The person's subject at the approval service, from the sign-in token the hosted agent
-            verified; set by the hosted agent only, for a person's run, never from model text or a tool input. 1 to
-            255 characters with no whitespace and no control character, and only together with `userId`: anything
-            else is 400, whether backchannel approval is on or off. L2 uses it to address one approval request to
-            the escalation's owner, and only when it resolves to `userId` under L2's own approval issuer. It is
-            never written to the ledger, logged or returned. Ignored when user accounts or backchannel approval are
-            off.
 
     PolicyViolation:
       type: object

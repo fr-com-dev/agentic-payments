@@ -2,7 +2,7 @@
 # workflow, called with its unit by the seven pipelines, each run by hand or on its own tag:
 #   deploy-infra.yml     unit platform   the platform (network, logs, identities, registry, vaults, storage, Foundry,
 #                                        the environments); no image, no promotion, fixed forward
-#   deploy-l1.yml        unit l1         x402-l1-agent: the agent and the regression job
+#   deploy-l1.yml        unit l1         x402-l1-agent: the agent, the regression job and the smoke job
 #   deploy-l2.yml        unit l2         x402-l2-control: the control service
 #   deploy-l3.yml        unit l3         x402-l3-verifier: the verifier
 #   deploy-operator.yml  unit operator   x402-operator: the operator job
@@ -14,7 +14,8 @@
 # pass through every unit; a failure rolls that unit back to its last-good. T-E2E-AZ: test/deploy-workflow.test.ts
 # checks this file and the seven pipelines offline.
 #
-# No GitHub secrets: the sign-in (OIDC, as pre-deploy.bicep's deploy app, in each step that calls Azure), the target
+# No GitHub secrets, and no token of a caller's: the two checks that call as the machine caller (the regression and
+# the hosted smoke run) are jobs of the L1 unit, which get their own tokens from the sign-in tenant. The sign-in (OIDC, as pre-deploy.bicep's deploy app, in each step that calls Azure), the target
 # (tenant, subscription, resource group) and every resource name come from infra/main.<environment>.bicepparam, which
 # holds every value main.bicep uses; the pinned Bicep CLI compiles it, and every deployment uses that CLI. On a new
 # environment each pipeline's first run is a first deployment (quickstart §4), which skips the checks through units
@@ -151,14 +152,14 @@ jobs:
           echo "BICEP_PATH=$RUNNER_TEMP/bicep/bicep" >> "$GITHUB_ENV"
           "$RUNNER_TEMP/bicep/bicep" build-params "$PARAMS" --stdout | jq '.parametersJson | fromjson | .parameters | map_values(.value)' > "$RUNNER_TEMP/params.json"
           jq -r 'def v(p): getpath(p) // error("the parameter file has no \(p | join("."))");
-            "authAudience=\(v(["authAudience"]))", "payerAddress=\(v(["payerAddress"]))"' "$RUNNER_TEMP/params.json" >> "$GITHUB_OUTPUT"
+            "payerAddress=\(v(["payerAddress"]))"' "$RUNNER_TEMP/params.json" >> "$GITHUB_OUTPUT"
           jq -r 'def v(p): getpath(p) // error("the parameter file has no \(p | join("."))");
             "TENANT_ID=\(v(["tenantId"]))", "SUBSCRIPTION_ID=\(v(["subscriptionId"]))", "DEPLOY_CLIENT_ID=\(v(["deployClientId"]))"' "$RUNNER_TEMP/params.json" >> "$GITHUB_ENV"
           jq -r 'def v(p): getpath(["names"] + p) // error("the parameter file has no names.\(p | join("."))");
             "RG=\(v(["resourceGroup"]))", "LOG_X402=\(v(["logs"]))", "CR_X402=\(v(["registry"]))",
             "CA_L1=\(v(["apps", "l1"]))", "CA_L3=\(v(["apps", "l3"]))", "CA_PORTAL=\(v(["apps", "portal"]))",
             "CA_SELLER=\(v(["apps", "seller"]))", "CA_SELLER_ALIAS=\(v(["apps", "sellerAlias"]))",
-            "CAJ_L1=\(v(["jobs", "l1"]))", "CAJ_L2=\(v(["jobs", "l2"]))"' "$RUNNER_TEMP/params.json" >> "$GITHUB_ENV"
+            "CAJ_L1=\(v(["jobs", "l1"]))", "CAJ_L2=\(v(["jobs", "l2"]))", "CAJ_SMOKE=\(v(["jobs", "smoke"]))"' "$RUNNER_TEMP/params.json" >> "$GITHUB_ENV"
 
       # No dependency cache: this job can deploy, and a restored cache would be code no commit holds. setup-node v5+
       # turns caching on by itself once package.json names a packageManager.
@@ -278,31 +279,22 @@ jobs:
           eval "$RUN_JOB"
           run_job "$CAJ_L2"
 
-      # The token is for the API app's client ID, the audience the agent accepts (authAudience). On L1, the request
-      # goes to the new revision.
+      # 016: the smoke job (src/smoke-main.ts, on L1's image) is the machine caller: it gets its own token from the
+      # sign-in tenant, sends the goal to the agent and exits 0 or 1, so no step asks for a token and the pipeline
+      # holds none. The checks this step made with jq are now made inside the job: the run completed, both purchases
+      # are PAID and CONFIRMED, nothing escalated (specs/012 research R14: a deployment check never asks the
+      # approver), and it took 120 s or less (SC-009). The job prints its target, outcome and duration, which run_job
+      # shows. On L1 it goes to the new revision by itself: it uses the candidate label's address while that answers.
       - name: "8 hosted smoke through the agent (on L1, its new revision)"
         id: smoke
         if: ${{ !inputs.first-deployment }}
         run: |
           eval "$SIGN_IN"
-          AGENT=$(az containerapp show -n "$CA_L1" -g "$RG" --query properties.configuration.ingress.fqdn -o tsv)
-          if [[ "$UNIT" == l1 && -n "${{ steps.deploy.outputs.stable }}" ]]; then AGENT="${AGENT/$CA_L1/$CA_L1---candidate}"; fi
-          ACCESS=$(az account get-access-token --resource "${{ steps.target.outputs.authAudience }}" --query accessToken -o tsv)
-          START=$(date +%s)
-          curl -fsS -m 210 -X POST "https://$AGENT/v1/runs" -H "authorization: Bearer $ACCESS" -H "content-type: application/json" \
-            -d '{"goal":"Get today'"'"'s weather for Lima and a short market brief, then give me a receipt list of what you bought."}' > "$RUNNER_TEMP/smoke.json"
-          SECS=$(( $(date +%s) - START ))
-          echo "hosted smoke: ${SECS}s (SC-009 target: p95 <= 120 s)" >> "$GITHUB_STEP_SUMMARY"
-          jq -e '.status == "completed"' "$RUNNER_TEMP/smoke.json" > /dev/null
-          for p in /api/weather /api/market-brief; do
-            jq -e --arg p "$p" '[.steps[] | select((.url // "") | contains($p)) | select(.result.outcome == "PAID" and .result.payment.settlement.status == "CONFIRMED")] | length >= 1' "$RUNNER_TEMP/smoke.json" > /dev/null
-          done
-          # specs/012 research R14: a deployment check never asks the approver; an escalation here fails the run.
-          jq -e '[.steps[] | select(.result.outcome == "ESCALATED")] | length == 0' "$RUNNER_TEMP/smoke.json" > /dev/null
-          test "$SECS" -le 120
+          eval "$RUN_JOB"
+          run_job "$CAJ_SMOKE"
 
       # 013: the portal answers, verifies Auth0 tokens (never the dev issuer's) and refuses a request without one. No
-      # token is sent: the pipeline's identity is an Entra application, and the portal accepts no Entra token.
+      # token is sent: the pipeline holds none, and the portal accepts only a person's, from its own client.
       # Skipped on a first deployment of a unit that precedes the portal; the portal's own first deployment runs it.
       - name: "8b portal smoke: health, Auth0 sign-in mode, and 401 without a token"
         id: portal-smoke

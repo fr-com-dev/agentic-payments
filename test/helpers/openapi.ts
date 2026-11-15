@@ -137,10 +137,10 @@ export function responseContent(doc: OpenApiDoc, method: string, path: string, s
 }
 
 /** `body` is the parsed JSON (empty for other media types); `text` is the raw body; `type` has no parameters. */
-export async function send(base: string, method: string, path: string, token?: string, body?: unknown) {
+export async function send(base: string, method: string, path: string, token?: string, body?: unknown, extraHeaders: Record<string, string> = {}) {
   const res = await fetch(base + path, {
     method,
-    headers: { "content-type": "application/json", ...(token !== undefined && { authorization: `Bearer ${token}` }) },
+    headers: { "content-type": "application/json", ...(token !== undefined && { authorization: `Bearer ${token}` }), ...extraHeaders },
     ...(method !== "GET" && { body: typeof body === "string" ? body : JSON.stringify(body ?? {}) }),
   });
   const text = await res.text();

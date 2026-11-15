@@ -1,6 +1,7 @@
 // L1-6 hosted agent service: the Express app (SPEC.md §8.1 L1-6; specs/011 contracts/hosted-agent-api.md).
 // Only `createHostedApp` lives here. The entry point that loads env, enforces INV-3 and listens is
 // src/hosted-main.ts, outside this layer, because rule A5 bans the payer key's name in L1 code.
+// 016: the caller's token is kept from auth to the end of the run and goes to one place, `gate.forCaller` (SEC-32).
 // Order per request: auth (401/403) → limits (429) → body (400/413) → session → run. Only POST /v1/runs and the two
 // health routes exist, plus the token-free docs routes with API_DOCS=1 (v1.6); Mastra publishes no routes
 // (research R1). docs/l1-hosted.openapi.yaml describes them; test/openapi-hosted.test.ts keeps it in sync.
@@ -8,17 +9,21 @@ import { randomUUID } from "node:crypto";
 import express, { type Express, type NextFunction, type Request, type Response } from "express";
 import type { MastraModelConfig } from "@mastra/core/llm";
 import { addressLimit, trustProxies } from "../../shared/address-limit.js";
-import type { AuthorizationGatePort, SettlementVerifierPort } from "../../shared/contracts.js";
-import { userIdFor } from "../../shared/user-id.js";
+import type { CallerGates, SettlementVerifierPort } from "../../shared/contracts.js";
+import type { TokenKeys } from "../../shared/identity-token.js";
 import { runGoal } from "./agent.js";
-import { mountHostedApiDocs } from "./api-docs.js";
+import { docsSignIn, mountHostedApiDocs } from "./api-docs.js";
 import type { HostedConfig } from "./config.js";
-import { requesterAuth, type Requester, type RequesterKeys } from "./requester-auth.js";
+import { callerTokenOf, requesterAuth, type Requester } from "./requester-auth.js";
 import { createRunLimiter } from "./run-limits.js";
 import { createRunLog, stepOutcome } from "./run-log.js";
 import { issueSessionRef, newSessionId, SESSION_REF_RE, verifySessionRef } from "./session-ref.js";
+import { openEventStream, wantsStream } from "./sse.js";
 
-/** Under the Container Apps ingress's 240 s idle timeout: a run sends nothing until it ends (research R5). */
+/**
+ * Under the Container Apps ingress's 240 s idle timeout: a JSON answer sends nothing until the run ends (research
+ * R5). A stream (016) sends events and keep-alives all along, and keeps the same deadline.
+ */
 export const RUN_DEADLINE_MS = 200_000;
 export const GOAL_MAX_CHARS = 4_000;
 export const BODY_LIMIT = "16kb";
@@ -26,9 +31,10 @@ const BODY_KEYS = new Set(["goal", "sessionRef"]);
 
 export interface HostedDeps {
   config: HostedConfig;
-  keys: RequesterKeys;
+  keys: TokenKeys;
   model: MastraModelConfig;
-  gate: AuthorizationGatePort;
+  /** 016: a gate per run, made for the caller whose token was verified. */
+  gate: CallerGates;
   settlement: SettlementVerifierPort;
   /** Test hook: a shorter run deadline. Never set by the entry point. */
   deadlineMs?: number;
@@ -40,11 +46,15 @@ export interface HostedDeps {
   skipSessionMac?: boolean;
   /** Test hook: accept a person's token from any client, the portal's included (T-AGT-07 must-fail). Never set by the entry point. */
   skipClientCheck?: boolean;
+  /** Test hook: accept a caller without the permission `agent:run` (T-AGT-09 must-fail). Never set by the entry point. */
+  skipPermission?: boolean;
   /** Test hooks (T-AGT-03): another limit per address, or none at all (the must-fail). Never set by the entry point. */
   maxRequestsPerAddress?: number;
   skipAddressLimit?: boolean;
   /** Where run-log lines go (default: stdout, one JSON line each). */
   log?: (line: string) => void;
+  /** Test hook (T-AGT-11): a shorter keep-alive period for the run stream. Never set by the entry point. */
+  keepAliveMs?: number;
 }
 
 export interface HostedApp {
@@ -83,7 +93,7 @@ export function createHostedApp(deps: HostedDeps): HostedApp {
     else res.status(503).json({ status: "starting" });
   });
   // API_DOCS=1 only (SEC-13): Swagger UI and the document, token-free like the health routes, so before auth.
-  if (deps.config.apiDocs) mountHostedApiDocs(app);
+  if (deps.config.apiDocs) mountHostedApiDocs(app, docsSignIn(deps.config));
 
   // Per address, before any token is verified: a caller without a valid token is bounded too (SEC-14).
   if (!deps.skipAddressLimit) app.use(addressLimit({ ...(deps.maxRequestsPerAddress !== undefined && { max: deps.maxRequestsPerAddress }) }));
@@ -91,10 +101,12 @@ export function createHostedApp(deps: HostedDeps): HostedApp {
   if (!deps.bypassAuth) {
     app.use(
       requesterAuth({
-        ...(deps.config.auth.person !== undefined && { person: deps.config.auth.person }),
-        ...(deps.config.auth.service !== undefined && { service: deps.config.auth.service }),
+        issuer: deps.config.auth.issuer,
+        audience: deps.config.auth.audience,
+        clientIds: deps.config.auth.clientIds,
         keys: deps.keys,
         ...(deps.skipClientCheck && { skipClientCheck: true }),
+        ...(deps.skipPermission && { skipPermission: true }),
       }),
     );
   }
@@ -142,22 +154,28 @@ export function createHostedApp(deps: HostedDeps): HostedApp {
     res.on("close", () => {
       if (!res.writableEnded) controller.abort("client_disconnected");
     });
-    // 013 FR-033: the user every payment of this run is for. Fixed here, from the verified requester, before the
-    // model sees anything: a person's own identifier, and none for a system identity (FR-002). Neither the goal
-    // text nor a tool input can change it.
-    const userId = !deps.bypassAuth && requester.kind === "user" ? userIdFor(requester.authority, requester.subject) : undefined;
+    // 016 (SEC-32): who every payment of this run is for is decided by L2, from the caller's token. The gate made
+    // here carries that token on each call and is the only thing that holds it; neither the goal text, the model
+    // nor a tool input can change it or see it. With auth bypassed (tests only) the gate carries none.
+    const gate = deps.gate.forCaller(callerTokenOf(res) ?? "");
+    // 016: every refusal is behind us, so the answer's form is chosen here. A stream starts with the run's
+    // identifier, at once; the JSON form says nothing until the run ends.
+    const stream = wantsStream(req) ? openEventStream(res, { ...(deps.keepAliveMs !== undefined && { keepAliveMs: deps.keepAliveMs }) }) : undefined;
+    stream?.send("run", { runId, startedAt });
     try {
       const outcome = await runGoal({
         goal: parsed.goal,
         sessionId,
-        ...(userId !== undefined && { userId }),
         signal: controller.signal,
         model: deps.model,
-        gate: deps.gate,
+        gate,
         settlement: deps.settlement,
         sellerUrl: deps.config.urls.seller,
-        onStep: (step, ms) =>
-          runLog.step({ runId, requester: requester.key, sessionId, index: step.index, tool: step.tool, ...stepOutcome(step.result), ms }),
+        onStep: (step, ms) => {
+          runLog.step({ runId, requester: requester.key, sessionId, index: step.index, tool: step.tool, ...stepOutcome(step.result), ms });
+          stream?.send("step", step);
+        },
+        ...(stream && { onText: (delta: string) => stream.send("text", { delta }) }),
       });
       runLog.run({
         runId,
@@ -169,7 +187,7 @@ export function createHostedApp(deps: HostedDeps): HostedApp {
         ms: Date.now() - startedMs,
       });
       if (res.writableEnded || res.destroyed) return;
-      res.json({
+      const answer = {
         runId,
         sessionRef: issueSessionRef(deps.config.sessionRefSecret, requester, sessionId),
         status: outcome.status,
@@ -179,10 +197,14 @@ export function createHostedApp(deps: HostedDeps): HostedApp {
         steps: outcome.steps,
         startedAt,
         finishedAt: new Date().toISOString(),
-      });
+      };
+      // The same object in both forms: the stream's last event, or the JSON body.
+      if (stream) stream.send("result", answer);
+      else res.json(answer);
     } finally {
       clearTimeout(timer);
       release();
+      stream?.end();
     }
   });
 

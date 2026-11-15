@@ -10,6 +10,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit && tsc --noEmit -p web/portal/tsconfig.json",
     "test": "vitest run",
+    "test:e2e": "vitest run test/e2e.full.test.ts test/e2e.local.test.ts",
     "check": "npm run typecheck && npm test && npm run demo:local",
     "demo:local": "tsx scripts/demo-local.ts",
     "stack:local": "tsx scripts/stack-local.ts",

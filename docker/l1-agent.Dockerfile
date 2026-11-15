@@ -1,9 +1,11 @@
 # syntax=docker/dockerfile:1
-# L1 image x402-l1-agent (specs/011 research R14): the hosted agent service and the regression job.
+# L1 image x402-l1-agent (specs/011 research R14; specs/016 research R9): the hosted agent service, the regression
+# job and the smoke job.
 #   node dist/src/hosted-main.js                       hosted agent service (L1-6)
 #   node dist/src/main.js --scripted --check-baseline  post-deployment regression job (L1-4)
-# It holds only L1's code (src/layer1-intent, src/shared, the two entry points) and the packages that code
-# imports: no signer, no L3 verifier, no seller.
+#   node dist/src/smoke-main.js                        post-deployment hosted smoke run, as the machine caller
+# It holds only L1's code (src/layer1-intent, src/shared, src/machine-caller, the three entry points) and the
+# packages that code imports: no signer, no L3 verifier, no seller.
 # scripts/image-closure.ts derives both from the import graph and fails the build when a file from another
 # layer would be included. No key or env file is inside; each Container App or job gets its secrets as Key
 # Vault references.
@@ -30,7 +32,8 @@ COPY package-lock.json ./
 RUN npm install --omit=dev --no-audit --no-fund --ignore-scripts && npm cache clean --force
 COPY --from=build /out/dist ./dist
 # The API-docs module resolves the OpenAPI file relative to itself (dist/src/layer1-intent/hosted → dist/docs).
-# It's read only with API_DOCS=1, which the Azure deployment never sets.
+# It's read only with API_DOCS=1, which in Azure only the agent's container gets, and only where its environment's
+# parameter file says so (agent.apiDocs; T-IAC-01 rule 23).
 COPY docs/l1-hosted.openapi.yaml ./dist/docs/
 # Load every module once, so a file or package the closure missed fails the build instead of a revision.
 RUN node --input-type=module -e "import { readFileSync } from 'node:fs'; for (const m of JSON.parse(readFileSync('dist/image-modules.json', 'utf8'))) await import('/app/' + m);"

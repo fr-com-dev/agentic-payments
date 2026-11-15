@@ -26,12 +26,12 @@ export interface MainNames {
   identities: Record<"l1" | "l2" | "l3" | "op" | "portal" | "seller", string>;
   vaults: Record<"l1" | "l2" | "l3" | "op" | "portal" | "seller", string>;
   apps: Record<"l1" | "l2" | "l3" | "portal" | "seller" | "sellerAlias", string>;
-  jobs: Record<"l1" | "l2", string>;
+  /** l1: the regression job; l2: the operator job; smoke (016): the hosted smoke run, a job of the L1 unit. */
+  jobs: Record<"l1" | "l2" | "smoke", string>;
 }
 /** pre-deploy.bicep's names for an environment (pre-deploy.<environment>.bicepparam). */
 export interface PreDeployNames {
   resourceGroup: string;
-  apiApp: string;
   deployApp: string;
   operators: string;
   stateStorage: string;

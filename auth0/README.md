@@ -3,13 +3,19 @@
 Terraform for what the project needs from Auth0:
 
 - L2's backchannel approval (SPEC L2-7, `specs/012`);
-- people's sign-in at the portal (SPEC L2-8, `specs/013` research R19).
-  System identities stay on Microsoft Entra ID, in `infra/pre-deploy.bicep`.
+- people's sign-in at the portal (SPEC L2-8, `specs/013` research R19);
+- the hosted agent's callers, people and machines (SPEC v1.17, `specs/016` research R9 and R10).
 
-It makes exactly two applications: L2's backchannel approval client and the portal's single-page client (SPEC
-v1.13, `specs/013` research R20). There is none for the hosted agent service, so no person's token from the tenant
-starts a run there; a deployed agent accepts system identities only. The Management API application the pipeline
-signs in with (step 2 below) is made by hand and is not part of the running system.
+It makes exactly four kinds of application (T-IAC-02 fails on any other):
+
+- L2's backchannel approval client;
+- the portal's single-page client;
+- the agent's single-page client, through which the agent's docs page signs a person in;
+- one confidential client per machine caller, for systems that start runs. The first is `checks`, the deployment
+  pipeline's smoke run and scripted regression.
+
+The Management API application the pipeline signs in with (step 2 below) is made by hand and is not part of the
+running system.
 
 - **Who runs it**: its pipeline, `.github/workflows/provision-auth0.yml`, started by hand. Every run shows the
   plan; it applies that same plan only when `apply` is checked. Nothing else applies this folder.
@@ -37,13 +43,28 @@ For people's sign-in:
 
 | Resource | What it is | Becomes |
 |---|---|---|
-| `auth0_resource_server.identity` | People's API, `https://x402-api/<environment>`. It uses RS256. Its only permission is the administrator's (next row), so everyone else's `permissions` list is empty. Tokens live one hour. Refresh tokens are allowed. | `AUTH_AUDIENCE`, `identity.audience` |
-| `auth0_resource_server_scopes.identity`, `auth0_role.admin`, `auth0_role_permissions.admin` | 014: the one permission, `portal:admin`, and the one role, `x402-admin`, which holds exactly it. They open the portal's administration area and nothing else. Nobody is assigned here. | read by the portal from the token |
+| `auth0_resource_server.identity` | People's API, `https://x402-api/<environment>`. It uses RS256. It has two permissions (next rows), and a token's `permissions` list holds only the ones its holder's roles give, so most people's is empty. Tokens live one hour. Refresh tokens are allowed. | `AUTH_AUDIENCE`, `identity.audience` |
+| `auth0_resource_server_scopes.identity` | The two permissions of people's API: `portal:admin` (014) and `agent:run` (016). | — |
+| `auth0_role.admin`, `auth0_role_permissions.admin` | 014: the role `x402-admin`, which holds exactly `portal:admin`. It opens the portal's administration area and nothing else. Nobody is assigned here. | read by the portal from the token |
 | `auth0_client.portal`, `auth0_client_credentials.portal` | The portal's web app: a public single-page client with no secret. It uses the authorization code with PKCE, and the `refresh_token` grant because its refresh tokens rotate. Its callbacks, web origins and logout URLs are `http://localhost:4025` and `portal_origin` when set. | `PORTAL_CLIENT_ID`, `userAccounts.portalClientId` |
 | `auth0_action.sign_in_time`, `auth0_trigger_action.sign_in_time` | The post-login Action in `sign-in-time.js`. It writes one claim on the access token, `https://x402.dev/auth_time`: the time of the person's most recent authentication, in seconds. It is appended to the tenant's post-login flow and replaces nothing there. | `AUTH_TIME_CLAIM` |
 
-The portal accepts only its own client. The agent service accepts no client of the tenant: a deployed agent has no
-`AGENT_CLIENT_IDS`, and T-IAC-02 fails on a third `auth0_client`.
+For the hosted agent's callers:
+
+| Resource | What it is | Becomes |
+|---|---|---|
+| `auth0_role.agent`, `auth0_role_permissions.agent` | The role `x402-agent`, which holds exactly `agent:run`. Its holder may start runs at the hosted agent, for their own account. Nobody is assigned here. | read by the agent and L2 from the token |
+| `auth0_client.agent`, `auth0_client_credentials.agent` | The agent's client: a public single-page client with no secret. Its only grant is the authorization code (with PKCE), so it gets no refresh token. Its callbacks are `<origin>/docs/oauth2-redirect.html`, and its allowed origins and web origins `<origin>`, for `http://localhost:4024`, `http://127.0.0.1:4024` and `agent_origin` when set. | `AGENT_CLIENT_IDS`, `API_DOCS_CLIENT_ID`, `agent.clientId` |
+| `auth0_client.machine`, `auth0_client_credentials.machine`, `auth0_client_grant.machine` | One of each per name in `machine_caller_keys`. The client is confidential, with the client-credentials grant only and no callback, so it can't sign a person in. It authenticates with `private_key_jwt` and the **public** half of the caller's RS256 key: no secret exists. Its one grant is for people's API, with `agent:run` only. | for `checks`: `MACHINE_CLIENT_ID`, `MACHINE_CLIENT_KEY_ID`, `agent.machineClientId`, `agent.machineKeyId` |
+
+Who accepts what:
+
+- The portal accepts only its own client's tokens, and reads only `portal:admin`.
+- The agent and L2 accept a person's token only from the agent's client (`AGENT_CLIENT_IDS`), and only with
+  `agent:run`. Both refuse to start with the portal's client on that list.
+- The agent and L2 accept a machine caller's token only with `agent:run` from its grant. A machine caller's client
+  is never on `AGENT_CLIENT_IDS`.
+- The agent role gives nothing at the portal, and the administrator's role gives nothing at the agent.
 
 ## What stays by hand
 
@@ -53,6 +74,12 @@ The portal accepts only its own client. The agent service accepts no client of t
 - **L2's private key** (or the secret): it goes into the l2 vault (`ciba-client-credential`) or a local
   `env/l2-control.env`, never into this folder, GitHub or the state.
 - **The live check**, in `specs/012` quickstart §5.
+- **A machine caller's private key**: it goes only where the caller runs. For `checks` that is the l1 vault
+  (`machine-client-key`), or a local `env/l1-agent.env`. It never goes into this folder, GitHub or the state.
+- **People who may start runs** (SPEC v1.17, `specs/016`). To let a person start runs at the hosted agent, assign
+  them the role `x402-agent` in Auth0 (**User Management → Users → the user → Roles**). It takes effect at their
+  next sign-in; taking it away takes effect when their access token expires, an hour at most. Nothing in this
+  folder assigns a role, and T-IAC-02 fails if it does.
 - **Administrators** (SPEC v1.15, `specs/014`). To let a person use the portal's administration area, assign them
   the role `x402-admin` in Auth0 (**User Management → Users → the user → Roles**). It takes effect at their next
   sign-in or token renewal; taking it away takes effect when their access token expires, an hour at most. Assign it
@@ -85,8 +112,7 @@ The portal accepts only its own client. The agent service accepts no client of t
    - `read:tenant_settings`, `read:users`;
    - for people's sign-in: `read:actions`, `create:actions`, `update:actions`, `delete:actions`, `read:triggers`,
      `update:triggers`;
-   - only for the one apply that takes out the role of v1.12 from a tenant that has it: `read:roles` and
-     `delete:roles`. Untick them afterwards.
+   - for the two roles (014, 016): `read:roles`, `create:roles`, `update:roles`, `delete:roles`.
 
    Store its credential as the environment's secrets. Each command asks for the value, so it stays out of your
    shell history:
@@ -109,10 +135,21 @@ The portal accepts only its own client. The agent service accepts no client of t
    openssl pkey -in ~/x402-secrets/ciba-client-key.pem -pubout -out ~/x402-secrets/ciba-client-key.pub.pem
    ```
 
-4. **Variables.** There is no tfvars file. Terraform's variables are variables of the GitHub environment, which the
-   plan step exports as `TF_VAR_*`. None is a secret. `infra/github-setup.sh` (step 1) already created six of the
-   seven: the first four as the placeholder `REPLACE_ME`, the next two as their defaults. Replace the four placeholders; the
-   pipeline plans nothing while one is left:
+4. **The `checks` key pair** (016), for the deployment pipeline's machine caller. Make it outside the repository,
+   as in step 3. Neither half is committed:
+
+   ```bash
+   openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out ~/x402-secrets/machine-checks-key.pem
+   ```
+
+   ```bash
+   openssl pkey -in ~/x402-secrets/machine-checks-key.pem -pubout -out ~/x402-secrets/machine-checks-key.pub.pem
+   ```
+
+5. **Variables.** There is no tfvars file. Terraform's variables are variables of the GitHub environment, which the
+   plan step exports as `TF_VAR_*`. None is a secret. `infra/github-setup.sh` (step 1) already created seven of the
+   nine: the first four as the placeholder `REPLACE_ME`, the next three as their defaults. Replace the four
+   placeholders; the pipeline plans nothing while one is left:
 
    ```bash
    gh variable set AUTH0_TENANT_DOMAIN --env auth0-dev --body "x402-dev.us.auth0.com"
@@ -138,18 +175,38 @@ The portal accepts only its own client. The agent service accepts no client of t
    | `AUTH0_CLIENT_PUBLIC_KEY` | `client_public_key_pem` | always |
    | `AUTH0_MANAGE_GUARDIAN` | `manage_guardian` | only to set `false` |
    | `AUTH0_GUARDIAN_POLICY` | `guardian_policy` | only to change `never` |
+   | `AUTH0_MACHINE_CALLER_KEYS` | `machine_caller_keys` | to declare a machine caller (created as `{}`: none) |
    | `AUTH0_PORTAL_ORIGIN` | `portal_origin` | once the portal is deployed |
+   | `AUTH0_AGENT_ORIGIN` | `agent_origin` | once the agent is deployed, and only where its docs page is on |
 
    Running `infra/github-setup.sh` again never changes a variable that exists. A variable you delete keeps the
    default in `variables.tf`. `environment` is the run's `environment` input.
 
-   `AUTH0_PORTAL_ORIGIN` is the one variable the script doesn't create, because a GitHub variable can't be empty.
-   Set it after the portal's first deployment, to `https://` and the portal's address (`main.bicep`'s `portalFqdn`
-   output), with no trailing slash. Then run the pipeline again, so the deployed portal is an allowed origin:
+   `AUTH0_MACHINE_CALLER_KEYS` is one JSON object: each machine caller's name, and the public half of its key as
+   PEM text. Terraform reads it as the map `machine_caller_keys`. Declare `checks` with the public half from step 4:
+
+   ```bash
+   gh variable set AUTH0_MACHINE_CALLER_KEYS --env auth0-dev --body "$(jq -cn --rawfile checks ~/x402-secrets/machine-checks-key.pub.pem '{checks: $checks}')"
+   ```
+
+   A name is 2 to 20 lowercase letters, digits or hyphens. To add a caller, add its name and key to the object; to
+   remove one, take it out. The next apply makes or deletes its client.
+
+   `AUTH0_PORTAL_ORIGIN` and `AUTH0_AGENT_ORIGIN` are the two variables the script doesn't create, because a GitHub
+   variable can't be empty. Set each one after its first deployment, to `https://` and the address (`main.bicep`'s
+   `portalFqdn` or `agentFqdn` output), with no trailing slash. Then run the pipeline again, so the deployed portal
+   is an allowed origin, and the deployed agent's docs page an allowed return address:
 
    ```bash
    gh variable set AUTH0_PORTAL_ORIGIN --env auth0-dev --body "https://<the portal's address>"
    ```
+
+   ```bash
+   gh variable set AUTH0_AGENT_ORIGIN --env auth0-dev --body "https://<the agent's address>"
+   ```
+
+   The agent's origin is needed only where its docs page is on (`agent.apiDocs` in the parameter file). Without it
+   the agent still accepts tokens; only the sign-in from the deployed docs page is refused by Auth0.
 
 ## Run it
 
@@ -171,6 +228,8 @@ The portal accepts only its own client. The agent service accepts no client of t
      (`specs/012` quickstart §6).
    - **Locally**: put its `issuer`, `clientId`, `audience` and `approver` in `env/l2-control.env` as `CIBA_ISSUER`,
      `CIBA_CLIENT_ID`, `CIBA_AUDIENCE` and `CIBA_APPROVER`, with `CIBA_APPROVAL=1`. Add `CIBA_CLIENT_KEY` yourself.
+     An administrator with a role on the state's container reads the same lines, and the callers' sign-in ones
+     (step 7), with `terraform -chdir=auth0 output -raw l2_env`.
 4. **The approver enrolls in Guardian push**, then you run the live check (`specs/012` quickstart §5).
 5. **Hand the values of people's sign-in to the portal.** The apply run's summary also shows
    the `identity` object and the portal web app's client ID.
@@ -178,8 +237,21 @@ The portal accepts only its own client. The agent service accepts no client of t
      `portalClientId` in its `userAccounts` object. Then run `deploy-portal.yml`.
    - **Locally**: an administrator with a role on the state's container reads the lines for `env/portal.env` with
      `terraform -chdir=auth0 output -raw portal_env`. They hold the same values as the summary.
-6. **Decide who can sign up.** Nobody needs a role. With sign-ups on, anyone who creates an account in the tenant
-   can onboard; turn them off on the connection to choose the people yourself ("What stays by hand", People).
+6. **Decide who can sign up.** Nobody needs a role to use the portal. With sign-ups on, anyone who creates an
+   account in the tenant can onboard; turn them off on the connection to choose the people yourself ("What stays
+   by hand", People).
+7. **Hand the callers' values to the agent and L2** (016; `specs/016` quickstart §5). The apply run's summary also
+   shows the `agent` object: the agent's client ID, and the `checks` client's ID and key ID (both empty until
+   `AUTH0_MACHINE_CALLER_KEYS` declares `checks`).
+   - **Azure**: paste its three values into `param agent` in `infra/main.dev.bicepparam`, and keep that file's own
+     `apiDocs`. Seed the private half of the `checks` key as `machine-client-key` in the l1 vault. Then run
+     `deploy-l2.yml`, and `deploy-l1.yml` after it.
+   - **Locally**: an administrator with a role on the state's container reads the lines for `env/l1-hosted.env`
+     with `terraform -chdir=auth0 output -raw l1_env` (remove `AUTH_JWKS_FILE` there), and L2's with `l2_env`.
+8. **Choose who may start runs.** Assign the role `x402-agent` to each of them in Auth0 ("What stays by hand",
+   People who may start runs). Without it a signed-in person gets 403 from the agent.
+9. **The deployed docs page.** Where `agent.apiDocs` is on, set `AUTH0_AGENT_ORIGIN` after the agent's first
+   deployment and run the pipeline with `apply` again (step 5 of "Set it up").
 
 **Key only.** The pipeline provisions `credential = "key"` and nothing else, so GitHub holds only the public half
 of L2's key. L2's credential is held by L2 only (Constitution V), which rules out sending a client secret through
@@ -192,6 +264,11 @@ GitHub. `private_key_jwt` needs Auth0's Enterprise plan; on a lower plan the pip
 - **Grants and the access policy.** The grant uses `subject_type = "user"`, because a CIBA token is
   user-delegated. If Auth0 refuses the approval request with `access_denied` before anyone was notified, check
   the API's access policy first: that is the live check's job.
+- **A machine caller's key.** To rotate it, replace its public half in `AUTH0_MACHINE_CALLER_KEYS` and apply. Auth0
+  gives the new credential a new key ID: copy `machineKeyId` from the summary to the parameter file, seed the new
+  private half in the vault, and deploy L1. Between the apply and that deployment the caller gets no token.
+- **Machine tokens and the approval API.** A machine caller has no grant for the approval API, whose policy
+  refuses every machine token anyway (`client { policy = "deny_all" }`).
 - **Guardian.** If another configuration owns the tenant's MFA settings, set `manage_guardian = false`, and turn
   on push there. `manage_guardian` can't go from true to false while the resource exists (`prevent_destroy`):
   remove `auth0_guardian.this[0]` from the state first (`terraform state rm`, by an administrator with a role on

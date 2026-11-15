@@ -1,5 +1,10 @@
 # Contract: requester access and session references (proposed SPEC L1-6, SEC-14, SEC-15)
 
+> **2026-11-15, superseded in part by feature 016** (`specs/016-agent-auth0-streaming/contracts/hosted-agent-api.md`,
+> SPEC v1.17): every requester now comes from the sign-in tenant (a person with `agent:run`, or a machine caller);
+> nothing comes from the organization's directory; and the requester's token is kept for the run and forwarded to
+> L2, which verifies it again. Session references are bound as described here.
+
 ## Token verification (`src/layer1-intent/hosted/requester-auth.ts`)
 
 It runs on every request except `GET /healthz` and `GET /readyz`, before the body is read.

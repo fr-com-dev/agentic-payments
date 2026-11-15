@@ -1,7 +1,7 @@
 # No tfvars file exists: the pipeline (provision-auth0.yml) sets every value as TF_VAR_<name>, from the variables of
 # its GitHub environment (AUTH0_TENANT_DOMAIN and the like; auth0/README.md). None of those is a secret. The pipeline
 # always sets credential = "key": GitHub never holds a credential of L2's (Constitution V), so it never sets
-# client_secret. No variable holds a private key.
+# client_secret. No variable holds a private key: L2's and every machine caller's are public halves only.
 
 variable "environment" {
   description = "The deployment environment these objects serve, as in infra/main.<environment>.bicepparam (dev)."
@@ -96,5 +96,29 @@ variable "portal_origin" {
   validation {
     condition     = var.portal_origin == "" || can(regex("^https://[a-z0-9][a-z0-9.-]*$", var.portal_origin))
     error_message = "portal_origin must be empty or https://<host>, with no path, port, wildcard or trailing slash."
+  }
+}
+
+variable "agent_origin" {
+  description = "The deployed hosted agent's origin, https://<host> (infra/main.bicep's agentFqdn output), whose docs page (/docs) then may sign people in through the agent's client, beside http://localhost:4024 and http://127.0.0.1:4024. Empty until the agent is deployed; needed only where its docs page is on (agent.apiDocs)."
+  type        = string
+  default     = ""
+  validation {
+    condition     = var.agent_origin == "" || can(regex("^https://[a-z0-9][a-z0-9.-]*$", var.agent_origin))
+    error_message = "agent_origin must be empty or https://<host>, with no path, port, wildcard or trailing slash."
+  }
+}
+
+variable "machine_caller_keys" {
+  description = "The machine callers: each one's name (it names the client, app-machine-<name>-<environment>) and the PUBLIC half (SPKI PEM, RSA 2048-4096) of its key, as text. The pipeline's own caller is checks. The private half goes only where the caller runs (the l1 vault's machine-client-key for checks), never here. Empty: no machine caller."
+  type        = map(string)
+  default     = {}
+  validation {
+    condition     = alltrue([for name, pem in var.machine_caller_keys : can(regex("^[a-z][a-z0-9-]{1,19}$", name))])
+    error_message = "A machine caller's name must be 2-20 lowercase letters, digits or hyphens, starting with a letter."
+  }
+  validation {
+    condition     = alltrue([for name, pem in var.machine_caller_keys : startswith(trimspace(pem), "-----BEGIN PUBLIC KEY-----") && !strcontains(pem, "PRIVATE KEY")])
+    error_message = "Each value of machine_caller_keys must be a PEM public key (-----BEGIN PUBLIC KEY-----), never a private key."
   }
 }

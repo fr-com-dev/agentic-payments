@@ -35,6 +35,23 @@ const DOC_FILE = "docs/l1-hosted.openapi.yaml";
 const loadDoc = () => loadDocFile(DOC_FILE);
 const DOCS = { API_DOCS: "1" };
 
+/** 016: an agent whose docs page signs in at a tenant (the tenant's name with the test's own keys). */
+const TENANT = "https://x402-test.eu.auth0.com/";
+const SIGN_IN = { API_DOCS: "1", AUTH_ISSUER: TENANT, AUTH_AUDIENCE: "https://x402-api/test", AUTH_JWKS_FILE: "", AGENT_CLIENT_IDS: "AgentDocsClient01", API_DOCS_CLIENT_ID: "AgentDocsClient01" };
+
+type Doc = { servers: { url: string }[]; paths: Record<string, Record<string, { security?: Record<string, unknown>[] }>>; components: { securitySchemes: Record<string, unknown> } };
+/** The committed document as an agent without a docs client serves it: no sign-in scheme, and no use of it. */
+function withoutSignIn(doc: Doc): Doc {
+  const { signIn: _scheme, ...schemes } = doc.components.securitySchemes;
+  const paths = Object.fromEntries(
+    Object.entries(doc.paths).map(([path, item]) => [
+      path,
+      Object.fromEntries(Object.entries(item).map(([method, op]) => [method, op.security ? { ...op, security: op.security.filter((s) => !("signIn" in s)) } : op])),
+    ]),
+  );
+  return { ...doc, paths, components: { ...doc.components, securitySchemes: schemes } };
+}
+
 const REQ = {
   scheme: "exact",
   network: "eip155:31337",
@@ -110,10 +127,17 @@ function ports(o: { budgetDown?: () => boolean } = {}) {
     }),
   });
   if (o.budgetDown) {
-    const budget = p.gate.budget.bind(p.gate);
-    p.gate.budget = async (sessionId) => {
-      if (o.budgetDown!()) throw new Error("L2 unreachable");
-      return budget(sessionId);
+    // 016: the app takes a gate per run (`forCaller`); the outage is put on each of those.
+    const forCaller = p.gate.forCaller.bind(p.gate);
+    p.gate.forCaller = (callerToken) => {
+      const gate = forCaller(callerToken);
+      return {
+        authorize: (intent) => gate.authorize(intent),
+        budget: async (sessionId) => {
+          if (o.budgetDown!()) throw new Error("L2 unreachable");
+          return gate.budget(sessionId);
+        },
+      };
     };
   }
   return p;
@@ -181,7 +205,7 @@ describe("T-API-05 every hosted agent route is documented, and every documented 
 
 /**
  * For each operation: without a token, a secured one answers 401 and an open one (`security: []`) doesn't; a token
- * without Agent.Run gets 403 from a secured one; a token with it passes the guard everywhere.
+ * without agent:run gets 403 from a secured one; a token with it passes the guard everywhere.
  */
 async function authMismatches(doc: OpenApiDoc, a: HostedTestApp): Promise<string[]> {
   const out: string[] = [];
@@ -194,16 +218,16 @@ async function authMismatches(doc: OpenApiDoc, a: HostedTestApp): Promise<string
     if ((none === 401) === open) out.push(`${method} ${path} no token: ${none}`);
     if (!open) {
       const forbidden = (await send(a.base, method, concrete, noRole)).status;
-      if (forbidden !== 403) out.push(`${method} ${path} without Agent.Run: ${forbidden}`);
+      if (forbidden !== 403) out.push(`${method} ${path} without agent:run: ${forbidden}`);
     }
     const passed = (await send(a.base, method, concrete, withRole)).status;
-    if (passed === 401 || passed === 403) out.push(`${method} ${path} with Agent.Run: ${passed}`);
+    if (passed === 401 || passed === 403) out.push(`${method} ${path} with agent:run: ${passed}`);
   }
   return out;
 }
 
 describe("T-API-06 each operation's security matches the agent's guard", () => {
-  it("T-API-06 POST /v1/runs needs an Agent.Run token; the health and docs routes need none", async () => {
+  it("T-API-06 POST /v1/runs needs a caller's token with agent:run; the health and docs routes need none", async () => {
     const a = await start();
     expect(await authMismatches(loadDoc(), a)).toEqual([]);
   });
@@ -213,7 +237,7 @@ describe("T-API-06 each operation's security matches the agent's guard", () => {
     const doc = loadDoc();
     doc.paths["/v1/runs"]!.post!.security = [];
     doc.paths["/healthz"]!.get!.security = [{ requesterBearer: [] }];
-    expect(await authMismatches(doc, a)).toEqual(["POST /v1/runs no token: 401", "GET /healthz no token: 200", "GET /healthz without Agent.Run: 200"]);
+    expect(await authMismatches(doc, a)).toEqual(["POST /v1/runs no token: 401", "GET /healthz no token: 200", "GET /healthz without agent:run: 200"]);
   });
 });
 
@@ -312,6 +336,27 @@ describe("T-API-07 live responses match the documented status, headers and schem
     expect(documented.filter((d) => !seen.has(d))).toEqual([]);
   });
 
+  it("T-API-07 the run stream is documented as the run route's other 200 form, and its last event conforms to the Run schema (v1.17)", async () => {
+    const doc = loadDoc();
+    const content = responseContent(doc, "POST", "/v1/runs", 200)!;
+    expect(Object.keys(content).sort()).toEqual(["application/json", "text/event-stream"]);
+    const a = await start(DOCS, { model: mockModel([text("done")]) });
+    const res = await fetch(`${a.base}/v1/runs`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${await a.token("alice")}`, "content-type": "application/json", accept: "text/event-stream" },
+      body: JSON.stringify({ goal: "hi" }),
+    });
+    expect([res.status, res.headers.get("content-type")!.split(";")[0]]).toEqual([200, "text/event-stream"]);
+    const blocks = (await res.text()).split("\n\n").filter((b) => b.startsWith("event: "));
+    const names = blocks.map((b) => b.split("\n")[0]!.slice("event: ".length));
+    // Only the four documented events.
+    const documented = String((content["text/event-stream"]!.schema as { description?: string }).description);
+    for (const name of new Set(names)) expect(documented, name).toContain(`| \`${name}\` |`);
+    expect([names[0], names.at(-1)]).toEqual(["run", "result"]);
+    const result = JSON.parse(blocks.at(-1)!.split("\n")[1]!.slice("data: ".length)) as unknown;
+    expect(conformance(doc, content["application/json"]!.schema!, result)).toEqual([]);
+  });
+
   it("T-API-07 must-fail: a missing field, a wrong value, an undocumented field and a mixed-up step are reported", () => {
     const doc = loadDoc();
     const run = { $ref: "#/components/schemas/Run" };
@@ -344,7 +389,7 @@ describe("T-API-07 live responses match the documented status, headers and schem
 // T-API-08 Swagger UI on the agent
 // ---------------------------------------------------------------------------------------------------------------
 
-describe("T-API-08 Swagger UI on the agent is opt-in, never set in Azure, same-origin and fixed (SEC-13)", () => {
+describe("T-API-08 the docs routes are off by default, and in Azure only the agent can serve them, where its environment says so", () => {
   const DOCS_PROBES = ["/docs", "/docs/swagger-ui-bundle.js", "/docs/swagger-initializer.js", "/openapi.yaml"];
   const probe = async (base: string, token?: string) => Promise.all(DOCS_PROBES.map(async (p) => `${p} ${(await send(base, "GET", p, token)).status}`));
 
@@ -378,15 +423,32 @@ describe("T-API-08 Swagger UI on the agent is opt-in, never set in Azure, same-o
     for (const bad of ["true", "yes", " 1"]) expect(() => loadHostedConfig({ ...env, API_DOCS: bad })).toThrow(ConfigError);
   });
 
-  it("T-API-08 the Azure deployment never sets API_DOCS on the agent", () => {
+  it("T-API-08 in Azure only the agent can serve the docs, and only where its environment's parameter file says so", () => {
     const files = [
       ...readdirSync("infra").filter((f) => /\.(bicep|bicepparam)$/.test(f)).map((f) => join("infra", f)),
       ...readdirSync("infra/modules").map((f) => join("infra/modules", f)),
       ...readdirSync(".github/workflows").map((f) => join(".github/workflows", f)),
     ];
     expect(files).toContain(".github/workflows/deploy.yml");
-    expect(files).toContain("infra/modules/l1-apps.bicep");
-    expect(files.filter((f) => /API_DOCS/.test(readFileSync(f, "utf8")))).toEqual([]);
+    expect(files).toContain("infra/main.bicep");
+    // 016 (FR-032): the switch is named in one file, the agent's module, and no workflow sets it.
+    const AGENT_MODULE = "infra/modules/l1-apps.bicep";
+    expect(files.filter((f) => /API_DOCS/.test(readFileSync(f, "utf8")))).toEqual([AGENT_MODULE]);
+    // There, outside comments, it is two env entries: the switch, which is the parameter file's agent.apiDocs and
+    // nothing else, and the client the docs page signs people in through, the agent's own, only while the switch is on.
+    const code = readFileSync(AGENT_MODULE, "utf8").split("\n").filter((l) => !l.trim().startsWith("//"));
+    expect(code.filter((l) => /API_DOCS/.test(l)).map((l) => l.trim())).toEqual([
+      "{ name: 'API_DOCS', value: agent.apiDocs ? '1' : '0' }",
+      "{ name: 'API_DOCS_CLIENT_ID', value: agent.apiDocs ? agent.clientId : '' }",
+    ]);
+    // Both are in the agent's container, the one that runs the hosted service: no job gets them.
+    const containers = code.join("\n").split(/\n {8}\{\n {10}name: '/).slice(1);
+    expect(containers.map((c) => [c.slice(0, c.indexOf("'")), /API_DOCS/.test(c)])).toEqual([["agent", true], ["regression", false], ["smoke", false]]);
+    expect(containers[0]).toContain("command: ['node', 'dist/src/hosted-main.js']");
+    // Each environment decides in its own parameter file, with a literal true or false.
+    const parameterFiles = readdirSync("infra").filter((f) => /^main\.[a-z0-9]+\.bicepparam$/.test(f));
+    expect(parameterFiles).toContain("main.dev.bicepparam");
+    for (const f of parameterFiles) expect(readFileSync(join("infra", f), "utf8"), f).toMatch(/^param agent = \{\n(?: {2}.*\n)*? {2}apiDocs: (?:true|false)\n/m);
   });
 
   it("T-API-08 the served document is the file with servers set to the serving agent", async () => {
@@ -394,9 +456,10 @@ describe("T-API-08 Swagger UI on the agent is opt-in, never set in Azure, same-o
     const res = await send(a.base, "GET", "/openapi.yaml");
     expect(res.type).toBe("application/yaml");
     const { servers, ...rest } = parse(res.text) as { servers: { url: string }[] };
-    const { servers: fileServers, ...fileRest } = parse(readFileSync(HOSTED_API_DOCS_FILE, "utf8")) as { servers: { url: string }[] };
+    const { servers: fileServers, ...fileRest } = withoutSignIn(parse(readFileSync(HOSTED_API_DOCS_FILE, "utf8")) as Doc);
     expect(servers.map((s) => s.url)).toEqual(["/"]);
     expect(fileServers.map((s) => s.url)).toEqual(["http://127.0.0.1:4024"]);
+    // 016: this agent has no docs client, so the sign-in scheme and its use are left out of what it serves.
     expect(rest).toEqual(fileRest);
     // must-fail: a document without a top-level servers block is refused rather than served unchanged
     expect(() => servedHostedApiDocument("openapi: 3.1.0\npaths: {}\n")).toThrow("no top-level servers block");
@@ -415,5 +478,57 @@ describe("T-API-08 Swagger UI on the agent is opt-in, never set in Azure, same-o
     const others = ["index.html", "package.json", "swagger-ui-bundle.js.map", "__proto__", "..%2Fpackage.json"];
     const statuses = await Promise.all(others.map(async (x) => `${x} ${(await send(a.base, "GET", `/docs/${x}`)).status}`));
     expect(statuses).toEqual(others.map((x) => `${x} 404`));
+  });
+
+  it("T-API-16 with a docs client, the page signs in at the tenant: the scheme names the tenant, the initializer uses PKCE with that client and the API, and nothing is persisted (016 SEC-34)", async () => {
+    const a = await start(SIGN_IN);
+    expect(a.config.auth.docsClientId).toBe("AgentDocsClient01");
+    // The served document: the committed scheme with the tenant's two addresses, offered beside the bearer scheme.
+    const served = parse((await send(a.base, "GET", "/openapi.yaml")).text) as Doc;
+    expect(served.components.securitySchemes.signIn).toMatchObject({
+      type: "oauth2",
+      flows: { authorizationCode: { authorizationUrl: `${TENANT}authorize`, tokenUrl: `${TENANT}oauth/token`, scopes: {} } },
+    });
+    expect(served.paths["/v1/runs"]!.post!.security).toEqual([{ requesterBearer: [] }, { signIn: [] }]);
+    const file = parse(readFileSync(HOSTED_API_DOCS_FILE, "utf8")) as Doc;
+    expect(JSON.stringify(file)).toContain("https://sign-in-tenant.invalid/");
+    expect(JSON.stringify(served)).not.toContain("sign-in-tenant.invalid");
+    expect(JSON.parse(JSON.stringify(served).replaceAll(TENANT, "https://sign-in-tenant.invalid/"))).toEqual({ ...file, servers: served.servers });
+    // The initializer: public values only, PKCE, the audience on the authorize address, the page's own redirect.
+    const init = (await send(a.base, "GET", "/docs/swagger-initializer.js")).text;
+    expect(init).toContain('oauth2RedirectUrl: window.location.origin + "/docs/oauth2-redirect.html"');
+    const oauth = JSON.parse(init.match(/initOAuth\((\{.*\})\);/)![1]!) as Record<string, unknown>;
+    expect(oauth).toEqual({ clientId: "AgentDocsClient01", usePkceWithAuthorizationCodeGrant: true, additionalQueryStringParams: { audience: "https://x402-api/test" } });
+    expect(init).not.toMatch(/persistAuthorization|clientSecret|secret/i);
+    // The redirect page and its script come from the pinned package, and the page holds no inline script.
+    const redirect = await send(a.base, "GET", "/docs/oauth2-redirect.html");
+    expect([redirect.status, redirect.type]).toEqual([200, "text/html"]);
+    expect(redirect.text).toBe(readFileSync("node_modules/swagger-ui-dist/oauth2-redirect.html", "utf8"));
+    expect(redirect.text.match(/<script[^>]*>/gi)).toEqual(['<script src="oauth2-redirect.js">']);
+    expect((await send(a.base, "GET", "/docs/oauth2-redirect.js")).text).toBe(readFileSync("node_modules/swagger-ui-dist/oauth2-redirect.js", "utf8"));
+    // The policy: the tenant's origin in connect-src and nowhere else; scripts from this origin only; on both pages.
+    for (const page of [await send(a.base, "GET", "/docs"), redirect]) {
+      const csp = (page.headers.get("content-security-policy") ?? "").split("; ");
+      expect(csp).toEqual(expect.arrayContaining(["default-src 'none'", "script-src 'self'", "connect-src 'self' https://x402-test.eu.auth0.com", "frame-ancestors 'none'"]));
+      expect(csp.filter((d) => /https?:/.test(d))).toEqual(["connect-src 'self' https://x402-test.eu.auth0.com"]);
+      expect(csp.join("; ")).not.toMatch(/unsafe-eval/);
+    }
+    // Still token-free, static, and nothing else is served.
+    expect((await send(a.base, "GET", "/docs/index.html")).status).toBe(404);
+  });
+
+  it("T-API-17 without a docs client the page is as before: no sign-in scheme, no redirect page, no origin but its own; and the dev issuer can't have one", async () => {
+    const a = await start();
+    const served = parse((await send(a.base, "GET", "/openapi.yaml")).text) as Doc;
+    expect(Object.keys(served.components.securitySchemes)).toEqual(["requesterBearer"]);
+    expect(served.paths["/v1/runs"]!.post!.security).toEqual([{ requesterBearer: [] }]);
+    expect((await send(a.base, "GET", "/openapi.yaml")).text).not.toMatch(/sign-in:|sign-in-tenant|oauth2/);
+    expect((await send(a.base, "GET", "/docs/swagger-initializer.js")).text).toBe('window.ui = SwaggerUIBundle({ url: "/openapi.yaml", dom_id: "#swagger-ui", validatorUrl: null });\n');
+    for (const asset of ["oauth2-redirect.html", "oauth2-redirect.js"]) expect((await send(a.base, "GET", `/docs/${asset}`)).status, asset).toBe(404);
+    expect((await send(a.base, "GET", "/docs")).headers.get("content-security-policy")).toContain("connect-src 'self';");
+    // The local dev issuer has no sign-in page, so the service refuses a docs client with it.
+    await expect(start({ API_DOCS: "1", API_DOCS_CLIENT_ID: "x402-agent-cli-dev" })).rejects.toThrow(/API_DOCS_CLIENT_ID needs the sign-in tenant/);
+    // must-fail: a document without the scheme can't be served with sign-in, rather than offering a broken button
+    expect(() => servedHostedApiDocument("openapi: 3.1.0\nservers:\n  - url: http://x\npaths: {}\n", { issuer: TENANT, clientId: "c", audience: "a" })).toThrow("no sign-in scheme to fill");
   });
 });

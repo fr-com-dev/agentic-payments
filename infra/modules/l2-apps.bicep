@@ -18,6 +18,10 @@
 // - 014 (rule 22): the administration role's token reaches only the l2 container, as a reference to the l2 vault's
 //   portal-admin-token, always referenced (the placeholder off while userAccounts.administration is false, when L2
 //   ignores it). PORTAL_ADMIN comes from userAccounts.administration.
+// - 016 (rule 23): L2 takes the user from the caller's token, which it verifies itself. It gets AUTH_ISSUER and
+//   AUTH_AUDIENCE from the identity parameter and AGENT_CLIENT_IDS from agent.clientId, the same values the agent
+//   gets, and PORTAL_CLIENT_ID from userAccounts.portalClientId, the client it never accepts as a caller's. Nothing
+//   of the directory, no docs switch and no machine key reaches it.
 param location string
 @description('Every resource name (main.<environment>.bicepparam).')
 param names object
@@ -33,6 +37,10 @@ param sellerPayTo string
 param ciba object
 @description('013 user accounts (SPEC L2-8): the non-secret settings from the parameter file.')
 param userAccounts object
+@description('The sign-in tenant (main.<environment>.bicepparam): its issuer and the API\'s identifier.')
+param identity object
+@description('016: the agent\'s client (main.<environment>.bicepparam); L2 reads clientId only.')
+param agent object
 
 resource idL2 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' existing = { name: names.identities.l2 }
 resource mainEnv 'Microsoft.App/managedEnvironments@2025-01-01' existing = { name: names.environments.x402 }
@@ -99,6 +107,11 @@ resource control 'Microsoft.App/containerApps@2025-01-01' = {
             { name: 'USER_WALLET_MNEMONIC', secretRef: 'user-wallet-mnemonic' }
             { name: 'PORTAL_ADMIN', value: userAccounts.administration ? '1' : '0' }
             { name: 'PORTAL_ADMIN_TOKEN', secretRef: 'portal-admin-token' }
+            // 016: the caller's token. A person's must come from the agent's client, never from the portal's.
+            { name: 'AUTH_ISSUER', value: identity.issuer }
+            { name: 'AUTH_AUDIENCE', value: identity.audience }
+            { name: 'AGENT_CLIENT_IDS', value: agent.clientId }
+            { name: 'PORTAL_CLIENT_ID', value: userAccounts.portalClientId }
           ]
           volumeMounts: [{ volumeName: 'ledger', mountPath: '/app/.local' }]
         }

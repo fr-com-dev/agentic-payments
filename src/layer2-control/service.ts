@@ -16,6 +16,7 @@ import type { Server } from "node:http";
 import { pathToFileURL } from "node:url";
 import express, { type ErrorRequestHandler, type Express } from "express";
 import type { PaymentRequirements } from "@x402/core/types";
+import { addressLimit } from "../shared/address-limit.js";
 import { requireRole } from "../shared/auth.js";
 import { apiDocsEnabled, ConfigError, CONTROL_BIND_HOST, controlPort, loadEnv, networkProfile, ROLE_TOKEN_VAR, tokenFor, type NetworkProfile } from "../shared/config.js";
 import { USER_ID_RE } from "../shared/user-id.js";
@@ -29,6 +30,7 @@ import { CibaClient, cibaConfigFromEnv, publicSettings } from "./ciba-client.js"
 import { mountEscalationRoutes } from "./escalation-routes.js";
 import { ESCALATION_TTL_MS, findPendingEscalation, findRejection, sweep } from "./escalations.js";
 import { AuditLedger, resourceKey, type LedgerEntry } from "./ledger.js";
+import { callerAuth, callerChecksPerMinute, callerDepsFor, callerSettingsFromEnv, forwardedIdentityOf, type CallerDeps } from "./caller.js";
 import { acquireLedgerLock } from "./ledger-lock.js";
 import { mountLedgerRoutes, type Serialize } from "./ledger-routes.js";
 import { loadMandate, type SpendingMandate } from "./mandate.js";
@@ -72,8 +74,14 @@ export interface ControlServiceDeps {
   apiDocs?: boolean;
   /** 012 (L2-7): backchannel approval through the approval service. Absent: off, behavior as in v1.7. */
   backchannel?: BackchannelDeps;
-  /** 013 (L2-8): user accounts. Absent: off, behavior as in v1.8, and `PaymentIntent.userId` is ignored. */
+  /** 013 (L2-8): user accounts. Absent: off, behavior as in v1.8, and a person's token is refused (016). */
   users?: UserAccountsDeps;
+  /**
+   * 016 (L2-5, SEC-32): sign-in. Present: every authorize and budget call must carry the caller's access token
+   * beside the role token, L2 verifies it and takes the user from it. Absent: no token is accepted, no payment
+   * names a user, and the platform account pays (the local scripted demo). main() requires it with user accounts.
+   */
+  caller?: CallerDeps;
   /** 013: the network, for the effective mandate and the views. Required with `users`. */
   net?: Pick<NetworkProfile, "caip2" | "asset" | "decimals">;
   /** 014 (L2-8): the administration routes. Absent: off, each answers 404. Needs `users`. */
@@ -118,17 +126,16 @@ function isHttpUrl(s: unknown): s is string {
 }
 
 /**
- * 015 (L2-7): the shape of `PaymentIntent.approvalSubject`: 1 to 255 characters, none of them whitespace or a control
- * character (an Auth0 user ID is `<connection>|<id>`). Only the shape is checked here; whether the subject is the
- * user's is decided with eligibility, inside the serialized section. A refusal never echoes the value.
+ * 400 checks (L2-5): ids present, accepts is an array, resourceUrl is http(s). 016 (SEC-32): a request can't name
+ * who the payment is for or whose phone to ask. `userId` and the retired `approvalSubject` are refused, because the
+ * user comes from the caller's token alone. `trustUser` is the test-only must-fail switch that restores `userId`.
  */
-const APPROVAL_SUBJECT_RE = /^[^\s\u0000-\u001f\u007f-\u009f]{1,255}$/;
-
-/** 400 checks (L2-5): ids present, accepts is an array, resourceUrl is http(s). */
-function validIntent(body: unknown): body is PaymentIntent {
+function validIntent(body: unknown, trustUser = false): body is PaymentIntent {
   if (body === null || typeof body !== "object") return false;
   const b = body as Record<string, unknown>;
   const pr = b.paymentRequired as Record<string, unknown> | undefined;
+  if ("approvalSubject" in b) return false;
+  if ("userId" in b && !(trustUser && typeof b.userId === "string" && USER_ID_RE.test(b.userId))) return false;
   return (
     typeof b.intentId === "string" &&
     b.intentId.length > 0 &&
@@ -139,11 +146,7 @@ function validIntent(body: unknown): body is PaymentIntent {
     typeof pr === "object" &&
     Array.isArray(pr.accepts) &&
     // 012 FR-007: optional, boolean only.
-    (b.operatorApprovalOnly === undefined || typeof b.operatorApprovalOnly === "boolean") &&
-    // 013 FR-033: optional; a user identifier only.
-    (b.userId === undefined || (typeof b.userId === "string" && USER_ID_RE.test(b.userId))) &&
-    // 015 FR-009: optional; a subject's shape only, and never without the user it belongs to.
-    (b.approvalSubject === undefined || (typeof b.approvalSubject === "string" && APPROVAL_SUBJECT_RE.test(b.approvalSubject) && b.userId !== undefined))
+    (b.operatorApprovalOnly === undefined || typeof b.operatorApprovalOnly === "boolean")
   );
 }
 
@@ -274,9 +277,10 @@ export function createControlService(deps: ControlServiceDeps): ControlService {
 
   /**
    * One serialized decision (L2-5 steps 1–6). `reevaluationOf` marks the second decision after a wait (012): its
-   * INTENT carries the escalation ID, and it never starts an approval request.
+   * INTENT carries the escalation ID, and it never starts an approval request. 016: `intent.userId` was set by the
+   * route from the caller's verified token, never by the request; `subject` is that token's subject, for a person.
    */
-  async function decideOnce(intent: PaymentIntent, opts: { reevaluationOf?: string } = {}): Promise<Decided> {
+  async function decideOnce(intent: PaymentIntent, opts: { reevaluationOf?: string; subject?: string } = {}): Promise<Decided> {
     // Step 1: one clock read; INTENT before deciding.
     const t = now();
     // 010: record due expiries and lapses first, so the decision sees current escalation states.
@@ -285,7 +289,8 @@ export function createControlService(deps: ControlServiceDeps): ControlService {
     const { intentId, sessionId } = intent;
     const key = resourceKey(intent.resourceUrl);
     const accepts = intent.paymentRequired.accepts as PaymentRequirements[];
-    // 013: the user named by the agent service. Off, the field is ignored and never recorded (FR-001).
+    // 013, 016: the user the caller's token proved. With user accounts off there is none (a person's token is
+    // refused before this point) and nothing is recorded about one (FR-001).
     let u = users && intent.userId !== undefined ? userDecision(intent.userId, intent.resourceUrl) : undefined;
     // Test-only must-fail proof of FR-002 (never set by main()): a person who has not onboarded falls back.
     if (u?.gate === "not_onboarded" && users!.fallbackToPlatform) u = undefined;
@@ -373,14 +378,15 @@ export function createControlService(deps: ControlServiceDeps): ControlService {
       }
       // 012 (L2-7): eligibility is decided here, inside the section, from the ledger; recorded on the entry.
       // 015: also from who the escalation is for. `u` is the user this decision resolved (absent: the platform
-      // account, which asks nobody) and the subject is the request's own; it goes to eligibility and, for
-      // `requested`, into the start plan, and nowhere else: never an entry, a log line or the decision.
+      // account, which asks nobody). 016: the subject is the one of the caller's verified token; it goes to
+      // eligibility and, for `requested`, into the start plan, and nowhere else: never an entry, a log line or
+      // the decision.
       const approvalRequest = backchannel?.eligibility({
         operatorOnly: intent.operatorApprovalOnly === true,
         reevaluation: opts.reevaluationOf !== undefined,
         nowMs: t,
         ...(u && { owner: u.userId }),
-        ...(intent.approvalSubject !== undefined && { subject: intent.approvalSubject }),
+        ...(opts.subject !== undefined && { subject: opts.subject }),
       });
       ledger.append(
         {
@@ -404,7 +410,7 @@ export function createControlService(deps: ControlServiceDeps): ControlService {
           amount: chosen.amount,
           requirement: chosen,
           escalationExpiresAtMs: t + ESCALATION_TTL_MS,
-          ...backchannel.addressee({ ...(u && { owner: u.userId }), ...(intent.approvalSubject !== undefined && { subject: intent.approvalSubject }) }),
+          ...backchannel.addressee({ ...(u && { owner: u.userId }), ...(opts.subject !== undefined && { subject: opts.subject }) }),
         },
       };
     }
@@ -483,19 +489,31 @@ export function createControlService(deps: ControlServiceDeps): ControlService {
     };
   }
 
-  app.post("/v1/authorize", requireRole("agent-control", tok(deps.tokens?.control)), express.json({ limit: "256kb" }), async (req, res) => {
-    if (!validIntent(req.body)) {
+  // 016 (SEC-32): the role token first, then the caller's token, then the body. A refused caller's body is never
+  // parsed, and the token is verified here, before any serialized section.
+  const caller = callerAuth(deps.caller, { usersOn: users !== undefined });
+  const trustIntentUser = deps.caller?.trustIntentUser === true;
+  // Verifying a caller's token costs a signature check, so both routes count requests per calling address first,
+  // after the role token: a caller without it is refused before it counts. Beyond the bound: 429, and nothing is
+  // verified, parsed, decided or appended. No bound where sign-in is not configured (nothing is verified there).
+  const callerLimit = addressLimit({ max: callerChecksPerMinute(deps.caller) });
+
+  app.post("/v1/authorize", requireRole("agent-control", tok(deps.tokens?.control)), callerLimit, caller, express.json({ limit: "256kb" }), async (req, res) => {
+    if (!validIntent(req.body, trustIntentUser)) {
       res.status(400).json({ error: "malformed PaymentIntent" });
       return;
     }
-    const intent = req.body;
+    // Who the payment is for: the person the token proved, or nobody (a machine caller, or no sign-in configured).
+    const who = forwardedIdentityOf(res);
+    const subject = who.kind === "person" ? who.subject : undefined;
+    const intent: PaymentIntent = trustIntentUser ? req.body : { ...req.body, ...(who.kind === "person" && { userId: who.userId }) };
     // 012 FR-019: the caller leaving during the wait ends it, and nothing is signed for this call.
     const left = new AbortController();
     res.on("close", () => {
       if (!res.writableFinished) left.abort();
     });
     try {
-      const first = await serialize(() => decideOnce(intent));
+      const first = await serialize(() => decideOnce(intent, { ...(subject !== undefined && { subject }) }));
       if (!first.start || !backchannel) {
         res.json(first.decision);
         return;
@@ -507,7 +525,7 @@ export function createControlService(deps: ControlServiceDeps): ControlService {
       if (outcome === "aborted" || left.signal.aborted) return;
       if (outcome === "approved" || outcome === "denied") {
         // FR-017: a second serialized decision, re-checking every rule at this moment.
-        const second = await serialize(() => (left.signal.aborted ? null : decideOnce(intent, { reevaluationOf: escalationId })));
+        const second = await serialize(() => (left.signal.aborted ? null : decideOnce(intent, { reevaluationOf: escalationId, ...(subject !== undefined && { subject }) })));
         if (second !== null) res.json(second.decision);
         return;
       }
@@ -519,16 +537,19 @@ export function createControlService(deps: ControlServiceDeps): ControlService {
 
   app.use("/v1/authorize", refuseUnreadBody);
 
-  app.get("/v1/budget/:sessionId", requireRole("agent-control", tok(deps.tokens?.control)), (req, res) => {
+  app.get("/v1/budget/:sessionId", requireRole("agent-control", tok(deps.tokens?.control)), callerLimit, caller, (req, res) => {
     const sessionId = String(req.params.sessionId);
     const t = now();
-    // 013: `?userId=` asks for the user view (contracts/control-api.md). Off, the query is ignored.
-    const queried = req.query.userId;
+    // 016: the user view is for the person the caller's token proved. `?userId=` named one before; it is refused
+    // now, whatever its value (the test-only switch restores it for the must-fail proof).
+    const asked = req.query.userId;
+    if (asked !== undefined && !(trustIntentUser && typeof asked === "string" && USER_ID_RE.test(asked))) {
+      res.status(400).json({ error: "userId is not accepted: the user comes from the caller's token" });
+      return;
+    }
+    const who = forwardedIdentityOf(res);
+    const queried = trustIntentUser && typeof asked === "string" ? asked : who.kind === "person" ? who.userId : undefined;
     if (users && queried !== undefined) {
-      if (typeof queried !== "string" || !USER_ID_RE.test(queried)) {
-        res.status(400).json({ error: "invalid userId" });
-        return;
-      }
       const state = userState(ledger.entries(), queried);
       const usable = userGate(state) === undefined;
       const ceiling = usable ? BigInt(users.platform.limits.userDailyCeilingAtomic) : 0n;
@@ -710,6 +731,11 @@ export async function main(): Promise<void> {
   // 015 (L2-7, FR-001): backchannel approval asks the user a payment is for, so it needs user accounts. Checked with
   // the rest, before the lock.
   if (ciba.enabled && !accounts.enabled) throw new ConfigError("CIBA_APPROVAL=1 needs USER_ACCOUNTS=1 (SPEC L2-7)");
+  // 016 (L2-5, FR-015): the caller's token. A user is whoever a verified token names, so user accounts need sign-in.
+  const signIn = callerSettingsFromEnv(process.env, networkProfile().name);
+  if (accounts.enabled && signIn === undefined) {
+    throw new ConfigError("USER_ACCOUNTS=1 needs AUTH_ISSUER, AUTH_AUDIENCE and AGENT_CLIENT_IDS (SPEC L2-8): the user of a payment comes from the caller's token");
+  }
   // L2-6: one writer. Wait in standby while another L2 holds the ledger, then read it only once ours.
   const lock = await acquireLedgerLock(ledgerPathFor());
   // The ledger loads and verifies first, so an integrity failure is reported before anything else.
@@ -740,6 +766,7 @@ export async function main(): Promise<void> {
   } else if (accounts.ignored.length > 0) {
     console.log(`l2-control: user accounts are off; ignoring ${accounts.ignored.join(", ")}`);
   }
+  if (signIn !== undefined) console.log(`l2-control: callers' tokens verified (issuer ${signIn.issuer}); every payment request needs one`);
   if (administration.enabled) console.log("l2-control: portal administration on");
   else if (administration.ignored.length > 0) console.log(`l2-control: portal administration is off; ignoring ${administration.ignored.join(", ")}`);
   const { app, sweep: sweepNow, backchannel } = createControlService({
@@ -749,6 +776,7 @@ export async function main(): Promise<void> {
     asset: { address: net.asset, decimals: net.decimals },
     apiDocs,
     ...(backchannelDeps && { backchannel: backchannelDeps }),
+    ...(signIn !== undefined && { caller: callerDepsFor(signIn) }),
     ...(accounts.enabled && {
       users: { platform: accounts.platform, keyring: accounts.keyring },
       net,

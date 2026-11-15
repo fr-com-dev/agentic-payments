@@ -2,14 +2,9 @@
 // specs/011 contracts/cloud-topology.md, access-and-sessions.md), as one subscription deployment that an
 // administrator runs by hand (quickstart §4 step 0):
 // - the resource group main.bicep deploys into;
-// - the API app registration app-l1-<location>-<environment> and its service principal: the identifier URI
-//   api://app-l1-…, v2.0 access tokens, the Agent.Run app role (assignment required) and the delegated scope
-//   user_impersonation, with the Azure CLI pre-authorized so a person assigned Agent.Run can get a token; and (013)
-//   the optional access-token claim idtyp, which tells an app-only token from a user's;
 // - the deploy app registration app-deploy-<location>-<environment>, its service principal and a federated
 //   credential for each of the repository's two GitHub environments, the deploy pipelines' and the Auth0 pipeline's:
 //   GitHub Actions sign in with OIDC, and no secret exists;
-// - Agent.Run for the deploy app (the pipeline's smoke run) and for agentUsers;
 // - the operators' group grp-op-<location>-<environment> (main.bicep lets it start the operator job);
 // - the deploy app's roles on the resource group (modules/deploy-access.bicep);
 // - the storage for the Terraform state of auth0/, which only the deploy app reads and writes
@@ -18,12 +13,16 @@
 // Every value comes from pre-deploy.<environment>.bicepparam, the target and every name included: run anywhere other
 // than the file's tenant and subscription, the deployment fails validation before it creates anything. T-IAC-01
 // rules 15–17 and 20 assert on the compiled form of this file and on its parameter file.
-// People's sign-in is not described here (specs/013 research R19, 2026-11-10): people sign in with Auth0, defined
-// in auth0/ (Terraform). The Entra objects 013 first added for it are taken out again: the portal web app
-// registration, and the Portal.Access scope with its pre-authorization and the auth_time claim. Entra wants a scope
-// disabled before it is removed, so the scope goes in two deployments (retirePortalScope). The API app stays for
-// system identities; its user_impersonation scope, the Azure CLI's pre-authorization and agentUsers stay as 011
-// made them.
+// Nobody's access to a service is described here. Every caller of the agent, a person or a machine, gets its token
+// from the sign-in tenant, defined in auth0/ (Terraform; specs/013 research R19, specs/016 research R12), so the
+// directory holds one app registration of ours, the deploy app. What 011 and 013 made here for the agent's callers
+// is gone from this file: the API app registration app-l1-<location>-<environment> with its service principal, the
+// Agent.Run role and its assignments, the user_impersonation scope and the Azure CLI's pre-authorization, the
+// idtyp claim, and 013's Portal.Access scope, whose two-step retirement ends with the registration.
+// Bicep never deletes what a template no longer names. In an environment deployed before 016, delete that
+// registration by hand once the agent with 016 is deployed and refuses the directory's tokens
+// (az ad app delete --id <its client ID>: its service principal, role and assignments go with it), as the old
+// portal registration app-portal-<location>-<environment> was. infra/cleanup.sh no longer knows either.
 targetScope = 'subscription'
 
 extension microsoftGraphV1
@@ -33,7 +32,7 @@ param tenantId string
 @description('The subscription the resource group goes in.')
 param subscriptionId string
 param location string
-@description('The names, {type}-{app}-{location}-{environment}: resourceGroup (the one main.bicep deploys into), apiApp, deployApp, operators and stateStorage (the Terraform state of auth0/).')
+@description('The names, {type}-{app}-{location}-{environment}: resourceGroup (the one main.bicep deploys into), deployApp, operators and stateStorage (the Terraform state of auth0/).')
 param names object
 @description('owner/name of the GitHub repository whose deploy job signs in as the deploy app.')
 param githubRepository string
@@ -45,93 +44,18 @@ param githubRepositoryId string
 param githubEnvironment string
 @description('The GitHub environment the Auth0 job runs in (provision-auth0.yml: environment: auth0-<environment>). It holds the Auth0 Management API credential, so it is not the deploy pipelines\' environment.')
 param githubAuth0Environment string
-@description('People who may run the agent (Agent.Run), by user principal name.')
-param agentUsers array
 @description('People who may start the operator job, by user principal name: the operators\' group members.')
 param operators array
-@description('013: true keeps the retired Portal.Access scope in the API app, disabled and pre-authorized for nobody: the one deployment that follows an environment where the scope was enabled, since Entra refuses to remove an enabled scope. False leaves the scope out: a new environment, and every later deployment.')
-param retirePortalScope bool
 
 // Validation fails, naming both, when this runs anywhere other than the parameter file says.
 var target = tenant().tenantId == tenantId && subscription().subscriptionId == subscriptionId
   ? subscriptionId
   : fail('pre-deploy: the parameter file names tenant ${tenantId}, subscription ${subscriptionId}; this deployment runs in tenant ${tenant().tenantId}, subscription ${subscription().subscriptionId}')
 
-// Stable IDs, so a redeployment updates the same role and scope instead of adding new ones.
-var agentRunRoleId = '5b2c3a7e-6f1d-4c55-9f0e-0a1b2c3d4e51'
-var userImpersonationId = '5b2c3a7e-6f1d-4c55-9f0e-0a1b2c3d4e52'
-var portalAccessId = '5b2c3a7e-6f1d-4c55-9f0e-0a1b2c3d4e53'
-// The Azure CLI's well-known public client ID.
-var azureCliAppId = '04b07795-8ddb-461a-bbee-02f9e1bf7b46'
-
-// The API app's delegated scopes. user_impersonation is 011's. Portal.Access was 013's scope for the portal web app
-// while people signed in with Entra: it is retired, so it appears only while retirePortalScope is true, and then
-// disabled, with the ID and the texts it had (only isEnabled changes).
-var userImpersonationScope = {
-  id: userImpersonationId
-  value: 'user_impersonation'
-  type: 'Admin'
-  isEnabled: true
-  adminConsentDisplayName: 'Run the x402 agent as the signed-in user'
-  adminConsentDescription: 'Lets a client run the x402 purchasing agent as the signed-in user. The user still needs the Agent.Run role.'
-}
-var retiredPortalAccessScope = {
-  id: portalAccessId
-  value: 'Portal.Access'
-  type: 'Admin'
-  isEnabled: false
-  adminConsentDisplayName: 'Use the x402 portal as the signed-in user'
-  adminConsentDescription: 'Lets the portal web app read and change the signed-in user\'s own profile, account and expense policy. The user still needs the Agent.Run role.'
-}
-
 resource rg 'Microsoft.Resources/resourceGroups@2024-03-01' = {
   name: names.resourceGroup
   location: location
   tags: { subscription: target }
-}
-
-// ---- The API app: what system identities' tokens are issued for ------------------------------------------------
-// Entra v2.0 tokens carry the app's client ID as aud, never the identifier URI, so the agent's SERVICE_AUDIENCE
-// (main.bicep's authAudience) is apiAppId.
-resource apiApp 'Microsoft.Graph/applications@v1.0' = {
-  uniqueName: names.apiApp
-  displayName: names.apiApp
-  signInAudience: 'AzureADMyOrg'
-  identifierUris: ['api://${names.apiApp}']
-  api: {
-    requestedAccessTokenVersion: 2
-    oauth2PermissionScopes: retirePortalScope ? [userImpersonationScope, retiredPortalAccessScope] : [userImpersonationScope]
-    // The Azure CLI may request user_impersonation without a consent prompt, so `az account get-access-token
-    // --scope api://app-l1-…/user_impersonation` works for a person assigned Agent.Run. Pre-authorization needs no
-    // service principal for the Azure CLI in the tenant (a consent grant would). Nobody is pre-authorized for the
-    // retired Portal.Access: the deployment that disables it also drops the portal web app's pre-authorization.
-    preAuthorizedApplications: [
-      { appId: azureCliAppId, delegatedPermissionIds: [userImpersonationId] }
-    ]
-  }
-  // 013: idtyp tells an app-only token, the only kind the agent service accepts from Entra, from a user's;
-  // include_user_token puts it in user tokens too, so a user's token says so itself.
-  optionalClaims: {
-    accessToken: [
-      { name: 'idtyp', additionalProperties: ['include_user_token'] }
-    ]
-  }
-  appRoles: [
-    {
-      id: agentRunRoleId
-      value: 'Agent.Run'
-      displayName: 'Agent.Run'
-      description: 'Run the x402 purchasing agent (spends from the shared budget within the mandate)'
-      allowedMemberTypes: ['User', 'Application']
-      isEnabled: true
-    }
-  ]
-}
-
-// Only principals assigned Agent.Run can get a token for the API.
-resource apiSp 'Microsoft.Graph/servicePrincipals@v1.0' = {
-  appId: apiApp.appId
-  appRoleAssignmentRequired: true
 }
 
 // ---- The deploy app: what GitHub Actions sign in as ------------------------------------------------------------
@@ -170,24 +94,6 @@ resource githubAuth0Credential 'Microsoft.Graph/applications/federatedIdentityCr
 resource deploySp 'Microsoft.Graph/servicePrincipals@v1.0' = {
   appId: deployApp.appId
 }
-
-// ---- Who may run the agent -------------------------------------------------------------------------------------
-// The deploy app, for the pipeline's smoke run: it can then spend through the agent, within the mandate.
-resource deployAgentRun 'Microsoft.Graph/appRoleAssignedTo@v1.0' = {
-  appRoleId: agentRunRoleId
-  principalId: deploySp.id
-  resourceId: apiSp.id
-}
-
-resource agentUser 'Microsoft.Graph/users@v1.0' existing = [for upn in agentUsers: {
-  userPrincipalName: upn
-}]
-
-resource userAgentRun 'Microsoft.Graph/appRoleAssignedTo@v1.0' = [for (upn, i) in agentUsers: {
-  appRoleId: agentRunRoleId
-  principalId: agentUser[i].id
-  resourceId: apiSp.id
-}]
 
 // ---- Who may start the operator job (main.bicep assigns the role on that job only) -----------------------------
 resource operatorUser 'Microsoft.Graph/users@v1.0' existing = [for upn in operators: {
@@ -231,6 +137,5 @@ output resourceGroup string = rg.name
 @description('The IDs main.<environment>.bicepparam needs, as its lines.')
 output mainParameters string = join([
   'param deployClientId = \'${deployApp.appId}\''
-  'param authAudience = \'${apiApp.appId}\''
   'param operatorsGroupId = \'${operatorsGroup.id}\''
 ], '\n')

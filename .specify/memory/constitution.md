@@ -1,5 +1,42 @@
 <!--
 Sync Impact Report
+- Version change: 1.8.0 → 2.0.0 (MAJOR, 2026-11-15, feature 016-agent-auth0-streaming). MAJOR because a rule of
+  Principle V is redefined (Governance: "MAJOR when a principle or invariant is removed or redefined").
+- Modified principles: V. Least-Privilege Credentials (the bullet on the requester credential is replaced: the
+  token is forwarded to L2 only, beside L1's role credential, on the authorize and budget calls of that run; L2
+  verifies it itself and takes the user from it; it opens no route by itself and never replaces a role
+  credential; both kinds of requester, people and machine callers, come from the sign-in tenant, where a system
+  identity came from the organization's directory; L2 applies the agent's client rule to a forwarded token. One
+  new bullet for a machine caller's key). One rule inside Principle V is reversed, by the owner's decision of
+  2026-11-15: "MUST NOT be forwarded to L2 or L3" becomes "forwarded to L2 only". No principle or invariant is
+  removed; INV-13 keeps "one credential never authorizes two roles", and the requester's token is no role
+  credential.
+- Modified sections: Technology & Scope Constraints (the Auth0 tenant holds three fixed applications and one per
+  declared machine caller, two permissions and two roles; the organization's directory is no issuer for any
+  caller; the hosted agent can answer as server-sent events; the API docs page may be turned on for a deployed
+  agent by its environment's parameter file, never for another unit; scope: people and machine callers start
+  runs in a deployed environment, and forwarding a person's token from the portal stays out; residual risks
+  for v1.17). No new package.
+- Added sections: none. Removed sections: none.
+- Residual risks removed or reworded: 1.4.0 "the hosted agent service is trusted to name the user each payment
+  is for" (removed: L2 takes the user from the token it verifies); 1.8.0 "a deployed environment asks nobody by
+  phone until people can start runs there" (removed: they can); 1.8.0 "a compromised hosted agent that knows
+  another user's subject can cause a request to that user's phone" (reworded: only for a person whose token it
+  holds).
+- Templates reviewed: plan-template.md, spec-template.md, tasks-template.md (no change)
+- Source: SPEC.md v1.17 (Changes in 1.17, §1.2, §1.3, §3.1 Azure profile, §3.3, §4 INV-13, §4.1 A14 and A15,
+  §7, L1-1, L1-2, L1-5, L1-6, L2-5, L2-7, L2-8, CFG-2, §11 SEC-13, SEC-14, SEC-20 and SEC-32..SEC-34)
+- Documents changed with it: SPEC.md and specs/007-process-isolation-security/contracts/threat-matrix.md. To
+  follow in the feature's last slice (specs/016 tasks T045, T049, T050): specs/README.md, CLAUDE.md, README.md
+  and auth0/README.md.
+- Deferred TODOs: SEC_ROWS in test/architecture.test.ts follows the threat matrix (SEC-31 stays reserved by
+  feature 015), and T-ARCH-TRACE passes once the tests the three new rows name exist; SPEC v1.17 is checked
+  against what was delivered in specs/016 task T048; three facts are checked against the real tenant and a
+  deployed agent (specs/016 quickstart §6: where a machine token carries its permission, the docs page's
+  sign-in, a stream through the ingress); the directory's old registration for the agent's callers is deleted
+  by hand after the agent with this feature is deployed.
+
+Previous report (1.8.0)
 - Version change: 1.7.0 → 1.8.0 (MINOR, 2026-11-12, feature 015-per-user-approval)
 - Modified principles: V. Least-Privilege Credentials (one word in the bullet on the approval-service client
   credential: an approval counts only when "the owner's" signed answer verifies, where it said "the approver's";
@@ -188,12 +225,18 @@ Rationale: authorization must be reproducible, auditable and race-free.
 - A third-party API credential (for example, the seller's CDP facilitator key) is held by
   exactly one process and confined to one file by an architecture rule. It must never become
   payment authority.
-- A requester credential (the access token a person or system presents to the hosted agent
-  service) authenticates the requester to L1 only. It MUST NOT be forwarded to L2 or L3, and it
-  never replaces a role credential. Since 1.6.0 a person's comes from the sign-in tenant (Auth0) and a
-  system identity's from the organization's directory (Microsoft Entra ID); a system identity never names a
-  user. A person's token for the portal and for the agent service differ by the client they were issued to:
-  each service MUST accept only its own clients and refuse the other's.
+- A requester credential (the access token a person or a machine caller presents to the hosted agent
+  service) authenticates the requester to L1. Since 2.0.0 both kinds come from the sign-in tenant (Auth0),
+  and L1 forwards the token unchanged to L2 only, on the authorize and budget calls of that run, beside L1's
+  own role credential. L2 MUST verify it itself and take the user from it; a machine caller's token names no
+  user. The token opens no route by itself and never replaces a role credential. It MUST NOT be forwarded to
+  L3, the seller or the model, and it MUST NOT be stored or logged. A person's token for the portal and for
+  the agent service differ by the client they were issued to: each service MUST accept only its own clients
+  and refuse the other's, and L2 MUST apply the agent's client rule to a forwarded token.
+- A machine caller's key (the private key with which one machine caller's client asks the sign-in tenant for
+  its own token) is an authentication credential of that one machine caller. It is confined to one module by
+  an architecture rule (A15) and kept in a vault, never in GitHub and never in Terraform's state. It never
+  signs a payment.
 - The approval-service client credential (L2's Auth0 key or secret, for backchannel approval) is held by L2
   only and confined to one module by an architecture rule (A9). It authenticates L2 to the approval service; it
   never signs a payment, and it never approves one by itself: an approval counts only when the owner's
@@ -264,7 +307,14 @@ Rationale: authorization must be reproducible, auditable and race-free.
   services (the hosted agent and the portal) use express-rate-limit 8.7.1 to bound requests per client address
   before a token is verified. The card
   vault is Stripe in test mode, reached over HTTPS from the portal only, through its REST API with a pinned
-  version and no SDK.
+  version and no SDK. Added in 2.0.0, with no new package: the callers of the hosted agent, people and machine
+  callers, come from the Auth0 tenant, and the organization's directory (Microsoft Entra ID) is no issuer for
+  any caller; it stays for the pipeline's sign-in to Azure, the agent's own access to the model and the
+  operators' group. The tenant holds three fixed applications (L2's approval client, the portal's client and
+  the agent's public client) plus one confidential client per declared machine caller, and two permissions
+  and two roles (`portal:admin` in `x402-admin`, `agent:run` in `x402-agent`), each role holding one
+  permission and assigned by hand. The hosted agent can answer a run as server-sent events. The API docs page
+  may be turned on for a deployed agent by its environment's parameter file, never for another unit.
 - Networks in scope: `local` (dev chain with a mock EIP-3009 USDC) and `base-sepolia`
   (testnet USDC). Mainnet is out of scope. The Azure profile (Container Apps, Key Vault, Microsoft
   Foundry) is in scope on testnet only.
@@ -273,7 +323,9 @@ Rationale: authorization must be reproducible, auditable and race-free.
   Since 1.4.0 user accounts are in scope (many users, each with their own account and expense
   policies); organizations of users, paying with a card, moving funds out of a user's account
   and deleting a user stay out. Since 1.7.0 administrators decide escalated payments in the portal. Since 1.8.0 a
-  user approves their own agent's escalated payments by phone; approving them in the portal stays out. Each extension (EXT-1..EXT-9) is delivered one per change and MUST
+  user approves their own agent's escalated payments by phone; approving them in the portal stays out. Since 2.0.0
+  people who hold the agent role, and machine callers, start runs of the hosted agent in a deployed environment;
+  forwarding a person's token from the portal to the control layer stays out. Each extension (EXT-1..EXT-9) is delivered one per change and MUST
   preserve every invariant.
 - Cross-layer types live only in the shared contract module. Changing them is a contract
   change: update every producer, consumer and test together.
@@ -290,7 +342,6 @@ Rationale: authorization must be reproducible, auditable and race-free.
   - the approval service is trusted to authenticate the approver;
   - the approver's phone is a new place where approvals happen.
   Added in 1.4.0:
-  - the hosted agent service is trusted to name the user each payment is for;
   - a stolen portal sign-in can loosen a policy up to the platform limits, after a fresh sign-in;
   - one mnemonic covers every user's test funds and cannot be rotated in place;
   - the card vault sees card details.
@@ -307,9 +358,15 @@ Rationale: authorization must be reproducible, auditable and race-free.
   - one portal process holds two role credentials, separate at the control layer and in its own code.
   Added in 1.8.0:
   - a person approves their own agent's spending, for every amount their policy and the platform limits allow;
-  - a compromised hosted agent that knows another user's subject can cause a request to that user's phone;
-  - a deployed environment asks nobody by phone until people can start runs there;
+  - a compromised hosted agent can cause a request to the phone of a person whose token it holds (reworded in
+    2.0.0: knowing that person's subject is no longer enough);
   - whoever knows a person's sign-in credentials can enroll a phone where that person never did.
+  Added in 2.0.0:
+  - the control layer cannot tell whether the token L1 forwards is the token of the caller of this run: a
+    compromised hosted agent can spend for a person whose token it has seen, within that person's policies and
+    until the token expires, and no longer for a person who has not called it;
+  - the agent's identity can read the machine caller's key, so a compromised agent can still request payments
+    from the platform account, within the platform mandate.
 
 ## Development Workflow & Quality Gates
 
@@ -338,4 +395,4 @@ New policy rules get a snake_case rule ID, a row in the SPEC rule table and a po
   design and again before implementation. Every review verifies the quality gates above.
 - Runtime guidance for agents lives in `CLAUDE.md`.
 
-**Version**: 1.8.0 | **Ratified**: 2026-10-16 | **Last Amended**: 2026-11-12
+**Version**: 2.0.0 | **Ratified**: 2026-10-16 | **Last Amended**: 2026-11-15

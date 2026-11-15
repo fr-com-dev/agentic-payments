@@ -46,23 +46,22 @@ export interface OrchestratorDeps {
    * scripted root (src/main.ts --scripted) sets it; the agents' tools cannot. It only removes an approval path.
    */
   operatorApprovalOnly?: boolean;
-  /**
-   * 013 FR-033: the user every intent of this orchestrator is for. Only the hosted agent's composition
-   * (src/layer1-intent/hosted/server.ts) sets it, from the verified requester; the agents' tools cannot.
-   */
-  userId?: string;
-  /**
-   * 015 (L2-7): that user's subject at the approval service, copied onto every intent beside `userId` so that L2 can
-   * address an approval request to them. Only a composition that verified the person's sign-in sets it; nothing
-   * else in L1 reads it: not the agents' tools, the model, a result or a log line.
-   */
-  approvalSubject?: string;
 }
 
 /** Non-JSON bodies are returned as text truncated to this many characters (L1-1 step 2). */
 export const MAX_TEXT_BODY = 2000;
 
 const errorMessage = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+/**
+ * 016: L2 answers 401 or 403 with a `caller_…` code when it refuses the caller's token (specs/016
+ * contracts/control-api.md). The agent is told so in words it can pass on; anything else is not a caller refusal.
+ */
+function callerRefusal(e: unknown): string | null {
+  const code = typeof e === "object" && e !== null && "code" in e ? (e as { code?: unknown }).code : undefined;
+  if (typeof code !== "string" || !code.startsWith("caller_")) return null;
+  return code === "caller_token_expired" ? "the sign-in has expired: sign in again" : "the caller was refused by the control layer";
+}
 
 async function readBody(res: Response): Promise<unknown> {
   const text = await res.text();
@@ -116,14 +115,14 @@ export class PaidResourceOrchestrator {
       purpose,
       createdAt: new Date().toISOString(),
       ...(this.deps.operatorApprovalOnly === true && { operatorApprovalOnly: true }),
-      ...(this.deps.userId !== undefined && { userId: this.deps.userId }),
-      ...(this.deps.userId !== undefined && this.deps.approvalSubject !== undefined && { approvalSubject: this.deps.approvalSubject }),
     };
     let decision;
     try {
       decision = await this.deps.gate.authorize(intent);
     } catch (e) {
-      return { outcome: "ERROR", url, httpStatus: 402, error: `authorization failed: ${errorMessage(e)}` };
+      // 016: L2 refused the caller, not the payment. Say which, never retry, never try another identity (FR-013).
+      const refusal = callerRefusal(e);
+      return { outcome: "ERROR", url, httpStatus: 402, error: refusal ?? `authorization failed: ${errorMessage(e)}` };
     }
 
     // Step 5: DENIED or ESCALATE stops here. No retry.
