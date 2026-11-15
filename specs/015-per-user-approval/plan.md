@@ -21,7 +21,8 @@ for, and nobody else, and removes the approver from every place a deployment is 
   ([R2](research.md#r2-the-identity-check-recompute-the-one-way-identifier),
   [R4](research.md#r4-eligibility-three-new-marks-decided-in-the-same-place)).
 - **The approver check becomes an owner check**, made from the signed answer alone, so it needs nothing stored and
-  works the same after a restart
+  works the same after a restart. It also catches a token from another issuer, which changed that check's proof
+  ([R20](research.md#r20-slice-1-as-delivered-what-differs-from-this-plan))
   ([R3](research.md#r3-the-approver-check-becomes-an-owner-check-from-the-signed-answer-alone)).
 - **The ledger names people by `usr_…` only.** The subject is never written, logged or returned. A backchannel
   decision now records the owner's identifier where it recorded the approver's subject
@@ -96,7 +97,7 @@ and the tenant's configuration in `auth0/`.
 field, one L2 route, one portal route, one card and one button in the web app, one Action. A linear ledger scan
 per decision and per read, as today.
 
-No item is NEEDS CLARIFICATION. [research.md](research.md) records each decision (R1–R19). One group of
+No item is NEEDS CLARIFICATION. [research.md](research.md) records each decision (R1–R19), and R20 what slice 1 delivered differently. One group of
 external facts comes from Auth0's documentation and has not been tried against a tenant: how the Action enrolls
 a phone ([R13](research.md#r13-enrollment-the-tenants-own-asked-for-by-the-portals-sign-in), five numbered
 points, checked by hand in [quickstart §7](quickstart.md)). Nothing on the payment path depends on them.
@@ -143,7 +144,7 @@ No unjustified violation, so Complexity Tracking is empty.
 specs/015-per-user-approval/
 ├── spec.md
 ├── plan.md                      # this file
-├── research.md                  # Phase 0: R1–R19
+├── research.md                  # Phase 0: R1–R19; R20: slice 1 as delivered
 ├── data-model.md                # Phase 1: identifiers, marks, states, entries, views
 ├── quickstart.md                # Phase 1: validation guide, local to the tenant
 ├── contracts/
@@ -364,11 +365,14 @@ of the user-account routes, never environment variables.
 
 T-CIBA-15..24, T-USR-13, T-PRT-15, T-WEB-13..14, T-AGT-08 and T-E2E-15, and the changes to T-API-01..04 and
 12..15, T-IAC-01 rule 19, T-IAC-02 and the setup script's test. Existing tests that must pass with no change of
-meaning: T-E2E-01, T-E2E-02, T-E2E-07, T-E2E-11 to 14, T-CIBA-01..14, T-USR-01..12, T-ADM-01..10,
+meaning: T-E2E-01, T-E2E-02, T-E2E-07, T-E2E-12, T-E2E-13, T-CIBA-01..14, T-USR-01..12, T-ADM-01..10,
 T-PRT-01..14, T-WEB-01..12, T-AGT-01..07 and T-LED-01..07. T-CIBA-01..14 change in one stated way: the helper's
 two onboarded people replace the configured approver, and the payments they test are a person's. T-E2E-10
 changes the same way: its approved purchase becomes a person's, because the platform account can no longer be
-asked; its scripted half is unchanged.
+asked; its scripted half is unchanged. As delivered, T-E2E-11 (the refusal through the orchestrator) and the
+phone case of T-E2E-14 (a portal approval ends the phone's wait) changed the same way, for the same reason
+([R20](research.md#r20-slice-1-as-delivered-what-differs-from-this-plan)); the other cases of T-E2E-14 are
+unchanged.
 
 ## SPEC and governance changes (same change)
 

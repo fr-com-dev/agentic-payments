@@ -10,7 +10,7 @@ description: "Task list for 015: backchannel approval by the person the run is f
 **Prerequisites**:
 - [plan.md](plan.md)
 - [spec.md](spec.md)
-- [research.md](research.md) (R1–R19)
+- [research.md](research.md) (R1–R19; R20 records what slice 1 delivered differently)
 - [data-model.md](data-model.md)
 - [contracts/](contracts/): control-api, approval-request, portal-api and config-and-secrets
 - [quickstart.md](quickstart.md)
@@ -315,7 +315,7 @@ setting and see it refuse, naming the setting; plan the tenant with no approver 
 
   Update SPEC CFG-2 (the `l2-control.env` row) and §3.1's Azure profile. T041 passes.
 - [ ] T045 [P] [US6] Remove the approver from the tenant's configuration and its pipeline:
-  - auth0/variables.tf: `approver_user_id` deleted; auth0/main.tf: `data "auth0_user" "approver"` and its comment deleted, the client's description reworded ("asks the person a run is for"); auth0/outputs.tf: `approver` out of `bicepparam_ciba` and the `CIBA_APPROVER=` line out of the env output;
+  - auth0/variables.tf: `approver_user_id` deleted; auth0/main.tf: `data "auth0_user" "approver"` and its comment deleted, the client's description reworded ("asks the person a run is for"); auth0/outputs.tf: the `CIBA_APPROVER=` line out of the env output (`approver` already left `bicepparam_ciba` with T044, research R20);
   - .github/workflows/provision-auth0.yml: `VAR_approver_user_id`, its `required` entry and its name in the export loop, and the header comment;
   - infra/github-setup.sh: `AUTH0_APPROVER_USER_ID` out of `AUTH0_VARIABLES`.
 

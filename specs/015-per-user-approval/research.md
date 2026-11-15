@@ -418,3 +418,47 @@ configured approver, and it can't be repeated from v1.16 until people can start 
 tenant, which is a later feature (FR-028). Its "Results so far" are on PR #31's branch
 (`claude/012-live-check`), not on `main`; the note goes where that section is when slice 5 lands. `specs/012`'s
 contracts get one line each pointing here for the approver's removal. Nothing in 012 is rewritten.
+
+## R20. Slice 1 as delivered: what differs from this plan
+
+Added 2026-11-15, after slice 1 merged (pull request 33, commits `22f7ea8..df29cdc`). The decisions above stand.
+These are the places where the code and its tests are not what the plan and the task list said, each with its
+reason. SPEC v1.16 already says what was built (§12: T-CIBA-08, T-CIBA-20, T-E2E-10, T-E2E-11, T-E2E-14).
+
+**1. One line of slice 4 landed in slice 1.** `approver` left the `bicepparam_ciba` output of
+`auth0/outputs.tf` with T044, not with T045. T-IAC-02 runs in plain `npm test` and requires that output to have
+exactly the keys of the parameter file's `ciba`, so the Bicep change of R15 could not land without it. Nothing
+else in `auth0/`, the pipeline or `infra/github-setup.sh` changed: the variable, the data source and the
+`CIBA_APPROVER=` line of the env output are still slice 4's (T045).
+
+**2. Two more end-to-end tests became a person's.** The task list named T-E2E-10 only. T-E2E-11 (a refusal
+through the orchestrator) and the phone case of T-E2E-14 (a portal approval ends the phone's wait) also asked
+the platform account, or a person signed in with the dev issuer, who can no longer be asked (FR-007, FR-011).
+Both now use a person whose identifier is made from the stand-in's issuer, as T-E2E-10 does. Their meaning is
+unchanged: a refusal denies, and a portal approval ends the wait.
+
+**3. The proof of the issuer check changed.** Step 7 reads the subject under the answer's own issuer (R3), so a
+token from another issuer fails two checks, `issuer` and then `owner`. Skipping the issuer check alone no longer
+lets that forgery through, which is safer and also means the old must-fail proof showed nothing.
+- In `approval-evidence.test.ts` the proof uses the same tenant written without its trailing slash: the
+  one-way identifier is the same (`issuerHost` normalizes it), so only the exact issuer check stops it.
+- Through L2 (`backchannel-verify.test.ts`, T-CIBA-08) the forgery pays only with `issuer` and `owner` skipped
+  together.
+
+**4. A log leak the design did not foresee, found by T021.** Outside the test environment Express prints an
+unhandled body-parser error, and that error carries the raw request body. A malformed-JSON call to
+`POST /v1/authorize` would have put `approvalSubject` (and `purpose`) in L2's log, against R7. `service.ts`
+now answers an unreadable authorize body itself (`refuseUnreadBody`), quoting and logging nothing, and a case
+of T-CIBA-20 fails without it. The token check still runs before the body is read. Only `/v1/authorize` is
+covered, because it is the only route whose body can hold the subject.
+
+**5. Smaller differences.**
+- T005 needed a fourth kind of assertion change: "the ledger is unchanged" in T-CIBA-03 compares entry counts,
+  because the ledger now holds the two people's onboarding entries.
+- T001 and T050 each had a part with nothing to change: `test/helpers/portal.ts` has no fake control port
+  until slice 3 adds one, and `scripts/escalations.ts` already printed any `approvalRequest` value (a test now
+  pins it).
+
+**Not verified when slice 1 was committed**: `npm run check` as one command and `test/demo.local.test.ts`,
+because another worktree's local stack held ports 8545 and 4020 to 4023. The chain tests and the demo passed
+on temporary alternate ports. Whoever lands the next slice runs the full check first.
