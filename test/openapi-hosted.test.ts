@@ -35,6 +35,23 @@ const DOC_FILE = "docs/l1-hosted.openapi.yaml";
 const loadDoc = () => loadDocFile(DOC_FILE);
 const DOCS = { API_DOCS: "1" };
 
+/** 016: an agent whose docs page signs in at a tenant (the tenant's name with the test's own keys). */
+const TENANT = "https://x402-test.eu.auth0.com/";
+const SIGN_IN = { API_DOCS: "1", AUTH_ISSUER: TENANT, AUTH_AUDIENCE: "https://x402-api/test", AUTH_JWKS_FILE: "", AGENT_CLIENT_IDS: "AgentDocsClient01", API_DOCS_CLIENT_ID: "AgentDocsClient01" };
+
+type Doc = { servers: { url: string }[]; paths: Record<string, Record<string, { security?: Record<string, unknown>[] }>>; components: { securitySchemes: Record<string, unknown> } };
+/** The committed document as an agent without a docs client serves it: no sign-in scheme, and no use of it. */
+function withoutSignIn(doc: Doc): Doc {
+  const { signIn: _scheme, ...schemes } = doc.components.securitySchemes;
+  const paths = Object.fromEntries(
+    Object.entries(doc.paths).map(([path, item]) => [
+      path,
+      Object.fromEntries(Object.entries(item).map(([method, op]) => [method, op.security ? { ...op, security: op.security.filter((s) => !("signIn" in s)) } : op])),
+    ]),
+  );
+  return { ...doc, paths, components: { ...doc.components, securitySchemes: schemes } };
+}
+
 const REQ = {
   scheme: "exact",
   network: "eip155:31337",
@@ -422,9 +439,10 @@ describe("T-API-08 Swagger UI on the agent is opt-in, never set in Azure, same-o
     const res = await send(a.base, "GET", "/openapi.yaml");
     expect(res.type).toBe("application/yaml");
     const { servers, ...rest } = parse(res.text) as { servers: { url: string }[] };
-    const { servers: fileServers, ...fileRest } = parse(readFileSync(HOSTED_API_DOCS_FILE, "utf8")) as { servers: { url: string }[] };
+    const { servers: fileServers, ...fileRest } = withoutSignIn(parse(readFileSync(HOSTED_API_DOCS_FILE, "utf8")) as Doc);
     expect(servers.map((s) => s.url)).toEqual(["/"]);
     expect(fileServers.map((s) => s.url)).toEqual(["http://127.0.0.1:4024"]);
+    // 016: this agent has no docs client, so the sign-in scheme and its use are left out of what it serves.
     expect(rest).toEqual(fileRest);
     // must-fail: a document without a top-level servers block is refused rather than served unchanged
     expect(() => servedHostedApiDocument("openapi: 3.1.0\npaths: {}\n")).toThrow("no top-level servers block");
@@ -443,5 +461,57 @@ describe("T-API-08 Swagger UI on the agent is opt-in, never set in Azure, same-o
     const others = ["index.html", "package.json", "swagger-ui-bundle.js.map", "__proto__", "..%2Fpackage.json"];
     const statuses = await Promise.all(others.map(async (x) => `${x} ${(await send(a.base, "GET", `/docs/${x}`)).status}`));
     expect(statuses).toEqual(others.map((x) => `${x} 404`));
+  });
+
+  it("T-API-16 with a docs client, the page signs in at the tenant: the scheme names the tenant, the initializer uses PKCE with that client and the API, and nothing is persisted (016 SEC-34)", async () => {
+    const a = await start(SIGN_IN);
+    expect(a.config.auth.docsClientId).toBe("AgentDocsClient01");
+    // The served document: the committed scheme with the tenant's two addresses, offered beside the bearer scheme.
+    const served = parse((await send(a.base, "GET", "/openapi.yaml")).text) as Doc;
+    expect(served.components.securitySchemes.signIn).toMatchObject({
+      type: "oauth2",
+      flows: { authorizationCode: { authorizationUrl: `${TENANT}authorize`, tokenUrl: `${TENANT}oauth/token`, scopes: {} } },
+    });
+    expect(served.paths["/v1/runs"]!.post!.security).toEqual([{ requesterBearer: [] }, { signIn: [] }]);
+    const file = parse(readFileSync(HOSTED_API_DOCS_FILE, "utf8")) as Doc;
+    expect(JSON.stringify(file)).toContain("https://sign-in-tenant.invalid/");
+    expect(JSON.stringify(served)).not.toContain("sign-in-tenant.invalid");
+    expect(JSON.parse(JSON.stringify(served).replaceAll(TENANT, "https://sign-in-tenant.invalid/"))).toEqual({ ...file, servers: served.servers });
+    // The initializer: public values only, PKCE, the audience on the authorize address, the page's own redirect.
+    const init = (await send(a.base, "GET", "/docs/swagger-initializer.js")).text;
+    expect(init).toContain('oauth2RedirectUrl: window.location.origin + "/docs/oauth2-redirect.html"');
+    const oauth = JSON.parse(init.match(/initOAuth\((\{.*\})\);/)![1]!) as Record<string, unknown>;
+    expect(oauth).toEqual({ clientId: "AgentDocsClient01", usePkceWithAuthorizationCodeGrant: true, additionalQueryStringParams: { audience: "https://x402-api/test" } });
+    expect(init).not.toMatch(/persistAuthorization|clientSecret|secret/i);
+    // The redirect page and its script come from the pinned package, and the page holds no inline script.
+    const redirect = await send(a.base, "GET", "/docs/oauth2-redirect.html");
+    expect([redirect.status, redirect.type]).toEqual([200, "text/html"]);
+    expect(redirect.text).toBe(readFileSync("node_modules/swagger-ui-dist/oauth2-redirect.html", "utf8"));
+    expect(redirect.text.match(/<script[^>]*>/g)).toEqual(['<script src="oauth2-redirect.js">']);
+    expect((await send(a.base, "GET", "/docs/oauth2-redirect.js")).text).toBe(readFileSync("node_modules/swagger-ui-dist/oauth2-redirect.js", "utf8"));
+    // The policy: the tenant's origin in connect-src and nowhere else; scripts from this origin only; on both pages.
+    for (const page of [await send(a.base, "GET", "/docs"), redirect]) {
+      const csp = (page.headers.get("content-security-policy") ?? "").split("; ");
+      expect(csp).toEqual(expect.arrayContaining(["default-src 'none'", "script-src 'self'", "connect-src 'self' https://x402-test.eu.auth0.com", "frame-ancestors 'none'"]));
+      expect(csp.filter((d) => /https?:/.test(d))).toEqual(["connect-src 'self' https://x402-test.eu.auth0.com"]);
+      expect(csp.join("; ")).not.toMatch(/unsafe-eval/);
+    }
+    // Still token-free, static, and nothing else is served.
+    expect((await send(a.base, "GET", "/docs/index.html")).status).toBe(404);
+  });
+
+  it("T-API-17 without a docs client the page is as before: no sign-in scheme, no redirect page, no origin but its own; and the dev issuer can't have one", async () => {
+    const a = await start();
+    const served = parse((await send(a.base, "GET", "/openapi.yaml")).text) as Doc;
+    expect(Object.keys(served.components.securitySchemes)).toEqual(["requesterBearer"]);
+    expect(served.paths["/v1/runs"]!.post!.security).toEqual([{ requesterBearer: [] }]);
+    expect((await send(a.base, "GET", "/openapi.yaml")).text).not.toMatch(/sign-in:|sign-in-tenant|oauth2/);
+    expect((await send(a.base, "GET", "/docs/swagger-initializer.js")).text).toBe('window.ui = SwaggerUIBundle({ url: "/openapi.yaml", dom_id: "#swagger-ui", validatorUrl: null });\n');
+    for (const asset of ["oauth2-redirect.html", "oauth2-redirect.js"]) expect((await send(a.base, "GET", `/docs/${asset}`)).status, asset).toBe(404);
+    expect((await send(a.base, "GET", "/docs")).headers.get("content-security-policy")).toContain("connect-src 'self';");
+    // The local dev issuer has no sign-in page, so the service refuses a docs client with it.
+    await expect(start({ API_DOCS: "1", API_DOCS_CLIENT_ID: "x402-agent-cli-dev" })).rejects.toThrow(/API_DOCS_CLIENT_ID needs the sign-in tenant/);
+    // must-fail: a document without the scheme can't be served with sign-in, rather than offering a broken button
+    expect(() => servedHostedApiDocument("openapi: 3.1.0\nservers:\n  - url: http://x\npaths: {}\n", { issuer: TENANT, clientId: "c", audience: "a" })).toThrow("no sign-in scheme to fill");
   });
 });

@@ -12,7 +12,7 @@ import { addressLimit, trustProxies } from "../../shared/address-limit.js";
 import type { CallerGates, SettlementVerifierPort } from "../../shared/contracts.js";
 import type { TokenKeys } from "../../shared/identity-token.js";
 import { runGoal } from "./agent.js";
-import { mountHostedApiDocs } from "./api-docs.js";
+import { docsSignIn, mountHostedApiDocs } from "./api-docs.js";
 import type { HostedConfig } from "./config.js";
 import { callerTokenOf, requesterAuth, type Requester } from "./requester-auth.js";
 import { createRunLimiter } from "./run-limits.js";
@@ -93,7 +93,7 @@ export function createHostedApp(deps: HostedDeps): HostedApp {
     else res.status(503).json({ status: "starting" });
   });
   // API_DOCS=1 only (SEC-13): Swagger UI and the document, token-free like the health routes, so before auth.
-  if (deps.config.apiDocs) mountHostedApiDocs(app);
+  if (deps.config.apiDocs) mountHostedApiDocs(app, docsSignIn(deps.config));
 
   // Per address, before any token is verified: a caller without a valid token is bounded too (SEC-14).
   if (!deps.skipAddressLimit) app.use(addressLimit({ ...(deps.maxRequestsPerAddress !== undefined && { max: deps.maxRequestsPerAddress }) }));

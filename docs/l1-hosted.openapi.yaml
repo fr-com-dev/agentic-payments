@@ -27,8 +27,9 @@ info:
     - **Amounts.** `amountUsd` is a decimal string; budget fields are decimal strings of atomic units (USDC
       has 6 decimals: `"1000"` is 0.001 USDC).
     - **API docs.** With `API_DOCS=1`, the agent also serves this document and Swagger UI at `/docs`. Those
-      routes take no token and are not mounted by default; the Azure deployment never sets `API_DOCS`.
-      When served, `servers` points at that agent.
+      routes take no token and are not mounted by default; in Azure they exist only where the environment's
+      parameter file turns them on. When served, `servers` points at that agent. v1.17: with
+      `API_DOCS_CLIENT_ID`, the page's Authorize button signs a person in at the tenant.
 servers:
   - url: http://127.0.0.1:4024
     description: Default local bind (npm run agent:hosted; 0.0.0.0 in a container)
@@ -54,6 +55,9 @@ paths:
         then call again with the same `sessionRef`.
       security:
         - requesterBearer: []
+        # sign-in:begin (served only where the docs page signs in; see src/shared/api-docs.ts)
+        - signIn: []
+        # sign-in:end
       requestBody:
         required: true
         content:
@@ -283,6 +287,21 @@ components:
 
         Locally (`NETWORK=local`, `AUTH_JWKS_FILE`), `npm run -s dev-token -- --subject alice` prints a
         dev-issuer token for a person, and `--service` one for a machine caller.
+
+    # sign-in:begin (served only where the docs page signs in; see src/shared/api-docs.ts)
+    signIn:
+      type: oauth2
+      description: |
+        v1.17. Sign in at the tenant from this page: press Authorize. Authorization code with PKCE through the
+        agent's public client, with no secret; the access token is the same `requesterBearer` token, kept in this
+        page's memory until it is reloaded. Leave the client secret field empty. Offered only where the agent
+        was started with `API_DOCS_CLIENT_ID`; the two addresses below are replaced by the tenant's when served.
+      flows:
+        authorizationCode:
+          authorizationUrl: https://sign-in-tenant.invalid/authorize
+          tokenUrl: https://sign-in-tenant.invalid/oauth/token
+          scopes: {}
+    # sign-in:end
 
   responses:
     Unauthorized:
