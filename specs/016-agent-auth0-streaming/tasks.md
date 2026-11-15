@@ -49,9 +49,9 @@ Repository root. Source in `src/`, tests in `test/`, the tenant in `auth0/`, Azu
 
 **Purpose**: a green baseline and the scope amendments, before any code (FR-047).
 
-- [ ] T001 Run `npm install` (not `npm ci`) and `npm run check`; record the demo's summary (`spent on-chain: 0.006 USDC`, `hash chain ok=true`) as the baseline. If a port is taken by another checkout's stack, say so and stop that stack only with the owner's agreement.
-- [ ] T002 Amend `SPEC.md` (v1.17, "Changes in 1.17") and `.specify/memory/constitution.md` (1.9.0, Sync Impact Report) together, from plan.md "SPEC and governance changes": §1.2, §1.3, §3.1 Azure profile, §3.3, INV-13, §7, L1-1, L1-2, L1-5, L1-6, L2-5, L2-7, L2-8, CFG-2, §11 (SEC-13, SEC-14, SEC-20 amended; SEC-32, SEC-33, SEC-34 new; the two residual risks), §12 (the tests of plan.md "Tests defined here"); Constitution Principle V and the scope constraints. Add the SEC rows to `specs/007-process-isolation-security/contracts/threat-matrix.md` and raise `SEC_ROWS` in `test/architecture.test.ts`. No code yet.
-- [ ] T003 [P] In `specs/015-per-user-approval/tasks.md`, mark T007, T008, T015 and T025 as replaced by 016 (a dated note under "Along the plan's slices" naming T019, T028 and T030 here), and note that 015's other open tasks are to be read against 016 (FR-043). Do not tick them.
+- [X] T001 Run `npm install` (not `npm ci`) and `npm run check`; record the demo's summary (`spent on-chain: 0.006 USDC`, `hash chain ok=true`) as the baseline. If a port is taken by another checkout's stack, say so and stop that stack only with the owner's agreement.
+- [ ] T002 Amend `SPEC.md` (v1.17, "Changes in 1.17") and `.specify/memory/constitution.md` (2.0.0, Sync Impact Report) together, from plan.md "SPEC and governance changes": §1.2, §1.3, §3.1 Azure profile, §3.3, INV-13, §7, L1-1, L1-2, L1-5, L1-6, L2-5, L2-7, L2-8, CFG-2, §11 (SEC-13, SEC-14, SEC-20 amended; SEC-32, SEC-33, SEC-34 new; the two residual risks), §12 (the tests of plan.md "Tests defined here"); Constitution Principle V and the scope constraints. Add the SEC rows to `specs/007-process-isolation-security/contracts/threat-matrix.md` and raise `SEC_ROWS` in `test/architecture.test.ts`. No code yet.
+- [X] T003 [P] In `specs/015-per-user-approval/tasks.md`, mark T007, T008, T015 and T025 as replaced by 016 (a dated note under "Along the plan's slices" naming T019, T028 and T030 here), and note that 015's other open tasks are to be read against 016 (FR-043). Do not tick them.
 
 ---
 
@@ -209,7 +209,7 @@ sign-in settings; the pipeline's checks run as jobs; nothing of the directory re
 
 ## Phase 11: Polish & Cross-Cutting Concerns
 
-- [ ] T048 [P] Finish `SPEC.md` v1.17 against what was delivered (every row of plan.md "SPEC and governance changes"; §12's test rows; §13 if the delivery order needs a line) and check the constitution's 1.9.0 text and residual risks against the code.
+- [ ] T048 [P] Finish `SPEC.md` v1.17 against what was delivered (every row of plan.md "SPEC and governance changes"; §12's test rows; §13 if the delivery order needs a line) and check the constitution's 2.0.0 text and residual risks against the code.
 - [ ] T049 [P] Update `specs/README.md` (the 016 row, SPEC v1.17, traceability for L1-6, L2-5, L2-7, L2-8, CFG-2, SEC-13, SEC-14, SEC-20, SEC-32..34, the new test IDs) and add a dated pointer to 016 at the top of `specs/011-l1-hosted-agent-azure/contracts/access-and-sessions.md`, `specs/013-l2-portal-onboarding/research.md` (R19, R20) and `specs/015-per-user-approval/contracts/control-api.md`.
 - [ ] T050 [P] Update `CLAUDE.md` (what the repo is; hard rules 2 and 10; the commands; "how to make common changes" for an L2 route and a hosted agent route; the gotchas about Entra tokens, the two applications, `API_DOCS` in `infra/`, the vault secrets to seed, the first-deployment order), `README.md` and `docs/` diagrams if they show the directory.
 - [ ] T051 Run quickstart.md §1, §2 and §7 and record each result in its Validation log; list §5 and §6 as the owner's steps with the tenant and Azure, not run here.

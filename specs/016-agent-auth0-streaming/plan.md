@@ -50,7 +50,7 @@ three OpenAPI documents, `SPEC.md`, the constitution and the operating guides.
 
 ## Constitution Check
 
-*Gate: checked before research and again after design.* Constitution 1.8.0; this feature amends it to 1.9.0
+*Gate: checked before research and again after design.* Constitution 1.8.0; this feature amends it to 2.0.0
 first (FR-047, task T002).
 
 | Principle | Before the amendment | After design |
@@ -59,7 +59,7 @@ first (FR-047, task T002).
 | II. Deterministic, pure policy | Holds. `policy.ts` is not edited; the user reaches it as today, in the context `service.ts` builds. | Holds. |
 | III. Ledger is the single source of truth | Holds. No entry type, no field, no counter. | Holds. |
 | IV. Trust the chain, not the counterparty | Not touched. | Not touched. |
-| V. Least-privilege credentials | **Violated as written**: "A requester credential … MUST NOT be forwarded to L2 or L3"; "a system identity's from the organization's directory"; "the only credential GitHub holds" stays true. | Amended in 1.9.0: the requester's token is forwarded to L2 only, beside L1's role token, and opens no route by itself; both kinds of requester come from the sign-in tenant; a machine caller's key is an authentication credential confined to one module (A15) and kept in a vault. |
+| V. Least-privilege credentials | **Violated as written**: "A requester credential … MUST NOT be forwarded to L2 or L3"; "a system identity's from the organization's directory"; "the only credential GitHub holds" stays true. | Amended in 2.0.0: the requester's token is forwarded to L2 only, beside L1's role token, and opens no route by itself; both kinds of requester come from the sign-in tenant; a machine caller's key is an authentication credential confined to one module (A15) and kept in a vault. |
 | VI. Exact money arithmetic | Not touched. | Not touched. |
 | VII. Protocol fidelity | Not touched (x402 headers). Server-sent events follow the standard format. | Holds. |
 | VIII. Proven safety | Applies to every new check. | Each has a must-fail test ([Proofs](#proofs-constitution-viii)). |
@@ -232,7 +232,7 @@ that sends `userId` or `approvalSubject` on an intent (they mint a dev token ins
 
 ## SPEC and governance changes (same change)
 
-`SPEC.md` v1.17 and constitution 1.9.0, amended together in T002, before code.
+`SPEC.md` v1.17 and constitution 2.0.0, amended together in T002, before code.
 
 | Where | Change |
 |---|---|

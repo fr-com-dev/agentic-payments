@@ -329,7 +329,7 @@ identity's were. The hosted agent's run log names the requester for both kinds.
 
 **Decision.** Five slices, each green on its own:
 
-1. Scope amendments (SPEC v1.17, constitution 1.9.0) and the shared caller check.
+1. Scope amendments (SPEC v1.17, constitution 2.0.0) and the shared caller check.
 2. L2 takes the user from the token; L1 forwards it; Entra leaves the agent's code; 015's fields removed.
 3. Streaming.
 4. The docs page's sign-in.

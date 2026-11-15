@@ -444,6 +444,22 @@ US1 alone is not safe to turn on: it has the owner and identity checks, but not 
 | 4. The tenant | T031, T032, T037, T042, T045 |
 | 5. Documents | T051–T058 |
 
+**2026-11-15: slice 2 is replaced by feature 016** (`specs/016-agent-auth0-streaming`). The owner decided that the
+hosted agent forwards the caller's token to L2 and that L2 takes the user, and the person to ask by phone, from
+the token it verifies itself. `PaymentIntent.approvalSubject` therefore leaves the contract, and the four tasks
+of slice 2 are not done here:
+
+| 015 task | Replaced by (016 tasks.md) |
+|---|---|
+| T007 (T-AGT-08) | T019: a person's run sends intents with no user and no subject, and forwards the token |
+| T008 (T-E2E-15) | T030: the hosted agent, L2 and the stand-in; the request goes to the token's subject |
+| T015 (the agent sends the subject) | T014, T015, T023: L2 reads the subject from the forwarded token |
+| T025 (the second half of T-E2E-10) | T030: a machine caller's escalation asks nobody |
+
+The other open tasks (slices 3 to 5) stay with 015 and are to be read against 016: SPEC v1.13's "no application
+for the agent" no longer holds, a person's run can now start in a deployed environment, and the tenant's
+configuration gains the agent's client, a second permission and a second role there.
+
 ---
 
 ## Notes
