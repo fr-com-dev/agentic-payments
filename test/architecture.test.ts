@@ -10,7 +10,7 @@ import { describe, expect, it } from "vitest";
 // Scanner core (T004–T006)
 // ---------------------------------------------------------------------------
 
-export type Rule = "A1" | "A2" | "A3" | "A4" | "A5" | "A6" | "A7" | "A8" | "A9" | "A10" | "A11" | "A12" | "A13" | "A14";
+export type Rule = "A1" | "A2" | "A3" | "A4" | "A5" | "A6" | "A7" | "A8" | "A9" | "A10" | "A11" | "A12" | "A13" | "A14" | "A15";
 export interface ArchViolation {
   rule: Rule;
   file: string;
@@ -383,6 +383,26 @@ export function checkCallerTokenPath(path: string, source: string): ArchViolatio
     ...(A14_HEADER_FILES.has(path) ? [] : hits(A14_HEADER, "names the caller's header")),
     ...(A14_FOR_CALLER_FILES.has(path) ? [] : hits(A14_FOR_CALLER, "takes a gate for a caller")),
   ];
+}
+
+// ---------------------------------------------------------------------------
+// A15 (016, SPEC v1.17 §4.1, SEC-33): a machine caller's key is an authentication credential confined to one module.
+// The two variables that carry it are named only in src/machine-caller/token.ts, and no layer imports that module:
+// it is used by the two entry points that call as a machine (the CLI agent and the smoke client). So the hosted
+// agent's own code, L2, L3 and the portal never hold a way to mint a machine caller's token.
+// ---------------------------------------------------------------------------
+
+const A15_NAMES = /\bMACHINE_CLIENT_KEY(_ID)?\b/;
+const A15_MODULE = "src/machine-caller/token.ts";
+const A15_IMPORT = /["'][./]*\/machine-caller\/[\w./-]+["']/;
+const A15_IMPORTERS = new Set(["src/main.ts", "src/smoke-main.ts"]);
+
+export function checkMachineCallerConfinement(path: string, source: string): ArchViolation[] {
+  if (!path.startsWith("src/") || path === A15_MODULE) return [];
+  const text = lex(source).noComments;
+  const hits = (re: RegExp, detail: (found: string) => string) =>
+    matches(text, re).map((off) => ({ rule: "A15" as const, file: path, line: lineAt(source, off), detail: detail(text.slice(off).match(/^\w+/)?.[0] ?? "") }));
+  return [...hits(A15_NAMES, (found) => found), ...(A15_IMPORTERS.has(path) ? [] : hits(A15_IMPORT, () => "imports the machine caller's module"))];
 }
 
 // ---------------------------------------------------------------------------
@@ -869,6 +889,41 @@ describe("T-ARCH-ENV per-process env templates (US4)", () => {
     expect(checkCallerTokenPath("src/layer1-intent/orchestrator.ts", "// L2 reads X-Caller-Authorization; see forCaller(token)\nexport {};\n")).toEqual([]);
     expect(checkCallerTokenPath("src/shared/contracts.ts", "export interface CallerGates { forCaller(callerToken: string): AuthorizationGatePort }")).toEqual([]);
     expect(checkCallerTokenPath("test/helpers/caller-tokens.ts", '({ "x-caller-authorization": t })')).toEqual([]);
+  });
+
+  // ---- 016: A15, the machine caller's key is confined to one module ------------------------------------------
+
+  it("T-ARCH-A15 fixture trips A15 two ways, and no other rule catches it", () => {
+    const { path, source } = fixture(15);
+    expect(checkFile(path, source)).toEqual([]);
+    expect(checkCallerTokenPath(path, source)).toEqual([]);
+    // The hosted agent's entry point: A1 already keeps the layers out; this is what keeps the other entry points out.
+    expect(checkMachineCallerConfinement(path, source).map((v) => [v.rule, v.detail])).toEqual([
+      ["A15", "MACHINE_CLIENT_KEY"],
+      ["A15", "imports the machine caller's module"],
+    ]);
+  });
+
+  it("T-ARCH-A15 repository is clean: only the machine caller's module names its key, and only the two machine entry points import it", () => {
+    expect(walk("src").flatMap((f) => checkMachineCallerConfinement(f, readFileSync(f, "utf8"))).map(format)).toEqual([]);
+    // Not vacuous: the module really names both variables, and both entry points really import it.
+    const names = checkMachineCallerConfinement("src/shared/x.ts", readFileSync("src/machine-caller/token.ts", "utf8")).map((v) => v.detail);
+    expect(new Set(names)).toEqual(new Set(["MACHINE_CLIENT_KEY", "MACHINE_CLIENT_KEY_ID"]));
+    for (const entry of ["src/main.ts", "src/smoke-main.ts"]) {
+      expect(checkMachineCallerConfinement("src/hosted-main.ts", readFileSync(entry, "utf8")).map((v) => v.detail), entry).toEqual(["imports the machine caller's module"]);
+    }
+    // The hosted agent, L2, L3 and the portal can't import it, and the module itself imports only shared code.
+    for (const file of ["src/hosted-main.ts", "src/layer1-intent/hosted/server.ts", "src/layer2-control/caller.ts", "src/layer3-settlement/service.ts", "src/portal/server.ts"]) {
+      expect(checkMachineCallerConfinement(file, 'import { MachineCaller } from "../machine-caller/token.js";').map((v) => v.rule), file).toEqual(["A15"]);
+    }
+    const imports = [...readFileSync("src/machine-caller/token.ts", "utf8").matchAll(/from "([^"]+)"/g)].map((m) => m[1]);
+    expect(imports.filter((i) => i!.startsWith("."))).toEqual(["../shared/config.js", "../shared/identity-token.js"]);
+  });
+
+  it("T-ARCH-A15 comments, the client's public ID and the caller's ready-made token never trip it", () => {
+    expect(checkMachineCallerConfinement("src/main.ts", "// MACHINE_CLIENT_KEY stays in src/machine-caller/token.ts\nexport {};\n")).toEqual([]);
+    expect(checkMachineCallerConfinement("src/smoke-main.ts", 'console.error("MACHINE_CLIENT_ID is required"); const t = process.env.CALLER_TOKEN;')).toEqual([]);
+    expect(checkMachineCallerConfinement("scripts/x.ts", "process.env.MACHINE_CLIENT_KEY")).toEqual([]);
   });
 
   it("T-ARCH-A1 and A4 cover the portal: it imports only shared and itself, no layer imports it, and it can't sign", () => {
