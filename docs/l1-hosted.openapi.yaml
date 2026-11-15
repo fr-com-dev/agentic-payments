@@ -4,17 +4,19 @@
 openapi: 3.1.0
 info:
   title: L1 hosted agent API
-  version: "1.6"
+  version: "1.17"
   summary: The purchasing agent of the x402 three-layer agent payments PoC, as an HTTP service.
   description: |
     A Claude agent that buys HTTP resources with x402 within a spending mandate. It holds no key: every
     payment is decided and signed by L2, and settled payments are verified on-chain by L3. One call runs one
     goal to the end and answers with every step and a receipt.
 
-    - **Auth.** An access token, checked before anything else. A person's comes from the sign-in tenant (Auth0)
-      and carries the permission `agent:run`; a system identity's comes from the organization's directory
-      (Microsoft Entra ID), app-only, with the app role `Agent.Run`. Without a valid token every path answers 401,
-      except `/healthz`, `/readyz` and the docs routes.
+    - **Auth.** An access token of the sign-in tenant (Auth0), checked before anything else. A person's carries
+      the permission `agent:run` and comes from one of the agent's clients; a machine caller's (client
+      credentials) carries `agent:run` from its grant. Without a valid token every path answers 401, except
+      `/healthz`, `/readyz` and the docs routes. v1.17: the agent forwards the token to L2 with each payment
+      request and budget question, and L2 verifies it again and takes the user from it. A person's run pays from
+      that person's own account; a machine caller's from the platform account.
     - **One call, one run.** The response arrives when the run has ended (completed, stopped or failed), at
       most 200 s later. Allow up to 220 s on the client.
     - **Sessions.** Each new run gets a session and a budget. Send the returned `sessionRef` with the next
@@ -30,7 +32,7 @@ servers:
     description: Default local bind (npm run agent:hosted; 0.0.0.0 in a container)
 tags:
   - name: runs
-    description: Run a goal (a person needs `agent:run`, a system identity `Agent.Run`).
+    description: Run a goal (a person or a machine caller, each with the permission `agent:run`).
   - name: health
     description: Liveness and readiness; no token.
   - name: docs
@@ -232,37 +234,34 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: |
-        One of two access tokens. The service reads the token's issuer only to choose the checks, then verifies in
-        full against that issuer (60 s tolerance on `exp` and `nbf`); any other issuer is 401.
+        An access token of the issuer in `AUTH_ISSUER`, the sign-in tenant, for people's API (`AUTH_AUDIENCE`).
+        Signature, issuer, audience, validity (60 s tolerance on `exp` and `nbf`) and a usable `sub`: 401. A
+        token of any other issuer, the organization's directory included, is 401.
 
-        **A person** (since v1.12): a token of the issuer in `AUTH_ISSUER` for the API (`AUTH_AUDIENCE`), with
-        the permission `agent:run` in `permissions`, issued to a client on the service's list
-        (`AGENT_CLIENT_IDS`). The run's payments are that person's. Since v1.13 the sign-in tenant (Auth0) has
-        no client for this service, so only the local dev issuer gives such a token: a deployed service is
-        configured without these three settings and answers a person's token with 401.
+        **A person**: the permission `agent:run` in `permissions` (a tenant administrator assigns the role that
+        holds it), issued to a client on the service's list (`AGENT_CLIENT_IDS`, never the portal's): otherwise
+        403. The run's payments are that person's.
 
-        **A system identity**: an app-only Entra ID v2.0 token (`idtyp: app`) of the organization's directory
-        (`AUTH_TENANT_ID`) whose `aud` is the API app's client ID (`SERVICE_AUDIENCE`), with the app role
-        `Agent.Run`. The run names no user. With `@azure/identity`, ask for `api://app-l1-eastus2-dev/.default`.
+        **A machine caller**: a client-credentials token (`gty: client-credentials`, `sub` `<client>@clients`)
+        whose grant gives `agent:run`: otherwise 403. The run names no user, and the platform account pays.
 
         Locally (`NETWORK=local`, `AUTH_JWKS_FILE`), `npm run -s dev-token -- --subject alice` prints a
-        dev-issuer token for a person, and `--service` one for a system identity.
+        dev-issuer token for a person, and `--service` one for a machine caller.
 
   responses:
     Unauthorized:
       description: >-
-        Missing, malformed, invalid, expired, wrong-audience or wrong-tenant token, or a token of an issuer the
-        service does not know.
+        Missing, malformed, invalid, expired or wrong-audience token, a machine token whose subject is not its
+        client's, or a token of an issuer the service does not know.
       content:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
     Forbidden:
       description: >-
-        A valid token that may not start a run. A person's: without the permission `agent:run`, from a client that
-        is not on the service's list (which covers the portal's web app, SEC-20), or a machine token of the sign-in
-        tenant. The directory's: without the app role `Agent.Run`, or a person's token (people sign in with the
-        sign-in tenant since v1.12).
+        A valid token that may not start a run. A person's: without the permission `agent:run`, or from a client
+        that is not on the service's list (which covers the portal's web app, SEC-20). A machine caller's: without
+        `agent:run` from its grant.
       content:
         application/json:
           schema:

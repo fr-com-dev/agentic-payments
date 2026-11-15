@@ -6,6 +6,8 @@ import { connect } from "node:net";
 import { resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { CHAIN_PORT, DEFAULT_DEPLOYMENT_FILE, DEFAULT_PORTS, DEV_TOKENS, formatAtomic } from "../src/shared/config.js";
+import { DEV_ISSUER } from "../src/shared/identity-token.js";
+import { DEV_AGENT_CLIENT, DEV_AUDIENCE } from "./dev-issuer-lib.js";
 import { GANACHE_NOISE, localAddress, localDevKeys } from "./local-chain-lib.js";
 import { RegressionBaseline } from "../test/helpers/baseline.js";
 
@@ -71,16 +73,27 @@ export function envFileFor(p: DemoProcess, opts: { allowExample?: boolean } = {}
   return { path, values: parseEnvFile(path) };
 }
 
+/** 016: L2's sign-in settings with the local dev issuer (the values of env/l1-hosted.env.example). Local only. */
+export const DEV_JWKS_FILE = ".local/dev-issuer/jwks.json";
+export const DEV_SIGN_IN = {
+  AUTH_ISSUER: DEV_ISSUER,
+  AUTH_AUDIENCE: DEV_AUDIENCE,
+  AGENT_CLIENT_IDS: DEV_AGENT_CLIENT,
+  AUTH_JWKS_FILE: DEV_JWKS_FILE,
+} as const;
+
 /**
  * T015: children inherit only PATH, HOME and NODE_* plus their own ENV_FILE. On NETWORK=local, missing
  * keys come from the CP-5 mnemonic: #2 only to l2, #1 only to the facilitator. The seller's payTo and
  * L2's payee allowlist default to #3 when empty. Off local nothing is derived. 013: `users` turns user accounts on in
- * the L2 child, on local only; demo:local never sets it.
+ * the L2 child, on local only; demo:local never sets it. 016: `signIn` (implied by `users`, which needs it)
+ * configures L2 to verify callers' tokens with the local dev issuer, so every payment request then needs one;
+ * demo:local never sets it either, and its scripted agent forwards none.
  */
 export function childEnv(
   p: DemoProcess,
   file: EnvFile | null,
-  opts: { network: string; sessionId: string; users?: boolean; admin?: boolean },
+  opts: { network: string; sessionId: string; users?: boolean; admin?: boolean; signIn?: boolean },
 ): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "" };
   for (const [k, v] of Object.entries(process.env)) if (k.startsWith("NODE_") && v !== undefined) env[k] = v;
@@ -98,6 +111,9 @@ export function childEnv(
       // 014 (`--admin`, with `--users` only): the administration routes, for the portal's administration area.
       if (opts.admin) env.PORTAL_ADMIN = "1";
     }
+    // 016 (`--sign-in`, and always with `--users`): L2 verifies callers' tokens, with the local dev issuer unless
+    // L2's own file names an issuer. The caller creates the dev issuer's keys before L2 starts.
+    if ((opts.users || opts.signIn) && !value("AUTH_ISSUER")) Object.assign(env, DEV_SIGN_IN);
   }
   if (p.role === "facilitator" && local && !value("FACILITATOR_PRIVATE_KEY")) {
     env.FACILITATOR_PRIVATE_KEY = localDevKeys({ NETWORK }).facilitator;

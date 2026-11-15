@@ -14,6 +14,7 @@ import type { PaymentRequired, PaymentRequirements } from "@x402/core/types";
 import type { AdminDeps } from "../../src/layer2-control/admin-routes.js";
 import { issuerKeys } from "../../src/layer2-control/approval-evidence.js";
 import type { BackchannelDeps } from "../../src/layer2-control/backchannel.js";
+import type { CallerDeps } from "../../src/layer2-control/caller.js";
 import { CibaClient, type CibaClientOptions, type CibaPort, type CibaSettings } from "../../src/layer2-control/ciba-client.js";
 import { AuditLedger, type LedgerEntry } from "../../src/layer2-control/ledger.js";
 import { buildMandate, type SpendingMandate } from "../../src/layer2-control/mandate.js";
@@ -21,6 +22,7 @@ import { createControlService, recordPlatformConfig, type ControlService } from 
 import { WalletKeyring, type PaymentSignerLike } from "../../src/layer2-control/signer.js";
 import type { AuthorizationDecision, PaymentIntent, PolicyValues, UserView } from "../../src/shared/contracts.js";
 import { userIdFor } from "../../src/shared/user-id.js";
+import { callerHeader, createTestIssuer, type TestIssuer } from "./caller-tokens.js";
 import { type CibaStub, startCibaStub, testRsaKeyPair, type TestRsaKeyPair } from "./ciba-stub.js";
 import { TEST_MNEMONIC, testPlatform } from "./users.js";
 
@@ -90,6 +92,13 @@ export interface BackchannelL2Options {
   clock?: TestClock;
   /** Overrides on the backchannel deps (waitMs, pollDelayMs, retryDelaysMs, cap, skipChecks, serializeOutcomes, log). */
   backchannel?: Partial<BackchannelDeps>;
+  /** 016: must-fail switches and other overrides on L2's caller deps. */
+  caller?: Partial<CallerDeps>;
+  /**
+   * 016: the issuer people sign in with, when it is not the approval service's (default: the stand-in's, as in one
+   * tenant). The two people are then users of that issuer, and nobody can be asked by phone (015's same-tenant rule).
+   */
+  callerIssuer?: string;
   /** No backchannel at all (the feature off). */
   off?: boolean;
   credential?: "key" | "secret";
@@ -135,7 +144,12 @@ export interface BackchannelL2 {
     amount: string,
     o?: { sessionId?: string; operatorApprovalOnly?: unknown; purpose?: string; as?: "alice" | "bob" | "platform" },
   ): PaymentIntent;
-  authorize(intent: PaymentIntent, o?: { signal?: AbortSignal }): Promise<{ status: number; body: AuthorizationDecision & { error?: string } }>;
+  /**
+   * `POST /v1/authorize` as L1 sends it (016): the control token and a caller's token. The caller is the person the
+   * intent names with `userId` (the field is taken off the body) or a machine caller when it names none. `caller`
+   * overrides: a token to forward, or `null` for none; the body then goes out as given.
+   */
+  authorize(intent: PaymentIntent | Record<string, unknown>, o?: { signal?: AbortSignal; caller?: string | null }): Promise<{ status: number; body: AuthorizationDecision & { error?: string } }>;
   approve(id: string, body?: Record<string, unknown>): Promise<{ status: number; body: Record<string, unknown> }>;
   reject(id: string, body?: Record<string, unknown>): Promise<{ status: number; body: Record<string, unknown> }>;
   /** 014: an administration route, with the administration role's token (needs the `admin` option). */
@@ -144,7 +158,10 @@ export interface BackchannelL2 {
   portal(method: string, path: string, body?: unknown): Promise<{ status: number; body: Record<string, unknown> }>;
   pending(): Promise<{ pending: Record<string, unknown>[]; cursor: number }>;
   events(after?: number): Promise<{ events: Record<string, unknown>[]; cursor: number }>;
-  budget(sessionId: string): Promise<{ status: number; body: Record<string, unknown> }>;
+  /** 016: as a machine caller, or as a person (`as`). */
+  budget(sessionId: string, o?: { as?: "alice" | "bob" }): Promise<{ status: number; body: Record<string, unknown> }>;
+  /** 016: the issuer of the callers' tokens this L2 verifies, named like the stand-in so that people are its users. */
+  callers: TestIssuer;
   reconcile(report: unknown): Promise<{ status: number }>;
   /** Entries whose escalationId (data or envelope) or intentId matches. */
   trail(o: { escalationId?: string; intentId?: string }): LedgerEntry[];
@@ -192,6 +209,9 @@ export async function startBackchannelL2(o: BackchannelL2Options = {}): Promise<
   const mandate: SpendingMandate = buildMandate({ ...MANDATE_JSON, ...o.mandate }, { caip2: CAIP2, asset: ASSET }, {});
   const platform = testPlatform();
   recordPlatformConfig(ledger, platform, clock.now());
+  // 016: people sign in at the same tenant that asks their phone (015's same-tenant rule), so the callers' tokens
+  // are issued under the stand-in's issuer name.
+  const callers = await createTestIssuer({ issuer: o.callerIssuer ?? stub.issuer });
   const service = createControlService({
     mandate,
     signer,
@@ -201,6 +221,7 @@ export async function startBackchannelL2(o: BackchannelL2Options = {}): Promise<
     now: clock.now,
     ...(o.off !== true && { backchannel: deps }),
     users: { platform, keyring: new WalletKeyring(TEST_MNEMONIC, { caip2: CAIP2, asset: ASSET }) },
+    caller: { ...callers.deps, ...o.caller },
     net: { caip2: CAIP2, asset: ASSET, decimals: 6 },
     ...(o.admin !== undefined && { admin: o.admin === true ? {} : o.admin }),
   });
@@ -208,10 +229,10 @@ export async function startBackchannelL2(o: BackchannelL2Options = {}): Promise<
     const s = service.app.listen(0, "127.0.0.1", () => r(s));
   });
   const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-  const call = async (method: string, path: string, token: string, body?: unknown, signal?: AbortSignal) => {
+  const call = async (method: string, path: string, token: string, body?: unknown, signal?: AbortSignal, caller?: string) => {
     const res = await fetch(`${url}${path}`, {
       method,
-      headers: { authorization: `Bearer ${token}`, ...(body !== undefined && { "content-type": "application/json" }) },
+      headers: { authorization: `Bearer ${token}`, ...(caller !== undefined && callerHeader(caller)), ...(body !== undefined && { "content-type": "application/json" }) },
       ...(body !== undefined && { body: JSON.stringify(body) }),
       ...(signal && { signal }),
     });
@@ -232,7 +253,7 @@ export async function startBackchannelL2(o: BackchannelL2Options = {}): Promise<
     return view.wallet!.address;
   };
   const onboard = async (subject: string): Promise<Person> => {
-    const userId = userIdFor(stub.issuer, subject);
+    const userId = callers.register(subject);
     return { userId, subject, address: await onboardUser(userId) };
   };
   const people = { alice: await onboard(ALICE_SUB), bob: await onboard(BOB_SUB) };
@@ -262,17 +283,26 @@ export async function startBackchannelL2(o: BackchannelL2Options = {}): Promise<
         purpose: io.purpose ?? "for the report",
         createdAt: new Date(clock.now()).toISOString(),
         ...(io.operatorApprovalOnly !== undefined && { operatorApprovalOnly: io.operatorApprovalOnly as boolean }),
-        ...(person && { userId: person.userId, approvalSubject: person.subject }),
+        ...(person && { userId: person.userId }),
       };
     },
-    authorize: (intent, ao = {}) => call("POST", "/v1/authorize", TOKENS.control, intent, ao.signal),
+    callers,
+    authorize: async (intent, ao = {}) => {
+      if (ao.caller !== undefined) return call("POST", "/v1/authorize", TOKENS.control, intent, ao.signal, ao.caller ?? undefined);
+      const { userId, ...body } = intent as Record<string, unknown>;
+      if (typeof userId === "string" && callers.subjectOf(userId) !== undefined) {
+        return call("POST", "/v1/authorize", TOKENS.control, body, ao.signal, await callers.forUser(userId));
+      }
+      return call("POST", "/v1/authorize", TOKENS.control, intent, ao.signal, await callers.machine());
+    },
     approve: (id, body = {}) => call("POST", `/v1/approvals/${id}`, TOKENS.operator, body),
     reject: (id, body = {}) => call("POST", `/v1/rejections/${id}`, TOKENS.operator, body),
     admin: (method, path, body) => call(method, path, TOKENS.portalAdmin, body),
     portal: (method, path, body) => call(method, path, TOKENS.portal, body),
     pending: async () => (await call("GET", "/v1/escalations", TOKENS.operator)).body,
     events: async (after = -1) => (await call("GET", `/v1/escalations/events?after=${after}`, TOKENS.operator)).body,
-    budget: (sessionId) => call("GET", `/v1/budget/${sessionId}`, TOKENS.control),
+    budget: async (sessionId, bo = {}) =>
+      call("GET", `/v1/budget/${sessionId}`, TOKENS.control, undefined, undefined, bo.as ? await callers.forUser(people[bo.as].userId) : await callers.machine()),
     reconcile: async (report) => ({ status: (await call("POST", "/v1/reconcile", TOKENS.settlement, report)).status }),
     trail: ({ escalationId, intentId }) =>
       ledger

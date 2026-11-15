@@ -106,9 +106,12 @@ describe("T-PRT-10 access by permission (FR-002, FR-003, FR-004, FR-006)", () =>
     // The organization's directory can't make an administrator: a `roles` claim is not a permission.
     const byRole = await p.token("carol", { permissions: null, claims: { roles: ["Portal.Admin", "portal:admin"] } });
     expect(await p.call("GET", "/api/admin/escalations", { token: byRole })).toMatchObject({ status: 403, body: FORBIDDEN });
-    // A system identity's token (the dev directory's) is not a token of the sign-in tenant at all.
-    const system = await p.agentToken("svc", { service: true, roles: ["Agent.Run", "Portal.Admin"] });
-    expect((await p.call("GET", "/api/admin/escalations", { token: system })).status).toBe(401);
+    // A machine caller's token (016: client credentials of the same tenant) is no administrator either, whatever
+    // its grant says; and a token of the organization's directory is not a token of the sign-in tenant at all.
+    const system = await p.agentToken("svc", { service: true, scope: "agent:run portal:admin", permissions: ["portal:admin"] });
+    expect((await p.call("GET", "/api/admin/escalations", { token: system })).status).toBe(403);
+    const directory = await p.agentToken("svc", { issuer: "https://login.microsoftonline.com/00000000-0000-4000-8000-000000000000/v2.0", claims: { roles: ["Portal.Admin"] } });
+    expect((await p.call("GET", "/api/admin/escalations", { token: directory })).status).toBe(401);
   });
 
   it("T-PRT-10 administration off: the routes are not there, and portal:admin counts for nothing", async () => {

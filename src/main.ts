@@ -28,7 +28,14 @@ async function main(argv: string[]): Promise<void> {
 
   const urls = serviceUrls();
   const sessionId = resolveSessionId();
-  const gate = new HttpAuthorizationGate(urls.control, tokenFor("agent-control"));
+  // 016 (SEC-33): where L2 verifies callers, this agent calls as a machine caller: its own client at the sign-in
+  // tenant (MACHINE_CLIENT_ID and its key), or locally a ready-made dev token (CALLER_TOKEN). The gate then carries
+  // that token to L2 beside the control token. With neither set it carries none, which is right where L2 has no
+  // sign-in configured (the local demo). The platform account pays in every case: this agent never runs for a person.
+  const { callerTokenSourceFromEnv } = await import("./machine-caller/token.js");
+  const callerToken = await callerTokenSourceFromEnv(process.env)?.();
+  const control = new HttpAuthorizationGate(urls.control, tokenFor("agent-control"));
+  const gate = callerToken !== undefined ? control.forCaller(callerToken) : control;
   const settlement = new HttpSettlementVerifier(urls.settlement, tokenFor("agent-verifier"));
   const scripted = argv.includes("--scripted");
   // 012 FR-007: the scripted regression (L1-4) is operator-only, so it never notifies the approver.

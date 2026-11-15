@@ -20,9 +20,10 @@ import { randomBytes } from "node:crypto";
 import { existsSync, rmSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { LOCAL_STACK, ProcessGroup, ROOT, childEnv, envFileFor, localStack, portInUse, sleep, type DemoProcess, type EnvFile, type StackRole } from "./demo-lib.js";
+import { DEV_JWKS_FILE, LOCAL_STACK, ProcessGroup, ROOT, childEnv, envFileFor, localStack, portInUse, sleep, type DemoProcess, type EnvFile, type StackRole } from "./demo-lib.js";
+import { DEV_TOKENS } from "../src/shared/config.js";
 import { DEV_ISSUER } from "../src/shared/identity-token.js";
-import { DEV_AGENT_CLIENT, loadOrCreateDevIssuer } from "./dev-issuer-lib.js";
+import { DEV_AGENT_CLIENT, DEV_MACHINE_CLIENT, loadOrCreateDevIssuer, signDevToken } from "./dev-issuer-lib.js";
 import { startLocalChain } from "./local-chain-lib.js";
 
 const operator = (entry: string): DemoProcess => ({ role: "operator", tag: "op", entry, args: [], envFile: "env/operator.env" });
@@ -113,7 +114,23 @@ async function run(role: string | undefined, args: string[]): Promise<number> {
   const jwks = r === "hosted" || r === "portal" ? file?.values.AUTH_JWKS_FILE : undefined;
   if (jwks) await loadOrCreateDevIssuer(dirname(resolve(ROOT, jwks)), { NETWORK: "local" });
 
-  const child = spawn(process.execPath, ["--import", "tsx", p.entry, ...args], { cwd: ROOT, env: localRunEnv(r, file), stdio: "inherit" });
+  const env = localRunEnv(r, file);
+  // 016: an L2 that verifies callers refuses the CLI agent's requests unless it forwards a caller's token. The CLI
+  // agent is a machine caller: give it a dev machine token, unless its own file sets one or a machine client.
+  if (r === "agent" && !file?.values.CALLER_TOKEN && !file?.values.MACHINE_CLIENT_ID) {
+    const control = file?.values.CONTROL_URL || `http://127.0.0.1:${localStack().ports.l2}`;
+    const probe = await fetch(`${control}/v1/budget/sess_probe`, { headers: { authorization: `Bearer ${file?.values.CONTROL_TOKEN || DEV_TOKENS.CONTROL_TOKEN}` } }).then(
+      async (res) => ({ status: res.status, error: ((await res.json().catch(() => ({}))) as { error?: unknown }).error }),
+      () => ({ status: 0, error: undefined }),
+    );
+    if (callerTokenNeeded(probe.status, probe.error)) {
+      const issuer = await loadOrCreateDevIssuer(dirname(resolve(ROOT, DEV_JWKS_FILE)), { NETWORK: "local" });
+      env.CALLER_TOKEN = await signDevToken(issuer, { subject: DEV_MACHINE_CLIENT, service: true });
+      console.error("vscode-local: this L2 verifies callers: the agent runs as the dev machine caller (the platform account pays)");
+    }
+  }
+
+  const child = spawn(process.execPath, ["--import", "tsx", p.entry, ...args], { cwd: ROOT, env, stdio: "inherit" });
   for (const sig of ["SIGINT", "SIGTERM"] as const) process.on(sig, () => child.kill(sig));
   return new Promise((done) => child.once("exit", (code, signal) => done(code ?? (signal ? 0 : 1))));
 }
@@ -158,6 +175,12 @@ const READY_MS = 60_000;
  */
 export const userAccountsOn = (status: number): boolean => status !== 404;
 
+/**
+ * 016: whether the L2 that answers verifies callers' tokens: asked for a budget with the control token and no
+ * caller's token, it then answers 401 `caller_token_required` (and 200 when it takes none).
+ */
+export const callerTokenNeeded = (status: number, error: unknown): boolean => status === 401 && error === "caller_token_required";
+
 async function stack(users: boolean): Promise<number> {
   const local = localStack();
   const group = new ProcessGroup(Object.values(local.ports));
@@ -173,6 +196,8 @@ async function stack(users: boolean): Promise<number> {
 
   console.log("local stack: checking");
   try {
+    // 016: with user accounts L2 verifies callers' tokens, and reads the dev issuer's keys when it starts.
+    if (users) await loadOrCreateDevIssuer(dirname(resolve(ROOT, DEV_JWKS_FILE)), { NETWORK: "local" });
     for (const p of LOCAL_STACK) {
       const role = p.role;
       const action = stackAction(await local.ready[role](), await portInUse(local.ports[role]));

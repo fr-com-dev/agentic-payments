@@ -15,16 +15,11 @@ export interface PaymentIntent {
   // hosted agent never sets it.
   operatorApprovalOnly?: boolean;
   /**
-   * 013 FR-033: the verified person who started the run (`^usr_[0-9a-f]{32}$`). Set by the hosted agent service only,
-   * never from model text or a tool input. Absent for system identities, the scripted agent and the local demo.
+   * The person the payment is for (`^usr_[0-9a-f]{32}$`). 016: set by L2, from the caller's token it verified
+   * itself, on the intent it decides and records. It is never accepted from a request: L2 refuses an intent that
+   * arrives with it (SEC-32). Absent for a machine caller, the scripted agent and the local demo.
    */
   userId?: string;
-  /**
-   * 015 (L2-7): the person's subject at the approval service, from the sign-in token the hosted agent verified.
-   * Set by the hosted agent only, for a person's run, never from model text or a tool input. L2 uses it to address
-   * one approval request to the escalation's owner and keeps it nowhere.
-   */
-  approvalSubject?: string;
 }
 
 // L2 -> L1
@@ -81,8 +76,17 @@ export interface SettlementReport {
 // Ports
 export interface AuthorizationGatePort {
   authorize(intent: PaymentIntent): Promise<AuthorizationDecision>;
-  /** 013: with `userId`, the user view of the budget (`scope: "user_daily"`). */
-  budget(sessionId: string, userId?: string): Promise<BudgetStatus>;
+  /** 016: a gate made for a person answers with that person's view of the budget (`scope: "user_daily"`). */
+  budget(sessionId: string): Promise<BudgetStatus>;
+}
+
+/**
+ * 016 (SEC-32): where a gate for one caller comes from. The hosted agent takes one per run, for the caller whose
+ * token it verified, and every call of that gate carries the token to L2. An empty token gives a gate that
+ * carries none (the local scripted agent, where L2 has no sign-in configured).
+ */
+export interface CallerGates {
+  forCaller(callerToken: string): AuthorizationGatePort;
 }
 
 export interface SettlementVerifierPort {
@@ -224,7 +228,7 @@ export type DecisionChannel = "operator" | "backchannel" | "portal";
 
 /**
  * Written once on `ESCALATED` when backchannel approval is on. 015: `no_owner` (the escalation records no user),
- * `no_identity` (a user and no `approvalSubject`) and `identity_mismatch` (the subject does not resolve to the user)
+ * `no_identity` (a user and no subject to ask; 016: no longer reached from a request) and `identity_mismatch` (the subject does not resolve to the user)
  * ask nobody.
  */
 export type ApprovalRequestMark = "requested" | "capped" | "operator_only" | "reevaluation" | "no_owner" | "no_identity" | "identity_mismatch";

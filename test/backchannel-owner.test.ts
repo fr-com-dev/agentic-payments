@@ -1,7 +1,8 @@
 // 015 — backchannel approval by the person the run is for (SPEC L2-7 v1.16; specs/015 contracts/control-api.md
 // "Tests"). In-process L2 with user accounts, two onboarded people and the stand-in approval service
 // (test/helpers/backchannel-l2.ts): T-CIBA-15 (one request, to the owner, and their answer decides), T-CIBA-16
-// (another person's genuine answer approves nothing), T-CIBA-17 (a subject that is not the user's asks nobody),
+// (another person's genuine answer approves nothing), T-CIBA-17 (the person asked is the one the caller's token
+// proves; since 016 the subject comes from that token, never from the request),
 // T-CIBA-18 (a run with no person behind it asks nobody) and T-CIBA-20 (the subject is written nowhere).
 // Every must-fail switch is a test-only dep of the backchannel, never an environment variable.
 import { readFileSync } from "node:fs";
@@ -199,15 +200,10 @@ describe("T-CIBA-16 another person's genuine answer approves nothing (US2, FR-01
   });
 });
 
-describe("T-CIBA-17 a subject that is not the user's asks nobody (US2, FR-009, FR-011, SEC-30)", () => {
-  /** An intent that names `userId` and carries `subject` (or none), as a caller holding CONTROL_TOKEN could send it. */
-  const intentAs = (l2: BackchannelL2, userId: string, subject: string | undefined, sessionId: string) => ({
-    ...l2.intentFor(PREMIUM, "50000", { as: "platform", sessionId }),
-    userId,
-    ...(subject !== undefined && { approvalSubject: subject }),
-  });
+describe("T-CIBA-17 the person asked is the one the caller's token proves, or nobody (US2, FR-009, FR-011, SEC-30; 016 FR-041)", () => {
+  const OTHER_TENANT = "https://other-tenant.example/";
   /** No request, the mark on the entry, an answer at once, and the operator path pays. */
-  async function asksNobody(l2: BackchannelL2, intent: ReturnType<typeof intentAs>, mark: string, payer: string) {
+  async function asksNobody(l2: BackchannelL2, intent: ReturnType<BackchannelL2["intentFor"]>, mark: string, payer: string) {
     const starts = l2.stub.startForms().length;
     const t0 = Date.now();
     const res = await l2.authorize(intent);
@@ -224,74 +220,71 @@ describe("T-CIBA-17 a subject that is not the user's asks nobody (US2, FR-009, F
     expect((paid.body as { payer: string }).payer.toLowerCase()).toBe(payer.toLowerCase());
   }
 
-  it("T-CIBA-17 alice's userId with bob's subject: identity_mismatch, no request, ESCALATE at once; an operator approval pays", async () => {
-    const l2 = await start();
-    const { alice } = l2.people;
-    await asksNobody(l2, intentAs(l2, alice.userId, BOB_SUB, "sess_mismatch"), "identity_mismatch", alice.address);
-    expect(l2.stub.requests).toHaveLength(0);
-  });
-
-  it("T-CIBA-17 a subject that is the user's only under another issuer: identity_mismatch (FR-011, same tenant or nobody is asked)", async () => {
-    const l2 = await start();
-    // Dana signed in with the local dev issuer. Her subject there is spelled like alice's at the approval service.
-    const dana = userIdFor("urn:x402:dev-issuer", ALICE_SUB);
-    expect(dana).not.toBe(l2.people.alice.userId);
-    const address = await l2.onboardUser(dana);
-    await asksNobody(l2, intentAs(l2, dana, ALICE_SUB, "sess_other_issuer"), "identity_mismatch", address);
-    expect(l2.stub.requests).toHaveLength(0);
-  });
-
-  it("T-CIBA-17 alice's userId and no subject: no_identity, no request", async () => {
-    const l2 = await start();
-    const { alice } = l2.people;
-    await asksNobody(l2, intentAs(l2, alice.userId, undefined, "sess_no_identity"), "no_identity", alice.address);
-    expect(l2.stub.requests).toHaveLength(0);
-  });
-
-  it("T-CIBA-17 the payment itself is decided as without the field: the same decisions and violations, whatever the subject", async () => {
-    const l2 = await start({ backchannel: { waitMs: 50 } });
+  it("T-CIBA-17 the request goes to the subject of the token L2 verified, and no field of the request can point it elsewhere", async () => {
+    const l2 = await start({ backchannel: { waitMs: 100 } });
     l2.stub.setAnswers("pending");
     const { alice } = l2.people;
-    const decide = async (path: string, amount: string, subject: string | undefined, sessionId: string) => {
-      const res = await l2.authorize({ ...intentAs(l2, alice.userId, subject, sessionId), resourceUrl: `${SELLER}${path}`, ...paymentFor(l2, path, amount) });
-      return [res.body.status, rulesOf(res.body)];
-    };
-    // Auto-approved, escalated, and denied above the hard cap: with alice's own subject, with bob's, and with none.
-    for (const [path, amount] of [["/api/weather", "1000"], ["/api/premium-report", "50000"], ["/api/too-much", "200000"]] as const) {
-      const own = await decide(path, amount, ALICE_SUB, `sess_own_${amount}`);
-      expect(await decide(path, amount, BOB_SUB, `sess_bobs_${amount}`)).toEqual(own);
-      expect(await decide(path, amount, undefined, `sess_none_${amount}`)).toEqual(own);
+    const aliceToken = await l2.callers.forUser(alice.userId);
+    // Alice's token, and a body that tries to send the request to bob's phone: refused, nothing recorded, nobody asked.
+    const before = l2.ledger.entries().length;
+    for (const extra of [{ approvalSubject: BOB_SUB }, { userId: l2.people.bob.userId }, { userId: alice.userId, approvalSubject: BOB_SUB }]) {
+      const res = await l2.authorize({ ...l2.intentFor(PREMIUM, "50000", { as: "platform", sessionId: "sess_forged" }), ...extra }, { caller: aliceToken });
+      expect([res.status, res.body.error]).toEqual([400, "malformed PaymentIntent"]);
     }
-    expect(ofType(l2, "ESCALATED").map((e) => e.data.approvalRequest)).toEqual(["requested", "identity_mismatch", "no_identity"]);
+    expect(l2.ledger.entries().length).toBe(before);
+    expect(l2.stub.startForms()).toHaveLength(0);
+    // The same payment without the fields: one request, to alice.
+    const res = await l2.authorize(l2.intentFor(PREMIUM, "50000", { as: "platform", sessionId: "sess_own" }), { caller: aliceToken });
+    expect(res.body.status).toBe("ESCALATE");
+    expect(ofType(l2, "ESCALATED").map((e) => [e.data.approvalRequest, e.data.userId])).toEqual([["requested", alice.userId]]);
+    expect(l2.stub.startForms().map((f) => hintOf(f).sub)).toEqual([ALICE_SUB]);
   });
 
-  it("T-CIBA-17 must fail without the identity check: the request is sent with the mismatched subject in its login_hint", async () => {
-    const l2 = await start({ backchannel: { skipIdentityCheck: true, waitMs: 200 } });
+  it("T-CIBA-17 a person who signed in at another tenant than the approval service's: identity_mismatch, no request; an operator approval pays (FR-011)", async () => {
+    const l2 = await start({ callerIssuer: OTHER_TENANT });
+    const { alice } = l2.people;
+    // Her subject is spelled the same at both, and she is still not the approval service's user.
+    expect(alice.userId).toBe(userIdFor(OTHER_TENANT, ALICE_SUB));
+    expect(alice.userId).not.toBe(userIdFor(l2.stub.issuer, ALICE_SUB));
+    await asksNobody(l2, l2.intentFor(PREMIUM, "50000", { sessionId: "sess_other_issuer" }), "identity_mismatch", alice.address);
+    expect(l2.stub.requests).toHaveLength(0);
+  });
+
+  it("T-CIBA-17 a machine caller's escalation has no owner: no_owner, no request (016 FR-042)", async () => {
+    const l2 = await start();
+    const res = await l2.authorize(l2.intentFor(PREMIUM, "50000", { as: "platform", sessionId: "sess_machine" }), { caller: await l2.callers.machine() });
+    expect(res.body.status).toBe("ESCALATE");
+    const esc = ofType(l2, "ESCALATED")[0]!;
+    expect(esc.data.approvalRequest).toBe("no_owner");
+    expect("userId" in esc.data).toBe(false);
+    await new Promise((r) => setTimeout(r, 60));
+    expect(l2.stub.requests).toHaveLength(0);
+  });
+
+  it("T-CIBA-17 must fail without the identity check: the other tenant's person is asked at the approval service, under a subject that is not hers there", async () => {
+    const l2 = await start({ callerIssuer: OTHER_TENANT, backchannel: { skipIdentityCheck: true, waitMs: 200 } });
     l2.stub.setAnswers("pending");
-    const res = await l2.authorize(intentAs(l2, l2.people.alice.userId, BOB_SUB, "sess_mismatch"));
+    const res = await l2.authorize(l2.intentFor(PREMIUM, "50000", { sessionId: "sess_mismatch" }));
     expect(res.body.status).toBe("ESCALATE");
     expect(ofType(l2, "ESCALATED")[0]!.data.approvalRequest).toBe("requested");
-    // Alice's payment, on bob's phone.
-    expect(l2.stub.startForms().map((f) => hintOf(f).sub)).toEqual([BOB_SUB]);
+    // A payment of the other tenant's alice, on the phone of whoever holds that subject at this one.
+    expect(l2.stub.startForms().map((f) => hintOf(f).sub)).toEqual([ALICE_SUB]);
   });
 });
-
-/** The challenge for `path` at `amount`, from the helper's own intent builder. */
-function paymentFor(l2: BackchannelL2, path: string, amount: string) {
-  return { paymentRequired: l2.intentFor(path, amount, { as: "platform" }).paymentRequired };
-}
 
 describe("T-CIBA-20 the subject is written nowhere (US2, FR-020, NFR-004, SC-009)", () => {
   // Some sign-in methods build the subject from an address, so the planted one is email-shaped.
   const ADDRESS = "planted.person-7f3a91@example.test";
   const PLANTED = `email|${ADDRESS}`;
 
-  it("T-CIBA-20 after an approval, a refusal, a mismatch and a failed start, neither the planted subject nor its address is in the ledger, a log line, a response or an event", async () => {
+  it("T-CIBA-20 after an approval, a refusal, a refused field and a failed start, neither the planted subject nor its address is in the ledger, a log line, a response or an event", async () => {
     const consoleLines: string[] = [];
     vi.spyOn(console, "log").mockImplementation((...a: unknown[]) => void consoleLines.push(a.map(String).join(" ")));
     vi.spyOn(console, "error").mockImplementation((...a: unknown[]) => void consoleLines.push(a.map(String).join(" ")));
     const l2 = await start({ admin: true, backchannel: { log: undefined } });
-    const pat = userIdFor(l2.stub.issuer, PLANTED);
+    // 016: the subject reaches L2 inside the caller's token and nowhere else.
+    const pat = l2.callers.register(PLANTED);
+    expect(pat).toBe(userIdFor(l2.stub.issuer, PLANTED));
     await l2.onboardUser(pat);
     const bodies: unknown[] = [];
     const keep = async <T extends { body: unknown }>(p: Promise<T>) => {
@@ -299,7 +292,7 @@ describe("T-CIBA-20 the subject is written nowhere (US2, FR-020, NFR-004, SC-009
       bodies.push(r.body);
       return r;
     };
-    const patsIntent = (path: string, sessionId: string) => ({ ...l2.intentFor(path, "50000", { as: "platform", sessionId }), userId: pat, approvalSubject: PLANTED });
+    const patsIntent = (path: string, sessionId: string) => ({ ...l2.intentFor(path, "50000", { as: "platform", sessionId }), userId: pat });
 
     // An approval and a refusal, from the planted person's own phone.
     l2.stub.setAnswersFor(0, "pending", { approve: {} });
@@ -308,24 +301,22 @@ describe("T-CIBA-20 the subject is written nowhere (US2, FR-020, NFR-004, SC-009
     expect(approved.body.status).toBe("AUTHORIZED");
     const refused = await keep(l2.authorize(patsIntent("/api/p2", "p2")));
     expect(refused.body.status).toBe("DENIED");
-    // A mismatch: alice's payment carrying the planted subject.
-    const mismatch = await keep(l2.authorize({ ...l2.intentFor("/api/p3", "50000", { as: "platform", sessionId: "p3" }), userId: l2.people.alice.userId, approvalSubject: PLANTED }));
-    expect(mismatch.body.status).toBe("ESCALATE");
     // A failed start: the service refuses the request for good.
     l2.stub.setStart({ permanent: "invalid_request" });
     const failed = await keep(l2.authorize(patsIntent("/api/p4", "p4")));
     expect(failed.body.status).toBe("ESCALATE");
-    // A malformed value (a space) is refused without being repeated.
-    const malformed = await keep(l2.authorize({ ...patsIntent("/api/p5", "p5"), approvalSubject: `${PLANTED} x` }));
+    // A body that carries the subject, as 015's hosted agent would have sent it: refused without being repeated.
+    const patsToken = await l2.callers.forUser(pat);
+    const malformed = await keep(l2.authorize({ ...l2.intentFor("/api/p5", "50000", { as: "platform", sessionId: "p5" }), approvalSubject: PLANTED }, { caller: patsToken }));
     expect(malformed.status).toBe(400);
-    expect(ofType(l2, "ESCALATED").map((e) => e.data.approvalRequest)).toEqual(["requested", "requested", "identity_mismatch", "requested"]);
+    expect(ofType(l2, "ESCALATED").map((e) => e.data.approvalRequest)).toEqual(["requested", "requested", "requested"]);
     expect(l2.stub.startForms().map((f) => hintOf(f).sub)).toEqual([PLANTED, PLANTED, PLANTED]); // the subject did travel
 
     // Every read a person or a process can make of it: the operator's, the administration's and the user-account routes.
     const escalationId = failed.body.authorizationId;
     await keep(l2.approve(escalationId));
     bodies.push(await l2.pending(), await l2.events());
-    const details = ofType(l2, "ESCALATED").map((e) => `/v1/admin/escalations/${e.authorizationId!}`); // approved, denied, pending, approved
+    const details = ofType(l2, "ESCALATED").map((e) => `/v1/admin/escalations/${e.authorizationId!}`); // approved, denied, approved
     for (const path of ["/v1/admin/escalations", "/v1/admin/escalations/events", ...details]) {
       const r = await keep(l2.admin("GET", path));
       expect(r.status, path).toBe(200);
@@ -337,8 +328,8 @@ describe("T-CIBA-20 the subject is written nowhere (US2, FR-020, NFR-004, SC-009
     await keep(l2.budget("p1"));
 
     const haystack = [readFileSync(l2.ledgerFile, "utf8"), ...consoleLines, ...l2.logs, JSON.stringify(bodies)].join("\n");
-    for (const needle of [PLANTED, ADDRESS, encodeURIComponent(PLANTED), encodeURIComponent(ADDRESS), PLANTED_ERROR_TEXT]) {
-      expect(haystack.includes(needle), needle).toBe(false);
+    for (const needle of [PLANTED, ADDRESS, encodeURIComponent(PLANTED), encodeURIComponent(ADDRESS), PLANTED_ERROR_TEXT, patsToken]) {
+      expect(haystack.includes(needle), needle.slice(0, 40)).toBe(false);
     }
     // The scan saw something: lifecycle lines were logged, and the ledger names the person by usr_… only.
     expect(consoleLines.some((l) => l.includes("approval request sent"))).toBe(true);
@@ -358,25 +349,34 @@ describe("T-CIBA-20 the subject is written nowhere (US2, FR-020, NFR-004, SC-009
     // body-parser error carries the raw request body as a property, so the body would be in L2's log.
     l2.service.app.set("env", "development");
     const before = l2.ledger.entries().length;
-    const send = (body: string) =>
-      fetch(`${l2.url}/v1/authorize`, { method: "POST", headers: { authorization: "Bearer b-control", "content-type": "application/json" }, body });
+    // 016: the body is read only for a caller L2 accepted, so the requests carry a machine caller's token.
+    const caller = await l2.callers.machine();
+    const send = (body: string, withCaller = true) =>
+      fetch(`${l2.url}/v1/authorize`, {
+        method: "POST",
+        headers: { authorization: "Bearer b-control", "content-type": "application/json", ...(withCaller && { "x-caller-authorization": `Bearer ${caller}` }) },
+        body,
+      });
     const answers: [number, string][] = [];
-    for (const broken of [`{"approvalSubject":"${PLANTED}",}`, `{"intentId":"int_x","sessionId":"s","approvalSubject":"${PLANTED}" oops`, `"${PLANTED}`]) {
+    for (const broken of [`{"purpose":"${PLANTED}",}`, `{"intentId":"int_x","sessionId":"s","purpose":"${PLANTED}" oops`, `"${PLANTED}`]) {
       const res = await send(broken);
       answers.push([res.status, await res.text()]);
     }
     // A body over the size limit is refused the same way, unread.
-    const big = await send(JSON.stringify({ approvalSubject: PLANTED, pad: "x".repeat(300_000) }));
+    const big = await send(JSON.stringify({ purpose: PLANTED, pad: "x".repeat(300_000) }));
     answers.push([big.status, await big.text()]);
     await new Promise((r) => setTimeout(r, 50)); // Express's default handler logs after it answers
     const haystack = [...answers.map((a) => a[1]), ...consoleLines, ...l2.logs].join("\n");
-    for (const needle of [PLANTED, ADDRESS, "planted.person"]) expect(haystack.includes(needle), needle).toBe(false);
+    for (const needle of [PLANTED, ADDRESS, "planted.person", caller]) expect(haystack.includes(needle), needle.slice(0, 40)).toBe(false);
     expect(consoleLines).toEqual([]);
     expect(answers.map((a) => a[0])).toEqual([400, 400, 400, 413]);
     for (const [status, text] of answers) expect(JSON.parse(text)).toEqual({ error: status === 400 ? "malformed PaymentIntent" : "PaymentIntent body refused" });
     expect(l2.ledger.entries().length).toBe(before);
-    // Without a token the body is never read: 401 precedes everything.
-    expect((await fetch(`${l2.url}/v1/authorize`, { method: "POST", headers: { "content-type": "application/json" }, body: `{"approvalSubject":"${PLANTED}",}` })).status).toBe(401);
+    // Without a role token, or without a caller's token, the body is never read: 401 precedes everything.
+    expect((await fetch(`${l2.url}/v1/authorize`, { method: "POST", headers: { "content-type": "application/json" }, body: `{"purpose":"${PLANTED}",}` })).status).toBe(401);
+    const noCaller = await send(`{"purpose":"${PLANTED}",}`, false);
+    expect([noCaller.status, await noCaller.json()]).toEqual([401, { error: "caller_token_required" }]);
+    expect(consoleLines).toEqual([]);
   });
 });
 

@@ -40,7 +40,8 @@ export const IMAGES: Record<ImageName, ImageSpec> = {
   "l1-agent": {
     dockerfile: "docker/l1-agent.Dockerfile",
     entries: ["src/hosted-main.ts", "src/main.ts"],
-    allowed: ["src/layer1-intent/", "src/shared/", "src/hosted-main.ts", "src/main.ts", "src/refusal.ts"],
+    // src/machine-caller/ (016): the machine caller's token, for the scripted regression and the smoke client.
+    allowed: ["src/layer1-intent/", "src/shared/", "src/machine-caller/", "src/hosted-main.ts", "src/main.ts", "src/refusal.ts"],
     extraPackages: ["swagger-ui-dist"], // src/shared/api-docs.ts, with API_DOCS=1 (v1.6)
   },
   // L2, the control service and sole signer.

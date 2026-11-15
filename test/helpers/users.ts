@@ -12,10 +12,12 @@ import { AuditLedger, type LedgerEntry } from "../../src/layer2-control/ledger.j
 import { buildMandate, type SpendingMandate } from "../../src/layer2-control/mandate.js";
 import { buildPlatform, type PlatformConfig } from "../../src/layer2-control/platform.js";
 import type { AdminDeps } from "../../src/layer2-control/admin-routes.js";
+import type { CallerDeps } from "../../src/layer2-control/caller.js";
 import { createControlService, recordPlatformConfig, type ControlService } from "../../src/layer2-control/service.js";
 import { WalletKeyring, type PaymentSignerLike } from "../../src/layer2-control/signer.js";
 import type { UserAccountsDeps } from "../../src/layer2-control/users.js";
-import type { AuthorizationDecision, PaymentIntent, PolicyValues } from "../../src/shared/contracts.js";
+import type { AuthorizationDecision, BudgetStatus, PaymentIntent, PolicyValues } from "../../src/shared/contracts.js";
+import { callerHeader, createTestIssuer, type TestIssuer } from "./caller-tokens.js";
 
 export const CAIP2 = "eip155:31337";
 export const ASSET = "0xAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAa";
@@ -105,8 +107,13 @@ export interface UsersL2Options {
   mandate?: Partial<typeof MANDATE_JSON>;
   /** Must-fail switches and other overrides on the user-account deps. */
   users?: Partial<UserAccountsDeps>;
-  /** User accounts off entirely (FR-001). */
+  /** User accounts off entirely (FR-001). Sign-in is then not configured either, unless `caller` is given. */
   off?: boolean;
+  /**
+   * 016: must-fail switches and other overrides on L2's caller deps; `false` leaves sign-in unconfigured (L2 then
+   * takes no caller's token). Default: configured, with this helper's own issuer.
+   */
+  caller?: Partial<CallerDeps> | false;
   /** 014: the administration routes on (`true`), or on with must-fail switches. Absent: off, each is 404. */
   admin?: true | AdminDeps;
   signerLatencyMs?: number;
@@ -129,8 +136,10 @@ export interface UsersL2 {
   platform: PlatformConfig;
   keyring: WalletKeyring;
   mandate: SpendingMandate;
-  /** Any route with any token (default: the portal's). */
-  call<T = Record<string, unknown>>(method: string, path: string, o?: { token?: string | null; body?: unknown }): Promise<Reply<T>>;
+  /** 016: the issuer of the callers' tokens this L2 verifies. People are known to it by `sub`. */
+  callers: TestIssuer;
+  /** Any route with any token (default: the portal's). `caller` is a caller's token to forward, as L1 does. */
+  call<T = Record<string, unknown>>(method: string, path: string, o?: { token?: string | null; body?: unknown; caller?: string }): Promise<Reply<T>>;
   portal<T = Record<string, unknown>>(method: string, path: string, body?: unknown): Promise<Reply<T>>;
   /** 014: an administration route, with the administration role's token. */
   admin<T = Record<string, unknown>>(method: string, path: string, body?: unknown): Promise<Reply<T>>;
@@ -139,7 +148,15 @@ export interface UsersL2 {
   /** 014: how many HTTP requests this L2 has received (to prove a refusal made no call). */
   requestCount(): number;
   intentFor(path: string, amount: string, o?: { sessionId?: string; userId?: string; host?: string; payTo?: string }): PaymentIntent;
-  authorize(intent: PaymentIntent | Record<string, unknown>): Promise<Reply<AuthorizationDecision & { error?: string }>>;
+  /**
+   * `POST /v1/authorize` as L1 sends it (016): the control token and a caller's token. By default the caller is the
+   * person the test named with `userId` on the intent (the field is taken off the body, which may not carry it), or
+   * a machine caller when it names none. `caller` overrides: a token to forward, or `null` to forward none; the
+   * body then goes out exactly as given.
+   */
+  authorize(intent: PaymentIntent | Record<string, unknown>, o?: { caller?: string | null }): Promise<Reply<AuthorizationDecision & { error?: string }>>;
+  /** `GET /v1/budget/:sessionId` as L1 sends it: for a person (`userId`), or a machine caller. */
+  budget(sessionId: string, o?: { userId?: string; caller?: string | null }): Promise<Reply<BudgetStatus & { error?: string }>>;
   /** Profile registered and a crypto account created. Returns the account's address. */
   withWallet(userId: string): Promise<string>;
   /** `withWallet`, then one policy. Returns the address and the policy ID. */
@@ -165,6 +182,8 @@ export async function startUsersL2(o: UsersL2Options = {}): Promise<UsersL2> {
     sign: async () => ({ headers: { "PAYMENT-SIGNATURE": "opaque" }, payer: PLATFORM_PAYER, validBefore: Math.floor(clock.now() / 1000) + 120 }),
   };
   if (!o.off) recordPlatformConfig(ledger, platform, clock.now());
+  const callers = await createTestIssuer();
+  const signIn = o.caller === false || (o.off && o.caller === undefined) ? undefined : { ...callers.deps, ...o.caller };
   const service = createControlService({
     mandate,
     signer,
@@ -174,6 +193,7 @@ export async function startUsersL2(o: UsersL2Options = {}): Promise<UsersL2> {
     now: clock.now,
     ...(o.signerLatencyMs !== undefined && { signerLatencyMs: o.signerLatencyMs }),
     ...(!o.off && { users: { platform, keyring, ...o.users }, net }),
+    ...(signIn && { caller: signIn }),
     ...(o.admin !== undefined && { admin: o.admin === true ? {} : o.admin }),
   });
   const server = await new Promise<Server>((r) => {
@@ -189,7 +209,11 @@ export async function startUsersL2(o: UsersL2Options = {}): Promise<UsersL2> {
     const token = co.token === undefined ? TOKENS.portal : co.token;
     const res = await fetch(`${url}${path}`, {
       method,
-      headers: { ...(token !== null && { authorization: `Bearer ${token}` }), ...(co.body !== undefined && { "content-type": "application/json" }) },
+      headers: {
+        ...(token !== null && { authorization: `Bearer ${token}` }),
+        ...(co.caller !== undefined && callerHeader(co.caller)),
+        ...(co.body !== undefined && { "content-type": "application/json" }),
+      },
       ...(co.body !== undefined && { body: JSON.stringify(co.body) }),
     });
     const text = await res.text();
@@ -251,7 +275,23 @@ export async function startUsersL2(o: UsersL2Options = {}): Promise<UsersL2> {
         ...(io.userId !== undefined && { userId: io.userId }),
       };
     },
-    authorize: (intent) => call("POST", "/v1/authorize", { token: TOKENS.control, body: intent }),
+    callers,
+    authorize: async (intent, ao = {}) => {
+      if (ao.caller !== undefined) return call("POST", "/v1/authorize", { token: TOKENS.control, body: intent, ...(ao.caller !== null && { caller: ao.caller }) });
+      if (!signIn) return call("POST", "/v1/authorize", { token: TOKENS.control, body: intent });
+      const { userId, ...body } = intent as Record<string, unknown>;
+      // A person the test named and this issuer knows: their token, and a body that names nobody.
+      if (typeof userId === "string" && callers.subjectOf(userId) !== undefined) {
+        return call("POST", "/v1/authorize", { token: TOKENS.control, body, caller: await callers.forUser(userId) });
+      }
+      return call("POST", "/v1/authorize", { token: TOKENS.control, body: intent, caller: await callers.machine() });
+    },
+    budget: async (sessionId, bo = {}) => {
+      const path = `/v1/budget/${encodeURIComponent(sessionId)}`;
+      if (bo.caller !== undefined) return call("GET", path, { token: TOKENS.control, ...(bo.caller !== null && { caller: bo.caller }) });
+      if (!signIn) return call("GET", path, { token: TOKENS.control });
+      return call("GET", path, { token: TOKENS.control, caller: bo.userId !== undefined ? await callers.forUser(bo.userId) : await callers.machine() });
+    },
     withWallet,
     onboard: async (userId, values = {}) => {
       const address = await withWallet(userId);

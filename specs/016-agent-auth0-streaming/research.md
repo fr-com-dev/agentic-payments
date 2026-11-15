@@ -89,8 +89,10 @@ type ForwardedIdentity = { kind: "person"; userId: string; subject: string } | {
 to the backchannel as the approval subject. `validIntent` refuses `userId` and `approvalSubject`. The recorded
 intent gets `userId` from the caller before it is written, so ledger entries keep their shape.
 
-- `ControlServiceDeps.caller?` carries the settings and the keys. With `users` set and `caller` absent,
-  `createControlService` throws; `main()` refuses earlier with a `ConfigError` naming the variables (FR-015).
+- `ControlServiceDeps.caller?` carries the settings and the keys. `main()` refuses `USER_ACCOUNTS=1` without them,
+  with a `ConfigError` naming the variables, before the ledger lock (FR-015). `createControlService` does not throw
+  for the same combination: it then takes no caller's token and refuses any request that names a user, so no user
+  can pay. That keeps the in-process suites that only use the portal's routes as they are.
 - Verification is awaited before `serialize(...)`. `jose`'s remote key set fetches the tenant's keys on first
   use and on an unknown key ID, outside the lock (FR-019).
 - Test-only switches on `caller` (NFR-005): `trustIntentUser` (take `userId` from the request, the old rule),

@@ -10,14 +10,15 @@ import type { LanguageModelV3GenerateResult } from "@ai-sdk/provider";
 import type { Express } from "express";
 import { MockLanguageModelV3 } from "ai/test";
 import { createLocalJWKSet } from "jose";
-import { DEV_AGENT_CLIENT, DEV_AUDIENCE, DEV_SERVICE_AUDIENCE, loadOrCreateDevIssuer, signDevToken, type DevTokenOptions } from "../../scripts/dev-issuer-lib.js";
-import { DEV_ISSUER, DEV_TENANT, loadHostedConfig, type HostedConfig } from "../../src/layer1-intent/hosted/config.js";
+import { DEV_AGENT_CLIENT, DEV_AUDIENCE, devSubject, loadOrCreateDevIssuer, signDevToken, type DevTokenOptions } from "../../scripts/dev-issuer-lib.js";
+import { DEV_ISSUER, loadHostedConfig, type HostedConfig } from "../../src/layer1-intent/hosted/config.js";
 import { createHostedApp, type HostedDeps } from "../../src/layer1-intent/hosted/server.js";
 import { HttpAuthorizationGate, HttpSettlementVerifier } from "../../src/layer1-intent/ports-http.js";
 import type {
   AuthorizationDecision,
   AuthorizationGatePort,
   BudgetStatus,
+  CallerGates,
   PaymentIntent,
   SettlementClaim,
   SettlementReport,
@@ -53,6 +54,9 @@ export type DoGenerate = ConstructorParameters<typeof MockLanguageModelV3>[0] ex
 export const mockModel = (doGenerate: DoGenerate = text("done")) => new MockLanguageModelV3({ doGenerate });
 
 /** The tool names the model saw on each call. */
+/** The calls the agent made to the model, whichever way it calls it (one place to change with streaming). */
+export const modelCalls = (model: MockLanguageModelV3) => model.doGenerateCalls;
+
 export const toolNamesSeen = (model: MockLanguageModelV3) => model.doGenerateCalls.map((c) => (c.tools ?? []).map((t) => t.name));
 
 // ---------------------------------------------------------------------------
@@ -61,28 +65,36 @@ export const toolNamesSeen = (model: MockLanguageModelV3) => model.doGenerateCal
 
 export interface FakePortsOptions {
   authorize?: (intent: PaymentIntent) => Promise<AuthorizationDecision>;
-  budget?: (sessionId: string, userId?: string) => Promise<BudgetStatus>;
+  budget?: (sessionId: string) => Promise<BudgetStatus>;
   verify?: (claim: SettlementClaim) => Promise<SettlementReport>;
 }
 
 export function fakePorts(o: FakePortsOptions = {}) {
-  /** 013: `userId` is what the service named for the call (absent for a system identity). */
-  const gateCalls: { op: "authorize" | "budget"; sessionId: string; userId?: string }[] = [];
+  /**
+   * 016: `callerToken` is the token the gate of that call was made for (`forCaller`): what L1 forwards to L2.
+   * `intent` is the whole intent of an authorize call, to check that it names no user.
+   */
+  const gateCalls: { op: "authorize" | "budget"; sessionId: string; callerToken: string; intent?: PaymentIntent }[] = [];
   const settlementCalls: SettlementClaim[] = [];
-  const gate: AuthorizationGatePort = {
+  const gateOf = (callerToken: string): AuthorizationGatePort => ({
     authorize: async (intent) => {
-      gateCalls.push({ op: "authorize", sessionId: intent.sessionId, ...(intent.userId !== undefined && { userId: intent.userId }) });
+      gateCalls.push({ op: "authorize", sessionId: intent.sessionId, callerToken, intent });
       return o.authorize
         ? o.authorize(intent)
         : { status: "DENIED", authorizationId: "auth_fake", intentId: intent.intentId, violations: [{ rule: "fake", detail: "fake gate" }] };
     },
-    budget: async (sessionId, userId) => {
-      gateCalls.push({ op: "budget", sessionId, ...(userId !== undefined && { userId }) });
+    budget: async (sessionId) => {
+      gateCalls.push({ op: "budget", sessionId, callerToken });
       return o.budget
-        ? o.budget(sessionId, userId)
+        ? o.budget(sessionId)
         : { sessionId, asset: "0xasset", decimals: 6, sessionCapAtomic: "100000", spentOrReservedAtomic: "0", remainingAtomic: "100000", perPaymentCapAtomic: "20000" };
     },
-  };
+  });
+  /**
+   * The hosted app takes one gate per run, for that run's caller (`forCaller`). The same object is also a plain
+   * gate that carries no token, for the tests that call `runGoal` or the orchestrator directly.
+   */
+  const gate: CallerGates & AuthorizationGatePort = { ...gateOf(""), forCaller: gateOf };
   const settlement: SettlementVerifierPort = {
     verify: async (claim) => {
       settlementCalls.push(claim);
@@ -112,7 +124,7 @@ export interface HostedTestApp {
   app: Express;
   config: HostedConfig;
   markReady(): void;
-  /** A dev-issuer token for `subject`: a person's with `agent:run` from the agent client, or with `service: true` a system identity's. */
+  /** A dev-issuer token for `subject`: a person's with `agent:run` from the agent client, or with `service: true` a machine caller's. */
   token(subject: string, o?: Omit<DevTokenOptions, "subject">): Promise<string>;
   /** POST /v1/runs with a token for `subject` (or no token when subject is null). */
   run(subject: string | null, body: unknown, o?: Omit<DevTokenOptions, "subject">): Promise<{ status: number; body: Record<string, unknown>; headers: Headers }>;
@@ -125,15 +137,16 @@ export async function startHostedApp(opts: StartHostedOptions = {}): Promise<Hos
   const { env: envOver, ready, harness, ...deps } = opts;
   const dir = mkdtempSync(join(tmpdir(), "hosted-"));
   const issuer = await loadOrCreateDevIssuer(join(dir, "issuer"), { NETWORK: "local" });
-  const config = loadHostedConfig({
+  // 016: with a harness whose L2 verifies callers' tokens, the agent verifies the same issuer's tokens with the
+  // same keys, so a token it accepts and forwards is one L2 accepts too.
+  const callers = harness?.callers;
+  const loaded = loadHostedConfig({
     NETWORK: "local",
     MODEL_PROVIDER: "anthropic",
     ANTHROPIC_API_KEY: "test-key-not-used",
     AUTH_ISSUER: DEV_ISSUER,
     AUTH_AUDIENCE: DEV_AUDIENCE,
     AGENT_CLIENT_IDS: DEV_AGENT_CLIENT,
-    AUTH_TENANT_ID: DEV_TENANT,
-    SERVICE_AUDIENCE: DEV_SERVICE_AUDIENCE,
     AUTH_JWKS_FILE: issuer.jwksPath,
     SESSION_REF_SECRET: randomBytes(32).toString("hex"),
     ...(harness && {
@@ -145,13 +158,14 @@ export async function startHostedApp(opts: StartHostedOptions = {}): Promise<Hos
     }),
     ...envOver,
   });
+  const config: HostedConfig = callers ? { ...loaded, auth: { ...loaded.auth, issuer: callers.issuer, audience: callers.audience } } : loaded;
   const ports = harness
     ? { gate: new HttpAuthorizationGate(config.urls.control, config.tokens.control), settlement: new HttpSettlementVerifier(config.urls.settlement, config.tokens.verifier) }
     : fakePorts();
   const hosted = createHostedApp({
     config,
-    // One local key signs both kinds of token; which checks run is chosen by the issuer each token names.
-    keys: { ...(config.auth.person && { person: devKeys(issuer.jwks) }), ...(config.auth.service && { service: devKeys(issuer.jwks) }) },
+    // One local key, one issuer: it signs a person's token and a machine caller's.
+    keys: callers ? { keys: callers.deps.keys, algorithms: callers.deps.algorithms } : devKeys(issuer.jwks),
     model: mockModel(),
     log: () => undefined,
     ...ports,
@@ -162,7 +176,11 @@ export async function startHostedApp(opts: StartHostedOptions = {}): Promise<Hos
     const s = hosted.app.listen(0, "127.0.0.1", () => r(s));
   });
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-  const token: HostedTestApp["token"] = (subject, o = {}) => signDevToken(issuer, { subject, ...o });
+  const token: HostedTestApp["token"] = (subject, o = {}) => {
+    if (!callers) return signDevToken(issuer, { subject, ...o });
+    const { service, sub, issuer: _issuer, audience: _audience, ...rest } = o;
+    return service ? callers.machine({ client: subject, ...rest }) : callers.person(sub ?? devSubject(subject), rest);
+  };
   return {
     base,
     app: hosted.app,

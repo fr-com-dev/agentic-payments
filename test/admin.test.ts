@@ -850,7 +850,7 @@ describe("T-ADM-08 the payment and its budget (US4, FR-022..FR-024, INV-7)", () 
       fits: true,
     });
     // The agent's own budget read gives the same figures for the run.
-    const agent = (await l2.call<{ spentOrReservedAtomic: string; remainingAtomic: string }>("GET", "/v1/budget/sess_p", { token: TOKENS.control })).body;
+    const agent = (await l2.budget("sess_p")).body;
     expect([agent.spentOrReservedAtomic, agent.remainingAtomic]).toEqual([budget.run.spentAtomic, budget.run.remainingAtomic]);
   });
 

@@ -48,15 +48,13 @@ export interface RunToolsDeps {
   gate: Pick<AuthorizationGatePort, "budget">;
   sessionId: string;
   record: Record_;
-  /** 013: the user the run pays for, fixed by the server. It is never part of a tool's input schema. */
-  userId?: string;
 }
 
 /** The only two tools (L1-3): names are the object keys the model sees; descriptions are L1-3's. */
 export function createRunTools(d: RunToolsDeps): Record<"fetch_resource" | "check_budget", RunTool> {
   let decimals: number | undefined;
-  // 013: for a user, L2 answers with the user view (the daily ceiling). The tools' inputs are unchanged.
-  const budget = () => (d.userId === undefined ? d.gate.budget(d.sessionId) : d.gate.budget(d.sessionId, d.userId));
+  // 016: the gate was made for the caller; for a person L2 answers with the user view (the daily ceiling).
+  const budget = () => d.gate.budget(d.sessionId);
   return {
     fetch_resource: createTool({
       id: "fetch_resource",
@@ -100,8 +98,6 @@ export interface RunGoalOptions {
   gate: AuthorizationGatePort;
   settlement: SettlementVerifierPort;
   sellerUrl: string;
-  /** 013 FR-033: the verified person the run pays for; absent for a system identity. Never a tool input. */
-  userId?: string;
   /** Test hook (T-AGT-02 must-fail): extra tools beside the two. Never set by the server. */
   extraTools?: Record<string, RunTool>;
   /** Called once per finished tool call, in completion order, with its duration (run log). */
@@ -142,10 +138,9 @@ export async function runGoal(o: RunGoalOptions): Promise<RunOutcome> {
     gate: o.gate,
     settlement: o.settlement,
     sessionId: o.sessionId,
-    ...(o.userId !== undefined && { userId: o.userId }),
   });
   const tools = {
-    ...createRunTools({ orchestrator, gate: o.gate, sessionId: o.sessionId, record, ...(o.userId !== undefined && { userId: o.userId }) }),
+    ...createRunTools({ orchestrator, gate: o.gate, sessionId: o.sessionId, record }),
     ...o.extraTools,
   };
   const agent = buildAgent({ model: o.model, sellerUrl: o.sellerUrl, tools });

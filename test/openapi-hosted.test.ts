@@ -110,10 +110,17 @@ function ports(o: { budgetDown?: () => boolean } = {}) {
     }),
   });
   if (o.budgetDown) {
-    const budget = p.gate.budget.bind(p.gate);
-    p.gate.budget = async (sessionId) => {
-      if (o.budgetDown!()) throw new Error("L2 unreachable");
-      return budget(sessionId);
+    // 016: the app takes a gate per run (`forCaller`); the outage is put on each of those.
+    const forCaller = p.gate.forCaller.bind(p.gate);
+    p.gate.forCaller = (callerToken) => {
+      const gate = forCaller(callerToken);
+      return {
+        authorize: (intent) => gate.authorize(intent),
+        budget: async (sessionId) => {
+          if (o.budgetDown!()) throw new Error("L2 unreachable");
+          return gate.budget(sessionId);
+        },
+      };
     };
   }
   return p;
@@ -181,7 +188,7 @@ describe("T-API-05 every hosted agent route is documented, and every documented 
 
 /**
  * For each operation: without a token, a secured one answers 401 and an open one (`security: []`) doesn't; a token
- * without Agent.Run gets 403 from a secured one; a token with it passes the guard everywhere.
+ * without agent:run gets 403 from a secured one; a token with it passes the guard everywhere.
  */
 async function authMismatches(doc: OpenApiDoc, a: HostedTestApp): Promise<string[]> {
   const out: string[] = [];
@@ -194,16 +201,16 @@ async function authMismatches(doc: OpenApiDoc, a: HostedTestApp): Promise<string
     if ((none === 401) === open) out.push(`${method} ${path} no token: ${none}`);
     if (!open) {
       const forbidden = (await send(a.base, method, concrete, noRole)).status;
-      if (forbidden !== 403) out.push(`${method} ${path} without Agent.Run: ${forbidden}`);
+      if (forbidden !== 403) out.push(`${method} ${path} without agent:run: ${forbidden}`);
     }
     const passed = (await send(a.base, method, concrete, withRole)).status;
-    if (passed === 401 || passed === 403) out.push(`${method} ${path} with Agent.Run: ${passed}`);
+    if (passed === 401 || passed === 403) out.push(`${method} ${path} with agent:run: ${passed}`);
   }
   return out;
 }
 
 describe("T-API-06 each operation's security matches the agent's guard", () => {
-  it("T-API-06 POST /v1/runs needs an Agent.Run token; the health and docs routes need none", async () => {
+  it("T-API-06 POST /v1/runs needs a caller's token with agent:run; the health and docs routes need none", async () => {
     const a = await start();
     expect(await authMismatches(loadDoc(), a)).toEqual([]);
   });
@@ -213,7 +220,7 @@ describe("T-API-06 each operation's security matches the agent's guard", () => {
     const doc = loadDoc();
     doc.paths["/v1/runs"]!.post!.security = [];
     doc.paths["/healthz"]!.get!.security = [{ requesterBearer: [] }];
-    expect(await authMismatches(doc, a)).toEqual(["POST /v1/runs no token: 401", "GET /healthz no token: 200", "GET /healthz without Agent.Run: 200"]);
+    expect(await authMismatches(doc, a)).toEqual(["POST /v1/runs no token: 401", "GET /healthz no token: 200", "GET /healthz without agent:run: 200"]);
   });
 });
 
