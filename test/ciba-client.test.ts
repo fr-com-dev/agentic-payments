@@ -4,11 +4,13 @@ import { generateKeyPairSync } from "node:crypto";
 import { decodeJwt } from "jose";
 import { afterEach, describe, expect, it } from "vitest";
 import { CibaClient, cibaConfigFromEnv, type CibaSettings, errorCode, rsaKeySizeAllowed } from "../src/layer2-control/ciba-client.js";
+import { ConfigError } from "../src/shared/config.js";
 import { type CibaStub, PLANTED_ERROR_TEXT, startCibaStub, testRsaKeyPair } from "./helpers/ciba-stub.js";
 
 const KEY = testRsaKeyPair();
 const SECRET = "s3cret-client-secret-value-0123456789";
-const APPROVER = "auth0|approver-1";
+/** 015: the person a request is addressed to (the escalation's owner); no approver is configured. */
+const SUBJECT = "auth0|alice-1";
 const CLIENT_ID = "client-l2";
 const AUDIENCE = "https://x402-payments.example/";
 const base = {
@@ -16,7 +18,6 @@ const base = {
   CIBA_ISSUER: "https://tenant.example.auth0.com/",
   CIBA_CLIENT_ID: CLIENT_ID,
   CIBA_AUDIENCE: AUDIENCE,
-  CIBA_APPROVER: APPROVER,
   CIBA_CLIENT_KEY: KEY.privatePem,
 };
 const pemBody = (pem: string) => pem.split("\n").filter((l) => l && !l.startsWith("-----")).join("");
@@ -49,7 +50,8 @@ describe("T-CIBA-01 configuration", () => {
 
   it("on with a complete key configuration; the trailing / is added", () => {
     const cfg = cibaConfigFromEnv({ ...base, CIBA_ISSUER: "https://tenant.example.auth0.com", CIBA_CLIENT_KEY_ID: "kid-1" });
-    expect(cfg).toMatchObject({ enabled: true, issuer: "https://tenant.example.auth0.com/", clientId: CLIENT_ID, audience: AUDIENCE, approver: APPROVER });
+    expect(cfg).toMatchObject({ enabled: true, issuer: "https://tenant.example.auth0.com/", clientId: CLIENT_ID, audience: AUDIENCE });
+    expect(Object.keys(cfg).sort()).toEqual(["audience", "clientId", "credential", "enabled", "issuer"]); // 015: no approver
     expect(cfg.enabled && cfg.credential).toMatchObject({ kind: "key", keyId: "kid-1" });
   });
 
@@ -73,7 +75,6 @@ describe("T-CIBA-01 configuration", () => {
     ["client id with a space", { ...base, CIBA_CLIENT_ID: "a b" }, "CIBA_CLIENT_ID"],
     ["client id over 64", { ...base, CIBA_CLIENT_ID: "c".repeat(65) }, "CIBA_CLIENT_ID"],
     ["no audience", { ...base, CIBA_AUDIENCE: "" }, "CIBA_AUDIENCE"],
-    ["no approver", { ...base, CIBA_APPROVER: "" }, "CIBA_APPROVER"],
     ["neither credential", withoutKey, "CIBA_CLIENT_KEY or CIBA_CLIENT_SECRET"],
     ["both credentials", { ...base, CIBA_CLIENT_SECRET: SECRET }, "CIBA_CLIENT_KEY and CIBA_CLIENT_SECRET"],
     ["not a PEM", { ...base, CIBA_CLIENT_KEY: "not-a-key" }, "CIBA_CLIENT_KEY"],
@@ -87,6 +88,44 @@ describe("T-CIBA-01 configuration", () => {
     expect(m).not.toContain(pemBody(KEY.privatePem).slice(0, 40));
     expect(m).not.toContain(SECRET);
     expect(m).not.toContain(pemBody(rsaOversized).slice(0, 40));
+  });
+
+  // 015 US6 (FR-003; specs/015 contracts/config-and-secrets.md "L2"): no approver is configured, and a leftover one
+  // stops L2 instead of looking as if it mattered.
+  describe("T-CIBA-24 a leftover CIBA_APPROVER", () => {
+    const LEFTOVER = "auth0|leftover-value-91c2";
+
+    it("T-CIBA-24 with CIBA_APPROVAL=1, a present CIBA_APPROVER is a ConfigError naming the variable and never its value", () => {
+      let thrown: unknown;
+      try {
+        cibaConfigFromEnv({ ...base, CIBA_APPROVER: LEFTOVER });
+      } catch (e) {
+        thrown = e;
+      }
+      expect(thrown).toBeInstanceOf(ConfigError);
+      const m = (thrown as Error).message;
+      expect(m).toBe("CIBA_APPROVER is no longer used: remove it (SPEC L2-7)");
+      expect(m).not.toContain(LEFTOVER);
+      expect(m).not.toContain("leftover");
+    });
+
+    it("T-CIBA-24 it is checked right after the switch: named even when every other setting is missing or wrong", () => {
+      expect(message(() => cibaConfigFromEnv({ CIBA_APPROVAL: "1", CIBA_APPROVER: LEFTOVER }))).toContain("CIBA_APPROVER");
+      expect(message(() => cibaConfigFromEnv({ ...base, CIBA_ISSUER: "http://tenant.example/", CIBA_APPROVER: LEFTOVER }))).toContain("CIBA_APPROVER");
+      // An empty value is not a leftover setting (Azure writes empty strings for unset values).
+      expect(cibaConfigFromEnv({ ...base, CIBA_APPROVER: "" }).enabled).toBe(true);
+    });
+
+    it("T-CIBA-24 with CIBA_APPROVAL off, a present CIBA_APPROVER is only named as ignored, as before", () => {
+      expect(cibaConfigFromEnv({ CIBA_APPROVER: LEFTOVER })).toEqual({ enabled: false, ignored: ["CIBA_APPROVER"] });
+      expect(cibaConfigFromEnv({ CIBA_APPROVAL: "0", CIBA_ISSUER: "https://x/", CIBA_APPROVER: LEFTOVER })).toEqual({ enabled: false, ignored: ["CIBA_ISSUER", "CIBA_APPROVER"] });
+    });
+
+    it("T-CIBA-24 a complete configuration without CIBA_APPROVER is enabled, with a key or with a secret", () => {
+      expect(cibaConfigFromEnv(base).enabled).toBe(true);
+      const { CIBA_CLIENT_KEY: _k, ...noKey } = base;
+      expect(cibaConfigFromEnv({ ...noKey, CIBA_CLIENT_SECRET: SECRET }).enabled).toBe(true);
+    });
   });
 
   it.each<[number, boolean]>([
@@ -109,18 +148,17 @@ afterEach(async () => {
 });
 
 async function setup(credential: "key" | "secret" = "key") {
-  stub = await startCibaStub({ approver: APPROVER, clientId: CLIENT_ID, audience: AUDIENCE, clientPublicKeyPem: KEY.publicPem, clientSecret: SECRET });
+  stub = await startCibaStub({ clientId: CLIENT_ID, audience: AUDIENCE, clientPublicKeyPem: KEY.publicPem, clientSecret: SECRET });
   const settings: CibaSettings = {
     issuer: stub.issuer,
     clientId: CLIENT_ID,
     audience: AUDIENCE,
-    approver: APPROVER,
     credential: credential === "key" ? { kind: "key", keyPem: KEY.privatePem, keyId: "kid-l2" } : { kind: "secret", secret: SECRET },
   };
   return { stub, client: new CibaClient(settings, { allowInsecureLoopback: true, startTimeoutMs: 300, pollTimeoutMs: 300 }), settings };
 }
 const DETAILS = [{ type: "urn:auth0:schemas:authorization-details:v1:x402-payment", instruction: "i", properties: { a: { display: true, name: "A", display_order: 1, value: "1" } } }];
-const params = { bindingMessage: "Pay_0.05_USDC_to_0x95Ac..f057_#3f9c2a1b", requestedExpiry: 298, authorizationDetails: DETAILS };
+const params = { subject: SUBJECT, bindingMessage: "Pay_0.05_USDC_to_0x95Ac..f057_#3f9c2a1b", requestedExpiry: 298, authorizationDetails: DETAILS };
 
 describe("T-CIBA-02 request shape", () => {
   it("bc-authorize gets exactly the contract's fields and a private_key_jwt assertion that verifies", async () => {
@@ -132,7 +170,7 @@ describe("T-CIBA-02 request shape", () => {
       ["audience", "authorization_details", "binding_message", "client_assertion", "client_assertion_type", "client_id", "login_hint", "requested_expiry", "scope"].sort(),
     );
     expect(form).toMatchObject({ client_id: CLIENT_ID, scope: "openid", audience: AUDIENCE, binding_message: params.bindingMessage, requested_expiry: "298" });
-    expect(JSON.parse(form.login_hint!)).toEqual({ format: "iss_sub", iss: s.issuer, sub: APPROVER });
+    expect(JSON.parse(form.login_hint!)).toEqual({ format: "iss_sub", iss: s.issuer, sub: SUBJECT });
     expect(JSON.parse(form.authorization_details!)).toEqual(DETAILS);
     expect(form.client_assertion_type).toBe("urn:ietf:params:oauth:client-assertion-type:jwt-bearer");
     const claims = s.assertions[0]!;
@@ -164,7 +202,7 @@ describe("T-CIBA-02 request shape", () => {
     expect(await client.poll(r.authReqId)).toEqual({ kind: "pending" });
     const t = await client.poll(r.authReqId);
     expect(t.kind).toBe("token");
-    expect(decodeJwt((t as { accessToken: string }).accessToken).sub).toBe(APPROVER);
+    expect(decodeJwt((t as { accessToken: string }).accessToken).sub).toBe(SUBJECT);
     const polls = s.requests.filter((q) => q.path === "/oauth/token");
     expect(polls.every((q) => q.form.grant_type === "urn:openid:params:grant-type:ciba" && q.form.auth_req_id === r.authReqId)).toBe(true);
     expect([...new Set(s.requests.map((q) => q.path))].sort()).toEqual(["/bc-authorize", "/oauth/token"]);

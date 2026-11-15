@@ -14,7 +14,7 @@
 import { randomUUID } from "node:crypto";
 import type { Server } from "node:http";
 import { pathToFileURL } from "node:url";
-import express, { type Express } from "express";
+import express, { type ErrorRequestHandler, type Express } from "express";
 import type { PaymentRequirements } from "@x402/core/types";
 import { requireRole } from "../shared/auth.js";
 import { apiDocsEnabled, ConfigError, CONTROL_BIND_HOST, controlPort, loadEnv, networkProfile, ROLE_TOKEN_VAR, tokenFor, type NetworkProfile } from "../shared/config.js";
@@ -117,6 +117,13 @@ function isHttpUrl(s: unknown): s is string {
   }
 }
 
+/**
+ * 015 (L2-7): the shape of `PaymentIntent.approvalSubject`: 1 to 255 characters, none of them whitespace or a control
+ * character (an Auth0 user ID is `<connection>|<id>`). Only the shape is checked here; whether the subject is the
+ * user's is decided with eligibility, inside the serialized section. A refusal never echoes the value.
+ */
+const APPROVAL_SUBJECT_RE = /^[^\s\u0000-\u001f\u007f-\u009f]{1,255}$/;
+
 /** 400 checks (L2-5): ids present, accepts is an array, resourceUrl is http(s). */
 function validIntent(body: unknown): body is PaymentIntent {
   if (body === null || typeof body !== "object") return false;
@@ -134,9 +141,27 @@ function validIntent(body: unknown): body is PaymentIntent {
     // 012 FR-007: optional, boolean only.
     (b.operatorApprovalOnly === undefined || typeof b.operatorApprovalOnly === "boolean") &&
     // 013 FR-033: optional; a user identifier only.
-    (b.userId === undefined || (typeof b.userId === "string" && USER_ID_RE.test(b.userId)))
+    (b.userId === undefined || (typeof b.userId === "string" && USER_ID_RE.test(b.userId))) &&
+    // 015 FR-009: optional; a subject's shape only, and never without the user it belongs to.
+    (b.approvalSubject === undefined || (typeof b.approvalSubject === "string" && APPROVAL_SUBJECT_RE.test(b.approvalSubject) && b.userId !== undefined))
   );
 }
+
+/**
+ * 015 (FR-020, T-CIBA-20): answers an authorize body that could not be read (not JSON, too large, cut off). Without
+ * it the error reaches Express's default handler, which logs it outside the test environment, and a body-parser
+ * error carries the raw body: `approvalSubject` (or `purpose`) would be in L2's log. Nothing of the request is
+ * logged or repeated here. Any other error is passed on unchanged.
+ */
+const refuseUnreadBody: ErrorRequestHandler = (err: unknown, _req, res, next) => {
+  const e = err as { type?: unknown; status?: unknown } | null;
+  const status = typeof e?.status === "number" && e.status >= 400 && e.status < 500 ? e.status : undefined;
+  if (res.headersSent || typeof e?.type !== "string" || status === undefined) {
+    next(err);
+    return;
+  }
+  res.status(status).json({ error: status === 400 ? "malformed PaymentIntent" : "PaymentIntent body refused" });
+};
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 const maxZero = (n: bigint) => (n < 0n ? 0n : n);
@@ -240,6 +265,9 @@ export function createControlService(deps: ControlServiceDeps): ControlService {
       dailyCommittedAtomic: spend.dailyCommittedAtomic,
     });
   }
+  // 015 (FR-001): a request goes to the user a payment is for. Without user accounts no payment names a user, so
+  // the feature would be on and could ask nobody.
+  if (deps.backchannel && !users) throw new Error("backchannel approval needs user accounts (SPEC L2-7)");
   const backchannel = deps.backchannel ? new Backchannel({ ...deps.backchannel, ledger, serialize, now }) : undefined;
 
   type Decided = { decision: AuthorizationDecision; start?: StartPlan };
@@ -344,10 +372,15 @@ export function createControlService(deps: ControlServiceDeps): ControlService {
         return { decision: { status: "ESCALATE", authorizationId: pending.authorizationId, intentId, violations: d.violations } };
       }
       // 012 (L2-7): eligibility is decided here, inside the section, from the ledger; recorded on the entry.
+      // 015: also from who the escalation is for. `u` is the user this decision resolved (absent: the platform
+      // account, which asks nobody) and the subject is the request's own; it goes to eligibility and, for
+      // `requested`, into the start plan, and nowhere else: never an entry, a log line or the decision.
       const approvalRequest = backchannel?.eligibility({
         operatorOnly: intent.operatorApprovalOnly === true,
         reevaluation: opts.reevaluationOf !== undefined,
         nowMs: t,
+        ...(u && { owner: u.userId }),
+        ...(intent.approvalSubject !== undefined && { subject: intent.approvalSubject }),
       });
       ledger.append(
         {
@@ -360,7 +393,7 @@ export function createControlService(deps: ControlServiceDeps): ControlService {
         t,
       );
       const decision: AuthorizationDecision = { status: "ESCALATE", ...base, violations: d.violations };
-      if (approvalRequest !== "requested") return { decision };
+      if (approvalRequest !== "requested" || !backchannel) return { decision };
       return {
         decision,
         start: {
@@ -371,6 +404,7 @@ export function createControlService(deps: ControlServiceDeps): ControlService {
           amount: chosen.amount,
           requirement: chosen,
           escalationExpiresAtMs: t + ESCALATION_TTL_MS,
+          ...backchannel.addressee({ ...(u && { owner: u.userId }), ...(intent.approvalSubject !== undefined && { subject: intent.approvalSubject }) }),
         },
       };
     }
@@ -482,6 +516,8 @@ export function createControlService(deps: ControlServiceDeps): ControlService {
       if (!res.headersSent) res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
+
+  app.use("/v1/authorize", refuseUnreadBody);
 
   app.get("/v1/budget/:sessionId", requireRole("agent-control", tok(deps.tokens?.control)), (req, res) => {
     const sessionId = String(req.params.sessionId);
@@ -671,6 +707,9 @@ export async function main(): Promise<void> {
   const accounts = userAccountsFromEnv(process.env, networkProfile());
   // 014: and for the administration area (its own token, and user accounts on).
   const administration = adminFromEnv(process.env, accounts);
+  // 015 (L2-7, FR-001): backchannel approval asks the user a payment is for, so it needs user accounts. Checked with
+  // the rest, before the lock.
+  if (ciba.enabled && !accounts.enabled) throw new ConfigError("CIBA_APPROVAL=1 needs USER_ACCOUNTS=1 (SPEC L2-7)");
   // L2-6: one writer. Wait in standby while another L2 holds the ledger, then read it only once ours.
   const lock = await acquireLedgerLock(ledgerPathFor());
   // The ledger loads and verifies first, so an integrity failure is reported before anything else.
@@ -688,7 +727,7 @@ export async function main(): Promise<void> {
   if (ciba.enabled) {
     const settings = publicSettings(ciba);
     backchannelDeps = { port: new CibaClient(ciba), ...settings, keys: issuerKeys(settings.issuer), decimals: net.decimals };
-    console.log(`l2-control: backchannel approval on (issuer ${settings.issuer}, approver ${settings.approver})`);
+    console.log(`l2-control: backchannel approval on (issuer ${settings.issuer}, per user)`);
   } else if (ciba.ignored.length > 0) {
     console.log(`l2-control: backchannel approval is off; ignoring ${ciba.ignored.join(", ")}`);
   }

@@ -1,8 +1,8 @@
-// 012 US2 — the approver refuses (specs/012 task T024): T-CIBA-07 (refusal). A refusal ends the escalation as
+// 012 US2 — the person asked refuses (specs/012 task T024; since 015 the payment's owner): T-CIBA-07 (refusal). A refusal ends the escalation as
 // denied with the backchannel channel, and R15 applies exactly as for an operator rejection (SEC-12).
 import { afterEach, describe, expect, it } from "vitest";
 import { PLANTED_ERROR_TEXT } from "./helpers/ciba-stub.js";
-import { APPROVER, PAY_TO, SELLER, startBackchannelL2, type BackchannelL2 } from "./helpers/backchannel-l2.js";
+import { ALICE_SUB, PAY_TO, SELLER, startBackchannelL2, type BackchannelL2 } from "./helpers/backchannel-l2.js";
 
 let l2: BackchannelL2 | undefined;
 afterEach(async () => {
@@ -30,7 +30,7 @@ describe("T-CIBA-07 outcomes (refusal)", () => {
       payTo: PAY_TO,
       amount: "50000",
       channel: "backchannel",
-      approver: APPROVER,
+      approver: l2.people.alice.userId,
       issuer: l2.stub.issuer,
       requestId: expect.stringMatching(/^apq_/),
     });
@@ -41,7 +41,8 @@ describe("T-CIBA-07 outcomes (refusal)", () => {
     expect(res.body.status).toBe("DENIED");
     const violations = (res.body as { violations: { rule: string; detail: string }[] }).violations;
     expect(violations).toEqual([{ rule: "human_rejected", detail: `rejected by the operator (${String(rej.data.rejectionId)})` }]);
-    expect(JSON.stringify(res.body)).not.toContain(APPROVER);
+    expect(JSON.stringify(res.body)).not.toContain(l2.people.alice.userId);
+    expect(JSON.stringify(res.body)).not.toContain(ALICE_SUB);
     expect(JSON.stringify(res.body)).not.toContain(PLANTED_ERROR_TEXT);
     expect(l2.ledger.entries().filter((e) => e.type === "AUTHORIZED")).toHaveLength(0);
   });

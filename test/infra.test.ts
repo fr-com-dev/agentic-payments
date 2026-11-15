@@ -788,7 +788,22 @@ export function violations(arms: Templates, params: Params, infraFiles: Record<s
   // l2), as a reference to the l2 vault's ciba-client-credential, named CIBA_CLIENT_KEY or CIBA_CLIENT_SECRET by
   // ciba.credential. Every other CIBA_* value comes from the ciba parameter, which main passes to l2-apps whole, and
   // main refuses (fail()) an enabled ciba it can't use. No other app, job or container sees anything of it.
+  // 015 (SPEC v1.16 L2-7; specs/015 contracts/config-and-secrets.md "T-IAC-01 rule 19, as amended"): no approver is
+  // configured anywhere. The ciba parameter has exactly six keys, none of them an approver; no app, L2's included,
+  // has a CIBA_APPROVER variable (L2 refuses to start with one); and main refuses ciba.enabled without
+  // userAccounts.enabled, because a request goes to the user a payment is for.
   const CIBA_SECRET = "ciba-client-credential";
+  const CIBA_KEYS = ["audience", "clientId", "clientKeyId", "credential", "enabled", "issuer"];
+  for (const [file, values] of Object.entries(params)) {
+    if (!/^main\.[a-z0-9]+\.bicepparam$/.test(file)) continue;
+    const keys = Object.keys((values.ciba ?? {}) as Json).sort();
+    if (JSON.stringify(keys) !== JSON.stringify(CIBA_KEYS)) v.push(`rule 19: ${file}'s ciba must have exactly the keys ${CIBA_KEYS.join(", ")} (it has ${keys.join(", ")})`);
+  }
+  for (const a of apps(main)) {
+    for (const c of containersOf(a)) {
+      for (const e of c.env ?? []) if (e.name === "CIBA_APPROVER") v.push(`rule 19: ${label(a)}/${c.name} has CIBA_APPROVER; no approver is configured (SPEC v1.16)`);
+    }
+  }
   for (const a of apps(main)) {
     const isL2 = namesOf(a).includes(MN.apps.l2);
     for (const s of secretsOf(a)) if (s.name === CIBA_SECRET && !isL2) v.push(`rule 19: ${label(a)} has the CIBA credential`);
@@ -812,7 +827,6 @@ export function violations(arms: Templates, params: Params, infraFiles: Record<s
       CIBA_ISSUER: "[parameters('ciba').issuer]",
       CIBA_CLIENT_ID: "[parameters('ciba').clientId]",
       CIBA_AUDIENCE: "[parameters('ciba').audience]",
-      CIBA_APPROVER: "[parameters('ciba').approver]",
       CIBA_CLIENT_KEY_ID: "[parameters('ciba').clientKeyId]",
     };
     for (const [name, want] of Object.entries(FROM_PARAM)) {
@@ -822,12 +836,14 @@ export function violations(arms: Templates, params: Params, infraFiles: Record<s
   }
   if (deploymentParam(main, "l2-apps", "ciba") !== JSON.stringify({ value: "[parameters('ciba')]" })) v.push("rule 19: main must pass the ciba parameter to l2-apps whole");
   const cibaChecked = String(((arms.main.variables ?? {}) as Json).cibaChecked ?? "");
-  for (const part of ["fail(", "startsWith(parameters('ciba').issuer, 'https://')", "contains(createArray('key', 'secret'), parameters('ciba').credential)", "parameters('ciba').clientId", "parameters('ciba').audience", "parameters('ciba').approver"]) {
+  for (const part of ["fail(", "startsWith(parameters('ciba').issuer, 'https://')", "contains(createArray('key', 'secret'), parameters('ciba').credential)", "parameters('ciba').clientId", "parameters('ciba').audience"]) {
     if (!cibaChecked.includes(part)) {
-      v.push("rule 19: main must refuse (fail()) a ciba with another credential kind, or enabled without an https:// issuer, a clientId, an audience and an approver");
+      v.push("rule 19: main must refuse (fail()) a ciba with another credential kind, or enabled without an https:// issuer, a clientId and an audience");
       break;
     }
   }
+  if (cibaChecked.includes("parameters('ciba').approver")) v.push("rule 19: main's ciba check still asks for an approver");
+  if (!cibaChecked.includes("fail(") || !cibaChecked.includes("parameters('userAccounts').enabled")) v.push("rule 19: main must refuse (fail()) ciba.enabled without userAccounts.enabled");
 
   // Rule 20: the Terraform state of auth0/ (pre-deploy.bicep's state-storage module; provision-auth0.yml). One
   // storage account, with Entra sign-in only (no account key, no anonymous access, HTTPS and TLS 1.2), versions and
@@ -1563,8 +1579,28 @@ resource extraRead 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
     const written = await mutant("modules/l2-apps.bicep", "{ name: 'CIBA_ISSUER', value: ciba.issuer }", "{ name: 'CIBA_ISSUER', value: 'https://tenant.example/' }");
     expect(written).toContain("rule 19: CIBA_ISSUER must come from the ciba parameter");
     const unchecked = await mutant("main.bicep", "startsWith(ciba.issuer, 'https://') && ", "");
-    expect(unchecked).toContain("rule 19: main must refuse (fail()) a ciba with another credential kind, or enabled without an https:// issuer, a clientId, an audience and an approver");
+    expect(unchecked).toContain("rule 19: main must refuse (fail()) a ciba with another credential kind, or enabled without an https:// issuer, a clientId and an audience");
   }, 120_000);
+
+  it("T-IAC-01 must-fail rule 19 (015): an approver key in ciba, CIBA_APPROVER put back in the L2 app, or main accepting ciba without user accounts, is reported", async () => {
+    // The real files: exactly the six keys, and no approver anywhere a deployment is configured.
+    const { params } = await compile("infra");
+    expect(Object.keys(params["main.dev.bicepparam"]!.ciba as Json).sort()).toEqual(["audience", "clientId", "clientKeyId", "credential", "enabled", "issuer"]);
+    for (const f of ["main.bicep", "main.dev.bicepparam", "modules/l2-apps.bicep"]) expect(readFileSync(join("infra", f), "utf8"), f).not.toMatch(/CIBA_APPROVER|ciba\.approver|\bapprover\s*:/i);
+
+    const key = await mutant("main.dev.bicepparam", "  credential: 'key'\n  clientKeyId: ''\n}", "  credential: 'key'\n  clientKeyId: ''\n  approver: 'auth0|someone'\n}");
+    expect(key).toEqual(["rule 19: main.dev.bicepparam's ciba must have exactly the keys audience, clientId, clientKeyId, credential, enabled, issuer (it has approver, audience, clientId, clientKeyId, credential, enabled, issuer)"]);
+
+    const variable = await mutant(
+      "modules/l2-apps.bicep",
+      "            { name: 'CIBA_AUDIENCE', value: ciba.audience }\n",
+      "            { name: 'CIBA_AUDIENCE', value: ciba.audience }\n            { name: 'CIBA_APPROVER', value: 'auth0|someone' }\n",
+    );
+    expect(variable.some((m) => /^rule 19: .*\/l2 has CIBA_APPROVER; no approver is configured/.test(m))).toBe(true);
+
+    const noFail = await mutant("main.bicep", " && !empty(ciba.audience) && userAccounts.enabled)", " && !empty(ciba.audience))");
+    expect(noFail).toEqual(["rule 19: main must refuse (fail()) ciba.enabled without userAccounts.enabled"]);
+  }, 180_000);
 
   it("T-IAC-01 must-fail rule 17: main.bicep without its target check is reported", async () => {
     const v = await mutant(

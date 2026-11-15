@@ -76,7 +76,9 @@ paths:
         "400":
           description: >-
             Malformed intent (missing ids, `paymentRequired.accepts` not an array, non-http(s) URL, a non-boolean
-            `operatorApprovalOnly`, or a `userId` that is not a user identifier).
+            `operatorApprovalOnly`, a `userId` that is not a user identifier, or, v1.16, an `approvalSubject` that
+            is malformed or sent without `userId`), or a body that is not JSON. The answer never repeats a value,
+            and L2 logs nothing of the body.
           content:
             application/json:
               schema:
@@ -1335,6 +1337,19 @@ components:
             from model text or a tool input. With user accounts on, the intent is decided against this user's
             policy and signed with this user's account. Absent: the platform account. Ignored when user accounts
             are off.
+        approvalSubject:
+          type: string
+          minLength: 1
+          maxLength: 255
+          pattern: "^[^\\s\\x00-\\x1f\\x7f-\\x9f]+$"
+          description: >-
+            v1.16 (L2-7). The person's subject at the approval service, from the sign-in token the hosted agent
+            verified; set by the hosted agent only, for a person's run, never from model text or a tool input. 1 to
+            255 characters with no whitespace and no control character, and only together with `userId`: anything
+            else is 400, whether backchannel approval is on or off. L2 uses it to address one approval request to
+            the escalation's owner, and only when it resolves to `userId` under L2's own approval issuer. It is
+            never written to the ledger, logged or returned. Ignored when user accounts or backchannel approval are
+            off.
 
     PolicyViolation:
       type: object
@@ -1593,7 +1608,7 @@ components:
         referenceCode:
           type: string
           pattern: "^[0-9a-f]{8}$"
-          description: v1.8. The first 8 hex characters of the escalation ID; the approver's phone shows the same code.
+          description: v1.8. The first 8 hex characters of the escalation ID; the phone of the person asked shows the same code.
         approvalRequest:
           $ref: "#/components/schemas/ApprovalRequestState"
         userId:
@@ -1604,8 +1619,10 @@ components:
       type: string
       description: >-
         v1.8 (L2-7). The backchannel approval request's state for a pending escalation. Present only when backchannel
-        approval is on.
-      enum: [requested, capped, operator_only, reevaluation, failed, verification_failed, lapsed]
+        approval is on. v1.16: `no_owner` (the escalation records no user), `no_identity` (the payment request
+        carried no subject for its user) and `identity_mismatch` (the subject is not that user's) ask nobody: the
+        escalation waits for the operator and the administrators.
+      enum: [requested, capped, operator_only, reevaluation, no_owner, no_identity, identity_mismatch, failed, verification_failed, lapsed]
 
     PendingEscalations:
       type: object
@@ -1777,6 +1794,10 @@ components:
           type: string
         approver:
           type: string
+          description: >-
+            On `approved` events, who approved, as the entry holds it: the operator's label; the administrator's
+            `usr_…` for the portal; for the backchannel the owner's `usr_…` (v1.16), or the configured approver's
+            subject in an entry written before v1.16.
         approvalExpiresAt:
           $ref: "#/components/schemas/IsoTime"
         rejectionId:
@@ -1792,8 +1813,10 @@ components:
           pattern: "^[0-9a-f]{8}$"
         approvalRequest:
           type: string
-          enum: [requested, capped, operator_only, reevaluation]
-          description: v1.8. On `escalated` events, when backchannel approval is on.
+          enum: [requested, capped, operator_only, reevaluation, no_owner, no_identity, identity_mismatch]
+          description: >-
+            v1.8. On `escalated` events, when backchannel approval is on: the mark written with the escalation.
+            v1.16 adds `no_owner`, `no_identity` and `identity_mismatch`, which ask nobody.
         channel:
           type: string
           enum: [operator, backchannel, portal]
@@ -1801,8 +1824,10 @@ components:
         decidedBy:
           type: string
           description: >-
-            v1.8. The operator's label, or the approver's verified identity (`sub`). v1.15: for the portal channel,
-            the administrator's identifier (`usr_…`).
+            v1.8. The operator's label, or who answered on the phone. v1.15: for the portal channel, the
+            administrator's identifier (`usr_…`). v1.16: for the backchannel, the identifier (`usr_…`) of the
+            escalation's owner, the only person asked; an entry written before v1.16 holds the configured approver's
+            subject (`sub`) instead, and is shown as it is.
         reasonCode:
           $ref: "#/components/schemas/RejectionReasonCode"
         requestId:
@@ -1811,7 +1836,10 @@ components:
           $ref: "#/components/schemas/IsoTime"
         failure:
           type: string
-          enum: [unreachable, transient, permanent, interrupted, unrecoverable]
+          enum: [unreachable, transient, permanent, interrupted, unrecoverable, no_owner]
+          description: >-
+            v1.16 adds `no_owner`: after a restart, an open request of an escalation that records no user (written
+            before v1.16) is not polled again for anybody.
         error:
           type: string
           description: An OAuth error code from a fixed list, or `other`. Never the service's text.
@@ -1820,7 +1848,10 @@ components:
           enum: [expired, late_refusal]
         check:
           type: string
-          enum: [malformed, signature, issuer, audience, client, expired, approver, request, details, replay]
+          enum: [malformed, signature, issuer, audience, client, expired, owner, approver, request, details, replay]
+          description: >-
+            The verification step an answer failed. v1.16: `owner` (the answer is not from the person the
+            escalation is for) replaces `approver`, which only entries written before v1.16 hold.
         userId:
           $ref: "#/components/schemas/UserId"
           description: v1.10. On `escalated` events of a user's payment.
@@ -1895,7 +1926,7 @@ components:
           $ref: "#/components/schemas/DecisionChannel"
         decidedBy:
           type: string
-          description: "An identifier (`usr_…`) for the portal, the approver's subject for the phone, the operator's label for the command line (text someone typed)."
+          description: "An identifier (`usr_…`) for the portal; for the phone the owner's identifier (`usr_…`, v1.16; an entry written before holds the configured approver's subject); the operator's label for the command line (text someone typed)."
         approvalId:
           type: string
         approvalExpiresAt:
@@ -1933,8 +1964,12 @@ components:
           pattern: "^[0-9a-f]{8}$"
         approvalRequest:
           type: string
-          description: The phone request's state; once the escalation has ended it may also be `answered` or `abandoned`.
-          enum: [requested, capped, operator_only, reevaluation, failed, verification_failed, lapsed, answered, abandoned]
+          description: >-
+            The phone request's state; once the escalation has ended it may also be `answered`, `abandoned` (a
+            person decided on another path while the request was open) or, v1.16, `unanswered` (nobody answered and
+            the escalation expired). v1.16 also adds the marks that ask nobody: `no_owner`, `no_identity` and
+            `identity_mismatch`.
+          enum: [requested, capped, operator_only, reevaluation, no_owner, no_identity, identity_mismatch, failed, verification_failed, lapsed, answered, abandoned, unanswered]
         userId:
           $ref: "#/components/schemas/UserId"
         state:
@@ -2279,7 +2314,7 @@ components:
     PlatformView:
       type: object
       additionalProperties: false
-      required: [platformId, digest, limits, sellers, network, asset, decimals]
+      required: [platformId, digest, limits, sellers, network, asset, decimals, phoneApproval]
       properties:
         platformId:
           type: string
@@ -2298,6 +2333,11 @@ components:
           type: string
         decimals:
           type: integer
+        phoneApproval:
+          type: boolean
+          description: >-
+            v1.16 (L2-7): true when backchannel approval is on in this L2, so a person can be asked on their own
+            phone.
 
     PolicyIssue:
       type: object

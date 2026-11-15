@@ -197,7 +197,7 @@ export function pendingEscalations(entries: Entries, nowMs: number): EscalationV
       createdAt: e.ts,
       expiresAt: iso(expiresAtMsOf(e)),
       referenceCode: referenceCode(e.authorizationId!),
-      ...(typeof e.data.approvalRequest === "string" && { approvalRequest: approvalRequestState(entries, e.authorizationId!)! }),
+      ...(typeof e.data.approvalRequest === "string" && { approvalRequest: approvalRequestState(entries, e.authorizationId!, nowMs)! }),
       ...(typeof e.data.userId === "string" && { userId: e.data.userId }),
     }))
     .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
@@ -294,8 +294,8 @@ export function decisionOf(e: LedgerEntry): EscalationDecision {
   };
 }
 
-/** The escalation as its ESCALATED entry describes it, whatever became of it. */
-function viewOf(entries: Entries, e: LedgerEntry): EscalationView {
+/** The escalation as its ESCALATED entry describes it, whatever became of it. `nowMs` is for the request's state. */
+function viewOf(entries: Entries, e: LedgerEntry, nowMs: number): EscalationView {
   return {
     authorizationId: e.authorizationId!,
     sessionId: String(e.sessionId ?? ""),
@@ -305,7 +305,7 @@ function viewOf(entries: Entries, e: LedgerEntry): EscalationView {
     createdAt: e.ts,
     expiresAt: iso(expiresAtMsOf(e)),
     referenceCode: referenceCode(e.authorizationId!),
-    ...(typeof e.data.approvalRequest === "string" && { approvalRequest: approvalRequestState(entries, e.authorizationId!)! }),
+    ...(typeof e.data.approvalRequest === "string" && { approvalRequest: approvalRequestState(entries, e.authorizationId!, nowMs)! }),
     ...(typeof e.data.userId === "string" && { userId: e.data.userId }),
   };
 }
@@ -317,7 +317,7 @@ export function escalationDetail(entries: Entries, escalationId: string, nowMs: 
   if (!escalated || state === "not_found") return undefined;
   const decision = decisionEntry(entries, escalationId);
   const byPerson = decision !== undefined && decision.type !== "ESCALATION_EXPIRED" && state !== "expired" && state !== "pending";
-  return { ...viewOf(entries, escalated), state, ...(byPerson && { decision: decisionOf(decision) }) };
+  return { ...viewOf(entries, escalated, nowMs), state, ...(byPerson && { decision: decisionOf(decision) }) };
 }
 
 // ---------------------------------------------------------------------------
@@ -376,11 +376,15 @@ const REQUEST_ENDINGS: ReadonlySet<LedgerEntry["type"]> = new Set([
   "APPROVAL_VERIFICATION_FAILED",
 ]);
 
-/** FR-008: `ESCALATED` entries marked `requested` within the trailing window (an attempt counts, sent or not). */
-export function approvalRequestCount(entries: Entries, nowMs: number, windowMs = 3_600_000): number {
+/**
+ * FR-008, and per person since 015 (FR-015): one user's `ESCALATED` entries marked `requested` within the trailing
+ * window (an attempt counts, sent or not). An entry of another user, or of no user (written before v1.16), counts
+ * for nobody else. Derived from the ledger on each decision: there is no counter.
+ */
+export function approvalRequestCount(entries: Entries, nowMs: number, windowMs: number, userId: string): number {
   let n = 0;
   for (const e of entries) {
-    if (e.type === "ESCALATED" && e.data.approvalRequest === "requested" && Date.parse(e.ts) > nowMs - windowMs) n++;
+    if (e.type === "ESCALATED" && e.data.approvalRequest === "requested" && e.data.userId === userId && Date.parse(e.ts) > nowMs - windowMs) n++;
   }
   return n;
 }
@@ -390,20 +394,28 @@ function requestEnding(entries: Entries, escalationId: string): LedgerEntry | un
   return entries.find((e) => REQUEST_ENDINGS.has(e.type) && e.data.escalationId === escalationId);
 }
 
-/** The approval request's state, or undefined when the escalation carries no mark (feature off, or before 012). */
-export function approvalRequestState(entries: Entries, escalationId: string): ApprovalRequestState | undefined {
+/**
+ * The approval request's state, or undefined when the escalation carries no mark (feature off, or before 012).
+ * 015 (specs/015 research R9): it takes the clock. A request that lives as long as its escalation is never recorded
+ * as lapsed: the escalation expires first, by the clock and then by `ESCALATION_EXPIRED`, and nothing is appended
+ * after a final state. That reads as `unanswered`, swept or not, with L2 running throughout or restarted.
+ * `abandoned` is only a person's decision on another path while the request was open.
+ */
+export function approvalRequestState(entries: Entries, escalationId: string, nowMs: number): ApprovalRequestState | undefined {
   const mark = findEscalation(entries, escalationId)?.data.approvalRequest;
   if (typeof mark !== "string") return undefined;
   if (mark !== "requested") return mark as ApprovalRequestMark;
   const decision = decisionEntry(entries, escalationId);
-  if (decision && decision.type !== "ESCALATION_EXPIRED" && channelOf(decision) === "backchannel") return "answered";
+  const byPerson = decision !== undefined && decision.type !== "ESCALATION_EXPIRED";
+  if (byPerson && channelOf(decision) === "backchannel") return "answered";
   const ending = requestEnding(entries, escalationId);
   if (ending) {
     if (ending.type === "APPROVAL_REQUEST_FAILED") return "failed";
     if (ending.type === "APPROVAL_REQUEST_LAPSED") return "lapsed";
     return "verification_failed";
   }
-  return decision ? "abandoned" : "requested";
+  if (byPerson) return "abandoned";
+  return escalationState(entries, escalationId, nowMs) === "expired" ? "unanswered" : "requested";
 }
 
 /** The escalation's APPROVAL_REQUESTED with no ending entry, whatever the time (lapse and failure recording). */
@@ -427,11 +439,16 @@ export interface ResumeSet {
   stale: LedgerEntry[];
   /** `requested` escalations still pending with no request entry at all: L2 died between the two sections. */
   interrupted: LedgerEntry[];
+  /**
+   * 015: active requests, open or stale, whose pending escalation records no user (written before v1.16, for the
+   * configured approver). Never polled: nobody's answer can approve an escalation with no owner.
+   */
+  ownerless: LedgerEntry[];
 }
 
 /** What `resume()` must do after a restart (FR-012). Never resends a request. */
 export function requestsToResume(entries: Entries, nowMs: number): ResumeSet {
-  const out: ResumeSet = { open: [], stale: [], interrupted: [] };
+  const out: ResumeSet = { open: [], stale: [], interrupted: [], ownerless: [] };
   for (const esc of entries) {
     if (esc.type !== "ESCALATED" || esc.data.approvalRequest !== "requested" || esc.authorizationId === undefined) continue;
     const id = esc.authorizationId;
@@ -443,7 +460,8 @@ export function requestsToResume(entries: Entries, nowMs: number): ResumeSet {
     }
     const req = activeApprovalRequest(entries, id);
     if (!req) continue;
-    (nowMs < (req.data.requestExpiresAtMs as number) ? out.open : out.stale).push(req);
+    if (typeof esc.data.userId !== "string") out.ownerless.push(req);
+    else (nowMs < (req.data.requestExpiresAtMs as number) ? out.open : out.stale).push(req);
   }
   return out;
 }

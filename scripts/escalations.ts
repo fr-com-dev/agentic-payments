@@ -6,6 +6,10 @@
 // channel. Every field comes from L2's whitelisted views; none can hold a token, a handle or Auth0 text.
 // 014 (L2-8): a decision made in the portal shows as channel=portal with the administrator's identifier, and a
 // rejection's reason code.
+// 015 (L2-7 v1.16): `approvalRequest=` also prints the states that ask nobody (`no_owner`, `no_identity`,
+// `identity_mismatch`) and, where a view of an ended escalation is printed, `unanswered`: the same column, whatever
+// the value. A phone decision's `approver=` and `decidedBy=` are the owner's `usr_…`; for an entry written before
+// v1.16 they are what that entry holds, the configured approver's subject. A failed check prints `check=owner`.
 import { pathToFileURL } from "node:url";
 import { loadEnv, serviceUrls, tokenFor } from "../src/shared/config.js";
 

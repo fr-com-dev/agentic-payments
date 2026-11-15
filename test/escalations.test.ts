@@ -11,6 +11,7 @@ import {
   approvalRequestState,
   channelOf,
   ESCALATION_TTL_MS,
+  escalationDetail,
   escalationEvents,
   escalationState,
   findPendingEscalation,
@@ -391,13 +392,16 @@ describe("T-LED-04 012 whitelist for the approval request entries", () => {
 });
 
 describe("012 approval request derivations", () => {
+  /** 015: the request's state takes the clock (research R9). A moment inside every escalation's window here. */
+  const NOW = T0 + 1_000;
   const mark = (l: AuditLedger, id: string, approvalRequest: string, at = T0) => {
     const e = escalate(l, id, { at, sessionId: `sess_${id}` });
     // Re-append with the mark: the helper writes the 010 shape, so write the 012 shape directly here.
     return { e, marked: l.append({ type: "ESCALATED", sessionId: `sess_${id}m`, authorizationId: `${id}m`, data: { ...e.data, approvalRequest } }, at) };
   };
-  const requested = (l: AuditLedger, id: string, at = T0, expiresIn = 300_000) => {
-    l.append({ type: "ESCALATED", sessionId: "sess_r", authorizationId: id, data: { violations: [], resourceKey: KEY, payTo: PAY_TO, amount: "50000", approvalRequest: "requested" } }, at);
+  /** 015: `userId` is the escalation's owner. Without one the entry has the shape written before v1.16. */
+  const requested = (l: AuditLedger, id: string, at = T0, expiresIn = 300_000, userId?: string) => {
+    l.append({ type: "ESCALATED", sessionId: "sess_r", authorizationId: id, data: { violations: [], resourceKey: KEY, payTo: PAY_TO, amount: "50000", approvalRequest: "requested", ...(userId !== undefined && { userId }) } }, at);
     return (requestId = `apq_${id}`) =>
       l.append(
         {
@@ -422,43 +426,102 @@ describe("012 approval request derivations", () => {
   it("approvalRequestState: unmarked, each mark, requested, answered, failed, lapsed, verification_failed, abandoned", () => {
     const l = new AuditLedger(file);
     escalate(l, "auth_plain");
-    expect(approvalRequestState(l.entries(), "auth_plain")).toBeUndefined();
+    expect(approvalRequestState(l.entries(), "auth_plain", NOW)).toBeUndefined();
     for (const m of ["capped", "operator_only", "reevaluation"]) {
       const { marked } = mark(l, `auth_${m}`, m);
-      expect(approvalRequestState(l.entries(), marked.authorizationId!)).toBe(m);
+      expect(approvalRequestState(l.entries(), marked.authorizationId!, NOW)).toBe(m);
     }
     requested(l, "auth_r1")();
-    expect(approvalRequestState(l.entries(), "auth_r1")).toBe("requested");
+    expect(approvalRequestState(l.entries(), "auth_r1", NOW)).toBe("requested");
     requested(l, "auth_r0");
-    expect(approvalRequestState(l.entries(), "auth_r0")).toBe("requested");
+    expect(approvalRequestState(l.entries(), "auth_r0", NOW)).toBe("requested");
     requested(l, "auth_f")();
     end(l, "auth_f", "APPROVAL_REQUEST_FAILED");
-    expect(approvalRequestState(l.entries(), "auth_f")).toBe("failed");
+    expect(approvalRequestState(l.entries(), "auth_f", NOW)).toBe("failed");
     requested(l, "auth_l")();
     end(l, "auth_l", "APPROVAL_REQUEST_LAPSED");
-    expect(approvalRequestState(l.entries(), "auth_l")).toBe("lapsed");
+    expect(approvalRequestState(l.entries(), "auth_l", NOW)).toBe("lapsed");
     requested(l, "auth_v")();
     end(l, "auth_v", "APPROVAL_VERIFICATION_FAILED");
-    expect(approvalRequestState(l.entries(), "auth_v")).toBe("verification_failed");
+    expect(approvalRequestState(l.entries(), "auth_v", NOW)).toBe("verification_failed");
     requested(l, "auth_ab")();
     approveEntry(l, "auth_ab", "apr_ab");
-    expect(approvalRequestState(l.entries(), "auth_ab")).toBe("abandoned");
+    expect(approvalRequestState(l.entries(), "auth_ab", NOW)).toBe("abandoned");
     requested(l, "auth_ans")();
     l.append({ type: "HUMAN_APPROVAL", sessionId: "sess_r", authorizationId: "auth_ans", data: { approvalId: "apr_b", escalationId: "auth_ans", resourceKey: KEY, payTo: PAY_TO, amount: "50000", approver: "auth0|x", expiresAtMs: T0 + 600_000, channel: "backchannel", evidence: { answerId: "jti-9" } } }, T0 + 30);
-    expect(approvalRequestState(l.entries(), "auth_ans")).toBe("answered");
+    expect(approvalRequestState(l.entries(), "auth_ans", NOW)).toBe("answered");
     expect(answerIdUsed(l.entries(), "jti-9")).toBe(true);
     expect(answerIdUsed(l.entries(), "jti-8")).toBe(false);
   });
 
-  it("approvalRequestCount counts `requested` marks in the trailing hour; exactly 3 600 000 ms later the first drops out", () => {
+  it("T-CIBA-21 approvalRequestState with the clock: unanswered once the window has passed, swept or not; abandoned only for a person's decision on another path", () => {
     const l = new AuditLedger(file);
-    requested(l, "auth_1", T0);
-    requested(l, "auth_2", T0 + 1000);
+    const state = (id: string, nowMs: number) => approvalRequestState(l.entries(), id, nowMs);
+    // Asked, never answered, never swept: the clock alone decides.
+    requested(l, "auth_un")();
+    expect(state("auth_un", T0 + ESCALATION_TTL_MS - 1)).toBe("requested");
+    expect(state("auth_un", T0 + ESCALATION_TTL_MS)).toBe("unanswered");
+    // Swept: ESCALATION_EXPIRED is the only entry after the request. It is unanswered, not abandoned.
+    requested(l, "auth_sw")();
+    l.append({ type: "ESCALATION_EXPIRED", sessionId: "sess_r", authorizationId: "auth_sw", data: { escalationId: "auth_sw", resourceKey: KEY, payTo: PAY_TO, amount: "50000", expiresAtMs: T0 + ESCALATION_TTL_MS } }, T0 + ESCALATION_TTL_MS + 5);
+    expect(state("auth_sw", T0 + ESCALATION_TTL_MS + 10)).toBe("unanswered");
+    // A request that was never recorded (L2 died between the two sections) and whose escalation expired reads the same.
+    requested(l, "auth_never");
+    expect(state("auth_never", T0 + ESCALATION_TTL_MS)).toBe("unanswered");
+    // A person's decision on another path, while the request was open: abandoned, whatever the clock says later.
+    requested(l, "auth_op")();
+    approveEntry(l, "auth_op", "apr_op");
+    expect(state("auth_op", NOW)).toBe("abandoned");
+    expect(state("auth_op", T0 + 10 * ESCALATION_TTL_MS)).toBe("abandoned");
+    // A request that ended first keeps its own ending after the escalation expires.
+    for (const [id, type, want] of [["auth_xf", "APPROVAL_REQUEST_FAILED", "failed"], ["auth_xl", "APPROVAL_REQUEST_LAPSED", "lapsed"], ["auth_xv", "APPROVAL_VERIFICATION_FAILED", "verification_failed"]] as const) {
+      requested(l, id)();
+      end(l, id, type);
+      expect(state(id, T0 + ESCALATION_TTL_MS + 1)).toBe(want);
+    }
+    // A mark that asked nobody is never unanswered: nobody was asked.
+    for (const m of ["capped", "operator_only", "no_owner", "no_identity", "identity_mismatch"]) {
+      const { marked } = mark(l, `auth_x_${m}`, m);
+      expect(state(marked.authorizationId!, T0 + ESCALATION_TTL_MS + 1)).toBe(m);
+    }
+    // The views use it: a pending list never shows unanswered (an expired escalation is not pending); the detail does.
+    expect(pendingEscalations(l.entries(), T0 + ESCALATION_TTL_MS + 1).map((v) => v.approvalRequest)).toEqual([]);
+    expect(escalationDetail(l.entries(), "auth_un", T0 + ESCALATION_TTL_MS + 1)).toMatchObject({ state: "expired", approvalRequest: "unanswered" });
+    expect(escalationDetail(l.entries(), "auth_un", NOW)).toMatchObject({ state: "pending", approvalRequest: "requested" });
+  });
+
+  it("approvalRequestCount counts one person's `requested` marks in the trailing hour; exactly 3 600 000 ms later the first drops out", () => {
+    const l = new AuditLedger(file);
+    const HOUR = 3_600_000;
+    const A = `usr_${"a".repeat(32)}`;
+    requested(l, "auth_1", T0, 300_000, A);
+    requested(l, "auth_2", T0 + 1000, 300_000, A);
     mark(l, "auth_c", "capped", T0 + 2000);
-    expect(approvalRequestCount(l.entries(), T0 + 5000)).toBe(2);
-    expect(approvalRequestCount(l.entries(), T0 + 3_600_000 - 1)).toBe(2);
-    expect(approvalRequestCount(l.entries(), T0 + 3_600_000)).toBe(1);
-    expect(approvalRequestCount(l.entries(), T0 + 3_601_000)).toBe(0);
+    expect(approvalRequestCount(l.entries(), T0 + 5000, HOUR, A)).toBe(2);
+    expect(approvalRequestCount(l.entries(), T0 + 3_600_000 - 1, HOUR, A)).toBe(2);
+    expect(approvalRequestCount(l.entries(), T0 + 3_600_000, HOUR, A)).toBe(1);
+    expect(approvalRequestCount(l.entries(), T0 + 3_601_000, HOUR, A)).toBe(0);
+  });
+
+  it("T-CIBA-19 approvalRequestCount is per person: another user's entries, and entries with no user, count for nobody else", () => {
+    const l = new AuditLedger(file);
+    const HOUR = 3_600_000;
+    const A = `usr_${"a".repeat(32)}`;
+    const B = `usr_${"b".repeat(32)}`;
+    const C = `usr_${"c".repeat(32)}`;
+    for (let i = 0; i < 3; i++) requested(l, `auth_a${i}`, T0 + i, 300_000, A);
+    requested(l, "auth_b0", T0 + 10, 300_000, B);
+    // Written before v1.16, for the configured approver: no user. They count for nobody.
+    for (let i = 0; i < 12; i++) requested(l, `auth_old${i}`, T0 + 20 + i);
+    // A mark that asked nobody is never counted, whoever it is for.
+    l.append({ type: "ESCALATED", sessionId: "sess_r", authorizationId: "auth_capped_a", data: { violations: [], resourceKey: KEY, payTo: PAY_TO, amount: "50000", approvalRequest: "capped", userId: A } }, T0 + 40);
+    l.append({ type: "ESCALATED", sessionId: "sess_r", authorizationId: "auth_mismatch_a", data: { violations: [], resourceKey: KEY, payTo: PAY_TO, amount: "50000", approvalRequest: "identity_mismatch", userId: A } }, T0 + 41);
+    const at = T0 + 1000;
+    expect(approvalRequestCount(l.entries(), at, HOUR, A)).toBe(3);
+    expect(approvalRequestCount(l.entries(), at, HOUR, B)).toBe(1);
+    expect(approvalRequestCount(l.entries(), at, HOUR, C)).toBe(0);
+    // A shorter window: only what is inside it.
+    expect(approvalRequestCount(l.entries(), T0 + 2, 2, A)).toBe(2);
   });
 
   it("openApprovalRequest needs a pending escalation, no ending entry and the request's own expiry ahead", () => {
@@ -472,20 +535,28 @@ describe("012 approval request derivations", () => {
     expect(activeApprovalRequest(l.entries(), "auth_o")).toBeUndefined();
   });
 
-  it("requestsToResume: open, stale and interrupted; never a decided or expired escalation", () => {
+  it("requestsToResume: open, stale, interrupted and (015, T-CIBA-22) ownerless; never a decided or expired escalation", () => {
     const l = new AuditLedger(file);
-    requested(l, "auth_open", T0)();
-    requested(l, "auth_stale", T0, 60_000)();
-    requested(l, "auth_int", T0);
-    requested(l, "auth_done", T0)();
+    const OWNER = `usr_${"a".repeat(32)}`;
+    requested(l, "auth_open", T0, 300_000, OWNER)();
+    requested(l, "auth_stale", T0, 60_000, OWNER)();
+    requested(l, "auth_int", T0, 300_000, OWNER);
+    requested(l, "auth_done", T0, 300_000, OWNER)();
     approveEntry(l, "auth_done", "apr_d");
-    requested(l, "auth_failed", T0);
+    requested(l, "auth_failed", T0, 300_000, OWNER);
     end(l, "auth_failed", "APPROVAL_REQUEST_FAILED");
+    // Written before v1.16: no user on the escalation. Open or stale, such a request is never polled again.
+    requested(l, "auth_old_open", T0)();
+    requested(l, "auth_old_stale", T0, 60_000)();
+    requested(l, "auth_old_int", T0);
+    requested(l, "auth_old_done", T0)();
+    approveEntry(l, "auth_old_done", "apr_od");
     const r = requestsToResume(l.entries(), T0 + 120_000);
     expect(r.open.map((e) => e.data.escalationId)).toEqual(["auth_open"]);
     expect(r.stale.map((e) => e.data.escalationId)).toEqual(["auth_stale"]);
-    expect(r.interrupted.map((e) => e.authorizationId)).toEqual(["auth_int"]);
-    expect(requestsToResume(l.entries(), T0 + ESCALATION_TTL_MS)).toEqual({ open: [], stale: [], interrupted: [] });
+    expect(r.interrupted.map((e) => e.authorizationId)).toEqual(["auth_int", "auth_old_int"]);
+    expect(r.ownerless.map((e) => e.data.escalationId)).toEqual(["auth_old_open", "auth_old_stale"]);
+    expect(requestsToResume(l.entries(), T0 + ESCALATION_TTL_MS)).toEqual({ open: [], stale: [], interrupted: [], ownerless: [] });
   });
 });
 
@@ -577,8 +648,8 @@ describe("T-LED-07 the portal channel in the derivations (014)", () => {
     }
     portalApproval(l, "auth_r1", T0 + 20);
     portalRejection(l, "auth_r2", "duplicate", T0 + 20);
-    expect(approvalRequestState(l.entries(), "auth_r1")).toBe("abandoned");
-    expect(approvalRequestState(l.entries(), "auth_r2")).toBe("abandoned");
+    expect(approvalRequestState(l.entries(), "auth_r1", T0 + 1_000)).toBe("abandoned");
+    expect(approvalRequestState(l.entries(), "auth_r2", T0 + 1_000)).toBe("abandoned");
     expect(openApprovalRequest(l.entries(), "auth_r1", T0 + 30)).toBeUndefined();
   });
 

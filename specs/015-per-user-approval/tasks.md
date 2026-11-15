@@ -61,7 +61,7 @@ US1 and are independent of one another.
 **Purpose**: the contract shapes, and the scope amendments that later phases need before they build what SPEC
 v1.15 and constitution 1.7.0 still forbid. No behavior changes.
 
-- [ ] T001 [P] Extend the shapes in src/shared/contracts.ts per data-model.md and contracts/control-api.md:
+- [X] T001 [P] Extend the shapes in src/shared/contracts.ts per data-model.md and contracts/control-api.md:
   - `PaymentIntent.approvalSubject?: string`, with the doc comment of contracts/control-api.md "POST /v1/authorize";
   - `ApprovalRequestMark` gains `"no_owner" | "no_identity" | "identity_mismatch"`;
   - `ApprovalRequestState` gains `"unanswered"`;
@@ -71,7 +71,7 @@ v1.15 and constitution 1.7.0 still forbid. No behavior changes.
   - the comment on `DecisionChannel` and on `EscalationDecision.decidedBy`: for the backchannel, the owner's `usr_…` (entries written before v1.16 hold the configured approver's subject).
 
   Make no behavior change; `npm run typecheck` stays green.
-- [ ] T002 [P] Amend the scope first, in SPEC.md and .specify/memory/constitution.md together (Governance: "change SPEC.md and this file together"; research R16), so that no later task builds what they forbid:
+- [X] T002 [P] Amend the scope first, in SPEC.md and .specify/memory/constitution.md together (Governance: "change SPEC.md and this file together"; research R16), so that no later task builds what they forbid:
   - SPEC.md version line: `1.16 (<date>)` and the clause "v1.16 sends each approval request to the person the run is for and removes the configured approver (L2-7, `specs/015`)"; a "Changes in 1.16" table with the columns of the 1.15 table and the rows of this task (later tasks add theirs);
   - SPEC §1.2 and §1.3: a person approves their own agent's escalated payments by phone; "Per-user approvers" leaves the out-of-scope list; approving in the portal as a user, and people's runs in a deployed environment, stay out;
   - SPEC L2-7: the sentence "One approver per L2 (`CIBA_APPROVER`)" becomes "Each request is addressed to the escalation's owner (v1.16)"; the tasks that change the behavior rewrite the rest of L2-7;
@@ -88,21 +88,21 @@ helpers running backchannel approval with user accounts and two people.
 **⚠️ CRITICAL**: no user story work can begin until this phase is complete. L2's behavior does not change in
 this phase: T-CIBA-01..14 must pass at its end with no change of meaning (T005 says what may change).
 
-- [ ] T003 Accept `approvalSubject` in the authorize body check of src/layer2-control/service.ts (contracts/control-api.md "POST /v1/authorize"), beside the `userId` check and still after the token check:
+- [X] T003 Accept `approvalSubject` in the authorize body check of src/layer2-control/service.ts (contracts/control-api.md "POST /v1/authorize"), beside the `userId` check and still after the token check:
   - valid only as "a string of 1 to 255 characters with no whitespace and no control character";
   - "never without `userId`": present with no `userId` is 400 malformed;
   - with user accounts off or backchannel approval off it is ignored;
   - it is not copied to `INTENT` or to any other entry, and it is not used yet.
 
   Add cases to test/users.test.ts (`015 authorize approvalSubject`): each malformed value is 400, 401 precedes 400, a valid value changes no decision and appears in no entry. Update `PaymentIntent` in docs/l2-control.openapi.yaml, the `POST /v1/authorize` row of SPEC L2-5 (the new 400 cases) and SPEC §7.
-- [ ] T004 [P] Let the stand-in answer as a person in test/helpers/ciba-stub.ts:
+- [X] T004 [P] Let the stand-in answer as a person in test/helpers/ciba-stub.ts:
   - an approval's token and ID token take their `sub` from the `sub` of the request's `login_hint` (parse the JSON `{ format, iss, sub }`), no longer from `opts.approver`;
   - `Answer` `approve` gains `as?: string`: sign the answer with that subject instead (another person's genuine answer);
   - the forgery `"subject"` keeps its meaning (a subject that is nobody's);
   - `CibaStubOptions.approver` becomes optional and unused once T009 lands; keep it accepted until then.
 
   With L2 unchanged the hint still carries the configured approver, so every existing test passes.
-- [ ] T005 Run backchannel tests with user accounts and two people in test/helpers/backchannel-l2.ts (research R17):
+- [X] T005 Run backchannel tests with user accounts and two people in test/helpers/backchannel-l2.ts (research R17):
   - user accounts are always on (the `users` and `net` deps that the `admin` option adds today); `admin` keeps adding only the administration routes;
   - export `ALICE_SUB = "auth0|alice-1"`, `BOB_SUB = "auth0|bob-1"`, and build `alice` and `bob` as `userIdFor(stub.issuer, <sub>)` after the stub starts; expose them on `BackchannelL2` as `people: { alice: { userId, subject }, bob: { userId, subject } }`;
   - onboard both before returning (profile, crypto account, one policy), reusing the calls of test/helpers/users.ts `onboard`; choose the policy values so that every amount T-CIBA-01..14 use gets the decision it gets today, and say in a comment which amounts escalate;
@@ -125,7 +125,7 @@ first person's approval pays once. A refusal gives DENIED with `human_rejected` 
 
 ### Tests for User Story 1 (write first; they must fail)
 
-- [ ] T006 [P] [US1] T-CIBA-15 in test/backchannel-owner.test.ts (new file; use `startBackchannelL2`):
+- [X] T006 [P] [US1] T-CIBA-15 in test/backchannel-owner.test.ts (new file; use `startBackchannelL2`):
   - an escalation of alice's sends exactly one `bc-authorize` whose `login_hint` is `{ format: "iss_sub", iss: <stub.issuer>, sub: ALICE_SUB }`; bob's subject is in no request;
   - `APPROVAL_REQUESTED.data.approver` is alice's `usr_…`;
   - alice approves within the wait: the call returns AUTHORIZED; one `HUMAN_APPROVAL` with `channel: "backchannel"`, `approver` alice's `usr_…` and `evidence` exactly `{ issuer, userId, answerId, issuedAt, detailsSource }` (no `subject` key);
@@ -142,23 +142,23 @@ first person's approval pays once. A refusal gives DENIED with `human_rejected` 
 T009 to T013 are one change: they remove the approver from types that the others still use, so `npm run typecheck`
 is green only at the end of T013. Commit them together.
 
-- [ ] T009 [US1] Address the request to the owner in src/layer2-control/ciba-client.ts (contracts/approval-request.md "The request"): `StartParams` gains `subject: string`; `start` builds `login_hint` from `settings.issuer` and `p.subject`; `CibaSettings` and `publicSettings` lose `approver`; `cibaConfigFromEnv` no longer requires `CIBA_APPROVER` (a present value is ignored here; T043 turns it into a refusal). Update test/ciba-client.test.ts (the form's fields, T-CIBA-02) and the helper of T005 (no `approver` in the settings).
-- [ ] T010 [US1] Make verification's step 7 an owner check in src/layer2-control/approval-evidence.ts (contracts/approval-request.md "The answer L2 accepts"):
+- [X] T009 [US1] Address the request to the owner in src/layer2-control/ciba-client.ts (contracts/approval-request.md "The request"): `StartParams` gains `subject: string`; `start` builds `login_hint` from `settings.issuer` and `p.subject`; `CibaSettings` and `publicSettings` lose `approver`; `cibaConfigFromEnv` no longer requires `CIBA_APPROVER` (a present value is ignored here; T043 turns it into a refusal). Update test/ciba-client.test.ts (the form's fields, T-CIBA-02) and the helper of T005 (no `approver` in the settings).
+- [X] T010 [US1] Make verification's step 7 an owner check in src/layer2-control/approval-evidence.ts (contracts/approval-request.md "The answer L2 accepts"):
   - `VERIFICATION_CHECKS` gains `"owner"` in step 7's place and keeps `"approver"` as a value that is read and never produced;
   - `ExpectedApproval.approver` becomes `ownerUserId: string`;
   - step 7: `userIdFor(claims.iss, claims.sub) !== expected.ownerUserId` fails `owner`;
   - `ApprovalEvidence` is `{ issuer, userId, answerId, issuedAt, detailsSource }`, with `userId` the owner's.
 
   Update test/approval-evidence.test.ts: the step order, the `owner` case, the evidence's keys. Import `userIdFor` from `../shared/user-id.js` only.
-- [ ] T011 [US1] Decide eligibility for an owner in src/layer2-control/backchannel.ts (research R4):
+- [X] T011 [US1] Decide eligibility for an owner in src/layer2-control/backchannel.ts (research R4):
   - `BackchannelDeps` loses `approver`;
   - `eligibility(o: { operatorOnly; reevaluation; nowMs; owner?: string; subject?: string })` returns, in this order: `reevaluation`, `operator_only`, `no_owner` (no `owner`), `no_identity` (no `subject`), `identity_mismatch` (`userIdFor(this.d.issuer, subject) !== owner`), `capped` (the existing count, unchanged until T039), `requested`;
   - `StartPlan` gains `owner: string` and `subject: string`; `runStart` passes `subject` to `port.start` and never to `ledger.append` or `this.log`.
-- [ ] T012 [US1] Record the owner in src/layer2-control/backchannel.ts (research R6): `APPROVAL_REQUESTED.data.approver`, `HUMAN_APPROVAL.data.approver` and `HUMAN_REJECTION.data.approver` are the `userId` of the escalation's `ESCALATED` entry (copy it as the resource, the payee and the amount are copied); `verify` passes `ownerUserId` from that entry; `HUMAN_APPROVAL.data.evidence` is the new evidence. Update the entry rows of SPEC L2-4 (`approver`, `evidence`, the `check` values).
-- [ ] T013 [US1] Pass the owner and the subject from the authorize path in src/layer2-control/service.ts: `decideOnce` calls `backchannel.eligibility` with `owner: u?.userId` and `subject: intent.approvalSubject`, and fills `StartPlan.owner` and `StartPlan.subject` for `requested`; the startup line becomes `backchannel approval on (issuer <issuer>, per user)`. T006 now passes.
-- [ ] T014 [US1] Let an orchestrator carry the subject, and keep T-E2E-10 true (slice 1): in src/layer1-intent/orchestrator.ts add `approvalSubject?: string` to the deps and copy it onto each intent beside `userId`; nothing else in L1 reads it. In test/e2e.local.test.ts rework the first half of T-E2E-10 (an approval within the wait pays in the same `fetchPaid`): the platform account can no longer be asked, so the purchase becomes a person's, with the orchestrator built with the `userId` and `approvalSubject` of an onboarded person whose account holds local test USDC; it still asserts 50000 on-chain and one request. Update the T-E2E-10 row of SPEC §12.
+- [X] T012 [US1] Record the owner in src/layer2-control/backchannel.ts (research R6): `APPROVAL_REQUESTED.data.approver`, `HUMAN_APPROVAL.data.approver` and `HUMAN_REJECTION.data.approver` are the `userId` of the escalation's `ESCALATED` entry (copy it as the resource, the payee and the amount are copied); `verify` passes `ownerUserId` from that entry; `HUMAN_APPROVAL.data.evidence` is the new evidence. Update the entry rows of SPEC L2-4 (`approver`, `evidence`, the `check` values).
+- [X] T013 [US1] Pass the owner and the subject from the authorize path in src/layer2-control/service.ts: `decideOnce` calls `backchannel.eligibility` with `owner: u?.userId` and `subject: intent.approvalSubject`, and fills `StartPlan.owner` and `StartPlan.subject` for `requested`; the startup line becomes `backchannel approval on (issuer <issuer>, per user)`. T006 now passes.
+- [X] T014 [US1] Let an orchestrator carry the subject, and keep T-E2E-10 true (slice 1): in src/layer1-intent/orchestrator.ts add `approvalSubject?: string` to the deps and copy it onto each intent beside `userId`; nothing else in L1 reads it. In test/e2e.local.test.ts rework the first half of T-E2E-10 (an approval within the wait pays in the same `fetchPaid`): the platform account can no longer be asked, so the purchase becomes a person's, with the orchestrator built with the `userId` and `approvalSubject` of an onboarded person whose account holds local test USDC; it still asserts 50000 on-chain and one request. Update the T-E2E-10 row of SPEC §12.
 - [ ] T015 [US1] Send the subject from the hosted agent (research R14): in src/layer1-intent/hosted/server.ts pass `approvalSubject: requester.subject` beside `userId` when the requester is a person and auth is not bypassed; carry it through `runGoal` and src/layer1-intent/hosted/agent.ts to the orchestrator's deps only (never to `createRunTools`, the instructions, the run record or the log). Add the sentence to SPEC L1-6 ("the user"). T007 and T008 now pass.
-- [ ] T016 [US1] Adapt the tests of 012 that named the approver, with no change of meaning: in every test/backchannel-*.test.ts (approve, refuse, verify, views, failures, lapse, fatigue), test/payment-details.test.ts and the 012 cases of test/escalations.test.ts replace `APPROVER` by the person the helper names (`people.alice`), the check name `approver` by `owner`, and the evidence's `subject` by `userId`; remove the `APPROVER` export from test/helpers/backchannel-l2.ts and its import in test/e2e.local.test.ts. Entries that a test writes by hand in the pre-1.16 shape stay as they are (they are what T047 reads). No other assertion changes.
+- [X] T016 [US1] Adapt the tests of 012 that named the approver, with no change of meaning: in every test/backchannel-*.test.ts (approve, refuse, verify, views, failures, lapse, fatigue), test/payment-details.test.ts and the 012 cases of test/escalations.test.ts replace `APPROVER` by the person the helper names (`people.alice`), the check name `approver` by `owner`, and the evidence's `subject` by `userId`; remove the `APPROVER` export from test/helpers/backchannel-l2.ts and its import in test/e2e.local.test.ts. Entries that a test writes by hand in the pre-1.16 shape stay as they are (they are what T047 reads). No other assertion changes.
 
 **Checkpoint**: US1 works end to end against the stand-in. `npm run check` green; the demo summary unchanged.
 
@@ -174,21 +174,21 @@ that does not resolve to alice: no request is sent on it. Each has a must-fail h
 
 ### Tests for User Story 2 (write first; they must fail)
 
-- [ ] T017 [US2] T-CIBA-16 in test/backchannel-owner.test.ts: for alice's pending escalation the stand-in answers `{ approve: { as: BOB_SUB } }` (valid signature, same payment details): no `HUMAN_APPROVAL`; one `APPROVAL_VERIFICATION_FAILED` with `check: "owner"`; the escalation stays pending; nothing is signed; an operator approval still pays. **Must fail**: with `skipChecks: new Set(["owner"])`, bob's answer approves alice's payment.
-- [ ] T018 [US2] T-CIBA-17 in test/backchannel-owner.test.ts:
+- [X] T017 [US2] T-CIBA-16 in test/backchannel-owner.test.ts: for alice's pending escalation the stand-in answers `{ approve: { as: BOB_SUB } }` (valid signature, same payment details): no `HUMAN_APPROVAL`; one `APPROVAL_VERIFICATION_FAILED` with `check: "owner"`; the escalation stays pending; nothing is signed; an operator approval still pays. **Must fail**: with `skipChecks: new Set(["owner"])`, bob's answer approves alice's payment.
+- [X] T018 [US2] T-CIBA-17 in test/backchannel-owner.test.ts:
   - an intent with alice's `userId` and bob's subject: `ESCALATED.approvalRequest` is `identity_mismatch`, no `bc-authorize` is sent, the call returns ESCALATE at once (no wait), and an operator approval pays;
   - a subject that would resolve to alice under another issuer (compute alice's `userId` with `userIdFor("urn:x402:dev-issuer", ALICE_SUB)` for a second onboarded person): `identity_mismatch` (FR-011);
   - alice's `userId` and no subject: `no_identity`, no request;
   - the payment itself is decided as without the field (same decision, same violations).
 
   **Must fail**: with `skipIdentityCheck`, the request is sent with the mismatched subject in its `login_hint`.
-- [ ] T019 [US2] T-CIBA-20 in test/backchannel-owner.test.ts: run an approval, a refusal, a mismatch and a failed start with the email-shaped planted subject `email|planted.person-7f3a91@example.test` for a third onboarded person (some sign-in methods build the subject from an address; SC-009); neither the subject nor the bare address `planted.person-7f3a91@example.test` is in any line of the ledger file, in no captured log line, in no response body of authorize, the operator's lists and events, the administration routes and the user-account routes, and in no event. The existing T-CIBA-12 scan stays as it is.
+- [X] T019 [US2] T-CIBA-20 in test/backchannel-owner.test.ts: run an approval, a refusal, a mismatch and a failed start with the email-shaped planted subject `email|planted.person-7f3a91@example.test` for a third onboarded person (some sign-in methods build the subject from an address; SC-009); neither the subject nor the bare address `planted.person-7f3a91@example.test` is in any line of the ledger file, in no captured log line, in no response body of authorize, the operator's lists and events, the administration routes and the user-account routes, and in no event. The existing T-CIBA-12 scan stays as it is.
 
 ### Implementation for User Story 2
 
-- [ ] T020 [US2] Add the test-only switch `skipIdentityCheck?: boolean` to `BackchannelDeps` in src/layer2-control/backchannel.ts: when set, eligibility skips the `identity_mismatch` branch. Comment it as the must-fail proof of T-CIBA-17, never set outside tests. Confirm `skipChecks` already covers `owner` (T010). T017 and T018 now pass in both halves.
-- [ ] T021 [US2] Close what T-CIBA-20 finds: make sure no log line in src/layer2-control/backchannel.ts or service.ts, no error body in service.ts and no view in escalations.ts can carry the subject (the 400 for a malformed `approvalSubject` names the field, never its value). T019 now passes.
-- [ ] T022 [US2] Add the threat row SEC-30 in SPEC §11 ("one person's answer approves another person's payment, or a caller points a person's request at another phone"; mitigations: the owner check from the signed answer, the identity check against the one-way identifier, L2's own issuer; tests T-CIBA-16, T-CIBA-17), reword SEC-17 ("the escalation's owner" where it says "approver"), add SEC-30 to specs/007-process-isolation-security/contracts/threat-matrix.md, and raise `SEC_ROWS` in test/architecture.test.ts to 30.
+- [X] T020 [US2] Add the test-only switch `skipIdentityCheck?: boolean` to `BackchannelDeps` in src/layer2-control/backchannel.ts: when set, eligibility skips the `identity_mismatch` branch. Comment it as the must-fail proof of T-CIBA-17, never set outside tests. Confirm `skipChecks` already covers `owner` (T010). T017 and T018 now pass in both halves.
+- [X] T021 [US2] Close what T-CIBA-20 finds: make sure no log line in src/layer2-control/backchannel.ts or service.ts, no error body in service.ts and no view in escalations.ts can carry the subject (the 400 for a malformed `approvalSubject` names the field, never its value). T019 now passes.
+- [X] T022 [US2] Add the threat row SEC-30 in SPEC §11 ("one person's answer approves another person's payment, or a caller points a person's request at another phone"; mitigations: the owner check from the signed answer, the identity check against the one-way identifier, L2's own issuer; tests T-CIBA-16, T-CIBA-17), reword SEC-17 ("the escalation's owner" where it says "approver"), add SEC-30 to specs/007-process-isolation-security/contracts/threat-matrix.md, and raise `SEC_ROWS` in test/architecture.test.ts to 30.
 
 **Checkpoint**: the two authority checks are proven. `npx vitest run test/backchannel-owner.test.ts -t "must fail"` shows both unsafe outcomes.
 
@@ -204,14 +204,14 @@ stand-in receives no request, each escalation is pending for the operator, and a
 
 ### Tests for User Story 3 (write first; they must fail)
 
-- [ ] T023 [P] [US3] T-CIBA-18 in test/backchannel-owner.test.ts: three escalations: a platform intent (`as: "platform"`, what a system identity's run and the command-line agent send), a platform intent with `operatorApprovalOnly: true` (what the scripted regression sends), and a person's intent with `operatorApprovalOnly: true`. `ESCALATED.approvalRequest` is `no_owner` for the first and `operator_only` for the other two, `stub.requests` is empty, each call returns ESCALATE at once, and an operator approval pays each. **Must fail**: with `ownerlessSubject: BOB_SUB`, the platform's escalation sends a request to bob's phone.
-- [ ] T024 [P] [US3] T-CIBA-22 in test/backchannel-lapse.test.ts: build a ledger file with `AuditLedger.append` holding an `ESCALATED` marked `requested` with no `userId`, and its `APPROVAL_REQUESTED` with `approver: "auth0|approver-1"` and a sealed handle (the shape entries had before v1.16); start an instance on that file with the clock inside the window: it polls nothing, appends one `APPROVAL_REQUEST_FAILED` with `phase: "resume"` and `failure: "no_owner"`, and the escalation expires at 300 s. A request whose escalation has an owner is still resumed (T-CIBA-11 unchanged); with alice's and bob's requests both open at the restart, each is polled from its own handle and each answer decides only its own escalation.
+- [X] T023 [P] [US3] T-CIBA-18 in test/backchannel-owner.test.ts: three escalations: a platform intent (`as: "platform"`, what a system identity's run and the command-line agent send), a platform intent with `operatorApprovalOnly: true` (what the scripted regression sends), and a person's intent with `operatorApprovalOnly: true`. `ESCALATED.approvalRequest` is `no_owner` for the first and `operator_only` for the other two, `stub.requests` is empty, each call returns ESCALATE at once, and an operator approval pays each. **Must fail**: with `ownerlessSubject: BOB_SUB`, the platform's escalation sends a request to bob's phone.
+- [X] T024 [P] [US3] T-CIBA-22 in test/backchannel-lapse.test.ts: build a ledger file with `AuditLedger.append` holding an `ESCALATED` marked `requested` with no `userId`, and its `APPROVAL_REQUESTED` with `approver: "auth0|approver-1"` and a sealed handle (the shape entries had before v1.16); start an instance on that file with the clock inside the window: it polls nothing, appends one `APPROVAL_REQUEST_FAILED` with `phase: "resume"` and `failure: "no_owner"`, and the escalation expires at 300 s. A request whose escalation has an owner is still resumed (T-CIBA-11 unchanged); with alice's and bob's requests both open at the restart, each is polled from its own handle and each answer decides only its own escalation.
 - [ ] T025 [P] [US3] In test/e2e.local.test.ts, extend the second half of T-E2E-10 (the scripted plan with backchannel approval on matches the baseline): the escalation at step 4 is marked `operator_only` and the stand-in received no request; add one run of a system identity through the hosted agent whose escalation is `no_owner` and waits for the operator.
 
 ### Implementation for User Story 3
 
-- [ ] T026 [US3] Add the test-only switch `ownerlessSubject?: string` to `BackchannelDeps` in src/layer2-control/backchannel.ts: when set, an escalation with no owner is treated as `requested` and sent to that subject. Comment it as the must-fail proof of FR-007; `main()` never sets it and no environment variable reaches it. T023 passes in both halves.
-- [ ] T027 [US3] Stop resuming ownerless requests (research R10): in src/layer2-control/escalations.ts `requestsToResume` returns a fourth list, `ownerless` (open or stale requests whose escalation records no `userId`); in src/layer2-control/backchannel.ts `resume()` records each with `recordFailure(req, { phase: "resume", failure: "no_owner" })` and logs one line without the old `approver` value. Extend the `failure` values of `APPROVAL_REQUEST_FAILED` in SPEC L2-4. T024 passes.
+- [X] T026 [US3] Add the test-only switch `ownerlessSubject?: string` to `BackchannelDeps` in src/layer2-control/backchannel.ts: when set, an escalation with no owner is treated as `requested` and sent to that subject. Comment it as the must-fail proof of FR-007; `main()` never sets it and no environment variable reaches it. T023 passes in both halves.
+- [X] T027 [US3] Stop resuming ownerless requests (research R10): in src/layer2-control/escalations.ts `requestsToResume` returns a fourth list, `ownerless` (open or stale requests whose escalation records no `userId`); in src/layer2-control/backchannel.ts `resume()` records each with `recordFailure(req, { phase: "resume", failure: "no_owner" })` and logs one line without the old `approver` value. Extend the `failure` values of `APPROVAL_REQUEST_FAILED` in SPEC L2-4. T024 passes.
 
 **Checkpoint**: US1 to US3 are done: this is the whole payment-authority change. `npm run check` green.
 
@@ -275,11 +275,11 @@ times, the 11th is `capped`, and bob is asked.
 
 ### Tests for User Story 5 (write first; they must fail)
 
-- [ ] T038 [P] [US5] T-CIBA-19 in test/backchannel-fatigue.test.ts: 11 escalations of alice's on 11 resources within the hour, then one of bob's: 10 requests carry alice's subject, alice's 11th is `capped` and pending for the operator, bob's is `requested` and sent; an hour and a second after alice's first, alice's next is `requested` again; a repeat of a pending purchase counts nothing (T-CIBA-03 unchanged). Pure cases in test/escalations.test.ts for `approvalRequestCount(entries, nowMs, windowMs, userId)`: entries of another user and entries with no user count for nobody. **Must fail**: with `sharedRequestCap`, bob is not asked.
+- [X] T038 [P] [US5] T-CIBA-19 in test/backchannel-fatigue.test.ts: 11 escalations of alice's on 11 resources within the hour, then one of bob's: 10 requests carry alice's subject, alice's 11th is `capped` and pending for the operator, bob's is `requested` and sent; an hour and a second after alice's first, alice's next is `requested` again; a repeat of a pending purchase counts nothing (T-CIBA-03 unchanged). Pure cases in test/escalations.test.ts for `approvalRequestCount(entries, nowMs, windowMs, userId)`: entries of another user and entries with no user count for nobody. **Must fail**: with `sharedRequestCap`, bob is not asked.
 
 ### Implementation for User Story 5
 
-- [ ] T039 [US5] Count per person: `approvalRequestCount` in src/layer2-control/escalations.ts takes a required `userId` and counts only `ESCALATED` entries with `approvalRequest: "requested"` and that `userId`; `eligibility` in src/layer2-control/backchannel.ts passes the owner. Add the test-only switch `sharedRequestCap?: boolean` (counts every `requested` entry, whoever it is for). Reword SEC-18 in SPEC §11 ("per person") and the eligibility bullet of L2-7. T038 passes; T-CIBA-04 keeps passing with one person.
+- [X] T039 [US5] Count per person: `approvalRequestCount` in src/layer2-control/escalations.ts takes a required `userId` and counts only `ESCALATED` entries with `approvalRequest: "requested"` and that `userId`; `eligibility` in src/layer2-control/backchannel.ts passes the owner. Add the test-only switch `sharedRequestCap?: boolean` (counts every `requested` entry, whoever it is for). Reword SEC-18 in SPEC §11 ("per person") and the eligibility bullet of L2-7. T038 passes; T-CIBA-04 keeps passing with one person.
 
 **Checkpoint**: one person at the limit changes nothing for another.
 
@@ -295,19 +295,19 @@ setting and see it refuse, naming the setting; plan the tenant with no approver 
 
 ### Tests for User Story 6 (write first; they must fail)
 
-- [ ] T040 [P] [US6] T-CIBA-24 in test/ciba-client.test.ts and test/backchannel-failures.test.ts:
+- [X] T040 [P] [US6] T-CIBA-24 in test/ciba-client.test.ts and test/backchannel-failures.test.ts:
   - `CIBA_APPROVAL=1` with `CIBA_APPROVER=auth0|leftover-value-91c2`: `cibaConfigFromEnv` throws a `ConfigError` whose message contains `CIBA_APPROVER` and not the value;
   - `CIBA_APPROVAL` off with `CIBA_APPROVER` set: `ignored` lists it, as today;
   - a complete configuration without `CIBA_APPROVER` is enabled;
   - `main()`'s check: `CIBA_APPROVAL=1` without `USER_ACCOUNTS=1` throws naming both, before the ledger lock is taken (no lock file appears);
   - `createControlService` with backchannel deps and no user-account deps throws.
-- [ ] T041 [P] [US6] T-IAC-01 rule 19 in test/infra.test.ts (contracts/config-and-secrets.md "T-IAC-01 rule 19, as amended"): the compiled `ciba` has exactly the keys `audience, clientId, clientKeyId, credential, enabled, issuer`; no app has a `CIBA_APPROVER` environment variable; `main.bicep` calls `fail()` for `ciba.enabled` without `userAccounts.enabled`. **Must fail** rows: an `approver` key, the variable put back in the L2 app, the `fail()` removed.
+- [X] T041 [P] [US6] T-IAC-01 rule 19 in test/infra.test.ts (contracts/config-and-secrets.md "T-IAC-01 rule 19, as amended"): the compiled `ciba` has exactly the keys `audience, clientId, clientKeyId, credential, enabled, issuer`; no app has a `CIBA_APPROVER` environment variable; `main.bicep` calls `fail()` for `ciba.enabled` without `userAccounts.enabled`. **Must fail** rows: an `approver` key, the variable put back in the L2 app, the `fail()` removed.
 - [ ] T042 [P] [US6] T-IAC-02 and the setup script in test/auth0-iac.test.ts and test/github-setup.test.ts: `REQUIRED` is `tenant_domain, api_identifier, client_public_key_pem`; `VARIABLES` has no `approver_user_id`; the variables without a default are `api_identifier, environment, tenant_domain`; the output `bicepparam_ciba` has exactly the parameter file's `ciba` keys; `github-setup.sh` creates five variables and never deletes or overwrites one. **Must fail** rows: an `auth0_user` data source, an `auth0_user` resource, `approver` in an output, the pipeline reading `vars.AUTH0_APPROVER_USER_ID`. Replace the existing rows that used `var.approver_user_id` as their example by another variable.
 
 ### Implementation for User Story 6
 
-- [ ] T043 [US6] Refuse a leftover approver in src/layer2-control/ciba-client.ts: with `CIBA_APPROVAL=1`, a present `CIBA_APPROVER` throws `ConfigError("CIBA_APPROVER is no longer used: remove it (SPEC L2-7)")`, checked right after the switch; keep the name in the list used for the "ignoring …" line. In src/layer2-control/service.ts, `main()` throws `ConfigError("CIBA_APPROVAL=1 needs USER_ACCOUNTS=1 (SPEC L2-7)")` after both configs are read and before `acquireLedgerLock`, and `createControlService` throws when `deps.backchannel` is set without `deps.users`. T040 passes.
-- [ ] T044 [P] [US6] Remove the approver from L2's deployment settings, in the same change as T043 (research R18):
+- [X] T043 [US6] Refuse a leftover approver in src/layer2-control/ciba-client.ts: with `CIBA_APPROVAL=1`, a present `CIBA_APPROVER` throws `ConfigError("CIBA_APPROVER is no longer used: remove it (SPEC L2-7)")`, checked right after the switch; keep the name in the list used for the "ignoring …" line. In src/layer2-control/service.ts, `main()` throws `ConfigError("CIBA_APPROVAL=1 needs USER_ACCOUNTS=1 (SPEC L2-7)")` after both configs are read and before `acquireLedgerLock`, and `createControlService` throws when `deps.backchannel` is set without `deps.users`. T040 passes.
+- [X] T044 [P] [US6] Remove the approver from L2's deployment settings, in the same change as T043 (research R18):
   - env/l2-control.env.example: delete the `# CIBA_APPROVER=` line; test/architecture.test.ts `TEMPLATES`: the `l2-control` spec loses the name (T-ARCH-ENV);
   - infra/main.bicep: `approver` out of the `ciba` comment and of `cibaChecked`, its `fail()` message reworded, and a new `fail()` when `ciba.enabled && !userAccounts.enabled`;
   - infra/main.dev.bicepparam: `approver` out of `ciba`, and the comment above it no longer mentions the approver's enrollment;
@@ -336,19 +336,19 @@ the request ended, and no token, handle, service text, name or email.
 
 ### Tests for User Story 7 (write first; they must fail)
 
-- [ ] T046 [P] [US7] T-CIBA-21 in test/backchannel-lapse.test.ts and test/escalations.test.ts:
+- [X] T046 [P] [US7] T-CIBA-21 in test/backchannel-lapse.test.ts and test/escalations.test.ts:
   - the stand-in grants the full requested lifetime (`{ expiresIn: <the requested_expiry> }`, as Auth0 does) and never answers; the clock passes 300 s with L2 running: the ledger holds `APPROVAL_REQUESTED`, then `ESCALATION_EXPIRED`, and no `APPROVAL_REQUEST_LAPSED`; `approvalRequestState` is `unanswered`;
   - the same with L2 closed and a new instance started on the ledger after the window: `unanswered`, and nothing is appended but the expiry;
   - before any sweep, with the clock past the window, the state is already `unanswered`;
   - an operator approval while the request is open: `abandoned`;
   - the existing case with a shorter lifetime still gives `APPROVAL_REQUEST_LAPSED` and `lapsed`.
-- [ ] T047 [P] [US7] T-CIBA-23 in test/backchannel-views.test.ts: load a ledger fixture written by v1.15 (a backchannel `HUMAN_APPROVAL` and a `HUMAN_REJECTION` with `approver: "auth0|approver-1"`, `evidence.subject`, and an `APPROVAL_VERIFICATION_FAILED` with `check: "approver"`): `verifyChain` is ok, the events show `decidedBy: "auth0|approver-1"` and `check: "approver"`, and nothing throws. Build that ledger in the test with `AuditLedger.append` into a temporary file, so its hashes are real; add no fixture file.
-- [ ] T048 [P] [US7] Extend T-CIBA-14 in test/backchannel-views.test.ts: for each outcome (approved, refused, unanswered, failed, capped, `no_owner`, `identity_mismatch`) the operator's list and events and the administration list show `userId` (the owner), `approvalRequest` (the state), `channel` and `decidedBy` (the owner's `usr_…` for a phone decision), each from the whitelist; an event row has no key outside `EscalationEvent`.
+- [X] T047 [P] [US7] T-CIBA-23 in test/backchannel-views.test.ts: load a ledger fixture written by v1.15 (a backchannel `HUMAN_APPROVAL` and a `HUMAN_REJECTION` with `approver: "auth0|approver-1"`, `evidence.subject`, and an `APPROVAL_VERIFICATION_FAILED` with `check: "approver"`): `verifyChain` is ok, the events show `decidedBy: "auth0|approver-1"` and `check: "approver"`, and nothing throws. Build that ledger in the test with `AuditLedger.append` into a temporary file, so its hashes are real; add no fixture file.
+- [X] T048 [P] [US7] Extend T-CIBA-14 in test/backchannel-views.test.ts: for each outcome (approved, refused, unanswered, failed, capped, `no_owner`, `identity_mismatch`) the operator's list and events and the administration list show `userId` (the owner), `approvalRequest` (the state), `channel` and `decidedBy` (the owner's `usr_…` for a phone decision), each from the whitelist; an event row has no key outside `EscalationEvent`.
 
 ### Implementation for User Story 7
 
-- [ ] T049 [US7] Give the request's state the clock in src/layer2-control/escalations.ts (research R9): `approvalRequestState(entries, escalationId, nowMs)` returns `unanswered` when the mark is `requested`, no ending entry exists, and `escalationState(entries, escalationId, nowMs)` is `expired`; `abandoned` only when a person's decision on another path exists. Pass `nowMs` from every caller (`viewOf`, `escalationDetail`, src/layer2-control/backchannel.ts, the admin and operator routes). Correct the outcome sentence of SPEC L2-7 ("a request that lives as long as its escalation ends with `ESCALATION_EXPIRED` alone and reads as `unanswered`; `APPROVAL_REQUEST_LAPSED` is written only when the request ends first") and add `unanswered` to SPEC §7 and both OpenAPI documents. T046 passes.
-- [ ] T050 [US7] Show the new values to the operator: in scripts/escalations.ts print `approvalRequest` for `no_owner`, `no_identity`, `identity_mismatch` and `unanswered` like the existing states (no new column), and keep `approver=` printing whatever the entry holds. Update the descriptions of `approver`, `decidedBy` and `check` in docs/l2-control.openapi.yaml and docs/portal.openapi.yaml. T047 and T048 pass.
+- [X] T049 [US7] Give the request's state the clock in src/layer2-control/escalations.ts (research R9): `approvalRequestState(entries, escalationId, nowMs)` returns `unanswered` when the mark is `requested`, no ending entry exists, and `escalationState(entries, escalationId, nowMs)` is `expired`; `abandoned` only when a person's decision on another path exists. Pass `nowMs` from every caller (`viewOf`, `escalationDetail`, src/layer2-control/backchannel.ts, the admin and operator routes). Correct the outcome sentence of SPEC L2-7 ("a request that lives as long as its escalation ends with `ESCALATION_EXPIRED` alone and reads as `unanswered`; `APPROVAL_REQUEST_LAPSED` is written only when the request ends first") and add `unanswered` to SPEC §7 and both OpenAPI documents. T046 passes.
+- [X] T050 [US7] Show the new values to the operator: in scripts/escalations.ts print `approvalRequest` for `no_owner`, `no_identity`, `identity_mismatch` and `unanswered` like the existing states (no new column), and keep `approver=` printing whatever the entry holds. Update the descriptions of `approver`, `decidedBy` and `check` in docs/l2-control.openapi.yaml and docs/portal.openapi.yaml. T047 and T048 pass.
 
 **Checkpoint**: every story is done. The 2026-11-12 finding is closed by T046.
 

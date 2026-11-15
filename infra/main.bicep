@@ -49,7 +49,8 @@ param sellerPayTo string
 param agentStableRevision string = ''
 
 // 012 backchannel approval (SPEC L2-7; specs/012 contracts/config-and-secrets.md "Azure"): non-secret values only,
-// { enabled, issuer, clientId, audience, approver, credential: 'key' | 'secret', clientKeyId }. A plain object, not a
+// { enabled, issuer, clientId, audience, credential: 'key' | 'secret', clientKeyId }. No approver (SPEC v1.16,
+// specs/015): each request goes to the user the escalated payment is for. A plain object, not a
 // user-defined type: a type would switch the compiled template to languageVersion 2.0 (symbolic names).
 @description('012: L2\'s backchannel approval. The credential is the l2 vault\'s ciba-client-credential, seeded by hand in every environment (the placeholder off while enabled is false).')
 param ciba object
@@ -79,11 +80,13 @@ var target = tenant().tenantId == tenantId && subscription().subscriptionId == s
   ? names.resourceGroup
   : fail('main: the parameter file names tenant ${tenantId}, subscription ${subscriptionId}, resource group ${names.resourceGroup}; this deployment runs in tenant ${tenant().tenantId}, subscription ${subscription().subscriptionId}, resource group ${resourceGroup().name}')
 
-// 012: an enabled ciba must name an https issuer, a client, an audience and an approver (T-IAC-01 rule 19).
+// 012: an enabled ciba must name an https issuer, a client and an audience (T-IAC-01 rule 19).
+// 015: and it needs user accounts on, because a request goes to the user a payment is for: L2 refuses to start with
+// CIBA_APPROVAL=1 and no USER_ACCOUNTS=1.
 #disable-next-line no-unused-vars
-var cibaChecked = contains(['key', 'secret'], ciba.credential) && (!ciba.enabled || (startsWith(ciba.issuer, 'https://') && !empty(ciba.clientId) && !empty(ciba.audience) && !empty(ciba.approver)))
+var cibaChecked = contains(['key', 'secret'], ciba.credential) && (!ciba.enabled || (startsWith(ciba.issuer, 'https://') && !empty(ciba.clientId) && !empty(ciba.audience) && userAccounts.enabled))
   ? ciba.enabled
-  : fail('main: ciba.credential must be key or secret, and ciba.enabled needs an https:// issuer, a clientId, an audience and an approver (specs/012 contracts/config-and-secrets.md)')
+  : fail('main: ciba.credential must be key or secret, and ciba.enabled needs an https:// issuer, a clientId, an audience and userAccounts.enabled (specs/012 and specs/015 contracts/config-and-secrets.md)')
 
 // 013: an enabled userAccounts must name the portal web app's client ID (an Auth0 client ID, which is not a GUID, so
 // the check is "not empty"), and so must any deployment of the portal itself, enabled or not: the portal doesn't

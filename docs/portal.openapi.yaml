@@ -1220,7 +1220,9 @@ components:
           $ref: "#/components/schemas/IsoTime"
         approvalRequest:
           type: string
-          description: The state of the approver's phone request, when backchannel approval is on.
+          description: >-
+            The state of the phone request to the payment's owner, when backchannel approval is on. v1.16:
+            `no_owner`, `no_identity` and `identity_mismatch` mean nobody was asked by phone.
 
     EmptyBody:
       type: object
@@ -1241,7 +1243,7 @@ components:
 
     DecisionChannel:
       type: string
-      description: "Where a decision came from: the operator's command line, the approver's phone, or the portal."
+      description: "Where a decision came from: the operator's command line, the phone of the payment's owner (v1.16; one configured approver before), or the portal."
       enum: [operator, backchannel, portal]
 
     ApprovedOutcome:
@@ -1348,6 +1350,10 @@ components:
           type: string
         approver:
           type: string
+          description: >-
+            On `approved` events, who approved, as the entry holds it: the operator's label; the administrator's
+            identifier for the portal; for the phone the owner's identifier (v1.16), or the configured approver's
+            subject in an entry written before v1.16.
         approvalExpiresAt:
           $ref: "#/components/schemas/IsoTime"
         rejectionId:
@@ -1363,8 +1369,10 @@ components:
           pattern: "^[0-9a-f]{8}$"
         approvalRequest:
           type: string
-          enum: [requested, capped, operator_only, reevaluation]
-          description: v1.8. On `escalated` events, when backchannel approval is on.
+          enum: [requested, capped, operator_only, reevaluation, no_owner, no_identity, identity_mismatch]
+          description: >-
+            v1.8. On `escalated` events, when backchannel approval is on. v1.16 adds `no_owner`, `no_identity` and
+            `identity_mismatch`, which ask nobody.
         channel:
           type: string
           enum: [operator, backchannel, portal]
@@ -1372,8 +1380,9 @@ components:
         decidedBy:
           type: string
           description: >-
-            v1.8. The operator's label, or the approver's verified identity (`sub`). v1.15: for the portal channel,
-            the administrator's identifier (`usr_…`).
+            v1.8. The operator's label, or who answered on the phone. v1.15: for the portal channel, the
+            administrator's identifier (`usr_…`). v1.16: for the phone, the identifier (`usr_…`) of the payment's
+            owner; an entry written before v1.16 holds the configured approver's subject instead.
         reasonCode:
           $ref: "#/components/schemas/RejectionReasonCode"
         requestId:
@@ -1382,7 +1391,7 @@ components:
           $ref: "#/components/schemas/IsoTime"
         failure:
           type: string
-          enum: [unreachable, transient, permanent, interrupted, unrecoverable]
+          enum: [unreachable, transient, permanent, interrupted, unrecoverable, no_owner]
         error:
           type: string
           description: An OAuth error code from a fixed list, or `other`. Never the service's text.
@@ -1391,7 +1400,8 @@ components:
           enum: [expired, late_refusal]
         check:
           type: string
-          enum: [malformed, signature, issuer, audience, client, expired, approver, request, details, replay]
+          enum: [malformed, signature, issuer, audience, client, expired, owner, approver, request, details, replay]
+          description: "The verification step an answer failed. v1.16: `owner` replaces `approver`, which only entries written before hold."
         userId:
           type: string
           pattern: "^usr_[0-9a-f]{32}$"
@@ -1476,7 +1486,7 @@ components:
           $ref: "#/components/schemas/DecisionChannel"
         decidedBy:
           type: string
-          description: "An identifier for the portal, the approver's subject for the phone, the operator's label for the command line (text someone typed, shown as text)."
+          description: "An identifier for the portal; for the phone the owner's identifier (v1.16; the configured approver's subject in an entry written before); the operator's label for the command line (text someone typed, shown as text)."
         approvalId:
           type: string
         approvalExpiresAt:

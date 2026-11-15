@@ -1,4 +1,5 @@
-// 012 US1 — the approver approves from their phone (specs/012 tasks T016, T017). In-process L2 with backchannel
+// 012 US1 — the person asked approves from their phone (specs/012 tasks T016, T017; since 015 that person is the
+// payment's owner, alice in the helper, where 012 had one configured approver). In-process L2 with backchannel
 // approval against the stand-in Auth0: one request per eligible escalation (T-CIBA-02), polling (T-CIBA-06) and
 // the bounded wait in the call (T-CIBA-09).
 import { afterEach, describe, expect, it } from "vitest";
@@ -15,7 +16,7 @@ import {
 import { POLL_TIMEOUT_MS, START_ATTEMPT_TIMEOUT_MS } from "../src/layer2-control/ciba-client.js";
 import { requirementDigest } from "../src/layer2-control/payment-details.js";
 import type { PaymentRequirements } from "@x402/core/types";
-import { APPROVER, ASSET, CAIP2, PAY_TO, SELLER, startBackchannelL2, type BackchannelL2, types } from "./helpers/backchannel-l2.js";
+import { ASSET, CAIP2, PAY_TO, SELLER, startBackchannelL2, type BackchannelL2, types } from "./helpers/backchannel-l2.js";
 
 let l2: BackchannelL2 | undefined;
 afterEach(async () => {
@@ -119,7 +120,7 @@ describe("T-CIBA-09 wait in the call (approval)", () => {
     const trail = l2.ledger.entries().filter((e) => e.intentId === intent.intentId || e.data.escalationId === esc.authorizationId);
     expect(types(trail)).toEqual(["INTENT", "ESCALATED", "APPROVAL_REQUESTED", "HUMAN_APPROVAL", "INTENT", "AUTHORIZED"]);
     const approval = trail[3]!;
-    expect(approval.data).toMatchObject({ channel: "backchannel", approver: APPROVER, escalationId: esc.authorizationId, payTo: PAY_TO, amount: "50000" });
+    expect(approval.data).toMatchObject({ channel: "backchannel", approver: l2.people.alice.userId, escalationId: esc.authorizationId, payTo: PAY_TO, amount: "50000" });
     expect((approval.data.evidence as Record<string, unknown>).issuer).toBe(l2.stub.issuer);
     expect(trail[4]!.data.reevaluationOf).toBe(esc.authorizationId);
     expect(trail[0]!.intentId).toBe(trail[4]!.intentId);
@@ -189,9 +190,10 @@ describe("T-CIBA-09 wait in the call (approval)", () => {
       finalityClass: "included",
       detail: "ok",
       observedAt: new Date().toISOString(),
-      verified: { asset: ASSET, payer: "0x00000000000000000000000000000000000000f1", payTo: PAY_TO, amount: "1000" },
+      verified: { asset: ASSET, payer: l2.people.alice.address, payTo: PAY_TO, amount: "1000" }, // 015: alice's own account signed it
     };
     expect((await l2.reconcile(report)).status).toBe(200);
+    expect(l2.ledger.entries().find((e) => e.type === "SETTLEMENT")!.data.anomaly).toBe(false);
     expect((await l2.budget("sess_bc")).status).toBe(200);
     expect((await l2.authorize(l2.intentFor("/api/market", "5000", { sessionId: "sess_other" }))).body.status).toBe("AUTHORIZED");
     expect(Date.now() - started).toBeLessThan(1000);

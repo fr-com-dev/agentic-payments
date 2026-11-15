@@ -3,6 +3,8 @@
 // call's client authentication, issues real RS256 access tokens from its own JWKS, and answers polls from a
 // per-request script. Forgeries cover every verification check. Every request is recorded, including unknown
 // paths, so tests can assert that L2 called nothing else.
+// 015: it answers as a person. An approval's token and ID token take their `sub` from the `sub` of the request's
+// `login_hint` (whoever L2 addressed), or from `approve.as` (another person's genuine answer to that request).
 import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo, Socket } from "node:net";
@@ -33,7 +35,8 @@ export type StartMode =
   | "unreachable"
   | "not_json"
   | { permanent: string }
-  | { expiresIn?: number; interval?: number };
+  /** `expiresIn: "as_requested"` grants exactly the lifetime the request asked for (`requested_expiry`), as Auth0 does. */
+  | { expiresIn?: number | "as_requested"; interval?: number };
 
 export type Forgery =
   | "issuer"
@@ -53,7 +56,15 @@ export type Answer =
   | "503"
   | "invalid_grant"
   | { slow_down: number | null }
-  | { approve: { detailsIn?: "token" | "response" | "both"; profile?: "auth0" | "rfc9068"; forge?: Forgery } };
+  | {
+      approve: {
+        detailsIn?: "token" | "response" | "both";
+        profile?: "auth0" | "rfc9068";
+        forge?: Forgery;
+        /** 015: sign the answer with this subject instead of the one the request was addressed to. */
+        as?: string;
+      };
+    };
 
 export interface StubRequest {
   path: string;
@@ -61,7 +72,8 @@ export interface StubRequest {
 }
 
 export interface CibaStubOptions {
-  approver: string;
+  /** Unused since 015: the answer's subject comes from the request's `login_hint`. Accepted so older callers compile. */
+  approver?: string;
   clientId: string;
   audience: string;
   /** SPKI PEM of the client's private_key_jwt key. */
@@ -102,6 +114,17 @@ export interface CibaStub {
 }
 
 const ERROR_STATUS: Record<string, number> = { invalid_client: 401, unauthorized_client: 403 };
+
+/** The `sub` of a bc-authorize form's `login_hint` (`{ format, iss, sub }`), or a subject that is nobody's. */
+function hintSubject(form: Record<string, string>): string {
+  try {
+    const hint = JSON.parse(form.login_hint ?? "") as { sub?: unknown };
+    if (typeof hint.sub === "string" && hint.sub.length > 0) return hint.sub;
+  } catch {
+    // fall through
+  }
+  return "auth0|no-login-hint";
+}
 
 export async function startCibaStub(opts: CibaStubOptions): Promise<CibaStub> {
   const now = opts.now ?? Date.now;
@@ -166,8 +189,10 @@ export async function startCibaStub(opts: CibaStubOptions): Promise<CibaStub> {
     const detailsIn = a.detailsIn ?? "both";
     const profile = a.profile ?? "auth0";
     const t = Math.floor(now() / 1000);
+    // Who answers: the person the request was addressed to, unless the test names another (`as`) or nobody's (`subject`).
+    const subject = a.as ?? hintSubject(req.form);
     const claims: Record<string, unknown> = {
-      sub: forge === "subject" ? "auth0|someone-else" : opts.approver,
+      sub: forge === "subject" ? "auth0|someone-else" : subject,
       aud: forge === "audience" ? ["https://other-api.example/"] : [opts.audience, `${issuer}userinfo`],
       scope: "openid",
       ...(profile === "auth0" ? { azp: forge === "client" ? "other-client" : opts.clientId } : { client_id: forge === "client" ? "other-client" : opts.clientId, jti: randomUUID() }),
@@ -182,7 +207,7 @@ export async function startCibaStub(opts: CibaStubOptions): Promise<CibaStub> {
       .sign(forge === "signature" ? rogueKey : signKey);
     tokensIssued.push(token);
     if (forge === undefined) lastApprovalToken = token;
-    const idToken = `${Buffer.from('{"alg":"RS256"}').toString("base64url")}.${Buffer.from(JSON.stringify({ sub: opts.approver, n: randomUUID() })).toString("base64url")}.sig`;
+    const idToken = `${Buffer.from('{"alg":"RS256"}').toString("base64url")}.${Buffer.from(JSON.stringify({ sub: subject, n: randomUUID() })).toString("base64url")}.sig`;
     tokensIssued.push(idToken);
     return {
       access_token: token,
@@ -224,7 +249,8 @@ export async function startCibaStub(opts: CibaStubOptions): Promise<CibaStub> {
     pending.set(authReqId, { authReqId, form, details, polls: 0, exchanged: false });
     authReqIds.push(authReqId);
     const o = typeof mode === "object" ? mode : {};
-    send(res, 200, { auth_req_id: authReqId, expires_in: o.expiresIn ?? 300, interval: o.interval ?? 1 });
+    const expiresIn = o.expiresIn === "as_requested" ? Number(form.requested_expiry) : (o.expiresIn ?? 300);
+    send(res, 200, { auth_req_id: authReqId, expires_in: expiresIn, interval: o.interval ?? 1 });
   }
 
   async function onToken(res: ServerResponse, form: Record<string, string>) {

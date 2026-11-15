@@ -19,6 +19,12 @@ export interface PaymentIntent {
    * never from model text or a tool input. Absent for system identities, the scripted agent and the local demo.
    */
   userId?: string;
+  /**
+   * 015 (L2-7): the person's subject at the approval service, from the sign-in token the hosted agent verified.
+   * Set by the hosted agent only, for a person's run, never from model text or a tool input. L2 uses it to address
+   * one approval request to the escalation's owner and keeps it nowhere.
+   */
+  approvalSubject?: string;
 }
 
 // L2 -> L1
@@ -200,6 +206,8 @@ export interface PlatformView {
   network: string;
   asset: string;
   decimals: number;
+  /** 015: true when backchannel approval is on in this L2 (a person can be asked on their phone). */
+  phoneApproval: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -207,11 +215,44 @@ export interface PlatformView {
 // (SPEC.md §7; specs/014 contracts/control-api.md). `src/layer2-control/escalations.ts` builds them.
 // ---------------------------------------------------------------------------
 
-/** Where a decision came from: the operator's command line, the approver's phone (012), or the portal (014). */
+/**
+ * Where a decision came from: the operator's command line, a phone (012), or the portal (014). 015: for the
+ * backchannel the phone is the owner's, and the decision names them by `usr_…` (entries written before v1.16 hold
+ * the configured approver's subject).
+ */
 export type DecisionChannel = "operator" | "backchannel" | "portal";
 
-export type ApprovalRequestMark = "requested" | "capped" | "operator_only" | "reevaluation";
-export type ApprovalRequestState = ApprovalRequestMark | "failed" | "verification_failed" | "lapsed" | "answered" | "abandoned";
+/**
+ * Written once on `ESCALATED` when backchannel approval is on. 015: `no_owner` (the escalation records no user),
+ * `no_identity` (a user and no `approvalSubject`) and `identity_mismatch` (the subject does not resolve to the user)
+ * ask nobody.
+ */
+export type ApprovalRequestMark = "requested" | "capped" | "operator_only" | "reevaluation" | "no_owner" | "no_identity" | "identity_mismatch";
+/** 015: `unanswered` is a `requested` escalation that expired with no entry ending its request. */
+export type ApprovalRequestState = ApprovalRequestMark | "failed" | "verification_failed" | "lapsed" | "answered" | "abandoned" | "unanswered";
+
+/**
+ * 015: why a person's pending payment waits for the operator and not for their phone. A fixed list: the approval
+ * service's text is never kept. `request_expired` is the reason for a `lapsed` request, whose escalation is still
+ * pending; the state `unanswered` belongs to an expired escalation and never appears here.
+ */
+export const WAITING_REASONS = ["limit_reached", "sign_in_not_supported", "phone_unreachable", "service_unavailable", "request_expired", "answer_not_accepted"] as const;
+export type WaitingReason = (typeof WAITING_REASONS)[number];
+
+/** 015: one pending escalation of a user, as that user may see it (GET /v1/users/:userId/escalations). Built field by field. */
+export interface WaitingPayment {
+  authorizationId: string;
+  referenceCode: string;
+  resourceKey: string;
+  payTo: string;
+  /** Atomic units. */
+  amount: string;
+  createdAt: string;
+  expiresAt: string;
+  waitingFor: "phone" | "operator";
+  /** Only with `operator`. */
+  reason?: WaitingReason;
+}
 
 /** 014: an escalation's ID is the `authorizationId` of its ESCALATE decision. The administration routes accept nothing else. */
 export const ESCALATION_ID_RE = /^auth_[0-9a-f-]{36}$/;
@@ -321,7 +362,10 @@ export interface EscalationBudget {
 export interface EscalationDecision {
   at: string;
   channel: DecisionChannel;
-  /** `usr_…` for the portal; the approver's subject for the backchannel; the operator's label (untrusted text). */
+  /**
+   * `usr_…` for the portal; for the backchannel the owner's `usr_…` (entries written before v1.16 hold the configured
+   * approver's subject); the operator's label (untrusted text).
+   */
   decidedBy: string;
   approvalId?: string;
   approvalExpiresAt?: string;
