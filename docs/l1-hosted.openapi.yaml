@@ -18,7 +18,9 @@ info:
       request and budget question, and L2 verifies it again and takes the user from it. A person's run pays from
       that person's own account; a machine caller's from the platform account.
     - **One call, one run.** The response arrives when the run has ended (completed, stopped or failed), at
-      most 200 s later. Allow up to 220 s on the client.
+      most 200 s later. Allow up to 220 s on the client. v1.17: send `Accept: text/event-stream` to receive the
+      run as it happens instead: its identifier at once, the text as it is written, each finished step, and the
+      same result object last.
     - **Sessions.** Each new run gets a session and a budget. Send the returned `sessionRef` with the next
       goal to continue that session; it works for the requester it was issued to only.
     - **Limits** per requester: 2 concurrent runs and 20 starts per sliding hour (429 with `Retry-After`).
@@ -70,11 +72,45 @@ paths:
                   sessionRef: sr1.sess_0123456789abcdef.Zm9yLWRvY3Mtb25seS1ub3QtYS1yZWFsLW1hYy0xMjM
       responses:
         "200":
-          description: The run has ended, in any status.
+          description: >-
+            The run has ended, in any status (`application/json`). Or, v1.17, with `Accept: text/event-stream`, the
+            run was accepted and its stream follows (`text/event-stream`); every way the run ends is then the
+            stream's last event.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Run"
+            text/event-stream:
+              schema:
+                type: string
+                description: |
+                  Server-sent events, each `event: <name>` and one `data:` line of JSON, in this order:
+
+                  | Event | When | `data` |
+                  |---|---|---|
+                  | `run` | once, first | `{ "runId", "startedAt" }` |
+                  | `text` | whenever the model writes text | `{ "delta" }` |
+                  | `step` | once per finished tool call, in completion order | the step, as `steps[]` lists it |
+                  | `result` | once, last | the `Run` object of the JSON answer |
+
+                  A line `: keep-alive` is sent whenever 15 seconds pass with nothing else sent. Nothing follows
+                  `result`. The stream carries nothing the JSON answer does not. A request refused before the run
+                  starts (401, 403, 429, 400, 413, 404) gets the JSON error, with or without this header.
+              examples:
+                stream:
+                  summary: A run that reads the catalog and answers
+                  value: |
+                    event: run
+                    data: {"runId":"run_0b6c2a4e-9d1f-4c3a-8b7e-5f6a7b8c9d0e","startedAt":"2026-11-15T10:00:00.000Z"}
+
+                    event: step
+                    data: {"index":1,"tool":"fetch_resource","url":"http://127.0.0.1:4021/api/catalog","purpose":"Browse the catalog","result":{"outcome":"FREE","httpStatus":200}}
+
+                    event: text
+                    data: {"delta":"The catalog lists four items."}
+
+                    event: result
+                    data: {"runId":"run_0b6c2a4e-9d1f-4c3a-8b7e-5f6a7b8c9d0e","sessionRef":"sr1.sess_0123456789abcdef.x","status":"completed","stopReason":null,"error":null,"finalText":"The catalog lists four items.","steps":[],"startedAt":"2026-11-15T10:00:00.000Z","finishedAt":"2026-11-15T10:00:07.000Z"}
         "400":
           description: |
             The body is not a JSON object; `goal` is missing, not a string, or empty or over 4,000 characters

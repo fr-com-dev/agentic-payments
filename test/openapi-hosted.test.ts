@@ -319,6 +319,27 @@ describe("T-API-07 live responses match the documented status, headers and schem
     expect(documented.filter((d) => !seen.has(d))).toEqual([]);
   });
 
+  it("T-API-07 the run stream is documented as the run route's other 200 form, and its last event conforms to the Run schema (v1.17)", async () => {
+    const doc = loadDoc();
+    const content = responseContent(doc, "POST", "/v1/runs", 200)!;
+    expect(Object.keys(content).sort()).toEqual(["application/json", "text/event-stream"]);
+    const a = await start(DOCS, { model: mockModel([text("done")]) });
+    const res = await fetch(`${a.base}/v1/runs`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${await a.token("alice")}`, "content-type": "application/json", accept: "text/event-stream" },
+      body: JSON.stringify({ goal: "hi" }),
+    });
+    expect([res.status, res.headers.get("content-type")!.split(";")[0]]).toEqual([200, "text/event-stream"]);
+    const blocks = (await res.text()).split("\n\n").filter((b) => b.startsWith("event: "));
+    const names = blocks.map((b) => b.split("\n")[0]!.slice("event: ".length));
+    // Only the four documented events.
+    const documented = String((content["text/event-stream"]!.schema as { description?: string }).description);
+    for (const name of new Set(names)) expect(documented, name).toContain(`| \`${name}\` |`);
+    expect([names[0], names.at(-1)]).toEqual(["run", "result"]);
+    const result = JSON.parse(blocks.at(-1)!.split("\n")[1]!.slice("data: ".length)) as unknown;
+    expect(conformance(doc, content["application/json"]!.schema!, result)).toEqual([]);
+  });
+
   it("T-API-07 must-fail: a missing field, a wrong value, an undocumented field and a mixed-up step are reported", () => {
     const doc = loadDoc();
     const run = { $ref: "#/components/schemas/Run" };

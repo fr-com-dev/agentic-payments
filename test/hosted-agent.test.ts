@@ -254,9 +254,9 @@ describe("T-AGT-02 tool set", () => {
     const a = await hosted({ model, env: { SELLER_URL: seller } });
     const r = await a.run("alice", { goal: "read the catalog" });
     expect(r.status).toBe(200);
-    expect(model.doGenerateCalls).toHaveLength(3);
+    expect(model.doStreamCalls).toHaveLength(3);
     expect(toolNamesSeen(model)).toEqual([0, 1, 2].map(() => ["fetch_resource", "check_budget"]));
-    for (const call of model.doGenerateCalls) {
+    for (const call of model.doStreamCalls) {
       expect(call.maxOutputTokens).toBe(2048);
       const tools = (call.tools ?? []) as { name: string; description?: string; inputSchema?: unknown }[];
       for (const [i, t] of tools.entries()) {
@@ -271,27 +271,31 @@ describe("T-AGT-02 tool set", () => {
     const a = await hosted({ model });
     const r = await a.run("alice", { goal: "loop" });
     expect(r.status).toBe(200);
-    expect(model.doGenerateCalls).toHaveLength(10);
+    expect(model.doStreamCalls).toHaveLength(10);
     expect(r.body).toMatchObject({ status: "stopped", stopReason: "step_limit" });
   });
 
-  /** Fake Anthropic Messages endpoint: records requests, answers one text turn. */
+  /**
+   * Fake Anthropic Messages endpoint: records requests and answers one text turn, as server-sent events (016: the
+   * agent calls the model through `stream`, so the request asks for a stream and the answer is one).
+   */
   function fakeAnthropicFetch() {
     const requests: { url: string; headers: Headers; body: Record<string, unknown> }[] = [];
     const fetchImpl: typeof fetch = async (input, init) => {
       const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
       requests.push({ url, headers: new Headers(init?.headers), body: JSON.parse(String(init?.body)) as Record<string, unknown> });
-      const message = {
-        id: "msg_1",
-        type: "message",
-        role: "assistant",
-        model: "claude-sonnet-5-5",
-        content: [{ type: "text", text: "done" }],
-        stop_reason: "end_turn",
-        stop_sequence: null,
-        usage: { input_tokens: 1, output_tokens: 1 },
-      };
-      return new Response(JSON.stringify(message), { status: 200, headers: { "content-type": "application/json" } });
+      const message = { id: "msg_1", type: "message", role: "assistant", model: "claude-sonnet-5-5", content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } };
+      const events: [string, Record<string, unknown>][] = [
+        ["message_start", { type: "message_start", message }],
+        ["content_block_start", { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }],
+        ["content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "do" } }],
+        ["content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "ne" } }],
+        ["content_block_stop", { type: "content_block_stop", index: 0 }],
+        ["message_delta", { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 1 } }],
+        ["message_stop", { type: "message_stop" }],
+      ];
+      const body = events.map(([event, data]) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`).join("");
+      return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
     };
     return { requests, fetchImpl };
   }
@@ -314,9 +318,10 @@ describe("T-AGT-02 tool set", () => {
     const f = fakeAnthropicFetch();
     const model = createModel(loadHostedConfig(base), { fetch: f.fetchImpl });
     const out = await runOnce(model);
-    expect(out.status).toBe("completed");
+    expect([out.status, out.finalText, out.error]).toEqual(["completed", "done", null]);
     expect(f.requests).toHaveLength(1);
     const req = f.requests[0]!;
+    expect(req.body.stream).toBe(true);
     expect(req.url).toBe("https://api.anthropic.com/v1/messages");
     expect((req.body.tools as { name: string }[]).map((t) => t.name)).toEqual(["fetch_resource", "check_budget"]);
     expect(req.body.max_tokens).toBe(2048);
@@ -346,8 +351,10 @@ describe("T-AGT-02 tool set", () => {
       },
     };
     const model = createModel(config, { fetch: f.fetchImpl, credential });
-    expect((await runOnce(model)).status).toBe("completed");
+    const out = await runOnce(model);
+    expect([out.status, out.finalText]).toEqual(["completed", "done"]);
     const req = f.requests[0]!;
+    expect(req.body.stream).toBe(true);
     expect(req.url).toBe("https://ais-x402.services.ai.azure.com/anthropic/v1/messages");
     expect(req.headers.get("authorization")).toBe("Bearer entra-token");
     expect(req.headers.get("x-api-key")).toBeNull();

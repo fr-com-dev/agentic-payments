@@ -3,6 +3,9 @@
 // workflows, processors or Mastra instance (SEC-1). Tools never sign, approve or reject; `purpose` reaches
 // L2 as audit text only (INV-5). Mastra's own logger is silenced: a provider error object can carry the
 // request body, and only the whitelisted run log may write (FR-026).
+// 016: the model is always called through `agent.stream`, whichever form the answer takes, so the JSON answer and
+// the event stream come from one path and can't differ (specs/016 research R7). `generate` was that same path plus
+// collecting the output. Tools still start only after their model step has finished (`eagerToolExecution: false`).
 import { Agent } from "@mastra/core/agent";
 import type { MastraModelConfig } from "@mastra/core/llm";
 import { noopLogger } from "@mastra/core/logger";
@@ -102,6 +105,8 @@ export interface RunGoalOptions {
   extraTools?: Record<string, RunTool>;
   /** Called once per finished tool call, in completion order, with its duration (run log). */
   onStep?: (step: RunStep, ms: number) => void;
+  /** 016: called with each piece of text as the model writes it (the run stream). Absent: the text is only collected. */
+  onText?: (delta: string) => void;
 }
 
 const reasonOf = (signal: AbortSignal): StopReason =>
@@ -152,11 +157,21 @@ export async function runGoal(o: RunGoalOptions): Promise<RunOutcome> {
   };
 
   try {
-    const r = await agent.generate(o.goal, {
+    const stream = await agent.stream(o.goal, {
       maxSteps: MAX_STEPS,
       modelSettings: { maxOutputTokens: MAX_OUTPUT_TOKENS, maxRetries: MODEL_MAX_RETRIES },
       abortSignal: o.signal,
+      // A tool runs when its model step has finished, as with `generate`: nothing starts on a half-written step.
+      eagerToolExecution: false,
     });
+    if (o.onText) {
+      // Text only: tool calls, results and reasoning never leave through this callback. A model error ends the
+      // stream here and is thrown by getFullOutput below.
+      for await (const chunk of stream.fullStream) {
+        if (chunk.type === "text-delta" && chunk.payload.text.length > 0) o.onText(chunk.payload.text);
+      }
+    }
+    const r = await stream.getFullOutput();
     if (o.signal.aborted) return finish({ status: "stopped", stopReason: reasonOf(o.signal), error: null, finalText: r.text ?? "" });
     if (r.finishReason === "tool-calls") return finish({ status: "stopped", stopReason: "step_limit", error: null, finalText: r.text ?? "" });
     return finish({ status: "completed", stopReason: null, error: null, finalText: r.text ?? "" });

@@ -6,8 +6,9 @@ import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { LanguageModelV3GenerateResult } from "@ai-sdk/provider";
+import type { LanguageModelV3CallOptions, LanguageModelV3GenerateResult, LanguageModelV3StreamPart, LanguageModelV3StreamResult } from "@ai-sdk/provider";
 import type { Express } from "express";
+import { simulateReadableStream } from "ai";
 import { MockLanguageModelV3 } from "ai/test";
 import { createLocalJWKSet } from "jose";
 import { DEV_AGENT_CLIENT, DEV_AUDIENCE, devSubject, loadOrCreateDevIssuer, signDevToken, type DevTokenOptions } from "../../scripts/dev-issuer-lib.js";
@@ -27,7 +28,7 @@ import type {
 import type { Harness } from "./harness.js";
 
 // ---------------------------------------------------------------------------
-// Mock model results (ai/test MockLanguageModelV3, scripted through doGenerate)
+// Mock model results (ai/test MockLanguageModelV3). A test scripts whole turns; the mock streams them (doStream).
 // ---------------------------------------------------------------------------
 
 const usage = { inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 1, text: 1, reasoning: 0 } };
@@ -49,15 +50,52 @@ export const text = (t: string): LanguageModelV3GenerateResult => ({
   warnings: [],
 });
 
-export type DoGenerate = ConstructorParameters<typeof MockLanguageModelV3>[0] extends infer O ? (O extends { doGenerate?: infer G } ? G : never) : never;
+/** One model turn as a test scripts it: a value, one per call in order, or a function of the call's options. */
+export type ModelScript =
+  | LanguageModelV3GenerateResult
+  | LanguageModelV3GenerateResult[]
+  | ((options: LanguageModelV3CallOptions) => LanguageModelV3GenerateResult | Promise<LanguageModelV3GenerateResult>);
 
-export const mockModel = (doGenerate: DoGenerate = text("done")) => new MockLanguageModelV3({ doGenerate });
+/**
+ * The turn as the provider streams it (016: the agent calls the model through `stream`): text in pieces, a tool call
+ * whole, then the finish part.
+ */
+function asStream(turn: LanguageModelV3GenerateResult): LanguageModelV3StreamResult {
+  const chunks: LanguageModelV3StreamPart[] = [{ type: "stream-start", warnings: [] }];
+  let n = 0;
+  for (const part of turn.content) {
+    if (part.type === "text") {
+      const id = `text_${++n}`;
+      chunks.push({ type: "text-start", id });
+      // Word by word, so a test of the run stream sees more than one piece.
+      for (const piece of part.text.match(/\S+\s*|\s+/g) ?? []) chunks.push({ type: "text-delta", id, delta: piece });
+      chunks.push({ type: "text-end", id });
+    } else if (part.type === "tool-call") {
+      chunks.push(part);
+    }
+  }
+  chunks.push({ type: "finish", usage: turn.usage, finishReason: turn.finishReason });
+  return { stream: simulateReadableStream({ chunks }) };
+}
+
+/** A scripted model. A turn that throws, or a script that runs out, fails the model call as a provider error would. */
+export const mockModel = (script: ModelScript = text("done")) => {
+  let call = 0;
+  return new MockLanguageModelV3({
+    doStream: async (options) => {
+      const i = call++;
+      const turn = typeof script === "function" ? await script(options) : Array.isArray(script) ? script[i] : script;
+      if (turn === undefined) throw new Error(`mock model: no turn scripted for call ${i + 1}`);
+      return asStream(turn);
+    },
+  });
+};
+
+/** The calls the agent made to the model. */
+export const modelCalls = (model: MockLanguageModelV3) => model.doStreamCalls;
 
 /** The tool names the model saw on each call. */
-/** The calls the agent made to the model, whichever way it calls it (one place to change with streaming). */
-export const modelCalls = (model: MockLanguageModelV3) => model.doGenerateCalls;
-
-export const toolNamesSeen = (model: MockLanguageModelV3) => model.doGenerateCalls.map((c) => (c.tools ?? []).map((t) => t.name));
+export const toolNamesSeen = (model: MockLanguageModelV3) => model.doStreamCalls.map((c) => (c.tools ?? []).map((t) => t.name));
 
 // ---------------------------------------------------------------------------
 // Recording fake ports

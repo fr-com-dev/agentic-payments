@@ -18,8 +18,12 @@ import { callerTokenOf, requesterAuth, type Requester } from "./requester-auth.j
 import { createRunLimiter } from "./run-limits.js";
 import { createRunLog, stepOutcome } from "./run-log.js";
 import { issueSessionRef, newSessionId, SESSION_REF_RE, verifySessionRef } from "./session-ref.js";
+import { openEventStream, wantsStream } from "./sse.js";
 
-/** Under the Container Apps ingress's 240 s idle timeout: a run sends nothing until it ends (research R5). */
+/**
+ * Under the Container Apps ingress's 240 s idle timeout: a JSON answer sends nothing until the run ends (research
+ * R5). A stream (016) sends events and keep-alives all along, and keeps the same deadline.
+ */
 export const RUN_DEADLINE_MS = 200_000;
 export const GOAL_MAX_CHARS = 4_000;
 export const BODY_LIMIT = "16kb";
@@ -49,6 +53,8 @@ export interface HostedDeps {
   skipAddressLimit?: boolean;
   /** Where run-log lines go (default: stdout, one JSON line each). */
   log?: (line: string) => void;
+  /** Test hook (T-AGT-11): a shorter keep-alive period for the run stream. Never set by the entry point. */
+  keepAliveMs?: number;
 }
 
 export interface HostedApp {
@@ -152,6 +158,10 @@ export function createHostedApp(deps: HostedDeps): HostedApp {
     // here carries that token on each call and is the only thing that holds it; neither the goal text, the model
     // nor a tool input can change it or see it. With auth bypassed (tests only) the gate carries none.
     const gate = deps.gate.forCaller(callerTokenOf(res) ?? "");
+    // 016: every refusal is behind us, so the answer's form is chosen here. A stream starts with the run's
+    // identifier, at once; the JSON form says nothing until the run ends.
+    const stream = wantsStream(req) ? openEventStream(res, { ...(deps.keepAliveMs !== undefined && { keepAliveMs: deps.keepAliveMs }) }) : undefined;
+    stream?.send("run", { runId, startedAt });
     try {
       const outcome = await runGoal({
         goal: parsed.goal,
@@ -161,8 +171,11 @@ export function createHostedApp(deps: HostedDeps): HostedApp {
         gate,
         settlement: deps.settlement,
         sellerUrl: deps.config.urls.seller,
-        onStep: (step, ms) =>
-          runLog.step({ runId, requester: requester.key, sessionId, index: step.index, tool: step.tool, ...stepOutcome(step.result), ms }),
+        onStep: (step, ms) => {
+          runLog.step({ runId, requester: requester.key, sessionId, index: step.index, tool: step.tool, ...stepOutcome(step.result), ms });
+          stream?.send("step", step);
+        },
+        ...(stream && { onText: (delta: string) => stream.send("text", { delta }) }),
       });
       runLog.run({
         runId,
@@ -174,7 +187,7 @@ export function createHostedApp(deps: HostedDeps): HostedApp {
         ms: Date.now() - startedMs,
       });
       if (res.writableEnded || res.destroyed) return;
-      res.json({
+      const answer = {
         runId,
         sessionRef: issueSessionRef(deps.config.sessionRefSecret, requester, sessionId),
         status: outcome.status,
@@ -184,10 +197,14 @@ export function createHostedApp(deps: HostedDeps): HostedApp {
         steps: outcome.steps,
         startedAt,
         finishedAt: new Date().toISOString(),
-      });
+      };
+      // The same object in both forms: the stream's last event, or the JSON body.
+      if (stream) stream.send("result", answer);
+      else res.json(answer);
     } finally {
       clearTimeout(timer);
       release();
+      stream?.end();
     }
   });
 
