@@ -389,7 +389,7 @@ describe("T-API-07 live responses match the documented status, headers and schem
 // T-API-08 Swagger UI on the agent
 // ---------------------------------------------------------------------------------------------------------------
 
-describe("T-API-08 Swagger UI on the agent is opt-in, never set in Azure, same-origin and fixed (SEC-13)", () => {
+describe("T-API-08 the docs routes are off by default, and in Azure only the agent can serve them, where its environment says so", () => {
   const DOCS_PROBES = ["/docs", "/docs/swagger-ui-bundle.js", "/docs/swagger-initializer.js", "/openapi.yaml"];
   const probe = async (base: string, token?: string) => Promise.all(DOCS_PROBES.map(async (p) => `${p} ${(await send(base, "GET", p, token)).status}`));
 
@@ -423,15 +423,32 @@ describe("T-API-08 Swagger UI on the agent is opt-in, never set in Azure, same-o
     for (const bad of ["true", "yes", " 1"]) expect(() => loadHostedConfig({ ...env, API_DOCS: bad })).toThrow(ConfigError);
   });
 
-  it("T-API-08 the Azure deployment never sets API_DOCS on the agent", () => {
+  it("T-API-08 in Azure only the agent can serve the docs, and only where its environment's parameter file says so", () => {
     const files = [
       ...readdirSync("infra").filter((f) => /\.(bicep|bicepparam)$/.test(f)).map((f) => join("infra", f)),
       ...readdirSync("infra/modules").map((f) => join("infra/modules", f)),
       ...readdirSync(".github/workflows").map((f) => join(".github/workflows", f)),
     ];
     expect(files).toContain(".github/workflows/deploy.yml");
-    expect(files).toContain("infra/modules/l1-apps.bicep");
-    expect(files.filter((f) => /API_DOCS/.test(readFileSync(f, "utf8")))).toEqual([]);
+    expect(files).toContain("infra/main.bicep");
+    // 016 (FR-032): the switch is named in one file, the agent's module, and no workflow sets it.
+    const AGENT_MODULE = "infra/modules/l1-apps.bicep";
+    expect(files.filter((f) => /API_DOCS/.test(readFileSync(f, "utf8")))).toEqual([AGENT_MODULE]);
+    // There, outside comments, it is two env entries: the switch, which is the parameter file's agent.apiDocs and
+    // nothing else, and the client the docs page signs people in through, the agent's own, only while the switch is on.
+    const code = readFileSync(AGENT_MODULE, "utf8").split("\n").filter((l) => !l.trim().startsWith("//"));
+    expect(code.filter((l) => /API_DOCS/.test(l)).map((l) => l.trim())).toEqual([
+      "{ name: 'API_DOCS', value: agent.apiDocs ? '1' : '0' }",
+      "{ name: 'API_DOCS_CLIENT_ID', value: agent.apiDocs ? agent.clientId : '' }",
+    ]);
+    // Both are in the agent's container, the one that runs the hosted service: no job gets them.
+    const containers = code.join("\n").split(/\n {8}\{\n {10}name: '/).slice(1);
+    expect(containers.map((c) => [c.slice(0, c.indexOf("'")), /API_DOCS/.test(c)])).toEqual([["agent", true], ["regression", false], ["smoke", false]]);
+    expect(containers[0]).toContain("command: ['node', 'dist/src/hosted-main.js']");
+    // Each environment decides in its own parameter file, with a literal true or false.
+    const parameterFiles = readdirSync("infra").filter((f) => /^main\.[a-z0-9]+\.bicepparam$/.test(f));
+    expect(parameterFiles).toContain("main.dev.bicepparam");
+    for (const f of parameterFiles) expect(readFileSync(join("infra", f), "utf8"), f).toMatch(/^param agent = \{\n(?: {2}.*\n)*? {2}apiDocs: (?:true|false)\n/m);
   });
 
   it("T-API-08 the served document is the file with servers set to the serving agent", async () => {

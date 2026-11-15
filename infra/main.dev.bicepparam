@@ -52,12 +52,12 @@ param names = {
   jobs: {
     l1: 'caj-l1-${location}-${environment}'
     l2: 'caj-l2-${location}-${environment}'
+    smoke: 'caj-smoke-${location}-${environment}'
   }
 }
 
 // pre-deploy.bicep's outputs (az deployment sub show -n pre-deploy-dev --query properties.outputs.mainParameters.value).
 param deployClientId = '62ea98ec-a6d9-48b4-96d0-591f872c7b17'
-param authAudience = '739f581a-8865-413f-9480-21dc4e012676'
 param operatorsGroupId = '6d09c1a1-ae43-4b55-b6d3-277b546adf3c'
 
 // Public addresses on Base Sepolia: the seller's payTo (L2's only payee), and the payer whose balance deploy.yml checks.
@@ -96,14 +96,27 @@ param userAccounts = {
   cardVaultPublishableKey: ''
 }
 
-// 013 people's sign-in (specs/013 research R19 and R20): people sign in with Auth0, at the portal only. The two
-// values are Terraform's output bicepparam_identity (auth0/; the same summary): the tenant's issuer
-// (https://<domain>/) and the API's identifier, from the apply run of 2026-11-12; main.bicep refuses
-// userAccounts.enabled without them. The agent service accepts system identities only, which
-// stay on Entra (tenantId and authAudience above): the tenant has no client for it.
+// The sign-in tenant (specs/013 research R19; specs/016): people sign in with Auth0, at the portal and at the agent,
+// and the pipeline's machine caller gets its tokens there too. The two values are Terraform's output
+// bicepparam_identity (auth0/; the same summary): the tenant's issuer (https://<domain>/) and the API's identifier,
+// from the apply run of 2026-11-12. The portal, the agent and L2 verify tokens against them; main.bicep refuses
+// userAccounts.enabled, and the l1 and l2 units, without them.
 param identity = {
   issuer: 'https://fabriciorojas.us.auth0.com/'
   audience: 'https://x402-api/dev'
+}
+
+// 016: the agent's client, the docs switch and the pipeline's machine caller. clientId, machineClientId and
+// machineKeyId are Terraform's output bicepparam_agent (auth0/): empty until provision-auth0.yml has applied 016's
+// tenant and its values are pasted here, and until then main.bicep refuses the l1 and l2 units. apiDocs is this
+// environment's own choice: true in dev, where the agent serves its docs page and signs people in through clientId.
+// The l1 vault holds machine-client-key, the private half of the machine caller's key (the placeholder off until
+// the tenant has the client).
+param agent = {
+  clientId: ''
+  apiDocs: true
+  machineClientId: ''
+  machineKeyId: ''
 }
 
 // Declared to Anthropic with the Claude deployment, which accepts its Azure Marketplace terms (owner's consent,

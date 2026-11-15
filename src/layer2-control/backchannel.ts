@@ -137,7 +137,7 @@ export class Backchannel {
   /**
    * Decided inside the serialized section that writes the new ESCALATED, from the ledger and the request only
    * (012 research R9; 015 research R4). The order is fixed. `owner` is the user the escalation records (absent: the
-   * platform account) and `subject` the `approvalSubject` of the request (absent: no identity was sent). Synchronous:
+   * platform account) and `subject` the subject of the caller's token that L2 verified (016; absent: no person's token came with the request). Synchronous:
    * no network call, and the subject is neither stored nor logged here.
    */
   eligibility(o: { operatorOnly: boolean; reevaluation: boolean; nowMs: number; owner?: string; subject?: string }): ApprovalRequestMark {

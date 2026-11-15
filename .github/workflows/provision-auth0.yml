@@ -1,7 +1,7 @@
 # The Auth0 tenant's pipeline (SPEC.md §13; specs/012 research R17): applies auth0/, the Terraform for what L2's
-# backchannel approval needs from Auth0 (SPEC L2-7) and for people's sign-in at the portal and the agent service
-# (specs/013 research R19). By hand only. Every run shows the plan; it applies that same plan
-# only when `apply` is checked. T-IAC-02 (test/auth0-iac.test.ts) checks this file.
+# backchannel approval needs from Auth0 (SPEC L2-7), for people's sign-in at the portal (specs/013 research R19) and
+# for the hosted agent's callers, people and machines (specs/016 research R9, R10). By hand only. Every run shows
+# the plan; it applies that same plan only when `apply` is checked. T-IAC-02 (test/auth0-iac.test.ts) checks this file.
 # - The job runs in the GitHub environment auth0-<environment>, never the deploy pipelines' one. Protect it with
 #   required reviewers: it holds the only secrets in GitHub, the Auth0 Management API application's credential
 #   (AUTH0_CLIENT_ID, AUTH0_CLIENT_SECRET). Auth0 has no sign-in without a credential for this. Only the plan and
@@ -10,9 +10,9 @@
 #   to Azure as the deploy app with OIDC, for that container only, and asks GitHub for a fresh token itself on each
 #   command. No Azure credential exists, and the state holds no secret.
 # - The Azure sign-in and names come from the Bicep parameter files, as in deploy.yml. The tenant's values (its
-#   domain, the API identifier, the approver, the public half of L2's key, the deployed portal's origin) are variables
-#   of the same GitHub environment, AUTH0_*: the plan step turns them into Terraform's TF_VAR_* variables. No tfvars file exists, in the
-#   repository or on the runner.
+#   domain, the API identifier, the approver, the public half of L2's key, the deployed portal's and agent's origins,
+#   the public half of each machine caller's key) are variables of the same GitHub environment, AUTH0_*: the plan
+#   step turns them into Terraform's TF_VAR_* variables. No tfvars file exists, in the repository or on the runner.
 name: provision-auth0
 
 on:
@@ -119,7 +119,9 @@ jobs:
       # Terraform's variables are built here, from the GitHub environment's variables: each one that is set becomes
       # TF_VAR_<name>, and one left unset keeps the default of auth0/variables.tf. The first four have no usable
       # default. The saved plan carries them to the apply step. L2 authenticates with its key only
-      # (credential = "key"): GitHub holds the public half, and never a credential of L2's (Constitution V).
+      # (credential = "key"): GitHub holds the public half, and never a credential of L2's (Constitution V). The
+      # machine callers' keys are public halves too, as one JSON object ({"checks":"<PEM>"}), which Terraform reads
+      # as the map.
       - name: "3 plan, with the variables of the GitHub environment"
         id: plan
         env:
@@ -132,6 +134,8 @@ jobs:
           VAR_manage_guardian: ${{ vars.AUTH0_MANAGE_GUARDIAN }}
           VAR_guardian_policy: ${{ vars.AUTH0_GUARDIAN_POLICY }}
           VAR_portal_origin: ${{ vars.AUTH0_PORTAL_ORIGIN }}
+          VAR_agent_origin: ${{ vars.AUTH0_AGENT_ORIGIN }}
+          VAR_machine_caller_keys: ${{ vars.AUTH0_MACHINE_CALLER_KEYS }}
         run: |
           if [[ -z "$AUTH0_CLIENT_ID" || -z "$AUTH0_CLIENT_SECRET" ]]; then
             echo "::error::the GitHub environment auth0-$ENVIRONMENT has no secret AUTH0_CLIENT_ID or AUTH0_CLIENT_SECRET (auth0/README.md). Nothing was planned."
@@ -152,7 +156,7 @@ jobs:
             fi
           done
           export TF_VAR_environment="$ENVIRONMENT" TF_VAR_credential=key
-          for name in tenant_domain api_identifier approver_user_id client_public_key_pem manage_guardian guardian_policy portal_origin; do
+          for name in tenant_domain api_identifier approver_user_id client_public_key_pem manage_guardian guardian_policy portal_origin agent_origin machine_caller_keys; do
             source="VAR_$name"
             if [[ -n "${!source}" ]]; then export "TF_VAR_$name=${!source}"; fi
           done
@@ -165,7 +169,8 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       # Exactly the plan of step 3, never a new one. Then the values the parameter file takes, none of them secret:
-      # L2's ciba object, and for people's sign-in the identity object and the portal web app's client ID.
+      # L2's ciba object, for people's sign-in the identity object and the portal web app's client ID, and for the
+      # hosted agent's callers the agent object (but its apiDocs, which the parameter file sets itself).
       - name: "4 apply the plan"
         id: apply
         if: ${{ inputs.apply }}
@@ -186,5 +191,9 @@ jobs:
             echo "### userAccounts.portalClientId, for the same file"
             echo '```json'
             terraform -chdir=auth0 output -json bicepparam_portal_client_id
+            echo '```'
+            echo "### The agent object, for the same file (keep its apiDocs)"
+            echo '```json'
+            terraform -chdir=auth0 output -json bicepparam_agent
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"

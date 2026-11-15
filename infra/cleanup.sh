@@ -6,13 +6,15 @@
 #    assignments, so they go before the app does;
 # 3. the resource group: the apps, jobs, environments, vaults, registry, storage, Foundry, identities, network and
 #    logs, with the role assignments inside it;
-# 4. the app registrations, the API app (app-l1-…, with its Agent.Run assignments) and the deploy app (app-deploy-…,
-#    with its federated credential), and the operators' group (grp-op-…).
+# 4. the deploy app registration (app-deploy-…, with its federated credentials) and the operators' group (grp-op-…).
+# It knows no other app registration: the agent's callers are the sign-in tenant's (auth0/), which this script
+# doesn't touch. The API app (app-l1-…) and the portal web app (app-portal-…) that earlier versions registered are
+# deleted by hand, where they still exist (az ad app delete --id <client ID>).
 # The tenant, subscription, names and GitHub repository come from infra/pre-deploy.<environment>.bicepparam, which
 # Bicep compiles; the resource group must also be the one infra/main.<environment>.bicepparam deploys to.
 #
 # Deleted vaults, Foundry accounts and app registrations stay soft-deleted, and their names stay taken. With --purge
-# the Foundry account and the app registrations are purged afterwards. The vaults can't be: purge protection keeps
+# the Foundry account and the app registration are purged afterwards. The vaults can't be: purge protection keeps
 # them, with their secrets, for 90 days. Deploying the environment again before then needs them recovered first.
 # The operators' group is a security group: deleting it is final. It leaves the subscription's resource providers,
 # NetworkWatcherRG (which Azure shares across deployments) and the subscription's deployment history.
@@ -22,7 +24,7 @@
 #   --purge    also purge what soft-delete keeps, so the names can be reused at once
 #   --yes      skip the confirmation (typing the resource group's name)
 # needs: az with Bicep (az bicep install), signed in to the parameter file's tenant with rights to delete the resource
-# group, role assignments, app registrations and the group; gh signed in with admin rights on the repository; jq.
+# group, role assignments, the app registration and the group; gh signed in with admin rights on the repository; jq.
 set -euo pipefail
 
 INFRA="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -62,7 +64,6 @@ TENANT=$(value tenantId)
 SUB=$(value subscriptionId)
 LOCATION=$(value location)
 RG=$(value names.resourceGroup)
-APP_L1=$(value names.apiApp)
 APP_DEPLOY=$(value names.deployApp)
 GRP_OP=$(value names.operators)
 REPO=$(value githubRepository)
@@ -77,9 +78,10 @@ GH_ENV_EXISTS=false
 if gh api "repos/$REPO/environments/$GH_ENV" --silent 2>/dev/null; then GH_ENV_EXISTS=true; fi
 GH_SECRETS=$(gh secret list --repo "$REPO" --json name --jq '.[].name' | paste -sd' ' -)
 
-# App registrations, as appId<TAB>object id<TAB>name, and the group, as id<TAB>name. Found by standard names only.
+# The app registration (the deploy app's), as appId<TAB>object id<TAB>name, and the group, as id<TAB>name. Found by
+# standard names only.
 APPS=()
-for name in "$APP_L1" "$APP_DEPLOY"; do
+for name in "$APP_DEPLOY"; do
   FOUND=$(az ad app list --filter "displayName eq '$name'" --query "[].[appId,id,displayName]" -o tsv)
   while IFS= read -r a; do [[ -n "$a" ]] && APPS+=("$a"); done <<< "$FOUND"
 done
@@ -109,7 +111,7 @@ if [[ "$(az group exists --name "$RG" --subscription "$SUB")" == "true" ]]; then
   while IFS= read -r a; do [[ -n "$a" ]] && ACCOUNTS+=("$a"); done <<< "$FOUND"
 fi
 
-# What an earlier run left soft-deleted: this group's Foundry accounts, and these app registrations.
+# What an earlier run left soft-deleted: this group's Foundry accounts, and the deploy app's registration.
 in_our_group() {
   local lower
   lower=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
@@ -125,7 +127,7 @@ SOFT_APPS=()
 FOUND=$(az rest --method GET --uri "$GRAPH/directory/deletedItems/microsoft.graph.application?\$select=id,appId,displayName&\$top=999" \
   --query "value[].[id,appId,displayName]" -o tsv)
 while IFS="$TAB" read -r id _ name; do
-  if [[ -n "$id" && ( "$name" == "$APP_L1" || "$name" == "$APP_DEPLOY" ) ]]; then SOFT_APPS+=("$id$TAB$name"); fi
+  if [[ -n "$id" && "$name" == "$APP_DEPLOY" ]]; then SOFT_APPS+=("$id$TAB$name"); fi
 done <<< "$FOUND"
 
 # ---- The plan --------------------------------------------------------------------------------------------------
@@ -216,7 +218,7 @@ else
     echo "soft-deleted: the Foundry account ${a%%"$TAB"*}, for 48 hours. Run this again with --purge to free its name."
   done
   for a in ${APPS[@]+"${APPS[@]}"}; do
-    echo "soft-deleted: the app registration ${a##*"$TAB"}, restorable for 30 days, and its identifier URI stays taken. Run this again with --purge to free it."
+    echo "soft-deleted: the app registration ${a##*"$TAB"}, restorable for 30 days, and its name stays taken. Run this again with --purge to free it."
   done
 fi
 

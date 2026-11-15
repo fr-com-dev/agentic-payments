@@ -7,10 +7,14 @@
 // (Terraform's, only in its plan step: no tfvars file exists), the pinned
 // Terraform and the locked provider (its lock file holds the Linux runner's checksum too), the state in Azure with
 // OIDC and no key, and an apply of exactly the plan shown.
-// 013 (specs/013 contracts/config-and-secrets.md "auth0/", research R19): people's sign-in. The API with RBAC and its
-// no permission and no role (research R21), the portal's public client (the only one for people: the tenant has
-// two applications, L2's and the portal's, research R20) with its own grant, the portal client's
-// URLs, and the post-login Action, whose code is also run here against a stand-in for Auth0's `api`.
+// 013 (specs/013 contracts/config-and-secrets.md "auth0/", research R19): people's sign-in. The API with RBAC, the
+// portal's public client with its own grant (using the portal needs no permission and no role, research R21), the
+// portal client's URLs, and the post-login Action, whose code is also run here against a stand-in for Auth0's `api`.
+// 016 (specs/016 contracts/tenant-and-config.md "The tenant", research R9 and R10): the hosted agent's callers. The
+// applications are exactly L2's, the portal's, the agent's and the machine callers'; the agent's client is public,
+// authorization code only, and returns to the docs page only; a machine caller's client has client credentials
+// only, a key and no secret, and one grant, for people's API with agent:run alone; people's API has exactly two
+// permissions, portal:admin and agent:run, each held by exactly one role, and nobody is assigned one here.
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -18,6 +22,7 @@ import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { DETAILS_TYPE } from "../src/layer2-control/payment-details.js";
+import { AGENT_RUN_PERMISSION } from "../src/shared/identity-token.js";
 
 const DIR = "auth0";
 const WORKFLOW = ".github/workflows/provision-auth0.yml";
@@ -34,29 +39,52 @@ const VARIABLES: Record<string, string> = {
   manage_guardian: "AUTH0_MANAGE_GUARDIAN",
   guardian_policy: "AUTH0_GUARDIAN_POLICY",
   portal_origin: "AUTH0_PORTAL_ORIGIN",
+  agent_origin: "AUTH0_AGENT_ORIGIN",
+  machine_caller_keys: "AUTH0_MACHINE_CALLER_KEYS",
 };
 /**
  * The variables infra/github-setup.sh doesn't create: they have no value until later (the portal's origin exists
- * once the portal is deployed), and a GitHub variable can't be empty. Unset, Terraform's default holds.
+ * once the portal is deployed, the agent's once the agent is), and a GitHub variable can't be empty. Unset,
+ * Terraform's default holds.
  */
-const SET_LATER = ["AUTH0_PORTAL_ORIGIN"];
-/** 013 research R21: the portal asks for no permission, so people's API defines none and the tenant has no role. */
+const SET_LATER = ["AUTH0_PORTAL_ORIGIN", "AUTH0_AGENT_ORIGIN"];
+/** 013 research R21: using the portal needs no permission. 014: its administration area needs this one. */
 const ADMIN_PERMISSION = "portal:admin";
 const ADMIN_ROLE = "x402-admin";
-/** 014: using the portal still needs no permission; its administration area needs the one permission there is. */
-const NO_ROLE = `people's API must define exactly one permission, ${ADMIN_PERMISSION}, and the tenant exactly one role, ${ADMIN_ROLE}, which holds exactly it: the portal asks for no permission to use it (research R21), and for that one to administer (014)`;
+/** 016 research R10: starting a run at the hosted agent needs AGENT_RUN_PERMISSION, which this role holds. */
+const AGENT_ROLE = "x402-agent";
+/** Each role: its resource's name, its name at the tenant, and the local that names the one permission it holds. */
+const ROLES: [resource: string, role: string, permission: string][] = [
+  ["admin", ADMIN_ROLE, "admin_permission"],
+  ["agent", AGENT_ROLE, "agent_permission"],
+];
+const TWO_ROLES = `people's API must define exactly two permissions, ${ADMIN_PERMISSION} and ${AGENT_RUN_PERMISSION}, and the tenant exactly two roles, ${ADMIN_ROLE} and ${AGENT_ROLE}, each holding exactly its own one: using the portal needs none (research R21), its administration area the first (014), a run at the hosted agent the second (016)`;
+const AGENT_PERMISSION = `local.agent_permission must equal AGENT_RUN_PERMISSION (${AGENT_RUN_PERMISSION}), the permission the agent and L2 look for`;
 const NOBODY_ASSIGNED = "no role or permission is assigned to a person here";
 const LOCAL_PORTAL = "http://localhost:4025";
+/** The local agent's docs origins (its default port, under both names a browser may use), and where its sign-in returns. */
+const LOCAL_AGENT = ["http://localhost:4024", "http://127.0.0.1:4024"];
+const DOCS_REDIRECT = "/docs/oauth2-redirect.html";
+/** The machine caller the deployment pipeline's checks run as (016 research R9): the one bicepparam_agent names. */
+const PIPELINE_CALLER = "checks";
 /** The access-token claim the Action sets: the services' default AUTH_TIME_CLAIM (contracts/config-and-secrets.md). */
 const AUTH_TIME_CLAIM = "https://x402.dev/auth_time";
 /** The Action's code, a file of its own so that this suite can run it. */
 const ACTION_FILE = "sign-in-time.js";
 const DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code";
-/** Research R20: the tenant has two applications. No client exists for the hosted agent service. */
-const TWO_CLIENTS = "the clients must be exactly L2's and the portal's: the tenant has no client for the hosted agent service";
+/** 016 research R10 (FR-026): the tenant's applications. A machine caller's is one resource, by for_each. */
+const APPLICATIONS = ["agent", "l2", "machine", "portal"];
+const FOUR_KINDS = "the applications must be exactly L2's, the portal's, the agent's and the machine callers' (auth0_client.l2, portal, agent and machine, one per name in var.machine_caller_keys), each with its own auth0_client_credentials: the tenant has no other";
+const AGENT_URLS = `the agent client's callbacks must be exactly <origin>${DOCS_REDIRECT}, and its allowed origins and web origins <origin>, for ${LOCAL_AGENT.join(", ")} and var.agent_origin when set: no logout URL and no other address`;
+const AGENT_NO_REFRESH = "the agent's client must have no refresh tokens (no refresh_token block): a person signs in again when the token expires";
+const MACHINE = `every machine caller's client must be non_interactive with the client_credentials grant only, authenticate by private_key_jwt with its one public key (RS256), and have exactly one grant, for people's API with exactly ${AGENT_RUN_PERMISSION}: no callback, no secret, no ${ADMIN_PERMISSION}`;
+const CALLER_KEYS = "var.machine_caller_keys must be a map of public keys, never a private one, and empty by default: no machine caller";
 const IDENTITY_OUTPUT = "output bicepparam_identity must be the tenant's issuer and people's API only, and name no client";
+const AGENT_OUTPUT = `output bicepparam_agent must be the agent's client, and the machine caller ${PIPELINE_CALLER}'s client and key ID, each empty when ${PIPELINE_CALLER} is not declared`;
+const ENV_OUTPUTS = "outputs l1_env and l2_env must give the same AUTH_ISSUER, AUTH_AUDIENCE and AGENT_CLIENT_IDS (the agent's client only: never the portal's, never a machine caller's), and l1_env the agent's client as API_DOCS_CLIENT_ID";
 /** How the lock file gets the checksum of each platform that runs Terraform: the pipeline's runner and a Mac. */
 const LOCK_COMMAND = "terraform -chdir=auth0 providers lock -platform=linux_amd64 -platform=darwin_arm64";
+const SETUP_VARIABLES = "infra/github-setup.sh must create exactly the variables the pipeline reads, but the ones set later (the portal's origin, the agent's origin)";
 const LOCKED_FOR_RUNNER = `auth0/.terraform.lock.hcl must hold the provider's h1 checksum for the pipeline's Linux runner as well as a Mac's (${LOCK_COMMAND})`;
 
 interface Sources {
@@ -119,6 +147,13 @@ function blocks(text: string | undefined, header: RegExp): string[] {
 /** HCL without comments, so a comment never satisfies or trips a check. A URL's `://` starts no comment. */
 const code = (text: string) => text.replace(/#.*$/gm, "").replace(/(?<!:)\/\/.*$/gm, "");
 const has = (body: string | undefined, re: RegExp) => body !== undefined && re.test(body);
+/** Every argument of a client that holds an address, as `name = value`, sorted. */
+const urlArguments = (client: string) =>
+  [...client.matchAll(/^\s*(callbacks|web_origins|allowed_logout_urls|allowed_origins|initiate_login_uri|cross_origin_loc|oidc_backchannel_logout_urls)\s*=\s*(.+)$/gm)].map((m) => `${m[1]} = ${m[2]!.trim()}`).sort();
+/** A client's grant types, in order. */
+const grantTypes = (client: string | undefined) => (/grant_types\s*=\s*\[([^\]]*)\]/.exec(client ?? "")?.[1] ?? "").split(",").map((g) => g.trim().replace(/^"|"$/g, "")).filter(Boolean);
+/** The quoted strings of one line of HCL. */
+const quoted = (line: string) => [...line.matchAll(/"([^"]*)"/g)].map((m) => m[1]);
 
 /** One message per problem. Empty for the real sources. */
 export function auth0Problems(s: Sources): string[] {
@@ -202,34 +237,41 @@ export function auth0Problems(s: Sources): string[] {
   }
   if (count("auth0_resource_server") !== 2) p.push("the APIs must be exactly the approval API and people's API");
 
-  // Using the portal needs no permission and no role (research R21). 014 adds the only ones there are: the
-  // administrator's permission, and one role that holds exactly it, for the portal's administration area.
+  // Using the portal needs no permission and no role (research R21). 014 adds the administrator's permission and
+  // 016 the one that starts a run at the hosted agent (research R10): exactly those two, each held by exactly one
+  // role, and no role holds two.
+  const names = (type: string) => [...tf.matchAll(new RegExp(`resource\\s+"${type}"\\s+"(\\w+)"`, "g"))].map((m) => m[1]!).sort();
   const adminPermission = /^\s*admin_permission\s*=\s*"([^"]+)"/m.exec(tf)?.[1];
+  const agentPermission = /^\s*agent_permission\s*=\s*"([^"]+)"/m.exec(tf)?.[1];
+  if (agentPermission !== AGENT_RUN_PERMISSION) p.push(AGENT_PERMISSION);
   const scopes = block(tf, /resource\s+"auth0_resource_server_scopes"\s+"identity"\s*\{/);
-  const scopeBlocks = blocks(scopes, /\bscopes\s*\{/g);
-  const adminRole = block(tf, /resource\s+"auth0_role"\s+"admin"\s*\{/);
-  const rolePermissions = block(tf, /resource\s+"auth0_role_permissions"\s+"admin"\s*\{/);
-  const held = blocks(rolePermissions, /\bpermissions\s*\{/g);
+  const defined = blocks(scopes, /\bscopes\s*\{/g).map((b) => /name\s*=\s*(\S+)/.exec(b)?.[1]);
+  const holdsItsOwn = ([resource, role, permission]: (typeof ROLES)[number]) => {
+    const rolePermissions = block(tf, new RegExp(`resource\\s+"auth0_role_permissions"\\s+"${resource}"\\s*\\{`));
+    const held = blocks(rolePermissions, /\bpermissions\s*\{/g);
+    return (
+      has(block(tf, new RegExp(`resource\\s+"auth0_role"\\s+"${resource}"\\s*\\{`)), new RegExp(`name\\s*=\\s*"${role}"`)) &&
+      has(rolePermissions, new RegExp(`role_id\\s*=\\s*auth0_role\\.${resource}\\.id\\b`)) &&
+      held.length === 1 &&
+      new RegExp(`name\\s*=\\s*local\\.${permission}\\b`).test(held[0]!) &&
+      /resource_server_identifier\s*=\s*auth0_resource_server\.identity\.identifier/.test(held[0]!)
+    );
+  };
   if (
     /^\s*permission\s*=/m.test(tf) ||
     adminPermission !== ADMIN_PERMISSION ||
     !has(scopes, /resource_server_identifier\s*=\s*auth0_resource_server\.identity\.identifier/) ||
-    scopeBlocks.length !== 1 ||
-    !/name\s*=\s*local\.admin_permission\b/.test(scopeBlocks[0]!) ||
-    !has(adminRole, new RegExp(`name\\s*=\\s*"${ADMIN_ROLE}"`)) ||
-    !has(rolePermissions, /role_id\s*=\s*auth0_role\.admin\.id/) ||
-    held.length !== 1 ||
-    !/name\s*=\s*local\.admin_permission\b/.test(held[0]!) ||
-    !/resource_server_identifier\s*=\s*auth0_resource_server\.identity\.identifier/.test(held[0]!) ||
+    JSON.stringify(defined) !== JSON.stringify(ROLES.map(([, , permission]) => `local.${permission}`)) ||
+    !ROLES.every(holdsItsOwn) ||
     count("auth0_resource_server_scopes") !== 1 ||
-    count("auth0_role") !== 1 ||
-    count("auth0_role_permissions") !== 1 ||
+    JSON.stringify(names("auth0_role")) !== JSON.stringify(ROLES.map(([resource]) => resource)) ||
+    JSON.stringify(names("auth0_role_permissions")) !== JSON.stringify(ROLES.map(([resource]) => resource)) ||
     ["auth0_resource_server_scope", "auth0_role_permission"].some((type) => count(type) !== 0)
   ) {
-    p.push(NO_ROLE);
+    p.push(TWO_ROLES);
   }
 
-  // The portal's public client: no secret, no key, and only its own grant. It is the only client for people.
+  // A public client (the portal's, the agent's): no secret, no key, and only its own grant.
   const publicClient = (name: string, label: string, appType: string, grants: string[]): string | undefined => {
     const c = block(tf, new RegExp(`resource\\s+"auth0_client"\\s+"${name}"\\s*\\{`));
     const cred = block(tf, new RegExp(`resource\\s+"auth0_client_credentials"\\s+"${name}"\\s*\\{`));
@@ -245,8 +287,7 @@ export function auth0Problems(s: Sources): string[] {
     ) {
       p.push(`${label} must be a public ${appType} client: authentication_method none, no secret and no key`);
     }
-    const got = (/grant_types\s*=\s*\[([^\]]*)\]/.exec(c)?.[1] ?? "").split(",").map((g) => g.trim().replace(/^"|"$/g, "")).filter(Boolean);
-    if (JSON.stringify(got) !== JSON.stringify(grants)) p.push(`${label} must have only its own grant (${grants.join(", ")})`);
+    if (JSON.stringify(grantTypes(c)) !== JSON.stringify(grants)) p.push(`${label} must have only its own grant (${grants.join(", ")})`);
     if (!has(c, /is_first_party\s*=\s*true/) || !has(c, /oidc_conformant\s*=\s*true/)) p.push(`${label} must be first-party and OIDC-conformant`);
     return c;
   };
@@ -254,10 +295,9 @@ export function auth0Problems(s: Sources): string[] {
   const portalClient = publicClient("portal", "the portal's client", "spa", ["authorization_code", "refresh_token"]);
   const origins = /^\s*portal_origins\s*=\s*(.+)$/m.exec(tf)?.[1] ?? "";
   if (portalClient) {
-    const urls = [...portalClient.matchAll(/^\s*(callbacks|web_origins|allowed_logout_urls|allowed_origins|initiate_login_uri|cross_origin_loc|oidc_backchannel_logout_urls)\s*=\s*(.+)$/gm)].map((m) => `${m[1]} = ${m[2]!.trim()}`).sort();
     if (
-      JSON.stringify(urls) !== JSON.stringify(["allowed_logout_urls = local.portal_origins", "callbacks = local.portal_origins", "web_origins = local.portal_origins"]) ||
-      JSON.stringify([...origins.matchAll(/"([^"]*)"/g)].map((m) => m[1])) !== JSON.stringify([LOCAL_PORTAL, ""]) ||
+      JSON.stringify(urlArguments(portalClient)) !== JSON.stringify(["allowed_logout_urls = local.portal_origins", "callbacks = local.portal_origins", "web_origins = local.portal_origins"]) ||
+      JSON.stringify(quoted(origins)) !== JSON.stringify([LOCAL_PORTAL, ""]) ||
       !origins.includes('var.portal_origin == "" ? [] : [var.portal_origin]') ||
       portalClient.includes("://")
     ) {
@@ -268,11 +308,69 @@ export function auth0Problems(s: Sources): string[] {
       p.push("the portal client's refresh tokens must rotate and expire");
     }
   }
-  if (!/condition\s*=\s*var\.portal_origin == "" \|\| can\(regex\("\^https:\/\/\[a-z0-9\]\[a-z0-9\.-\]\*\$", var\.portal_origin\)\)/.test(block(tf, /variable\s+"portal_origin"\s*\{/) ?? "")) {
-    p.push("var.portal_origin must be empty or one https origin: a host, with no path, port, wildcard or trailing slash");
+
+  // 016: the agent's public client, for its docs page. Authorization code (with PKCE: a public client) and nothing
+  // else, so no refresh token exists. The sign-in returns to the docs page's redirect address under each docs
+  // origin, and only those origins may call the tenant from a browser. It has no logout URL.
+  const agentClient = publicClient("agent", "the agent's client", "spa", ["authorization_code"]);
+  const agentOrigins = /^\s*agent_origins\s*=\s*(.+)$/m.exec(tf)?.[1] ?? "";
+  const agentCallbacks = /^\s*agent_callbacks\s*=\s*(.+)$/m.exec(tf)?.[1]?.trim();
+  if (agentClient) {
+    if (
+      JSON.stringify(urlArguments(agentClient)) !== JSON.stringify(["allowed_origins = local.agent_origins", "callbacks = local.agent_callbacks", "web_origins = local.agent_origins"]) ||
+      JSON.stringify(quoted(agentOrigins)) !== JSON.stringify([...LOCAL_AGENT, ""]) ||
+      !agentOrigins.includes('var.agent_origin == "" ? [] : [var.agent_origin]') ||
+      agentCallbacks !== `[for origin in local.agent_origins : "\${origin}${DOCS_REDIRECT}"]` ||
+      agentClient.includes("://")
+    ) {
+      p.push(AGENT_URLS);
+    }
+    if (has(agentClient, /\brefresh_token\s*\{/)) p.push(AGENT_NO_REFRESH);
   }
-  const clients = [...tf.matchAll(/resource\s+"auth0_client"\s+"(\w+)"/g)].map((m) => m[1]).sort();
-  if (JSON.stringify(clients) !== JSON.stringify(["l2", "portal"])) p.push(TWO_CLIENTS);
+  for (const name of ["portal_origin", "agent_origin"]) {
+    const condition = new RegExp(`condition\\s*=\\s*var\\.${name} == "" \\|\\| can\\(regex\\("\\^https:\\/\\/\\[a-z0-9\\]\\[a-z0-9\\.-\\]\\*\\$", var\\.${name}\\)\\)`);
+    if (!condition.test(block(tf, new RegExp(`variable\\s+"${name}"\\s*\\{`)) ?? "")) p.push(`var.${name} must be empty or one https origin: a host, with no path, port, wildcard or trailing slash`);
+  }
+
+  // 016: a machine caller's client (research R9, FR-021), one per name in var.machine_caller_keys. It can't sign a
+  // person in (client credentials only, no address), it holds a public key and no secret, and its one grant is for
+  // people's API with agent:run alone: never the administrator's permission, never the approval API.
+  const forEach = /for_each\s*=\s*var\.machine_caller_keys\b/;
+  const ofEach = /client_id\s*=\s*auth0_client\.machine\[each\.key\]\.client_id\b/;
+  const machine = block(tf, /resource\s+"auth0_client"\s+"machine"\s*\{/);
+  const machineCredentials = block(tf, /resource\s+"auth0_client_credentials"\s+"machine"\s*\{/);
+  const machineGrant = block(tf, /resource\s+"auth0_client_grant"\s+"machine"\s*\{/);
+  const machineKeys = blocks(block(machineCredentials ?? "", /private_key_jwt\s*\{/), /\bcredentials\s*\{/g);
+  if (
+    !has(machine, forEach) ||
+    !has(machine, /app_type\s*=\s*"non_interactive"/) ||
+    JSON.stringify(grantTypes(machine)) !== '["client_credentials"]' ||
+    !has(machine, /is_first_party\s*=\s*true/) ||
+    !has(machine, /oidc_conformant\s*=\s*true/) ||
+    urlArguments(machine ?? "").length !== 0 ||
+    has(machine, /:\/\/|\brefresh_token\s*\{/) ||
+    !has(machineCredentials, forEach) ||
+    !has(machineCredentials, ofEach) ||
+    !has(machineCredentials, /authentication_method\s*=\s*"private_key_jwt"/) ||
+    has(machineCredentials, /client_secret|tls_client_auth/) ||
+    machineKeys.length !== 1 ||
+    !/credential_type\s*=\s*"public_key"/.test(machineKeys[0]!) ||
+    !/pem\s*=\s*each\.value\b/.test(machineKeys[0]!) ||
+    !/algorithm\s*=\s*"RS256"/.test(machineKeys[0]!) ||
+    !has(machineGrant, forEach) ||
+    !has(machineGrant, ofEach) ||
+    !has(machineGrant, /audience\s*=\s*auth0_resource_server\.identity\.identifier\b/) ||
+    !has(machineGrant, /scopes\s*=\s*\[local\.agent_permission\]/) ||
+    has(machineGrant, /authorization_details_types|subject_type\s*=\s*"user"/) ||
+    JSON.stringify(names("auth0_client_grant")) !== '["l2_ciba","machine"]'
+  ) {
+    p.push(MACHINE);
+  }
+  const callerKeys = block(tf, /variable\s+"machine_caller_keys"\s*\{/) ?? "";
+  if (!/type\s*=\s*map\(string\)/.test(callerKeys) || !/default\s*=\s*\{\}/.test(callerKeys) || !callerKeys.includes('!strcontains(pem, "PRIVATE KEY")')) p.push(CALLER_KEYS);
+
+  // The applications: exactly these four kinds, each with its own credentials resource (FR-026).
+  if (JSON.stringify(names("auth0_client")) !== JSON.stringify(APPLICATIONS) || JSON.stringify(names("auth0_client_credentials")) !== JSON.stringify(APPLICATIONS)) p.push(FOUR_KINDS);
 
   // The post-login Action: its code is the file this suite runs (actionProblems), it holds no secret and no package,
   // and it is appended to the tenant's flow, never replacing it. It writes one namespaced claim on the access token.
@@ -303,7 +401,7 @@ export function auth0Problems(s: Sources): string[] {
 
   // Nothing here manages users, assigns a role or holds secrets.
   if (/resource\s+"auth0_user"/.test(tf) || /\bpassword\s*=/.test(tf)) p.push("users and passwords are never managed here");
-  if (/resource\s+"auth0_(user_roles?|user_permissions?|organization_member\w*)"/.test(tf)) p.push(NOBODY_ASSIGNED);
+  if (/resource\s+"auth0_(user_roles?|user_permissions?|role_users?|role_members?|organization_member\w*)"/.test(tf)) p.push(NOBODY_ASSIGNED);
   for (const [f, text] of Object.entries(s.all)) {
     if (/-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(text)) p.push(`${f} holds a private key`);
     if (/eyJ[\w-]+\.eyJ[\w-]+\.[\w-]+/.test(text)) p.push(`${f} holds a JWT`);
@@ -316,7 +414,7 @@ export function auth0Problems(s: Sources): string[] {
   const got = [...out.matchAll(/^\s*(\w+)\s*=/gm)].map((m) => m[1]!).sort();
   if (JSON.stringify(got) !== JSON.stringify(want)) p.push(`output bicepparam_ciba must have exactly the ciba keys of the parameter file (${want.join(", ")}), got ${got.join(", ")}`);
   // 013: the outputs for people's sign-in. The identity object has exactly the keys main.bicep reads, and names no
-  // client: the agent service accepts no person's token from the tenant, so it has no allow-list to fill.
+  // client: the portal's goes in userAccounts.portalClientId, and the agent's in the agent object (016, below).
   const wantIdentity = Object.keys(bicepObject(s.bicepparam, "identity")).sort();
   const identityOut = block(block(tf, /output\s+"bicepparam_identity"\s*\{/) ?? "", /value\s*=\s*\{/) ?? "";
   const gotIdentity = [...identityOut.matchAll(/^\s*(\w+)\s*=/gm)].map((m) => m[1]!).sort();
@@ -327,6 +425,33 @@ export function auth0Problems(s: Sources): string[] {
     p.push(IDENTITY_OUTPUT);
   }
   if (!has(block(tf, /output\s+"bicepparam_portal_client_id"\s*\{/), /value\s*=\s*auth0_client\.portal\.client_id\b/)) p.push("output bicepparam_portal_client_id must be the portal client's ID (userAccounts.portalClientId)");
+  // 016: the agent object, with exactly the keys main.bicep reads but apiDocs, which is the parameter file's own
+  // choice: the agent's client, and the pipeline's machine caller with its key's ID, empty until it is declared.
+  const wantAgent = Object.keys(bicepObject(s.bicepparam, "agent")).filter((key) => key !== "apiDocs").sort();
+  const agentOut = block(block(tf, /output\s+"bicepparam_agent"\s*\{/) ?? "", /value\s*=\s*\{/) ?? "";
+  const gotAgent = [...agentOut.matchAll(/^\s*(\w+)\s*=/gm)].map((m) => m[1]!).sort();
+  if (wantAgent.length === 0 || JSON.stringify(gotAgent) !== JSON.stringify(wantAgent)) {
+    p.push(`output bicepparam_agent must have exactly the agent keys of the parameter file but apiDocs (${wantAgent.join(", ")}), got ${gotAgent.join(", ")}`);
+  }
+  if (
+    !/clientId\s*=\s*auth0_client\.agent\.client_id\b/.test(agentOut) ||
+    !agentOut.includes(`try(auth0_client.machine["${PIPELINE_CALLER}"].client_id, "")`) ||
+    !agentOut.includes(`try(one(auth0_client_credentials.machine["${PIPELINE_CALLER}"].private_key_jwt[0].credentials).key_id, "")`) ||
+    !/machineClientId\s*=\s*try\(auth0_client\.machine\b/.test(agentOut) ||
+    !/machineKeyId\s*=\s*try\(one\(auth0_client_credentials\.machine\b/.test(agentOut)
+  ) {
+    p.push(AGENT_OUTPUT);
+  }
+  // The lines for local env files: the agent and L2 get the same sign-in settings, and the list of clients a
+  // person's token may come from is the agent's client alone.
+  const envLines = (name: string) => [...(block(tf, new RegExp(`output\\s+"${name}"\\s*\\{`)) ?? "").matchAll(/^\s*"([A-Z_]+=[^"]*)",?$/gm)].map((m) => m[1]!);
+  const signIn = ["AUTH_ISSUER=${local.issuer}", "AUTH_AUDIENCE=${auth0_resource_server.identity.identifier}", "AGENT_CLIENT_IDS=${auth0_client.agent.client_id}"];
+  if (
+    JSON.stringify(envLines("l1_env")) !== JSON.stringify([...signIn, "API_DOCS_CLIENT_ID=${auth0_client.agent.client_id}"]) ||
+    JSON.stringify(envLines("l2_env").filter((line) => !line.startsWith("CIBA_"))) !== JSON.stringify(signIn)
+  ) {
+    p.push(ENV_OUTPUTS);
+  }
 
   // The state: a blob in Azure, read and written with an Entra sign-in; nothing of it is written in the folder.
   const backend = block(tf, /backend\s+"azurerm"\s*\{/);
@@ -382,7 +507,7 @@ export function pipelineProblems(s: Sources): string[] {
   const exported = /for name in ([a-z_ ]+); do\n\s+source="VAR_\$name"\n\s+if \[\[ -n "\$\{!source\}" \]\]; then export "TF_VAR_\$name=\$\{!source\}"; fi/.exec(run("plan"))?.[1];
   const required = /for required in ([A-Za-z0-9_: ]+); do\n\s+source="VAR_\$\{required%%:\*\}"\n\s+if \[\[ -z "\$\{!source\}" \]\]; then\n[^\n]+\n\s+exit 1/.exec(run("plan"))?.[1];
   if (!wired || Object.keys(planEnv).filter((k) => k.startsWith("VAR_")).length !== Object.keys(VARIABLES).length || exported !== Object.keys(VARIABLES).join(" ") || required !== REQUIRED.map((name) => `${name}:${VARIABLES[name]}`).join(" ")) {
-    p.push("Terraform's variables must come from the GitHub environment's variables, as TF_VAR_* in the plan step: all seven wired, the four without a usable default required");
+    p.push("Terraform's variables must come from the GitHub environment's variables, as TF_VAR_* in the plan step: all nine wired, the four without a usable default required");
   }
   // Constitution V: L2's credential is held by L2 only. The pipeline provisions the key path alone, where GitHub
   // holds the public half; it never takes L2's client secret, from a secret, a variable or a file.
@@ -393,7 +518,7 @@ export function pipelineProblems(s: Sources): string[] {
   // can't be empty), and the plan refuses the placeholder it gives them.
   const created = [...s.setup.matchAll(/^ {2}"(AUTH0_[A-Z_]+)=/gm)].map((m) => m[1]!).sort();
   const placeholder = /^PLACEHOLDER="([A-Z_]+)"$/m.exec(s.setup)?.[1];
-  if (JSON.stringify(created) !== JSON.stringify(Object.values(VARIABLES).filter((x) => !SET_LATER.includes(x)).sort())) p.push("infra/github-setup.sh must create exactly the variables the pipeline reads, but the ones set later (the portal's origin)");
+  if (JSON.stringify(created) !== JSON.stringify(Object.values(VARIABLES).filter((x) => !SET_LATER.includes(x)).sort())) p.push(SETUP_VARIABLES);
   if (!placeholder || !new RegExp(`for source in "\\$\\{!VAR_@\\}"; do\\n\\s+if \\[\\[ "\\$\\{!source\\}" == ${placeholder} \\]\\]; then\\n[^\\n]+\\n\\s+exit 1`).test(run("plan").split("terraform -chdir=auth0 plan")[0]!)) {
     p.push("the plan step must refuse a variable that still holds infra/github-setup.sh's placeholder, before it plans");
   }
@@ -438,8 +563,8 @@ export function pipelineProblems(s: Sources): string[] {
   ) {
     p.push("the only change to the tenant must be the apply step, when the apply input is checked, applying exactly the saved plan");
   }
-  // 013: the apply step's summary gives every value the parameter file takes, none of them secret.
-  for (const output of ["bicepparam_ciba", "bicepparam_identity", "bicepparam_portal_client_id"]) {
+  // 013, 016: the apply step's summary gives every value the parameter file takes, none of them secret.
+  for (const output of ["bicepparam_ciba", "bicepparam_identity", "bicepparam_portal_client_id", "bicepparam_agent"]) {
     if (!run("apply").includes(`terraform -chdir=auth0 output -json ${output}\n`)) p.push(`the apply step must show the output ${output} in the run's summary, for infra/main.<environment>.bicepparam`);
   }
   return p;
@@ -450,7 +575,7 @@ function elsewhereVars(w: Pipeline, steps: Step[]): string {
   return JSON.stringify({ ...w, jobs: { job: { steps: steps.map((x) => (x.id === "plan" ? { ...x, env: undefined } : x)) } } });
 }
 
-/** An object parameter (ciba, identity) in a parameter file, parsed from its text (keys and literal values). */
+/** An object parameter (ciba, identity, agent) in a parameter file, parsed from its text (keys and literal values). */
 function bicepObject(bicepparam: string, name: string): Record<string, string> {
   const body = block(bicepparam, new RegExp(`param ${name} = \\{`)) ?? "";
   return Object.fromEntries([...body.matchAll(/^\s*(\w+):\s*(.+)$/gm)].map((m) => [m[1]!, m[2]!.trim()]));
@@ -532,6 +657,10 @@ describe("T-IAC-02 Auth0 tenant as code (auth0/)", () => {
     expect(Object.keys(bicepObject(load().bicepparam, "identity")).sort()).toEqual(["audience", "issuer"]);
   });
 
+  it("016: the parameter file's agent object has the four keys main.bicep reads: Terraform's three and its own apiDocs", () => {
+    expect(Object.keys(bicepObject(load().bicepparam, "agent")).sort()).toEqual(["apiDocs", "clientId", "machineClientId", "machineKeyId"]);
+  });
+
   it.each<[string, string, string | RegExp, string, string]>([
     ["an ES256 credential", "main.tf", 'algorithm       = "RS256"', 'algorithm       = "ES256"', "the credential's algorithm must be RS256 (what L2 signs; Auth0 never takes ES256)"],
     ["a second grant type", "main.tf", '["urn:openid:params:grant-type:ciba"]', '["urn:openid:params:grant-type:ciba", "client_credentials"]', "L2's client must have the CIBA grant and no other"],
@@ -573,14 +702,13 @@ describe("T-IAC-02 Auth0 tenant as code (auth0/)", () => {
     ["an API without refresh tokens", "main.tf", /(resource "auth0_resource_server" "identity" \{[\s\S]*?allow_offline_access\s*=\s*)true/, "$1false", "people's API must allow offline access (the web app's refresh-token rotation)"],
     ["HS256 tokens for people", "main.tf", /(resource "auth0_resource_server" "identity" \{[\s\S]*?signing_alg\s*=\s*)"RS256"/, '$1"HS256"', "people's API must sign with RS256 (the services accept RS256 only)"],
     ["the approval API reused for people", "main.tf", /identifier(\s*)= local\.identity_audience/, "identifier$1= var.api_identifier", "people's API must have an identifier of its own (local.identity_audience), never the approval API's"],
-    ["a permission on people's API", "main.tf", 'resource "auth0_client" "portal" {', 'resource "auth0_resource_server_scopes" "identity" {\n  resource_server_identifier = auth0_resource_server.identity.identifier\n\n  scopes {\n    name = "agent:run"\n  }\n}\n\nresource "auth0_client" "portal" {', NO_ROLE],
-    ["a role", "main.tf", 'resource "auth0_client" "portal" {', 'resource "auth0_role" "user" {\n  name = "x402-user"\n}\n\nresource "auth0_client" "portal" {', NO_ROLE],
-    ["a role that holds a permission", "main.tf", 'resource "auth0_client" "portal" {', 'resource "auth0_role_permissions" "user" {\n  role_id = "rol_x"\n\n  permissions {\n    name                       = "read:users"\n    resource_server_identifier = "https://x402-dev.us.auth0.com/api/v2/"\n  }\n}\n\nresource "auth0_client" "portal" {', NO_ROLE],
+    ["a second list of permissions on people's API", "main.tf", 'resource "auth0_client" "portal" {', 'resource "auth0_resource_server_scopes" "more" {\n  resource_server_identifier = auth0_resource_server.identity.identifier\n\n  scopes {\n    name = "portal:use"\n  }\n}\n\nresource "auth0_client" "portal" {', TWO_ROLES],
+    ["a third role", "main.tf", 'resource "auth0_client" "portal" {', 'resource "auth0_role" "user" {\n  name = "x402-user"\n}\n\nresource "auth0_client" "portal" {', TWO_ROLES],
+    ["a third role that holds a permission", "main.tf", 'resource "auth0_client" "portal" {', 'resource "auth0_role_permissions" "user" {\n  role_id = "rol_x"\n\n  permissions {\n    name                       = "read:users"\n    resource_server_identifier = "https://x402-dev.us.auth0.com/api/v2/"\n  }\n}\n\nresource "auth0_client" "portal" {', TWO_ROLES],
     ["a portal client with a secret", "main.tf", /(resource "auth0_client_credentials" "portal" \{[\s\S]*?authentication_method\s*=\s*)"none"/, '$1"client_secret_post"', PORTAL_PUBLIC],
     ["a confidential portal client", "main.tf", 'app_type        = "spa"', 'app_type        = "regular_web"', PORTAL_PUBLIC],
     ["a portal client with the implicit grant", "main.tf", '["authorization_code", "refresh_token"]', '["authorization_code", "refresh_token", "implicit"]', PORTAL_GRANT],
     ["a portal client with the device grant", "main.tf", '["authorization_code", "refresh_token"]', `["authorization_code", "refresh_token", "${DEVICE_GRANT}"]`, PORTAL_GRANT],
-    ["a client for the agent service", "main.tf", 'resource "auth0_client" "portal" {', 'resource "auth0_client" "agent_cli" {\n  name     = "agent-cli"\n  app_type = "native"\n}\n\nresource "auth0_client" "portal" {', TWO_CLIENTS],
     ["a second callback URL", "main.tf", `concat(["${LOCAL_PORTAL}"], `, `concat(["${LOCAL_PORTAL}", "https://portal.example"], `, PORTAL_URLS],
     ["another local origin", "main.tf", `"${LOCAL_PORTAL}"`, '"http://localhost:3000"', PORTAL_URLS],
     ["a callback written in the client", "main.tf", /callbacks(\s*)= local\.portal_origins/, 'callbacks$1= ["https://portal.example/callback"]', PORTAL_URLS],
@@ -593,28 +721,104 @@ describe("T-IAC-02 Auth0 tenant as code (auth0/)", () => {
     ["an Action on another trigger", "main.tf", /(supported_triggers \{\n\s+id\s*= )"post-login"/, '$1"credentials-exchange"', ONE_ACTION],
     ["Action code written elsewhere", "main.tf", 'code    = file("${path.module}/sign-in-time.js")', 'code    = "exports.onExecutePostLogin = async () => {};"', ONE_ACTION],
     ["a second Action", "main.tf", 'resource "auth0_action" "sign_in_time" {', 'resource "auth0_action" "other" {\n  name = "other"\n  code = "x"\n}\n\nresource "auth0_action" "sign_in_time" {', ONE_ACTION],
-    ["another claim name in Terraform", "main.tf", `auth_time_claim   = "${AUTH_TIME_CLAIM}"`, 'auth_time_claim   = "https://example.com/auth_time"', `local.auth_time_claim must be ${AUTH_TIME_CLAIM}, the services' default AUTH_TIME_CLAIM`],
+    ["another claim name in Terraform", "main.tf", `auth_time_claim  = "${AUTH_TIME_CLAIM}"`, 'auth_time_claim  = "https://example.com/auth_time"', `local.auth_time_claim must be ${AUTH_TIME_CLAIM}, the services' default AUTH_TIME_CLAIM`],
     ["an Action that also writes the ID token", ACTION_FILE, /(\n\s+api\.accessToken\.setCustomClaim\(CLAIM, [^\n]+)/, "$1\n    api.idToken.setCustomClaim(CLAIM, 1);", ONE_CLAIM],
     ["an Action that writes a second claim", ACTION_FILE, /(\n\s+api\.accessToken\.setCustomClaim\(CLAIM, [^\n]+)/, '$1\n    api.accessToken.setCustomClaim("https://x402.dev/roles", []);', ONE_CLAIM],
     ["an Action that writes a claim without a namespace", ACTION_FILE, `"${AUTH_TIME_CLAIM}"`, '"auth_time"', ONE_CLAIM],
     ["an Action that refuses sign-ins", ACTION_FILE, /(\n\s+api\.accessToken\.setCustomClaim\(CLAIM, [^\n]+)/, '$1\n    api.access.deny("no");', ONE_CLAIM],
     // 014: the administrator's permission and role, and nothing beside them.
-    ["014: another name for the administrator's permission", "main.tf", `admin_permission  = "${ADMIN_PERMISSION}"`, 'admin_permission  = "agent:run"', NO_ROLE],
-    ["014: a permission to use the portal, back again", "main.tf", `  admin_permission  = "${ADMIN_PERMISSION}"\n`, `  admin_permission  = "${ADMIN_PERMISSION}"\n  permission        = "agent:run"\n`, NO_ROLE],
-    ["014: a second permission on the API", "main.tf", /(\n  scopes \{\n[^}]*\})/, '$1\n\n  scopes {\n    name = "portal:owner"\n  }', NO_ROLE],
-    ["014: no administrator's permission on the API", "main.tf", /resource "auth0_resource_server_scopes" "identity" \{[\s\S]*?\n\}\n\n/, "", NO_ROLE],
-    ["014: the administrator's role under another name", "main.tf", `"${ADMIN_ROLE}"`, '"x402-user"', NO_ROLE],
-    ["014: no administrator's role", "main.tf", /resource "auth0_role" "admin" \{[\s\S]*?\n\}\n\n/, "", NO_ROLE],
-    ["014: an administrator's role with a second permission", "main.tf", /(resource "auth0_role_permissions" "admin" \{[\s\S]*?\n  permissions \{\n[^}]*\})/, '$1\n\n  permissions {\n    name                       = "read:users"\n    resource_server_identifier = "https://x402-dev.us.auth0.com/api/v2/"\n  }', NO_ROLE],
-    ["014: an administrator's role holding a permission of the approval API", "main.tf", /(resource "auth0_role_permissions" "admin" \{[\s\S]*?resource_server_identifier\s*= )auth0_resource_server\.identity\.identifier/, "$1auth0_resource_server.payments.identifier", NO_ROLE],
+    ["014: another name for the administrator's permission", "main.tf", `admin_permission  = "${ADMIN_PERMISSION}"`, 'admin_permission  = "portal:owner"', TWO_ROLES],
+    ["014: a permission to use the portal, back again", "main.tf", `  admin_permission  = "${ADMIN_PERMISSION}"\n`, `  admin_permission  = "${ADMIN_PERMISSION}"\n  permission        = "portal:use"\n`, TWO_ROLES],
+    ["014: no administrator's permission on the API", "main.tf", /resource "auth0_resource_server_scopes" "identity" \{[\s\S]*?\n\}\n\n/, "", TWO_ROLES],
+    ["014: the administrator's role under another name", "main.tf", `"${ADMIN_ROLE}"`, '"x402-user"', TWO_ROLES],
+    ["014: no administrator's role", "main.tf", /resource "auth0_role" "admin" \{[\s\S]*?\n\}\n\n/, "", TWO_ROLES],
+    ["014: an administrator's role with a second permission", "main.tf", /(resource "auth0_role_permissions" "admin" \{[\s\S]*?\n  permissions \{\n[^}]*\})/, '$1\n\n  permissions {\n    name                       = "read:users"\n    resource_server_identifier = "https://x402-dev.us.auth0.com/api/v2/"\n  }', TWO_ROLES],
+    ["014: an administrator's role holding a permission of the approval API", "main.tf", /(resource "auth0_role_permissions" "admin" \{[\s\S]*?resource_server_identifier\s*= )auth0_resource_server\.identity\.identifier/, "$1auth0_resource_server.payments.identifier", TWO_ROLES],
     ["014: the administrator's role assigned to a person", "main.tf", 'resource "auth0_role_permissions" "admin" {', 'resource "auth0_user_roles" "someone" {\n  user_id = var.approver_user_id\n  roles   = [auth0_role.admin.id]\n}\n\nresource "auth0_role_permissions" "admin" {', NOBODY_ASSIGNED],
     ["a role assigned to a person", "main.tf", 'resource "auth0_client" "portal" {', 'resource "auth0_user_roles" "someone" {\n  user_id = var.approver_user_id\n  roles   = ["rol_x"]\n}\n\nresource "auth0_client" "portal" {', NOBODY_ASSIGNED],
     ["a connection with a password in code", "main.tf", 'resource "auth0_client" "portal" {', 'resource "auth0_connection" "db" {\n  name     = "db"\n  strategy = "auth0"\n  options {\n    password = "x"\n  }\n}\n\nresource "auth0_client" "portal" {', "users and passwords are never managed here"],
-    ["a client the agent service would accept", "outputs.tf", /(output "bicepparam_identity" \{[\s\S]*?audience\s*= auth0_resource_server\.identity\.identifier)/, "$1\n    agentClientIds = [auth0_client.portal.client_id]", IDENTITY_OUTPUT],
+    ["a client in the identity object", "outputs.tf", /(output "bicepparam_identity" \{[\s\S]*?audience\s*= auth0_resource_server\.identity\.identifier)/, "$1\n    agentClientIds = [auth0_client.portal.client_id]", IDENTITY_OUTPUT],
     ["an identity output for the approval API", "outputs.tf", /(output "bicepparam_identity" \{[\s\S]*?audience\s*= )auth0_resource_server\.identity\.identifier/, "$1auth0_resource_server.payments.identifier", IDENTITY_OUTPUT],
     ["an identity output missing the audience", "outputs.tf", /(output "bicepparam_identity" \{[\s\S]*?)\n\s+audience\s*= auth0_resource_server\.identity\.identifier/, "$1", "output bicepparam_identity must have exactly the identity keys of the parameter file (audience, issuer), got issuer"],
     ["L2's client as the portal's client ID", "outputs.tf", /(output "bicepparam_portal_client_id" \{[\s\S]*?value\s*= )auth0_client\.portal\.client_id/, "$1auth0_client.l2.client_id", "output bicepparam_portal_client_id must be the portal client's ID (userAccounts.portalClientId)"],
   ])("013 must fail: %s is reported", (_label, file, from, to, message) => {
+    expect(auth0Problems(mutate(load(), file, from, to))).toContain(message);
+  });
+
+  // 016: the hosted agent's callers. One mutant, at least, for each rule of contracts/tenant-and-config.md "The tenant".
+  const AGENT_PUBLIC = "the agent's client must be a public spa client: authentication_method none, no secret and no key";
+  const AGENT_GRANT = "the agent's client must have only its own grant (authorization_code)";
+  const AGENT_KEYS = "output bicepparam_agent must have exactly the agent keys of the parameter file but apiDocs (clientId, machineClientId, machineKeyId), got clientId, machineClientId";
+  const GRANT_FOR_PAYMENTS = 'resource "auth0_client_grant" "machine_payments" {\n  for_each = var.machine_caller_keys\n\n  client_id = auth0_client.machine[each.key].client_id\n  audience  = auth0_resource_server.payments.identifier\n  scopes    = []\n}\n\n';
+  it.each<[string, string, string | RegExp, string, string]>([
+    // The applications (FR-026).
+    ["a fourth kind of application", "main.tf", 'resource "auth0_client" "portal" {', 'resource "auth0_client" "cli" {\n  name     = "agent-cli"\n  app_type = "native"\n}\n\nresource "auth0_client" "portal" {', FOUR_KINDS],
+    ["credentials for an application that isn't one of the four", "main.tf", 'resource "auth0_client_credentials" "portal" {', 'resource "auth0_client_credentials" "cli" {\n  client_id             = "abc"\n  authentication_method = "none"\n}\n\nresource "auth0_client_credentials" "portal" {', FOUR_KINDS],
+    ["no client for the agent's callers", "main.tf", /resource "auth0_client" "agent" \{[\s\S]*?\n\}\n\n/, "", FOUR_KINDS],
+    ["no client for the machine callers", "main.tf", /resource "auth0_client" "machine" \{[\s\S]*?\n\}\n\n/, "", FOUR_KINDS],
+    // The permissions and the roles (FR-025).
+    ["a third permission on the API", "main.tf", /(\n  scopes \{\n[^}]*local\.agent_permission[^}]*\})/, '$1\n\n  scopes {\n    name = "portal:owner"\n  }', TWO_ROLES],
+    ["no permission to start a run", "main.tf", /\n  scopes \{\n[^}]*local\.agent_permission[^}]*\}\n/, "", TWO_ROLES],
+    ["another name for the permission to start a run", "main.tf", `agent_permission = "${AGENT_RUN_PERMISSION}"`, 'agent_permission = "agent:use"', AGENT_PERMISSION],
+    ["the agent role under another name", "main.tf", `"${AGENT_ROLE}"`, '"x402-user"', TWO_ROLES],
+    ["no agent role", "main.tf", /resource "auth0_role" "agent" \{[\s\S]*?\n\}\n\n/, "", TWO_ROLES],
+    ["an agent role that holds the administrator's permission", "main.tf", /(resource "auth0_role_permissions" "agent" \{[\s\S]*?name\s*= )local\.agent_permission/, "$1local.admin_permission", TWO_ROLES],
+    ["an agent role with a second permission", "main.tf", /(resource "auth0_role_permissions" "agent" \{[\s\S]*?\n  permissions \{\n[^}]*\})/, "$1\n\n  permissions {\n    name                       = local.admin_permission\n    resource_server_identifier = auth0_resource_server.identity.identifier\n  }", TWO_ROLES],
+    ["an administrator's role that also starts runs", "main.tf", /(resource "auth0_role_permissions" "admin" \{[\s\S]*?\n  permissions \{\n[^}]*\})/, "$1\n\n  permissions {\n    name                       = local.agent_permission\n    resource_server_identifier = auth0_resource_server.identity.identifier\n  }", TWO_ROLES],
+    ["the agent role assigned to a person", "main.tf", 'resource "auth0_role_permissions" "agent" {', 'resource "auth0_user_roles" "someone" {\n  user_id = var.approver_user_id\n  roles   = [auth0_role.agent.id]\n}\n\nresource "auth0_role_permissions" "agent" {', NOBODY_ASSIGNED],
+    ["the agent role assigned to a person, one role at a time", "main.tf", 'resource "auth0_role_permissions" "agent" {', 'resource "auth0_user_role" "someone" {\n  user_id = var.approver_user_id\n  role_id = auth0_role.agent.id\n}\n\nresource "auth0_role_permissions" "agent" {', NOBODY_ASSIGNED],
+    ["a role's people listed in code", "main.tf", 'resource "auth0_role_permissions" "agent" {', 'resource "auth0_role_users" "agent" {\n  role_id = auth0_role.agent.id\n  users   = [var.approver_user_id]\n}\n\nresource "auth0_role_permissions" "agent" {', NOBODY_ASSIGNED],
+    ["a permission given to a person directly", "main.tf", 'resource "auth0_role_permissions" "agent" {', 'resource "auth0_user_permission" "someone" {\n  user_id                    = var.approver_user_id\n  permission                 = "agent:run"\n  resource_server_identifier = auth0_resource_server.identity.identifier\n}\n\nresource "auth0_role_permissions" "agent" {', NOBODY_ASSIGNED],
+    // The agent's client (FR-024).
+    ["an agent client with a secret", "main.tf", /(resource "auth0_client_credentials" "agent" \{[\s\S]*?authentication_method\s*=\s*)"none"/, '$1"client_secret_post"', AGENT_PUBLIC],
+    ["an agent client with a key", "main.tf", /(resource "auth0_client_credentials" "agent" \{[\s\S]*?authentication_method\s*=\s*)"none"/, '$1"private_key_jwt"', AGENT_PUBLIC],
+    ["a confidential agent client", "main.tf", /(resource "auth0_client" "agent" \{[\s\S]*?app_type\s*=\s*)"spa"/, '$1"regular_web"', AGENT_PUBLIC],
+    ["an agent client with the refresh-token grant", "main.tf", '["authorization_code"]', '["authorization_code", "refresh_token"]', AGENT_GRANT],
+    ["an agent client with the implicit grant", "main.tf", '["authorization_code"]', '["authorization_code", "implicit"]', AGENT_GRANT],
+    ["an agent client with the device grant", "main.tf", '["authorization_code"]', `["authorization_code", "${DEVICE_GRANT}"]`, AGENT_GRANT],
+    ["an agent client with refresh tokens set up", "main.tf", /(resource "auth0_client" "agent" \{[\s\S]*?)(\n  jwt_configuration \{)/, '$1\n  refresh_token {\n    rotation_type   = "rotating"\n    expiration_type = "expiring"\n  }\n$2', AGENT_NO_REFRESH],
+    ["a callback outside the docs page", "main.tf", `"\${origin}${DOCS_REDIRECT}"`, '"${origin}/callback"', AGENT_URLS],
+    ["a callback to the whole origin", "main.tf", /callbacks(\s*)= local\.agent_callbacks/, "callbacks$1= local.agent_origins", AGENT_URLS],
+    ["a callback written in the agent's client", "main.tf", /callbacks(\s*)= local\.agent_callbacks/, `callbacks$1= ["https://agent.example${DOCS_REDIRECT}"]`, AGENT_URLS],
+    ["a second callback under each origin", "main.tf", `[for origin in local.agent_origins : "\${origin}${DOCS_REDIRECT}"]`, `flatten([for origin in local.agent_origins : ["\${origin}${DOCS_REDIRECT}", "\${origin}/callback"]])`, AGENT_URLS],
+    ["another local origin for the docs page", "main.tf", `"${LOCAL_AGENT[1]}"`, '"http://localhost:3000"', AGENT_URLS],
+    ["a third origin written for the docs page", "main.tf", `"${LOCAL_AGENT[1]}"]`, `"${LOCAL_AGENT[1]}", "https://agent.example"]`, AGENT_URLS],
+    ["the portal's origins on the agent's client", "main.tf", /(\n  web_origins\s*= )local\.agent_origins/, "$1local.portal_origins", AGENT_URLS],
+    ["a logout URL on the agent's client", "main.tf", /(\n  web_origins\s*= local\.agent_origins)/, "$1\n  allowed_logout_urls = local.agent_origins", AGENT_URLS],
+    ["a wildcard agent origin", "variables.tf", 'can(regex("^https://[a-z0-9][a-z0-9.-]*$", var.agent_origin))', 'startswith(var.agent_origin, "https://")', "var.agent_origin must be empty or one https origin: a host, with no path, port, wildcard or trailing slash"],
+    // A machine caller's client (FR-021, FR-022).
+    ["a machine client that can sign a person in", "main.tf", '["client_credentials"]', '["client_credentials", "authorization_code"]', MACHINE],
+    ["a machine client with refresh tokens", "main.tf", '["client_credentials"]', '["client_credentials", "refresh_token"]', MACHINE],
+    ["a machine client that isn't a machine's", "main.tf", '"non_interactive"', '"regular_web"', MACHINE],
+    ["a machine client with a callback", "main.tf", /(resource "auth0_client" "machine" \{[\s\S]*?)(\n  jwt_configuration \{)/, '$1\n  callbacks = ["https://example.com/callback"]\n$2', MACHINE],
+    ["a machine client outside the declared callers", "main.tf", /(resource "auth0_client" "machine" \{\n) {2}for_each = var\.machine_caller_keys\n/, "$1", MACHINE],
+    ["a machine client with a secret", "main.tf", /(resource "auth0_client_credentials" "machine" \{[\s\S]*?authentication_method\s*=\s*)"private_key_jwt"/, '$1"client_secret_post"', MACHINE],
+    ["a machine client with a secret beside its key", "main.tf", /(resource "auth0_client_credentials" "machine" \{[\s\S]*?authentication_method\s*=\s*"private_key_jwt"\n)/, '$1  client_secret_wo      = "abc"\n', MACHINE],
+    ["a machine client with an ES256 key", "main.tf", /(resource "auth0_client_credentials" "machine" \{[\s\S]*?algorithm\s*=\s*)"RS256"/, '$1"ES256"', MACHINE],
+    ["a machine client with a second key", "main.tf", /(resource "auth0_client_credentials" "machine" \{[\s\S]*?\n    credentials \{\n[^}]*\})/, '$1\n\n    credentials {\n      credential_type = "public_key"\n      pem             = var.client_public_key_pem\n      algorithm       = "RS256"\n    }', MACHINE],
+    ["a machine client with L2's key", "main.tf", /(resource "auth0_client_credentials" "machine" \{[\s\S]*?pem\s*=\s*)each\.value/, "$1var.client_public_key_pem", MACHINE],
+    ["a machine client with the administrator's permission", "main.tf", "[local.agent_permission]", "[local.agent_permission, local.admin_permission]", MACHINE],
+    ["a machine client with the administrator's permission only", "main.tf", "[local.agent_permission]", "[local.admin_permission]", MACHINE],
+    ["a machine client with no permission", "main.tf", "[local.agent_permission]", "[]", MACHINE],
+    ["a machine client with a second grant", "main.tf", 'resource "auth0_client_grant" "machine" {', `${GRANT_FOR_PAYMENTS}resource "auth0_client_grant" "machine" {`, MACHINE],
+    ["a machine client granted the approval API", "main.tf", /(resource "auth0_client_grant" "machine" \{[\s\S]*?audience\s*= )auth0_resource_server\.identity\.identifier/, "$1auth0_resource_server.payments.identifier", MACHINE],
+    ["a machine client that may request payment details", "main.tf", /(resource "auth0_client_grant" "machine" \{[\s\S]*?\n  scopes\s*= [^\n]+)/, "$1\n  authorization_details_types = [local.details_type]", MACHINE],
+    ["a machine client without a grant", "main.tf", /resource "auth0_client_grant" "machine" \{[\s\S]*?\n\}\n/, "", MACHINE],
+    ["a machine caller's key that may be a private one", "variables.tf", ' && !strcontains(pem, "PRIVATE KEY")])', "])", CALLER_KEYS],
+    ["a machine caller declared by default", "variables.tf", /(variable "machine_caller_keys" \{[\s\S]*?default\s*= )\{\}/, '$1{ checks = "x" }', CALLER_KEYS],
+    // The outputs.
+    ["an agent output missing the key's ID", "outputs.tf", /\n\s+machineKeyId\s*= [^\n]+/, "", AGENT_KEYS],
+    ["the portal's client as the agent's", "outputs.tf", /(\n\s+clientId\s*= )auth0_client\.agent\.client_id/, "$1auth0_client.portal.client_id", AGENT_OUTPUT],
+    ["another machine caller as the pipeline's", "outputs.tf", `auth0_client.machine["${PIPELINE_CALLER}"].client_id`, 'auth0_client.machine["other"].client_id', AGENT_OUTPUT],
+    ["the agent's client as the machine caller", "outputs.tf", /(machineClientId\s*= )try\(auth0_client\.machine\["checks"\]\.client_id, ""\)/, "$1auth0_client.agent.client_id", AGENT_OUTPUT],
+    ["L2's key ID as the machine caller's", "outputs.tf", /(machineKeyId\s*= try\(one\()auth0_client_credentials\.machine\["checks"\]/, "$1auth0_client_credentials.l2", AGENT_OUTPUT],
+    ["the portal's client on the agent's list", "outputs.tf", /(output "l1_env" \{[\s\S]*?AGENT_CLIENT_IDS=\$\{auth0_client\.agent\.client_id\})/, "$1,${auth0_client.portal.client_id}", ENV_OUTPUTS],
+    ["a machine caller's client on the agent's list", "outputs.tf", /(output "l1_env" \{[\s\S]*?AGENT_CLIENT_IDS=\$\{auth0_client\.agent\.client_id\})/, '$1,${auth0_client.machine["checks"].client_id}', ENV_OUTPUTS],
+    ["a docs page that signs in through the portal's client", "outputs.tf", "API_DOCS_CLIENT_ID=${auth0_client.agent.client_id}", "API_DOCS_CLIENT_ID=${auth0_client.portal.client_id}", ENV_OUTPUTS],
+    ["L2 given another client list than the agent", "outputs.tf", /(output "l2_env" \{[\s\S]*?AGENT_CLIENT_IDS=\$\{)auth0_client\.agent\.client_id/, "$1auth0_client.portal.client_id", ENV_OUTPUTS],
+    ["L2 given the approval API as the callers' audience", "outputs.tf", /(output "l2_env" \{[\s\S]*?AUTH_AUDIENCE=\$\{)auth0_resource_server\.identity\.identifier/, "$1auth0_resource_server.payments.identifier", ENV_OUTPUTS],
+    ["L2 without the callers' sign-in", "outputs.tf", /(output "l2_env" \{[\s\S]*?)\n\s+"AGENT_CLIENT_IDS=[^\n]+/, "$1", ENV_OUTPUTS],
+  ])("016 must fail: %s is reported", (_label, file, from, to, message) => {
     expect(auth0Problems(mutate(load(), file, from, to))).toContain(message);
   });
 
@@ -654,7 +858,7 @@ describe("T-IAC-02 Auth0 tenant as code (auth0/)", () => {
 
   const SECRET_SCOPE = "the secrets must reach only the plan and apply steps, as their environment: never the job, another step or a script";
   const VARS_SCOPE = "the variables must reach only the plan step, and no tfvars file or -var argument may be used";
-  const VARS_WIRED = "Terraform's variables must come from the GitHub environment's variables, as TF_VAR_* in the plan step: all seven wired, the four without a usable default required";
+  const VARS_WIRED = "Terraform's variables must come from the GitHub environment's variables, as TF_VAR_* in the plan step: all nine wired, the four without a usable default required";
   const KEY_ONLY = 'the pipeline must provision credential = "key" only, and never hold L2\'s client secret (Constitution V)';
   const ONLY_APPLY = "the only change to the tenant must be the apply step, when the apply input is checked, applying exactly the saved plan";
   it.each<[string, string | RegExp, string, string]>([
@@ -667,7 +871,13 @@ describe("T-IAC-02 Auth0 tenant as code (auth0/)", () => {
     ["a variable in every step", "  TF_INPUT: \"0\"", "  TF_INPUT: \"0\"\n  TENANT: ${{ vars.AUTH0_TENANT_DOMAIN }}", VARS_SCOPE],
     ["a tfvars file", '-out="$RUNNER_TEMP/auth0.tfplan"\n          {\n            echo "### Plan', '-var-file="$ENVIRONMENT.tfvars" -out="$RUNNER_TEMP/auth0.tfplan"\n          {\n            echo "### Plan', VARS_SCOPE],
     ["a variable that is never set", "          VAR_guardian_policy: ${{ vars.AUTH0_GUARDIAN_POLICY }}\n", "", VARS_WIRED],
-    ["a portal origin that never reaches Terraform", "client_public_key_pem manage_guardian guardian_policy portal_origin; do", "client_public_key_pem manage_guardian guardian_policy; do", VARS_WIRED],
+    ["a portal origin that never reaches Terraform", "manage_guardian guardian_policy portal_origin agent_origin machine_caller_keys; do", "manage_guardian guardian_policy agent_origin machine_caller_keys; do", VARS_WIRED],
+    ["016: an agent origin that never reaches Terraform", "portal_origin agent_origin machine_caller_keys; do", "portal_origin machine_caller_keys; do", VARS_WIRED],
+    ["016: machine callers' keys that never reach Terraform", "portal_origin agent_origin machine_caller_keys; do", "portal_origin agent_origin; do", VARS_WIRED],
+    ["016: an agent origin that is never set", "          VAR_agent_origin: ${{ vars.AUTH0_AGENT_ORIGIN }}\n", "", VARS_WIRED],
+    ["016: machine callers' keys taken from a secret", "VAR_machine_caller_keys: ${{ vars.AUTH0_MACHINE_CALLER_KEYS }}", "VAR_machine_caller_keys: ${{ secrets.AUTH0_MACHINE_CALLER_KEYS }}", "the pipeline reads secrets.AUTH0_MACHINE_CALLER_KEYS: only its two secrets and its Terraform variables may be read"],
+    ["016: an empty value exported over a default", 'if [[ -n "${!source}" ]]; then export "TF_VAR_$name=${!source}"; fi', 'export "TF_VAR_$name=${!source}"', VARS_WIRED],
+    ["016: a summary without the agent values", "            terraform -chdir=auth0 output -json bicepparam_agent\n", "", "the apply step must show the output bicepparam_agent in the run's summary, for infra/main.<environment>.bicepparam"],
     ["a summary without the identity values", "            terraform -chdir=auth0 output -json bicepparam_identity\n", "", "the apply step must show the output bicepparam_identity in the run's summary, for infra/main.<environment>.bicepparam"],
     ["a variable taken from another one", "VAR_approver_user_id: ${{ vars.AUTH0_APPROVER_USER_ID }}", "VAR_approver_user_id: ${{ vars.AUTH0_TENANT_DOMAIN }}", VARS_WIRED],
     ["a plan with a placeholder", 'if [[ "${!source}" == REPLACE_ME ]]; then', 'if [[ "${!source}" == NEVER ]]; then', "the plan step must refuse a variable that still holds infra/github-setup.sh's placeholder, before it plans"],
@@ -695,13 +905,14 @@ describe("T-IAC-02 Auth0 tenant as code (auth0/)", () => {
     expect(pipelineProblems({ ...s, workflow: s.workflow.replace(from, () => to) })).toContain(message);
   });
 
-  it("013 must fail (pipeline): a set-up script that creates the portal's origin, which has no value yet, is reported", () => {
+  it.each<[string, string, string]>([
+    ["013: creates the portal's origin, which has no value yet", '  "AUTH0_GUARDIAN_POLICY=never"\n', '  "AUTH0_GUARDIAN_POLICY=never"\n  "AUTH0_PORTAL_ORIGIN=$PLACEHOLDER"\n'],
+    ["016: creates the agent's origin, which has no value yet", '  "AUTH0_GUARDIAN_POLICY=never"\n', '  "AUTH0_GUARDIAN_POLICY=never"\n  "AUTH0_AGENT_ORIGIN=$PLACEHOLDER"\n'],
+    ["016: doesn't create the machine callers' keys", '  "AUTH0_MACHINE_CALLER_KEYS={}"\n', ""],
+  ])("must fail (pipeline): a set-up script that %s is reported", (_label, from, to) => {
     const s = load();
-    const anchor = '  "AUTH0_GUARDIAN_POLICY=never"\n';
-    expect(s.setup.includes(anchor), "github-setup.sh contains the mutation anchor").toBe(true);
-    expect(pipelineProblems({ ...s, setup: s.setup.replace(anchor, `${anchor}  "AUTH0_PORTAL_ORIGIN=$PLACEHOLDER"\n`) })).toContain(
-      "infra/github-setup.sh must create exactly the variables the pipeline reads, but the ones set later (the portal's origin)",
-    );
+    expect(s.setup.includes(from), "github-setup.sh contains the mutation anchor").toBe(true);
+    expect(pipelineProblems({ ...s, setup: s.setup.replace(from, () => to) })).toContain(SETUP_VARIABLES);
   });
 
   it.skipIf(!terraform)("terraform fmt -check passes", () => {

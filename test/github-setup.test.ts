@@ -3,8 +3,9 @@
 // CLI (test/fixtures/fake-azure.mjs; needs BICEP_PATH). From infra/pre-deploy.<environment>.bicepparam it must
 // create the GitHub environment deploy.yml's job runs in and the one provision-auth0.yml's job runs in
 // (auth0-<environment>), in the repository named there, and in the latter the AUTH0_* variables that are missing
-// (Terraform's: placeholders for the four without a default, the defaults for the others), never changing one that
-// exists. It sets nothing else: deploy.yml reads no secret, and the Auth0 environment's secrets are set by hand. A secret left in the repository or the deploy environment is reported, never
+// (Terraform's: placeholders for the four without a default, the defaults for the others, of which the machine
+// callers' keys, 016, as the empty map; never the portal's or the agent's origin, which have no value yet), never
+// changing one that exists. It sets nothing else: deploy.yml reads no secret, and the Auth0 environment's secrets are set by hand. A secret left in the repository or the deploy environment is reported, never
 // used. It refuses, sending nothing, a parameter file whose GitHub environment isn't the deploy environment or whose
 // Auth0 environment isn't auth0-<environment>, a malformed
 // repository and a file Bicep can't compile, and changes nothing when GitHub would sign the deploy job with another
@@ -86,6 +87,7 @@ const VARIABLES: [string, string][] = [
   ["AUTH0_CLIENT_PUBLIC_KEY", "REPLACE_ME"],
   ["AUTH0_MANAGE_GUARDIAN", "true"],
   ["AUTH0_GUARDIAN_POLICY", "never"],
+  ["AUTH0_MACHINE_CALLER_KEYS", "{}"],
 ];
 
 /**
@@ -122,9 +124,10 @@ describe.skipIf(!BICEP_PATH)("T-E2E-AZ GitHub setup (infra/github-setup.sh again
     expect(r.out).toContain("dry run: would create the environment auth0-dev in acme/agentic-payments, and its missing AUTH0_* variables");
   });
 
-  it("T-E2E-AZ github-setup.sh creates the Auth0 environment's six variables, the four without a default as placeholders to replace", () => {
+  it("T-E2E-AZ github-setup.sh creates the Auth0 environment's seven variables, the four without a default as placeholders to replace, and neither origin", () => {
     const r = setup(PARAMS);
     expect(problems(r)).toEqual([]);
+    expect(r.calls.some((c) => c.includes("AUTH0_PORTAL_ORIGIN") || c.includes("AUTH0_AGENT_ORIGIN"))).toBe(false);
     expect(r.out).toContain("replace the placeholders before the first run (gh variable set <name> --repo acme/agentic-payments --env auth0-dev): AUTH0_TENANT_DOMAIN AUTH0_API_IDENTIFIER AUTH0_APPROVER_USER_ID AUTH0_CLIENT_PUBLIC_KEY.");
   });
 

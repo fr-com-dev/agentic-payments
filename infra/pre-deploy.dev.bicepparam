@@ -11,7 +11,6 @@ param location = 'eastus2'
 var environment = 'dev'
 param names = {
   resourceGroup: 'rg-x402-${location}-${environment}'
-  apiApp: 'app-l1-${location}-${environment}'
   deployApp: 'app-deploy-${location}-${environment}'
   operators: 'grp-op-${location}-${environment}'
   stateStorage: 'sttfstate${location}${environment}'
@@ -27,19 +26,13 @@ param githubEnvironment = environment
 // provision-auth0.yml's job runs in its own GitHub environment, which holds the Auth0 Management API credential.
 param githubAuth0Environment = 'auth0-${environment}'
 
-// 013: people sign in with Auth0 now (auth0/, specs/013 research R19), so what 013 first added to Entra for the
-// portal is taken out. Entra refuses to remove a scope that is still enabled, so it takes two deployments of this
-// file:
-// 1. with true: the Portal.Access scope stays in the API app, disabled, and the portal web app's pre-authorization
-//    and the auth_time claim go;
-// 2. with false: the scope is left out, and Entra removes it.
-// A new environment, which never had the scope, uses false from the start.
-// Dev has the scope enabled and pre-authorized (both deployments of 2026-11-10), so it is true here until step 1 has
-// run; then set it to false and deploy again.
-// Bicep never deletes what a template no longer names: after step 1, delete the portal web app registration
-// app-portal-eastus2-dev by hand (az ad app delete --id <its client ID>). infra/cleanup.sh no longer knows it.
-param retirePortalScope = true
+// Nobody is given access to the agent here (016): its callers, people and machines, are the sign-in tenant's
+// (auth0/). The API app registration app-l1-eastus2-dev that 011 made for them is no longer in pre-deploy.bicep,
+// and Bicep never deletes what a template stops naming: delete it by hand once the agent with 016 is deployed
+// (az ad app delete --id 739f581a-8865-413f-9480-21dc4e012676, its client ID, the authAudience main.dev.bicepparam
+// had; its service principal, the Agent.Run role and its assignments go with it, and so does what is left of 013's
+// Portal.Access scope). infra/cleanup.sh no longer knows it, as it no longer knows the portal web app registration
+// app-portal-eastus2-dev.
 
-// People: who may run the agent (Agent.Run), and who may start the operator job (the operators' group).
-param agentUsers = ['me@fabriciorojas.com']
+// People: who may start the operator job (the operators' group).
 param operators = ['me@fabriciorojas.com']
