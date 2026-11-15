@@ -77,7 +77,7 @@ afterEach(async () => {
  * User accounts (v1.10) are on unless `users: false`, which is main() without USER_ACCOUNTS=1; the administration
  * routes (v1.15) are on with them unless `admin: false`, which is main() without PORTAL_ADMIN=1.
  */
-async function startService(opts: { apiDocs?: boolean; users?: boolean; admin?: boolean } = { apiDocs: true }) {
+async function startService(opts: { apiDocs?: boolean; users?: boolean; admin?: boolean; callerChecks?: number } = { apiDocs: true }) {
   let t = NOW;
   // 016: with user accounts on, sign-in is configured (main() requires it), so the two agent routes need a caller's token.
   const callers: TestIssuer | undefined = opts.users !== false ? await createTestIssuer() : undefined;
@@ -109,7 +109,8 @@ async function startService(opts: { apiDocs?: boolean; users?: boolean; admin?: 
       users: { platform: testPlatform(), keyring: new WalletKeyring(TEST_MNEMONIC, { caip2: CAIP2, asset: ASSET }) },
       net: { caip2: CAIP2, asset: ASSET, decimals: 6 },
     }),
-    ...(callers && { caller: callers.deps }),
+    // `callerChecks`: a low bound on token checks, so a scenario reaches the two agent routes' documented 429.
+    ...(callers && { caller: { ...callers.deps, ...(opts.callerChecks !== undefined && { maxChecksPerMinute: opts.callerChecks }) } }),
     // A low limit for the ledger check, so the scenario reaches its documented 429 in a few requests.
     ...(opts.users !== false && opts.admin !== false && { admin: { maxLedgerChecksPerMinute: 3 } }),
   });
@@ -244,10 +245,10 @@ describe("T-API-03 live responses match the documented status and schema", () =>
     const call = async (
       method: string,
       path: string,
-      opts: { token?: string; params?: Record<string, string>; query?: string; body?: unknown; caller?: string } = {},
+      opts: { token?: string; params?: Record<string, string>; query?: string; body?: unknown; caller?: string; base?: string } = {},
     ) => {
       const concrete = path.replace(/\{(\w+)\}/g, (_, k: string) => opts.params?.[k] ?? "x") + (opts.query ?? "");
-      const res = await send(base, method, concrete, opts.token, opts.body, opts.caller !== undefined ? callerHeader(opts.caller) : {});
+      const res = await send(opts.base ?? base, method, concrete, opts.token, opts.body, opts.caller !== undefined ? callerHeader(opts.caller) : {});
       seen.add(`${method} ${path} ${res.status}`);
       const content = responseContent(doc, method, path, res.status);
       const schema = content?.[res.type]?.schema;
@@ -469,6 +470,14 @@ describe("T-API-03 live responses match the documented status and schema", () =>
     expect([...seen].filter((s) => s.startsWith("GET /docs/{asset} "))).toEqual(["GET /docs/{asset} 200"]);
 
     for (const [method, path] of operations(doc)) await call(method, path);
+
+    // v1.17 the caller check's bound: a second L2 with a bound of one, so the next request on either route is 429
+    const limited = await startService({ callerChecks: 1 });
+    const theirs = await limited.callers!.machine();
+    await call("GET", "/v1/budget/{sessionId}", { ...C, base: limited.base, params: { sessionId: "sess_a" }, caller: theirs });
+    await call("GET", "/v1/budget/{sessionId}", { ...C, base: limited.base, params: { sessionId: "sess_a" }, caller: theirs });
+    await call("POST", "/v1/authorize", { ...C, base: limited.base, body: intent("sess_a", "/api/weather", "1000"), caller: theirs });
+    expect(seen.has("GET /v1/budget/{sessionId} 429") && seen.has("POST /v1/authorize 429")).toBe(true);
 
     expect(errors).toEqual([]);
     const documented = operations(doc).flatMap(([m, p, op]) => Object.keys(op.responses).map((s) => `${m} ${p} ${s}`));

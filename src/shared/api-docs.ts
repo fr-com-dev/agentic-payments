@@ -114,8 +114,11 @@ export function servedApiDocument(site: Pick<ApiDocsSite, "file" | "servedBy" | 
   if (!SERVERS_BLOCK.test(text)) throw new Error(`${site.file}: no top-level servers block`);
   const served = text.replace(SERVERS_BLOCK, `servers:\n  - url: /\n    description: ${site.servedBy}\n`);
   if (!site.signIn) return served.replace(SIGN_IN_BLOCK, "");
-  if (!served.includes(SIGN_IN_PLACEHOLDER)) throw new Error(`${site.file}: no sign-in scheme to fill (${SIGN_IN_PLACEHOLDER})`);
-  return served.replaceAll(SIGN_IN_PLACEHOLDER, site.signIn.issuer);
+  // The placeholder is a marker in a file of this repository, not an address to check: cut the text at each one
+  // and join the pieces with the tenant.
+  const pieces = served.split(SIGN_IN_PLACEHOLDER);
+  if (pieces.length === 1) throw new Error(`${site.file}: no sign-in scheme to fill (${SIGN_IN_PLACEHOLDER})`);
+  return pieces.join(site.signIn.issuer);
 }
 
 /** GET /docs, GET /docs/:asset, GET /openapi.yaml. Reads every file up front, so a missing one fails startup. */

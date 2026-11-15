@@ -6,6 +6,8 @@
 //   It opens nothing by itself (INV-13).
 // - It is verified before the body is parsed and before the serialized section. Verification may fetch the
 //   tenant's keys; nothing inside the section does (hard rule 5).
+// - Verifying costs a signature check, and at times a key fetch, so the two routes count requests per calling
+//   address first (service.ts mounts the limiter between the role token and this check): 429 beyond the bound.
 // - Nothing here stores, logs or returns the token. What stays, for the length of the request, is the forwarded
 //   identity: the user and, for a phone approval (L2-7), the subject.
 // Rule A14 keeps the header's name in this file and in src/layer1-intent/ports-http.ts.
@@ -43,6 +45,23 @@ export interface CallerDeps extends Omit<CallerSettings, "jwksFile">, TokenKeys 
   skipPermission?: boolean;
   /** Test hook (T-CTK-07 must-fail): write the token to the log. Never set by main(). */
   echoCaller?: boolean;
+  /** Test hook (T-CTK-09): a lower bound on token checks a minute, so a test reaches it in a few requests. Never set by main(). */
+  maxChecksPerMinute?: number;
+  /** Test hook (T-CTK-09 must-fail): no bound on token checks. Never set by main(). */
+  skipLimit?: boolean;
+}
+
+/**
+ * Requests a minute, from one address, that L2 verifies a caller's token for (authorize and budget together): 429
+ * beyond. Far above what the hosted agent sends (two runs at a time, ten steps each), so it bounds a faulty or
+ * compromised caller, not a run.
+ */
+export const MAX_CALLER_CHECKS_PER_MINUTE = 600;
+
+/** The bound for this L2: none where sign-in is not configured, because no token is verified there. */
+export function callerChecksPerMinute(deps: CallerDeps | undefined): number {
+  if (deps === undefined || deps.skipLimit) return Number.MAX_SAFE_INTEGER;
+  return deps.maxChecksPerMinute ?? MAX_CALLER_CHECKS_PER_MINUTE;
 }
 
 /** Who the verified token is, as L2 uses it. `none`: sign-in is not configured and no token came. */

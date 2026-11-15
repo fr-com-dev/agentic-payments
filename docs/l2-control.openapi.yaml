@@ -63,7 +63,9 @@ paths:
         verifies itself: a person's token decides under that person's policy and signs with that person's
         account, never the platform account; a machine caller's token names no user, and the platform account
         pays. Checks run in this order: the control token (401), the caller's token (401, 400, 403), then the
-        body (400). A refusal decides nothing, signs nothing and appends nothing.
+        body (400). A refusal decides nothing, signs nothing and appends nothing. Verifying a token costs a
+        signature check, so the requests one address sends to this route and to the budget route are counted
+        between the first two checks: 429 beyond 600 a minute.
       security:
         - controlToken: []
       parameters:
@@ -95,6 +97,8 @@ paths:
           $ref: "#/components/responses/UnauthorizedOrCaller"
         "403":
           $ref: "#/components/responses/CallerForbidden"
+        "429":
+          $ref: "#/components/responses/TooManyCallerChecks"
         "500":
           description: Unexpected failure inside the decision.
           content:
@@ -141,6 +145,8 @@ paths:
           $ref: "#/components/responses/UnauthorizedOrCaller"
         "403":
           $ref: "#/components/responses/CallerForbidden"
+        "429":
+          $ref: "#/components/responses/TooManyCallerChecks"
 
   /v1/reconcile:
     post:
@@ -1219,6 +1225,20 @@ components:
         token: `caller_token_required` (sign-in is configured and none was forwarded), `caller_token_expired`
         (only its validity period is wrong) or `caller_token_invalid` (anything else about it). Nothing is
         appended.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    TooManyCallerChecks:
+      description: >-
+        v1.17. Where sign-in is configured: more than 600 requests in a minute from one address on the two routes
+        that take a caller's token, counted together, after the control token was accepted and before the caller's
+        token is verified. `Retry-After` says when to ask again. Nothing was verified, read, decided or appended.
+      headers:
+        Retry-After:
+          description: Seconds until the next request is accepted.
+          schema:
+            type: integer
       content:
         application/json:
           schema:

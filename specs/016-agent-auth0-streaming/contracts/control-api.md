@@ -45,6 +45,12 @@ X-Caller-Authorization: Bearer <the access token the caller presented to the hos
 or none). With user accounts on they are required: L2 refuses to start without them. A refusal at steps 1 to 7
 decides nothing, signs nothing and appends nothing.
 
+**The bound on token checks.** Verifying a token costs a signature check, so where sign-in is configured the two
+routes count requests per calling address between checks 1 and 2, together: at most 600 a minute. Beyond that the
+answer is 429 `{ "error": "too many requests" }` with `Retry-After`, and nothing is verified, parsed, decided or
+appended. A request refused at check 1 does not count. Where sign-in is not configured nothing is bounded.
+Added on 2026-11-15 after code scanning flagged both routes (`js/missing-rate-limiting`); T-CTK-09.
+
 The portal's client is never on `AGENT_CLIENT_IDS`: L2 refuses to start when `PORTAL_CLIENT_ID` is set and on
 the list, as the agent does.
 

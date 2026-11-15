@@ -214,6 +214,7 @@ sign-in settings; the pipeline's checks run as jobs; nothing of the directory re
 - [X] T050 [P] Update `CLAUDE.md` (what the repo is; hard rules 2 and 10; the commands; "how to make common changes" for an L2 route and a hosted agent route; the gotchas about Entra tokens, the two applications, `API_DOCS` in `infra/`, the vault secrets to seed, the first-deployment order), `README.md` and `docs/` diagrams if they show the directory.
 - [X] T051 Run quickstart.md §1, §2 and §7 and record each result in its Validation log; list §5 and §6 as the owner's steps with the tenant and Azure, not run here.
 - [X] T052 Check the delivery order against research R16 before opening pull requests: no pull request leaves a deployed environment where L1's word names a user, and the settings of Phase 10 are in the same pull request as, or an earlier one than, anything that needs them.
+- [X] T053 After the pull request's code scanning (CodeQL, 2026-11-15): bound the token checks per calling address on `POST /v1/authorize` and `GET /v1/budget/:sessionId` in src/layer2-control/service.ts and caller.ts (`MAX_CALLER_CHECKS_PER_MINUTE = 600`, 429 with `Retry-After`, test-only `maxChecksPerMinute` and `skipLimit`), T-CTK-09 with its must-fail half in test/caller-token.test.ts, the 429 in docs/l2-control.openapi.yaml and T-API-03, SPEC L2-5 and SEC-32, contracts/control-api.md. Also: fill the docs page's sign-in placeholder without a substring test (src/shared/api-docs.ts), and match script tags in any case in test/openapi-hosted.test.ts.
 
 ---
 
@@ -254,7 +255,7 @@ works end to end locally with the dev issuer. `npm run check` is green with the 
 | 2. L2 takes the user from the token; L1 forwards it; Entra leaves the agent's code; 015's fields removed | T008–T030 |
 | 3. Streaming | T031–T035 |
 | 4. The docs page's sign-in | T036, T037 |
-| 5. The machine caller, the tenant, Azure, the pipeline, then the documents | T038–T052 |
+| 5. The machine caller, the tenant, Azure, the pipeline, then the documents | T038–T053 |
 
 ## Notes
 

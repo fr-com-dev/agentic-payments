@@ -16,6 +16,7 @@ import type { Server } from "node:http";
 import { pathToFileURL } from "node:url";
 import express, { type ErrorRequestHandler, type Express } from "express";
 import type { PaymentRequirements } from "@x402/core/types";
+import { addressLimit } from "../shared/address-limit.js";
 import { requireRole } from "../shared/auth.js";
 import { apiDocsEnabled, ConfigError, CONTROL_BIND_HOST, controlPort, loadEnv, networkProfile, ROLE_TOKEN_VAR, tokenFor, type NetworkProfile } from "../shared/config.js";
 import { USER_ID_RE } from "../shared/user-id.js";
@@ -29,7 +30,7 @@ import { CibaClient, cibaConfigFromEnv, publicSettings } from "./ciba-client.js"
 import { mountEscalationRoutes } from "./escalation-routes.js";
 import { ESCALATION_TTL_MS, findPendingEscalation, findRejection, sweep } from "./escalations.js";
 import { AuditLedger, resourceKey, type LedgerEntry } from "./ledger.js";
-import { callerAuth, callerDepsFor, callerSettingsFromEnv, forwardedIdentityOf, type CallerDeps } from "./caller.js";
+import { callerAuth, callerChecksPerMinute, callerDepsFor, callerSettingsFromEnv, forwardedIdentityOf, type CallerDeps } from "./caller.js";
 import { acquireLedgerLock } from "./ledger-lock.js";
 import { mountLedgerRoutes, type Serialize } from "./ledger-routes.js";
 import { loadMandate, type SpendingMandate } from "./mandate.js";
@@ -492,8 +493,12 @@ export function createControlService(deps: ControlServiceDeps): ControlService {
   // parsed, and the token is verified here, before any serialized section.
   const caller = callerAuth(deps.caller, { usersOn: users !== undefined });
   const trustIntentUser = deps.caller?.trustIntentUser === true;
+  // Verifying a caller's token costs a signature check, so both routes count requests per calling address first,
+  // after the role token: a caller without it is refused before it counts. Beyond the bound: 429, and nothing is
+  // verified, parsed, decided or appended. No bound where sign-in is not configured (nothing is verified there).
+  const callerLimit = addressLimit({ max: callerChecksPerMinute(deps.caller) });
 
-  app.post("/v1/authorize", requireRole("agent-control", tok(deps.tokens?.control)), caller, express.json({ limit: "256kb" }), async (req, res) => {
+  app.post("/v1/authorize", requireRole("agent-control", tok(deps.tokens?.control)), callerLimit, caller, express.json({ limit: "256kb" }), async (req, res) => {
     if (!validIntent(req.body, trustIntentUser)) {
       res.status(400).json({ error: "malformed PaymentIntent" });
       return;
@@ -532,7 +537,7 @@ export function createControlService(deps: ControlServiceDeps): ControlService {
 
   app.use("/v1/authorize", refuseUnreadBody);
 
-  app.get("/v1/budget/:sessionId", requireRole("agent-control", tok(deps.tokens?.control)), caller, (req, res) => {
+  app.get("/v1/budget/:sessionId", requireRole("agent-control", tok(deps.tokens?.control)), callerLimit, caller, (req, res) => {
     const sessionId = String(req.params.sessionId);
     const t = now();
     // 016: the user view is for the person the caller's token proved. `?userId=` named one before; it is refused

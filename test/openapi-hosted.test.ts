@@ -504,7 +504,7 @@ describe("T-API-08 the docs routes are off by default, and in Azure only the age
     const redirect = await send(a.base, "GET", "/docs/oauth2-redirect.html");
     expect([redirect.status, redirect.type]).toEqual([200, "text/html"]);
     expect(redirect.text).toBe(readFileSync("node_modules/swagger-ui-dist/oauth2-redirect.html", "utf8"));
-    expect(redirect.text.match(/<script[^>]*>/g)).toEqual(['<script src="oauth2-redirect.js">']);
+    expect(redirect.text.match(/<script[^>]*>/gi)).toEqual(['<script src="oauth2-redirect.js">']);
     expect((await send(a.base, "GET", "/docs/oauth2-redirect.js")).text).toBe(readFileSync("node_modules/swagger-ui-dist/oauth2-redirect.js", "utf8"));
     // The policy: the tenant's origin in connect-src and nowhere else; scripts from this origin only; on both pages.
     for (const page of [await send(a.base, "GET", "/docs"), redirect]) {

@@ -4,9 +4,10 @@
 // (test/helpers/users.ts, test/helpers/caller-tokens.ts): the real routes, the real check, a real ledger.
 // T-CTK-01 the order of checks; T-CTK-02 who the payment is for; T-CTK-03 a request names nobody; T-CTK-04 the
 // caller's token opens nothing by itself; T-CTK-05 where a token is required; T-CTK-06 startup; T-CTK-07 the token
-// is written nowhere; T-CTK-08 it is verified outside the serialized section.
-// Every must-fail switch (`trustIntentUser`, `skipRequired`, `skipClientCheck`, `skipPermission`, `echoCaller`) is a
-// test-only dep of L2's caller check, never an environment variable.
+// is written nowhere; T-CTK-08 it is verified outside the serialized section; T-CTK-09 the check is bounded per
+// calling address.
+// Every must-fail switch (`trustIntentUser`, `skipRequired`, `skipClientCheck`, `skipPermission`, `echoCaller`,
+// `skipLimit`) is a test-only dep of L2's caller check, never an environment variable.
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DEV_PORTAL_CLIENT } from "../scripts/dev-issuer-lib.js";
@@ -444,10 +445,69 @@ describe("T-CTK-08 the token is verified before the serialized section, with no 
 
   it("T-CTK-08 the caller check is mounted before the body parser and before the serialized section", () => {
     const service = readFileSync("src/layer2-control/service.ts", "utf8");
-    expect(service).toMatch(/app\.post\("\/v1\/authorize", requireRole\("agent-control", [^)]*\)\), caller, express\.json\(/);
-    expect(service).toMatch(/app\.get\("\/v1\/budget\/:sessionId", requireRole\("agent-control", [^)]*\)\), caller, \(req, res\)/);
+    expect(service).toMatch(/app\.post\("\/v1\/authorize", requireRole\("agent-control", [^)]*\)\), callerLimit, caller, express\.json\(/);
+    expect(service).toMatch(/app\.get\("\/v1\/budget\/:sessionId", requireRole\("agent-control", [^)]*\)\), callerLimit, caller, \(req, res\)/);
     // The caller module reaches nothing of L2's state: it imports the shared verifier and nothing of its own layer.
     const imports = [...readFileSync("src/layer2-control/caller.ts", "utf8").matchAll(/from "([^"]+)"/g)].map((m) => m[1]);
     expect(imports.sort()).toEqual(["../shared/config.js", "../shared/identity-token.js", "../shared/user-id.js", "express"]);
+  });
+});
+
+describe("T-CTK-09 the caller check is bounded per calling address (016, SEC-32)", () => {
+  const AUTHORIZE = "/v1/authorize";
+  const BUDGET = "/v1/budget/sess_u";
+
+  it("T-CTK-09 beyond the bound both routes answer 429 with Retry-After, and nothing is verified, read or appended", async () => {
+    // An issuer of the test's own, so that each key lookup (one per token whose signature is checked) is counted.
+    const issuer = await createTestIssuer();
+    let lookups = 0;
+    const counting: TokenKeys["keys"] = async (header, token) => {
+      lookups += 1;
+      return (issuer.deps.keys as (h: typeof header, t: typeof token) => Promise<CryptoKey | Uint8Array>)(header, token);
+    };
+    const l2 = await start({ caller: { ...issuer.deps, keys: counting, maxChecksPerMinute: 4 } });
+    const caller = await issuer.machine();
+    const body = l2.intentFor("/api/weather", "1000");
+    // A request without the control token is refused before it counts: it can't use up the agent's checks.
+    for (let i = 0; i < 6; i++) expect((await l2.call("POST", AUTHORIZE, { token: TOKENS.portal, caller, body })).status).toBe(401);
+    // The bound is one for both routes together, and a refused caller's request counts like any other.
+    expect((await l2.call("POST", AUTHORIZE, { token: TOKENS.control, caller, body })).status).toBe(200);
+    expect((await l2.call("GET", BUDGET, { token: TOKENS.control, caller })).status).toBe(200);
+    expect((await l2.call("POST", AUTHORIZE, { token: TOKENS.control, caller: "not-a-token", body })).status).toBe(401);
+    expect((await l2.call("GET", BUDGET, { token: TOKENS.control })).status).toBe(401);
+    const before = l2.ledger.entries().length;
+    expect(lookups).toBe(2);
+    // The fifth and later: 429 on both, for a good token, a bad one, none, and a body that is not JSON.
+    const refused = [
+      await fetch(`${l2.url}${AUTHORIZE}`, { method: "POST", headers: { authorization: `Bearer ${TOKENS.control}`, "x-caller-authorization": `Bearer ${caller}`, "content-type": "application/json" }, body: JSON.stringify(body) }),
+      await fetch(`${l2.url}${BUDGET}`, { headers: { authorization: `Bearer ${TOKENS.control}`, "x-caller-authorization": `Bearer ${caller}` } }),
+      await fetch(`${l2.url}${AUTHORIZE}`, { method: "POST", headers: { authorization: `Bearer ${TOKENS.control}`, "x-caller-authorization": "Bearer not-a-token", "content-type": "application/json" }, body: "{not json" }),
+      await fetch(`${l2.url}${BUDGET}`, { headers: { authorization: `Bearer ${TOKENS.control}` } }),
+    ];
+    for (const res of refused) {
+      expect(res.status).toBe(429);
+      expect(await res.json()).toEqual({ error: "too many requests" });
+      expect(Number(res.headers.get("retry-after"))).toBeGreaterThanOrEqual(1);
+    }
+    expect(lookups).toBe(2);
+    expect(l2.ledger.entries()).toHaveLength(before);
+    // The bound is the caller check's own: the portal's and the operator's routes answer as before.
+    expect((await l2.call("GET", "/v1/platform")).status).toBe(200);
+    expect((await l2.call("GET", "/v1/ledger/verify", { token: TOKENS.operator })).status).toBe(200);
+  });
+
+  it("T-CTK-09 must fail without the bound: the same calls are all verified and decided", async () => {
+    const l2 = await start({ caller: { maxChecksPerMinute: 4, skipLimit: true } });
+    const caller = await l2.callers.machine();
+    for (let i = 0; i < 10; i++) {
+      expect((await l2.call("GET", BUDGET, { token: TOKENS.control, caller })).status, String(i)).toBe(200);
+    }
+  });
+
+  it("T-CTK-09 where sign-in is not configured no token is verified, so nothing is bounded: the platform's calls are decided as before 016", async () => {
+    const l2 = await start({ caller: false });
+    for (let i = 0; i < 10; i++) {
+      expect((await l2.call("GET", BUDGET, { token: TOKENS.control })).status, String(i)).toBe(200);
+    }
   });
 });
