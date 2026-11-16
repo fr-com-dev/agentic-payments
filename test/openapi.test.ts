@@ -115,6 +115,8 @@ async function startService(opts: { apiDocs?: boolean; users?: boolean; admin?: 
     ...(callers && { person: { issuer: callers.issuer, audience: callers.audience, portalClientId: DEV_PORTAL_CLIENT, keys: callers.deps.keys, algorithms: callers.deps.algorithms } }),
     // A low limit for the ledger check, so the scenario reaches its documented 429 in a few requests.
     ...(opts.users !== false && opts.admin !== false && { admin: { maxLedgerChecksPerMinute: 3 } }),
+    // And for the operator's, likewise.
+    maxLedgerVerifiesPerMinute: 2,
   });
   const server = await new Promise<Server>((r) => {
     const s = svc.app.listen(0, "127.0.0.1", () => r(s));
@@ -445,7 +447,8 @@ describe("T-API-03 live responses match the documented status and schema", () =>
     await call("POST", "/v1/reconcile", { token: TOKENS.settlement, body: { ...report, authorizationId: "auth_unknown" } });
     await call("POST", "/v1/reconcile", { token: TOKENS.settlement, body: { authorizationId: "auth_x" } });
 
-    await call("GET", "/v1/ledger/verify", O);
+    // the operator's ledger check, until its limit refuses one (429, with nothing read)
+    for (let i = 0; i < 3; i++) await call("GET", "/v1/ledger/verify", O);
 
     // v1.15 portal administration: every admin operation and each of its statuses
     const A = { token: TOKENS.portalAdmin };

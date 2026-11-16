@@ -1,4 +1,4 @@
-// 1.19 (Phase 3, finding #7) — the ledger's keyed chain (SPEC.md §8.2 L2-4, INV-9; T-LED-05). The hash chain alone
+// 1.19 (Phase 3, finding #7) — the ledger's keyed chain (SPEC.md §8.2 L2-4, INV-9; T-LED-09). The hash chain alone
 // lets anyone who can write the file rewrite an entry and recompute every hash after it. With LEDGER_MAC_KEY, every
 // new entry carries an HMAC of its hash that nobody without the key can recompute.
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -44,8 +44,8 @@ function rewrite(ls: string[], at: number, change: (e: LedgerEntry) => void, str
   return out;
 }
 
-describe("T-LED-05 LEDGER_MAC_KEY", () => {
-  it("T-LED-05 off or unset means no key; a value needs at least 32 bytes; an error never repeats the value", () => {
+describe("T-LED-09 LEDGER_MAC_KEY", () => {
+  it("T-LED-09 off or unset means no key; a value needs at least 32 bytes; an error never repeats the value", () => {
     expect(ledgerMacKeyFromEnv({})).toBeUndefined();
     expect(ledgerMacKeyFromEnv({ LEDGER_MAC_KEY: "off" })).toBeUndefined();
     expect(ledgerMacKeyFromEnv({ LEDGER_MAC_KEY: HEX_KEY })).toEqual({ key: Buffer.from(HEX_KEY, "hex"), keyedFrom: 0 });
@@ -64,15 +64,15 @@ describe("T-LED-05 LEDGER_MAC_KEY", () => {
   });
 });
 
-describe("T-LED-05 the keyed chain", () => {
-  it("T-LED-05 every entry written with the key carries a MAC; the ledger reopens with the key, and refuses to open without it", () => {
+describe("T-LED-09 the keyed chain", () => {
+  it("T-LED-09 every entry written with the key carries a MAC; the ledger reopens with the key, and refuses to open without it", () => {
     fill(new AuditLedger(file, { mac: KEY }), 3);
     expect(lines().map((l) => typeof (JSON.parse(l) as LedgerEntry).mac)).toEqual(["string", "string", "string"]);
     expect(new AuditLedger(file, { mac: KEY }).verifyChain()).toEqual({ entries: 3, ok: true });
     expect(() => new AuditLedger(file)).toThrow(/is keyed; start L2 with its LEDGER_MAC_KEY/);
   });
 
-  it("T-LED-05 an entry rewritten with every hash recomputed, or with the MACs stripped, is refused with the key", () => {
+  it("T-LED-09 an entry rewritten with every hash recomputed, or with the MACs stripped, is refused with the key", () => {
     fill(new AuditLedger(file, { mac: KEY }), 4);
     const original = lines();
     const raised = rewrite(original, 1, (e) => (e.data.purpose = "rewritten"));
@@ -83,18 +83,18 @@ describe("T-LED-05 the keyed chain", () => {
     expect(() => new AuditLedger(file, { mac: KEY })).toThrow(/integrity/);
   });
 
-  it("T-LED-05 must fail: with hashes only, the same rewrite verifies, which is what the key prevents", () => {
+  it("T-LED-09 must fail: with hashes only, the same rewrite verifies, which is what the key prevents", () => {
     fill(new AuditLedger(file, { mac: KEY }), 4);
     const stripped = rewrite(lines(), 1, (e) => (e.data.purpose = "rewritten"), true);
     expect(verifyLines(stripped)).toEqual({ entries: 4, ok: true });
   });
 
-  it("T-LED-05 another key is refused at the first keyed entry", () => {
+  it("T-LED-09 another key is refused at the first keyed entry", () => {
     fill(new AuditLedger(file, { mac: KEY }), 2);
     expect(() => new AuditLedger(file, { mac: { key: Buffer.alloc(32, 9), keyedFrom: 0 } })).toThrow(/broken at line 0/);
   });
 
-  it("T-LED-05 an existing ledger is adopted as it is: its first n entries may stay unkeyed, every later one is keyed", () => {
+  it("T-LED-09 an existing ledger is adopted as it is: its first n entries may stay unkeyed, every later one is keyed", () => {
     fill(new AuditLedger(file), 3);
     const adopted = { ...KEY, keyedFrom: 3 };
     const l = new AuditLedger(file, { mac: adopted });
@@ -108,7 +108,7 @@ describe("T-LED-05 the keyed chain", () => {
     expect(verifyLines(lines(), adopted)).toEqual({ entries: 2, ok: false, brokenAt: 2 });
   });
 
-  it("T-LED-05 an unkeyed entry after a keyed one is refused", () => {
+  it("T-LED-09 an unkeyed entry after a keyed one is refused", () => {
     fill(new AuditLedger(file), 2);
     fill(new AuditLedger(file, { mac: { ...KEY, keyedFrom: 2 } }), 1, 2);
     const ls = lines();

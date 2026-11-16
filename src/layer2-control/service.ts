@@ -99,6 +99,8 @@ export interface ControlServiceDeps {
    * they prevent: a number for an amount signed and kept in the ledger as a number.
    */
   skipIntentShape?: boolean;
+  /** Test hook: a lower bound on the operator's ledger checks a minute (MAX_LEDGER_VERIFIES_PER_MINUTE). Never set by main(). */
+  maxLedgerVerifiesPerMinute?: number;
 }
 
 export interface ControlService {
@@ -632,6 +634,7 @@ export function createControlService(deps: ControlServiceDeps): ControlService {
   mountLedgerRoutes(app, {
     ledger,
     serialize,
+    ...(deps.maxLedgerVerifiesPerMinute !== undefined && { maxVerifiesPerMinute: deps.maxLedgerVerifiesPerMinute }),
     tokens: {
       ...(deps.tokens?.settlement !== undefined && { settlement: deps.tokens.settlement }),
       ...(deps.tokens?.operator !== undefined && { operator: deps.tokens.operator }),

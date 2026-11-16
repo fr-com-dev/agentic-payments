@@ -2,6 +2,7 @@
 // The L2 service bootstrap (feature 002) mounts these on its app. Each route's guard runs before
 // body parsing, so a wrong token never appends an entry (INV-13).
 import type { Express } from "express";
+import { addressLimit } from "../shared/address-limit.js";
 import { requireRole, type RequireRoleOptions } from "../shared/auth.js";
 import type { SettlementReport } from "../shared/contracts.js";
 import { jsonBody } from "./json-body.js";
@@ -10,11 +11,20 @@ import type { AuditLedger } from "./ledger.js";
 /** Runs `fn` inside the L2 serialized section (single writer, shared with authorize). */
 export type Serialize = <T>(fn: () => T | Promise<T>) => Promise<T>;
 
+/**
+ * Operator ledger checks a minute, from one address. Each one reads and hashes the whole ledger, so the bound is the
+ * administration area's (MAX_LEDGER_CHECKS_PER_MINUTE): far above what an operator runs by hand or a pipeline job runs.
+ * Counted after the role guard, so a caller without the operator's token is refused before it counts.
+ */
+export const MAX_LEDGER_VERIFIES_PER_MINUTE = 30;
+
 export interface LedgerRoutesDeps {
   ledger: AuditLedger;
   serialize: Serialize;
   /** Test hook: explicit tokens instead of resolving them from the environment. */
   tokens?: { settlement?: string; operator?: string };
+  /** Test hook: a lower bound on operator ledger checks a minute (default MAX_LEDGER_VERIFIES_PER_MINUTE). */
+  maxVerifiesPerMinute?: number;
 }
 
 const isNonEmptyString = (v: unknown): v is string => typeof v === "string" && v.length > 0;
@@ -31,6 +41,7 @@ export function isWellFormedReport(body: unknown): body is SettlementReport {
 
 export function mountLedgerRoutes(app: Express, deps: LedgerRoutesDeps): void {
   const opt = (token?: string): RequireRoleOptions => (token === undefined ? {} : { token });
+  const verifyLimit = addressLimit({ max: deps.maxVerifiesPerMinute ?? MAX_LEDGER_VERIFIES_PER_MINUTE });
 
   app.post(
     "/v1/reconcile",
@@ -51,7 +62,7 @@ export function mountLedgerRoutes(app: Express, deps: LedgerRoutesDeps): void {
     },
   );
 
-  app.get("/v1/ledger/verify", requireRole("operator", opt(deps.tokens?.operator)), (_req, res) => {
+  app.get("/v1/ledger/verify", requireRole("operator", opt(deps.tokens?.operator)), verifyLimit, (_req, res) => {
     res.json(deps.ledger.verifyChain());
   });
 }

@@ -6,6 +6,7 @@ import { createPublicKey, generateKeyPairSync, randomUUID, verify as cryptoVerif
 import type { Server } from "node:http";
 import type { AddressInfo, Socket } from "node:net";
 import express from "express";
+import { addressLimit } from "../../src/shared/address-limit.js";
 
 export type StubMode = "ok" | "401" | "429" | "500" | "hang" | "unsupported" | "decline" | "pending";
 
@@ -116,6 +117,8 @@ export async function startCdpStub(opts: CdpStubOptions): Promise<CdpStub> {
   };
 
   const app = express();
+  // A wide bound, as CDP has its own: it keeps the stub's key check behind a limiter (CodeQL js/missing-rate-limiting).
+  app.use(addressLimit({ max: 6_000 }));
   app.use(express.json({ limit: "1mb" }));
   app.use(BASE_PATH, (req, res, next) => {
     counts.requests++;

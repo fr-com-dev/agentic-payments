@@ -252,7 +252,7 @@ const SETTLEMENT = "test-settlement-token";
 const OPERATOR = "test-operator-token";
 const CONTROL = "test-control-token";
 
-async function startRoutes(l: AuditLedger) {
+async function startRoutes(l: AuditLedger, o: { maxVerifiesPerMinute?: number } = {}) {
   let tail: Promise<unknown> = Promise.resolve();
   const serialize: Serialize = (fn) => {
     const run = tail.then(fn, fn);
@@ -260,7 +260,7 @@ async function startRoutes(l: AuditLedger) {
     return run;
   };
   const app = express();
-  mountLedgerRoutes(app, { ledger: l, serialize, tokens: { settlement: SETTLEMENT, operator: OPERATOR } });
+  mountLedgerRoutes(app, { ledger: l, serialize, tokens: { settlement: SETTLEMENT, operator: OPERATOR }, ...o });
   const server = app.listen(0, "127.0.0.1");
   await new Promise<void>((r) => server.once("listening", () => r()));
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -323,6 +323,27 @@ describe("ledger routes (in-process)", () => {
       expect(r.status).toBe(200);
       expect(await r.json()).toEqual({ entries: 3, ok: true });
       for (const t of [CONTROL, SETTLEMENT]) expect((await get(t)).status).toBe(401);
+    } finally {
+      await s.close();
+    }
+  });
+
+  it("T-LIM-01 the operator's ledger checks are bounded per address: 429 with Retry-After beyond it, nothing read", async () => {
+    const l = seed(3);
+    const reads = vi.spyOn(l, "verifyChain");
+    const s = await startRoutes(l, { maxVerifiesPerMinute: 2 });
+    try {
+      const get = (t: string) => fetch(`${s.base}/v1/ledger/verify`, { headers: { authorization: `Bearer ${t}` } });
+      // A caller without the operator's token is refused before it counts.
+      for (let i = 0; i < 3; i++) expect((await get(CONTROL)).status).toBe(401);
+      for (let i = 0; i < 2; i++) expect((await get(OPERATOR)).status).toBe(200);
+      const refused = await get(OPERATOR);
+      expect(refused.status).toBe(429);
+      expect(Number(refused.headers.get("retry-after"))).toBeGreaterThan(0);
+      expect(await refused.json()).toEqual({ error: "too many requests" });
+      expect(reads).toHaveBeenCalledTimes(2);
+      // The settlement route has no such bound.
+      expect((await post(s.base, SETTLEMENT, "not json")).status).toBe(400);
     } finally {
       await s.close();
     }
@@ -643,7 +664,7 @@ describe("013 user accounts in the ledger (T-LED-06)", () => {
 // ---------------------------------------------------------------------------
 // 1.19 (Phase 3): a NOT_SETTLED releases an amount only for the recorded nonce, observed after validBefore (L2-4.1)
 // ---------------------------------------------------------------------------
-describe("T-LED-04 the nonce gates the release of a NOT_SETTLED amount", () => {
+describe("T-LED-08 the nonce gates the release of a NOT_SETTLED amount", () => {
   const NONCE = `0x${"ab".repeat(32)}`;
   const validBefore = Math.floor(T0 / 1000) + 120;
   /** AUTHORIZED with the nonce, as service.ts writes it since 1.19. */
@@ -661,21 +682,21 @@ describe("T-LED-04 the nonce gates the release of a NOT_SETTLED amount", () => {
     report(id, { status: "NOT_SETTLED", transaction: undefined, verified: { asset: ASSET, payer: PAYER, payTo: PAY_TO, amount: "1000", nonce: NONCE }, ...over });
   const after = validBefore * 1000 + 1;
 
-  it("T-LED-04 an early NOT_SETTLED (the seller's word, while the authorization was live) keeps counting after validBefore", () => {
+  it("T-LED-08 an early NOT_SETTLED (the seller's word, while the authorization was live) keeps counting after validBefore", () => {
     const l = new AuditLedger(file);
     authorizeWithNonce(l, "auth_n");
     l.reconcile(notSettled("auth_n", { observedAt: new Date(T0 + 5_000).toISOString() }), T0 + 5_000);
     expect(l.committedAtomic({ sessionId: "sess_a" }, after)).toBe(1000n);
   });
 
-  it("T-LED-04 a NOT_SETTLED for the recorded nonce, observed after validBefore, releases it", () => {
+  it("T-LED-08 a NOT_SETTLED for the recorded nonce, observed after validBefore, releases it", () => {
     const l = new AuditLedger(file);
     authorizeWithNonce(l, "auth_n");
     l.reconcile(notSettled("auth_n", { observedAt: new Date(after + 60_000).toISOString() }), after + 60_000);
     expect(l.committedAtomic({ sessionId: "sess_a" }, after + 60_000)).toBe(0n);
   });
 
-  it("T-LED-04 a report about another nonce is a mismatch, and the amount keeps counting", () => {
+  it("T-LED-08 a report about another nonce is a mismatch, and the amount keeps counting", () => {
     const l = new AuditLedger(file);
     authorizeWithNonce(l, "auth_n");
     const other = { asset: ASSET, payer: PAYER, payTo: PAY_TO, amount: "1000", nonce: `0x${"cd".repeat(32)}` };
@@ -683,14 +704,14 @@ describe("T-LED-04 the nonce gates the release of a NOT_SETTLED amount", () => {
     expect(l.committedAtomic({ sessionId: "sess_a" }, after + 60_000)).toBe(1000n);
   });
 
-  it("T-LED-04 an entry written before 1.19 (no nonce) keeps the old rule", () => {
+  it("T-LED-08 an entry written before 1.19 (no nonce) keeps the old rule", () => {
     const l = new AuditLedger(file);
     authorize(l, "auth_old", { validBefore });
     l.reconcile(report("auth_old", { status: "NOT_SETTLED", transaction: undefined }), T0 + 1);
     expect(l.committedAtomic({ sessionId: "sess_a" }, after)).toBe(0n);
   });
 
-  it("T-LED-04 must fail: without the nonce rule (skipNonceCheck), the early NOT_SETTLED releases the amount", () => {
+  it("T-LED-08 must fail: without the nonce rule (skipNonceCheck), the early NOT_SETTLED releases the amount", () => {
     const l = new AuditLedger(file);
     l.skipNonceCheck = true;
     authorizeWithNonce(l, "auth_n");

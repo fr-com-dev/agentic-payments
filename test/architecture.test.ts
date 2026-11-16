@@ -1040,7 +1040,7 @@ function missingIds(rows: { sec: string; ids: string[] }[], titles: string[]): s
   const has = (id: string) =>
     id.endsWith("-*")
       ? titles.some((t) => t.includes(id.slice(0, -1)))
-      : titles.some((t) => new RegExp(`${id.replace(/[-]/g, "\\-")}(?![A-Za-z0-9])`).test(t));
+      : titles.some((t) => new RegExp(`${id.replace(/[\\^$.*+?()[\]{}|-]/g, "\\$&")}(?![A-Za-z0-9])`).test(t));
   return rows.flatMap((r) => (r.ids.length === 0 ? [`${r.sec}: no test named`] : r.ids.filter((id) => !has(id)).map((id) => `${r.sec}: ${id}`)));
 }
 

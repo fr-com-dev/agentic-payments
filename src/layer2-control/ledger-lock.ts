@@ -31,7 +31,7 @@ export interface LedgerLockOptions {
   log?: (line: string) => void;
   /** Called when a heartbeat finds the lock gone or held by someone else. Default: exit 1. */
   onLost?: () => void;
-  /** Test-only (1.19 must-fail, T-LED-06): judge staleness by the holder's heartbeat time alone, as before 1.19. */
+  /** Test-only (1.19 must-fail, T-LED-10): judge staleness by the holder's heartbeat time alone, as before 1.19. */
   skipLocalStaleness?: boolean;
 }
 

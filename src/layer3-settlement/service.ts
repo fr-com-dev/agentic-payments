@@ -6,6 +6,7 @@ import type { Server } from "node:http";
 import { pathToFileURL } from "node:url";
 import express, { type ErrorRequestHandler, type Express } from "express";
 import { createPublicClient, http } from "viem";
+import { addressLimit } from "../shared/address-limit.js";
 import { requireRole } from "../shared/auth.js";
 import {
   loadEnv,
@@ -27,6 +28,11 @@ import { ChainSettlementVerifier, type ReadOnlyChainClient } from "./verifier.js
 export const DEFAULT_RECHECK_ATTEMPTS = 5;
 export const DEFAULT_RECHECK_INTERVAL_MS = 30_000;
 export const RECONCILE_TIMEOUT_MS = 5_000;
+/**
+ * Settlement claims a minute, from one address. L1 sends one per paid payment; in Azure every caller reaches L3
+ * through the same ingress address, so this bounds L3 as a whole: L2's bound on caller checks, far above a run's need.
+ */
+export const MAX_SETTLEMENT_CLAIMS_PER_MINUTE = 600;
 
 /** Read-only chain client (research R1). No account, no key, no write actions. */
 export function createReadOnlyClient(net: Pick<NetworkProfile, "rpcUrl">): ReadOnlyChainClient {
@@ -64,6 +70,8 @@ export interface SettlementServiceDeps {
   reconcileTimeoutMs?: number;
   /** Test hook: the expected VERIFIER_TOKEN instead of resolving it from the environment. */
   token?: string;
+  /** Test hook: a lower bound on claims a minute per address (default MAX_SETTLEMENT_CLAIMS_PER_MINUTE). Never set by main(). */
+  maxClaimsPerMinute?: number;
   log?: (msg: string) => void;
 }
 
@@ -151,6 +159,8 @@ export function createSettlementService(deps: SettlementServiceDeps): Settlement
     "/v1/settlements",
     // 401 precedes 400: the guard runs before the body is parsed or validated.
     requireRole("agent-verifier", deps.token !== undefined ? { token: deps.token } : {}),
+    // Counted after the guard, before the body is read: each claim may read the chain several times.
+    addressLimit({ max: deps.maxClaimsPerMinute ?? MAX_SETTLEMENT_CLAIMS_PER_MINUTE }),
     express.json({ limit: "64kb" }),
     async (req, res) => {
       if (!validClaim(req.body)) {

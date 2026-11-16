@@ -130,6 +130,19 @@ describe("US4 auth and validation (005 T031)", () => {
     expect((await post(base, claim(), TOKENS.verifier)).status).toBe(200);
   });
 
+  it("T-LIM-02 claims are bounded per address: 429 with Retry-After beyond it, nothing verified; a bad token never counts", async () => {
+    const v = scriptedVerifier(["CONFIRMED", "CONFIRMED", "CONFIRMED"]);
+    const { base, reconciler } = await start({ verifier: v, maxClaimsPerMinute: 2 });
+    for (let i = 0; i < 3; i++) expect((await post(base, claim(), "nope")).status).toBe(401);
+    for (let i = 0; i < 2; i++) expect((await post(base, claim())).status).toBe(200);
+    const refused = await post(base, claim());
+    expect(refused.status).toBe(429);
+    expect(Number(refused.headers.get("retry-after"))).toBeGreaterThan(0);
+    expect(await refused.json()).toEqual({ error: "too many requests" });
+    expect(v.calls).toHaveLength(2);
+    expect(reconciler.reports).toHaveLength(2);
+  });
+
   it("valid token: non-string authorizationId or non-object requirement → 400 {error}", async () => {
     const v = scriptedVerifier(["CONFIRMED"]);
     const { base } = await start({ verifier: v });

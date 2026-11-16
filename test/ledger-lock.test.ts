@@ -116,8 +116,8 @@ describe("T-LED-05 one ledger writer", () => {
   });
 });
 
-describe("T-LED-06 the lock across clocks, and fenced appends (1.19, L2-6)", () => {
-  it("T-LED-06 a live holder whose clock runs 2 minutes behind ours is never taken over", async () => {
+describe("T-LED-10 the lock across clocks, and fenced appends (1.19, L2-6)", () => {
+  it("T-LED-10 a live holder whose clock runs 2 minutes behind ours is never taken over", async () => {
     const path = fresh();
     let now = Date.parse("2026-11-16T00:00:00Z");
     const skew = 120_000;
@@ -138,7 +138,7 @@ describe("T-LED-06 the lock across clocks, and fenced appends (1.19, L2-6)", () 
     expect(acquired).toBe(false);
   });
 
-  it("T-LED-06 must fail: judged by the other host's clock alone (skipLocalStaleness), the same live lock is taken over at once", async () => {
+  it("T-LED-10 must fail: judged by the other host's clock alone (skipLocalStaleness), the same live lock is taken over at once", async () => {
     const path = fresh();
     const now = Date.parse("2026-11-16T00:00:00Z");
     writeFileSync(`${path}.lock`, JSON.stringify({ holder: "l2_live", pid: 1, host: "h", acquiredAt: "x", heartbeatAt: new Date(now - 120_000).toISOString() }));
@@ -148,7 +148,7 @@ describe("T-LED-06 the lock across clocks, and fenced appends (1.19, L2-6)", () 
     lock.release();
   });
 
-  it("T-LED-06 a replaced holder's next append is refused before anything is written, and the loss is reported", async () => {
+  it("T-LED-10 a replaced holder's next append is refused before anything is written, and the loss is reported", async () => {
     const path = fresh();
     let lost = 0;
     const lock = await acquireLedgerLock(path, { onLost: () => void lost++ });
@@ -161,7 +161,7 @@ describe("T-LED-06 the lock across clocks, and fenced appends (1.19, L2-6)", () 
     lock.release();
   });
 
-  it("T-LED-06 L2's main() opens the ledger fenced by the lock", () => {
+  it("T-LED-10 L2's main() opens the ledger fenced by the lock", () => {
     const body = readFileSync("src/layer2-control/service.ts", "utf8");
     const main = body.slice(body.indexOf("export async function main"));
     const open = main.slice(main.indexOf("new AuditLedger("));

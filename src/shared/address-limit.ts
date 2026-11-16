@@ -1,9 +1,13 @@
 // A limit on requests per client address, for the two public services (the hosted agent and the portal): SEC-14,
-// SEC-19. L2 uses the same limiter for two costly things: the administration area's ledger check (014) and the check
-// of a caller's token on the authorize and budget routes (016). It runs before the bearer token is verified, so a caller without a valid token can't make a service
-// verify signatures without bound; the per-person limits each service applies after authentication stay as they
-// are. Counters are held in memory by the replica. Behind the Azure ingress the client's address is the last entry
-// of X-Forwarded-For, which Express reads only when TRUSTED_PROXY_HOPS says how many proxies to trust.
+// SEC-19. L2 uses the same limiter for its costly checks: the ledger check of the administration area (014) and of
+// the operator (1.19), the check of a caller's token on the authorize and budget routes (016) and of a person's
+// portal token on the user and administration routes (1.19); L3 for settlement claims and the local facilitator for
+// its requests (1.19). On the public services it runs before the bearer token is verified, so a caller without a
+// valid token can't make a service verify signatures without bound; the per-person limits each service applies after
+// authentication stay as they are. Pass it to a route as a direct argument before the check it bounds, never inside
+// an array: CodeQL (js/missing-rate-limiting) recognizes it only there. Counters are held in memory by the replica.
+// Behind the Azure ingress the client's address is the last entry of X-Forwarded-For, which Express reads only when
+// TRUSTED_PROXY_HOPS says how many proxies to trust.
 import type { Express, Request, RequestHandler, Response } from "express";
 import { rateLimit } from "express-rate-limit";
 import { ConfigError } from "./config.js";

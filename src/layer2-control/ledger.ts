@@ -192,7 +192,7 @@ function released(auth: LedgerEntry, report: Record<string, unknown>, nowMs: num
 
 export class AuditLedger {
   private readonly items: LedgerEntry[];
-  /** Test-only (1.19 must-fail, T-LED-04): release on any NOT_SETTLED after validBefore, as before 1.19. */
+  /** Test-only (1.19 must-fail, T-LED-08): release on any NOT_SETTLED after validBefore, as before 1.19. */
   skipNonceCheck = false;
   /** 012: in-memory observers of appended entries (they wake the authorize wait, L2-7). Never part of the chain. */
   private readonly listeners = new Set<(e: LedgerEntry) => void>();

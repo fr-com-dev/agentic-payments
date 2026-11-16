@@ -85,7 +85,9 @@ export function mountUserRoutes(app: Express, deps: UserRoutesDeps): void {
   // 1.19 (SEC-35): every user route takes the role token, then the person's own token (verified here, counted per
   // address first), before its body is read. `/v1/platform` names nobody and takes the role token only.
   const personLimit = addressLimit({ max: deps.person.maxChecksPerMinute ?? MAX_PERSON_CHECKS_PER_MINUTE });
-  const guard = [role, personLimit, personAuth(deps.person, { now: deps.now })];
+  // The three are passed to each route one by one, never as an array: CodeQL (js/missing-rate-limiting) sees a
+  // limiter only as a direct argument before the check it bounds.
+  const person = personAuth(deps.person, { now: deps.now });
   const json = jsonBody();
   // `unserializedUserWrites` is the must-fail proof of FR-036: writes then run beside a decision in flight.
   const write = <T>(fn: () => T): Promise<T> => (users.unserializedUserWrites ? Promise.resolve().then(fn) : deps.serialize(fn));
@@ -136,7 +138,9 @@ export function mountUserRoutes(app: Express, deps: UserRoutesDeps): void {
 
   app.get(
     "/v1/users/:userId",
-    guard,
+    role,
+    personLimit,
+    person,
     route((_req, res, userId) => {
       const t = deps.now();
       res.json(viewOf(userState(ledger.entries(), userId), t));
@@ -145,7 +149,9 @@ export function mountUserRoutes(app: Express, deps: UserRoutesDeps): void {
 
   app.put(
     "/v1/users/:userId/registration",
-    guard,
+    role,
+    personLimit,
+    person,
     json,
     route(async (req, res, userId) => {
       const body = req.body as unknown;
@@ -166,7 +172,9 @@ export function mountUserRoutes(app: Express, deps: UserRoutesDeps): void {
 
   app.put(
     "/v1/users/:userId/wallet",
-    guard,
+    role,
+    personLimit,
+    person,
     route(async (_req, res, userId) => {
       const out = await write((): { error: string } | { view: ReturnType<typeof viewOf> } => {
         const t = deps.now();
@@ -204,7 +212,9 @@ export function mountUserRoutes(app: Express, deps: UserRoutesDeps): void {
 
   app.post(
     "/v1/users/:userId/policies",
-    guard,
+    role,
+    personLimit,
+    person,
     json,
     route(async (req, res, userId) => {
       const body = req.body as unknown;
@@ -238,7 +248,9 @@ export function mountUserRoutes(app: Express, deps: UserRoutesDeps): void {
 
   app.get(
     "/v1/users/:userId/policies/:policyId",
-    guard,
+    role,
+    personLimit,
+    person,
     route((req, res, userId) => {
       const t = deps.now();
       const state = userState(ledger.entries(), userId);
@@ -250,7 +262,9 @@ export function mountUserRoutes(app: Express, deps: UserRoutesDeps): void {
 
   app.put(
     "/v1/users/:userId/policies/:policyId",
-    guard,
+    role,
+    personLimit,
+    person,
     json,
     route(async (req, res, userId) => {
       const body = req.body as unknown;
@@ -337,15 +351,17 @@ export function mountUserRoutes(app: Express, deps: UserRoutesDeps): void {
         }),
       );
     });
-  app.post("/v1/users/:userId/policies/:policyId/pause", guard, json, act("pause"));
-  app.post("/v1/users/:userId/policies/:policyId/resume", guard, json, act("resume"));
-  app.post("/v1/users/:userId/policies/:policyId/remove", guard, json, act("remove"));
+  app.post("/v1/users/:userId/policies/:policyId/pause", role, personLimit, person, json, act("pause"));
+  app.post("/v1/users/:userId/policies/:policyId/resume", role, personLimit, person, json, act("resume"));
+  app.post("/v1/users/:userId/policies/:policyId/remove", role, personLimit, person, json, act("remove"));
 
   // ---- the account --------------------------------------------------------
 
   app.post(
     "/v1/users/:userId/disable",
-    guard,
+    role,
+    personLimit,
+    person,
     route(async (_req, res, userId) => {
       send(
         res,
@@ -363,7 +379,9 @@ export function mountUserRoutes(app: Express, deps: UserRoutesDeps): void {
 
   app.post(
     "/v1/users/:userId/enable",
-    guard,
+    role,
+    personLimit,
+    person,
     json,
     route(async (req, res, userId) => {
       const body = (req.body ?? {}) as unknown;
@@ -422,6 +440,6 @@ export function mountUserRoutes(app: Express, deps: UserRoutesDeps): void {
         }),
       );
     });
-  app.put("/v1/users/:userId/cards/:cardId", guard, card(false));
-  app.delete("/v1/users/:userId/cards/:cardId", guard, card(true));
+  app.put("/v1/users/:userId/cards/:cardId", role, personLimit, person, card(false));
+  app.delete("/v1/users/:userId/cards/:cardId", role, personLimit, person, card(true));
 }
