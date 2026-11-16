@@ -200,15 +200,21 @@ export async function startHostedApp(opts: StartHostedOptions = {}): Promise<Hos
   const ports = harness
     ? { gate: new HttpAuthorizationGate(config.urls.control, config.tokens.control), settlement: new HttpSettlementVerifier(config.urls.settlement, config.tokens.verifier) }
     : fakePorts();
-  const hosted = createHostedApp({
-    config,
-    // One local key, one issuer: it signs a person's token and a machine caller's.
-    keys: callers ? { keys: callers.deps.keys, algorithms: callers.deps.algorithms } : devKeys(issuer.jwks),
-    model: mockModel(),
-    log: () => undefined,
-    ...ports,
-    ...deps,
-  } as HostedDeps);
+  // Object.assign, not a spread: since @mastra/core 1.83 the model's type is a union too large for TypeScript to
+  // spread into a literal (TS2590).
+  const hosted = createHostedApp(
+    Object.assign(
+      {
+        config,
+        // One local key, one issuer: it signs a person's token and a machine caller's.
+        keys: callers ? { keys: callers.deps.keys, algorithms: callers.deps.algorithms } : devKeys(issuer.jwks),
+        model: mockModel(),
+        log: () => undefined,
+      },
+      ports,
+      deps,
+    ) as HostedDeps,
+  );
   if (ready !== false) hosted.markReady();
   const server = await new Promise<Server>((r) => {
     const s = hosted.app.listen(0, "127.0.0.1", () => r(s));

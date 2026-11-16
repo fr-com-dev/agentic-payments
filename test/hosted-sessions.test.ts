@@ -19,7 +19,8 @@ async function start(extra: Parameters<typeof startHostedApp>[0] = {}) {
     const turns = opts.prompt.filter((m) => m.role === "tool").length;
     return turns === 0 ? toolCall("check_budget", {}) : text("done");
   });
-  const a = await startHostedApp({ model, gate: ports.gate, settlement: ports.settlement, ...extra });
+  // Object.assign, not a spread: the model's type is too large a union to spread (TS2590, @mastra/core 1.83).
+  const a = await startHostedApp(Object.assign({ model, gate: ports.gate, settlement: ports.settlement }, extra));
   apps.push(a);
   const sessionsSeen = () => ports.gateCalls.filter((c) => c.op === "budget").map((c) => c.sessionId);
   return { a, sessionsSeen };

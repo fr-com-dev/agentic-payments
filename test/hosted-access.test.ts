@@ -198,7 +198,8 @@ describe("T-AGT-03 access matrix", () => {
   async function refusals(cases: Case[], deps: Parameters<typeof startHostedApp>[0] = {}) {
     const model = mockModel();
     const ports = fakePorts();
-    const a = await start({ model, gate: ports.gate, settlement: ports.settlement, ...deps });
+    // Object.assign, not a spread: the model's type is too large a union to spread (TS2590, @mastra/core 1.83).
+    const a = await start(Object.assign({ model, gate: ports.gate, settlement: ports.settlement }, deps));
     for (const [name, o, status] of cases) {
       const t0 = Date.now();
       const r = await a.run("alice", { goal: "hi" }, o);
