@@ -793,3 +793,85 @@ describe("012 FR-007 operator-only intents", () => {
     expect(JSON.stringify(AGENT_TOOLS)).not.toContain("operatorApprovalOnly");
   });
 });
+
+// ---------------------------------------------------------------------------
+// 1.19 (Phase 3): what the orchestrator fetches at all (L1-1, SEC-1)
+// ---------------------------------------------------------------------------
+describe("T-L1-FETCH-01 no redirects, http(s) only, the seller's host only for the model's agents", () => {
+  const redirect = (to: string) => () => new Response(null, { status: 302, headers: { location: to } });
+  const recordingFetch = () => {
+    const calls: { url: string; init?: RequestInit }[] = [];
+    const seller = fakeSeller();
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+      calls.push({ url: String(input), ...(init !== undefined && { init }) });
+      return seller.fetchImpl(input, init);
+    }) as typeof fetch;
+    return { calls, fetchImpl, seller };
+  };
+
+  it("T-L1-FETCH-01 every request asks fetch not to follow redirects, and a 3xx is an ERROR that asks L2 nothing", async () => {
+    const gate = fakeGate();
+    const f = recordingFetch();
+    const o = new PaidResourceOrchestrator({ gate, settlement: fakeVerifier(), sessionId: "s", fetchImpl: f.fetchImpl });
+    expect((await o.fetchPaid(URL_W, "p")).outcome).toBe("PAID");
+    expect(f.calls.map((c) => c.init?.redirect)).toEqual(["manual", "manual"]);
+
+    const seller = fakeSeller({ first: redirect("http://169.254.169.254/latest") });
+    const gate2 = fakeGate();
+    const r = await new PaidResourceOrchestrator({ gate: gate2, settlement: fakeVerifier(), sessionId: "s", fetchImpl: seller.fetchImpl }).fetchPaid(URL_W, "p");
+    expect(r).toMatchObject({ outcome: "ERROR", httpStatus: 302, error: "the resource redirected; redirects are not followed" });
+    expect(gate2.intents).toHaveLength(0);
+  });
+
+  it("T-L1-FETCH-01 a redirect on the paid retry never carries the payment header anywhere else", async () => {
+    const seller = fakeSeller({ paid: redirect("https://elsewhere.example/collect") });
+    const ver = fakeVerifier((c) => report(c, "PENDING"));
+    const r = await new PaidResourceOrchestrator({ gate: fakeGate(), settlement: ver, sessionId: "s", fetchImpl: seller.fetchImpl }).fetchPaid(URL_W, "p");
+    expect(seller.calls.map((c) => c.url)).toEqual([URL_W, URL_W]);
+    expect([r.outcome, ver.claims[0]!.httpStatus]).toEqual(["PAYMENT_FAILED", 302]);
+  });
+
+  it("T-L1-FETCH-01 a URL that isn't http(s), or (with allowedHosts) another host, is refused before anything is requested", async () => {
+    const f = recordingFetch();
+    const o = new PaidResourceOrchestrator({ gate: fakeGate(), settlement: fakeVerifier(), sessionId: "s", fetchImpl: f.fetchImpl, allowedHosts: ["127.0.0.1:4021"] });
+    for (const [url, error] of [
+      ["file:///etc/passwd", "only http and https URLs are fetched"],
+      ["http://169.254.169.254/metadata", "the host 169.254.169.254 is not one this agent may fetch"],
+      ["http://127.0.0.1:4020/v1/budget/s", "the host 127.0.0.1:4020 is not one this agent may fetch"],
+      ["not a url", "not a URL"],
+    ] as const) {
+      expect(await o.fetchPaid(url, "p"), url).toEqual({ outcome: "ERROR", url, error });
+    }
+    expect(f.calls).toHaveLength(0);
+    expect((await o.fetchPaid(URL_W, "p")).outcome).toBe("PAID");
+  });
+
+  it("T-L1-FETCH-01 must fail: without allowedHosts the same orchestrator fetches an internal address", async () => {
+    const f = recordingFetch();
+    const o = new PaidResourceOrchestrator({ gate: fakeGate(), settlement: fakeVerifier(), sessionId: "s", fetchImpl: f.fetchImpl });
+    await o.fetchPaid("http://127.0.0.1:4020/v1/budget/s", "p");
+    expect(f.calls.map((c) => c.url)).toEqual(["http://127.0.0.1:4020/v1/budget/s", "http://127.0.0.1:4020/v1/budget/s"]);
+  });
+
+  it("T-L1-FETCH-01 the hosted agent and the command-line agent set allowedHosts to the seller's host; the scripted plan doesn't", () => {
+    expect(readFileSync("src/layer1-intent/hosted/agent.ts", "utf8")).toMatch(/allowedHosts: \[new URL\(o\.sellerUrl\)\.host\]/);
+    expect(readFileSync("src/main.ts", "utf8")).toMatch(/\.\.\.\(!scripted && \{ allowedHosts: \[new URL\(urls\.seller\)\.host\] \}\)/);
+  });
+});
+
+describe("T-L1-NONCE-01 the claim carries L2's nonce, and a PENDING that waits for it is not a payment (1.19)", () => {
+  const NONCE = `0x${"ab".repeat(32)}`;
+  it("T-L1-NONCE-01 the claim names the decision's nonce; a long purpose is cut to 500 characters", async () => {
+    const gate = fakeGate((i) => ({ ...authorized(i), nonce: NONCE }));
+    const ver = fakeVerifier();
+    await new PaidResourceOrchestrator({ gate, settlement: ver, sessionId: "s", fetchImpl: fakeSeller().fetchImpl }).fetchPaid(URL_W, "p".repeat(900));
+    expect(ver.claims[0]!.nonce).toBe(NONCE);
+    expect(gate.intents[0]!.purpose).toHaveLength(500);
+  });
+
+  it("T-L1-NONCE-01 a 2xx whose report is PENDING with settlesBy is PAYMENT_FAILED, like the NOT_SETTLED it replaces", async () => {
+    const ver = fakeVerifier((c) => ({ ...report(c, "PENDING"), transaction: undefined as never, settlesBy: new Date(1_900_000_060_000).toISOString() }));
+    const r = await new PaidResourceOrchestrator({ gate: fakeGate(), settlement: ver, sessionId: "s", fetchImpl: fakeSeller().fetchImpl }).fetchPaid(URL_W, "p");
+    expect(r.outcome).toBe("PAYMENT_FAILED");
+  });
+});

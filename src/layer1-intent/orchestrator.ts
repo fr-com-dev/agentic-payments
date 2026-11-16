@@ -3,14 +3,15 @@
 // comes only from L3, never from the seller's PAYMENT-RESPONSE (INV-10).
 import { randomUUID } from "node:crypto";
 import { decodePaymentRequiredHeader } from "@x402/core/http";
-import type {
-  AuthorizationGatePort,
-  PaymentIntent,
-  PaymentRequired,
-  PolicyViolation,
-  SettlementClaim,
-  SettlementReport,
-  SettlementVerifierPort,
+import {
+  PURPOSE_MAX_CHARS,
+  type AuthorizationGatePort,
+  type PaymentIntent,
+  type PaymentRequired,
+  type PolicyViolation,
+  type SettlementClaim,
+  type SettlementReport,
+  type SettlementVerifierPort,
 } from "../shared/contracts.js";
 
 export type PaidFetchOutcome = "FREE" | "PAID" | "DENIED" | "ESCALATED" | "PAYMENT_FAILED" | "ERROR";
@@ -46,6 +47,13 @@ export interface OrchestratorDeps {
    * scripted root (src/main.ts --scripted) sets it; the agents' tools cannot. It only removes an approval path.
    */
   operatorApprovalOnly?: boolean;
+  /**
+   * 1.19 (L1-1, SEC-1): the hosts (`host[:port]`, as `new URL(...).host` gives them) this orchestrator may fetch at
+   * all. The model-driven agents set it to the seller's host, so neither a goal nor text in a fetched page can send
+   * the agent to an internal address or anywhere else. Absent (the scripted plan): any http(s) host; L2 still allows
+   * a payment only at its own hosts (R6).
+   */
+  allowedHosts?: readonly string[];
 }
 
 /** Non-JSON bodies are returned as text truncated to this many characters (L1-1 step 2). */
@@ -83,13 +91,32 @@ export class PaidResourceOrchestrator {
     return this.deps.sessionId;
   }
 
+  /** 1.19: why this URL is not fetched at all, or null. Nothing is requested for a refused URL. */
+  private refusal(url: string): string | null {
+    let u: URL;
+    try {
+      u = new URL(url);
+    } catch {
+      return "not a URL";
+    }
+    if (u.protocol !== "http:" && u.protocol !== "https:") return "only http and https URLs are fetched";
+    if (this.deps.allowedHosts !== undefined && !this.deps.allowedHosts.includes(u.host)) return `the host ${u.host} is not one this agent may fetch`;
+    return null;
+  }
+
   async fetchPaid(url: string, purpose: string): Promise<PaidFetchResult> {
-    // Step 1: unpaid request.
+    const refused = this.refusal(url);
+    if (refused !== null) return { outcome: "ERROR", url, error: refused };
+    // Step 1: unpaid request. 1.19: redirects are never followed. A redirect would make the answer come from a host
+    // L2's R6 and R7 never saw (they judge `url`), and, on the paid retry, carry the signed payment header to it.
     let first: Response;
     try {
-      first = await this.fetchImpl(url);
+      first = await this.fetchImpl(url, { redirect: "manual" });
     } catch (e) {
       return { outcome: "ERROR", url, error: errorMessage(e) };
+    }
+    if (first.status >= 300 && first.status < 400) {
+      return { outcome: "ERROR", url, httpStatus: first.status, error: "the resource redirected; redirects are not followed" };
     }
 
     // Step 2: anything but 402 is free.
@@ -112,7 +139,8 @@ export class PaidResourceOrchestrator {
       sessionId: this.deps.sessionId,
       resourceUrl: url,
       paymentRequired,
-      purpose,
+      // 1.19: L2 keeps at most PURPOSE_MAX_CHARS of the model's text, and refuses a longer one.
+      purpose: String(purpose).slice(0, PURPOSE_MAX_CHARS),
       createdAt: new Date().toISOString(),
       ...(this.deps.operatorApprovalOnly === true && { operatorApprovalOnly: true }),
     };
@@ -145,10 +173,10 @@ export class PaidResourceOrchestrator {
       payTo: req.payTo,
     };
 
-    // Step 6: paid retry with L2's headers, unchanged.
+    // Step 6: paid retry with L2's headers, unchanged, to the same URL only (1.19: never through a redirect).
     let paid: Response;
     try {
-      paid = await this.fetchImpl(url, { headers: decision.paymentHeaders });
+      paid = await this.fetchImpl(url, { headers: decision.paymentHeaders, redirect: "manual" });
     } catch (e) {
       // The signed authorization may still settle; L3 decides from the chain with no PAYMENT-RESPONSE.
       return this.settle(url, decision, payment, 0, null, undefined, `paid request failed: ${errorMessage(e)}`);
@@ -162,7 +190,7 @@ export class PaidResourceOrchestrator {
 
   private async settle(
     url: string,
-    decision: { authorizationId: string; requirement: SettlementClaim["requirement"]; payer: string; validBefore: number },
+    decision: { authorizationId: string; requirement: SettlementClaim["requirement"]; payer: string; validBefore: number; nonce?: string },
     payment: PaidFetchPayment,
     httpStatus: number,
     paymentResponseHeader: string | null,
@@ -175,6 +203,7 @@ export class PaidResourceOrchestrator {
       requirement: decision.requirement,
       payer: decision.payer,
       validBefore: decision.validBefore,
+      ...(decision.nonce !== undefined && { nonce: decision.nonce }),
       httpStatus,
       paymentResponseHeader,
     };
@@ -186,8 +215,9 @@ export class PaidResourceOrchestrator {
       // Money may have moved: keep the payment details (SPEC v1.1 L1-1 step 8).
       return { outcome: "PAYMENT_FAILED", ...base, payment, error: `settlement verification failed: ${errorMessage(e)}` };
     }
-    // Step 8.
-    const settled = report.status === "CONFIRMED" || report.status === "PENDING";
+    // Step 8. 1.19: a PENDING with `settlesBy` is no evidence of a settlement (L3 waits to read the nonce), so it is
+    // not "settled" here, exactly as the NOT_SETTLED it replaces was not.
+    const settled = report.status === "CONFIRMED" || (report.status === "PENDING" && report.settlesBy === undefined);
     return {
       outcome: ok && settled ? "PAID" : "PAYMENT_FAILED",
       ...base,

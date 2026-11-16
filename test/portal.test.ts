@@ -329,9 +329,15 @@ describe("T-PRT-01 access (FR-003, FR-005, SEC-19, SEC-20)", () => {
     expect((await p.call("GET", "/api/me", { token: await p.token("mallory", { azp: DEV_AGENT_CLIENT, permissions: ["agent:run"] }) })).status).toBe(403);
   });
 
-  it("T-PRT-01 must-fail: with the test-only bypassAuth hook, an agent-service token reaches a route", async () => {
+  it("T-PRT-01 must-fail: with the test-only bypassAuth hook, an agent-service token gets past the portal, and (1.19) L2 refuses it itself", async () => {
     const p = await start({ bypassAuth: true });
-    expect((await p.call("GET", "/api/me", { token: await p.agentToken("alice") })).status).toBe(200);
+    const before = p.l2Calls();
+    const r = await p.call("GET", "/api/me", { token: await p.agentToken("alice") });
+    // The portal's own refusal is 403 `forbidden` with no call to L2; here L2 was asked, and its person check refused
+    // a token from the agent's client.
+    expect(r.body).not.toEqual({ error: "forbidden" });
+    expect(p.l2Calls()).toBeGreaterThan(before);
+    expect(r.status).toBe(403);
   });
 
   it("T-PRT-01 a caller without a valid token is limited per address, before any token is verified", async () => {

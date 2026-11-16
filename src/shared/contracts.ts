@@ -22,6 +22,14 @@ export interface PaymentIntent {
   userId?: string;
 }
 
+/**
+ * 1.19 (L2-5): the longest `purpose` L2 accepts, in characters. L1 cuts the model's text to it before asking; L2
+ * refuses a longer one (400), because every intent is kept in the ledger for good and every decision reads it.
+ */
+export const PURPOSE_MAX_CHARS = 500;
+/** 1.19 (L2-5): the most payment options one challenge may offer. Each one is evaluated against every rule. */
+export const ACCEPTS_MAX = 20;
+
 // L2 -> L1
 export interface PolicyViolation {
   rule: string;
@@ -37,6 +45,8 @@ export type AuthorizationDecision =
       paymentHeaders: Record<string, string>;
       payer: string;
       validBefore: number;
+      /** 1.19: the signed authorization's EIP-3009 nonce; L1 passes it to L3 in the settlement claim. */
+      nonce?: string;
       remainingSessionBudgetAtomic: string;
     }
   | {
@@ -52,6 +62,11 @@ export interface SettlementClaim {
   requirement: PaymentRequirements;
   payer: string;
   validBefore: number;
+  /**
+   * 1.19 (L3-1): the authorization's EIP-3009 nonce, from L2's decision. With it, L3 reports NOT_SETTLED only after
+   * validBefore and only when the nonce is still unused on-chain; without it (an older L1), as before 1.19.
+   */
+  nonce?: string;
   httpStatus: number;
   paymentResponseHeader: string | null;
 }
@@ -70,7 +85,13 @@ export interface SettlementReport {
   finalityClass: FinalityClass;
   detail: string;
   observedAt: string;
-  verified: { asset: string; payer: string; payTo: string; amount: string };
+  /** 1.19: `nonce` is the authorization's EIP-3009 nonce when the claim carried one; L2 compares it with its own. */
+  verified: { asset: string; payer: string; payTo: string; amount: string; nonce?: string };
+  /**
+   * 1.19: on a PENDING report only, when the authorization could still be used: the time (ISO) after which L3 checks
+   * its nonce on-chain (validBefore plus a margin). L3 re-checks then.
+   */
+  settlesBy?: string;
 }
 
 // Ports

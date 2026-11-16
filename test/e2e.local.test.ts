@@ -959,7 +959,8 @@ describe("013 user accounts end to end", () => {
     for (const secret of [...HARNESS_USER_MNEMONIC.split(" ").filter((w) => w.length > 5), ...Object.values(h.tokens)]) {
       expect(ledgerText.includes(secret), secret).toBe(false);
     }
-    expect(/0x[0-9a-fA-F]{64}"/.test(ledgerText.replace(/"(transaction|hash|prevHash|digest)":"[^"]+"/g, ""))).toBe(false);
+    // 1.19: an AUTHORIZED entry's `nonce` is the public EIP-3009 nonce, like a transaction hash.
+    expect(/0x[0-9a-fA-F]{64}"/.test(ledgerText.replace(/"(transaction|hash|prevHash|digest|nonce)":"[^"]+"/g, ""))).toBe(false);
   });
 
   it("T-E2E-12 a user's account that can't cover the payment: signed, refused by the facilitator, nothing spent", async () => {
@@ -1107,7 +1108,9 @@ describe("014 portal administration end to end", () => {
     // The real portal app, with its two clients pointed at the harness's L2 and that L2's own two tokens.
     const { startPortal } = await import("./helpers/portal.js");
     const l2 = { url: h.urls.control, clock: { now: Date.now }, ledger: {}, requestCount: () => 0, close: async () => {} };
-    portal = await startPortal({ l2: l2 as never, admin: true, env: { PORTAL_TOKEN: h.tokens.portal, PORTAL_ADMIN_TOKEN: h.tokens.portalAdmin } });
+    // 1.19 (SEC-35): L2 verifies the person's token the portal forwards, so the portal signs in with the same tenant.
+    portal = await startPortal({ l2: l2 as never, admin: true, callers: h.callers!, env: { PORTAL_TOKEN: h.tokens.portal, PORTAL_ADMIN_TOKEN: h.tokens.portalAdmin } });
+    CAROL = portal.userId("carol");
   }, 60_000);
   afterAll(async () => {
     await portal?.close();
@@ -1117,7 +1120,9 @@ describe("014 portal administration end to end", () => {
 
   const ERIN_SUB = "auth0|erin-e2e";
   let ERIN: string;
-  const CAROL = devUserId("carol");
+  // 1.19: the portal signs in with the harness's tenant (L2 verifies the token it forwards), so carol is that
+  // tenant's user; set once the portal is up.
+  let CAROL = "";
   const premium = () => `${h.urls.seller}/api/premium-report`;
   /**
    * A run of erin's: the gate forwards her token (016). `operatorApprovalOnly` keeps the phone out of it, so the

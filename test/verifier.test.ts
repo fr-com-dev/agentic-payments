@@ -279,3 +279,56 @@ describe("L3-1 step 2 v1.2 (FR-020, SEC-11): a failure claim carrying a hash is 
     expect((await verifier(settled(1000n)).verify(claim("1000"))).detail).not.toMatch(/facilitator reported failure/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// 1.19 (Phase 3): "nothing settled" is the chain's answer about the nonce, after validBefore (SPEC L3-1)
+// ---------------------------------------------------------------------------
+describe("T-L3-NONCE-01 NOT_SETTLED only after validBefore, from the nonce's state", () => {
+  const NONCE = `0x${"ab".repeat(32)}`;
+  const VALID_BEFORE = 1_900_000_000;
+  const withNonce = (over: Partial<SettlementClaim> = {}) => claim("1000", { nonce: NONCE, validBefore: VALID_BEFORE, paymentResponseHeader: null, ...over });
+  const run = (script: FakeChainScript, extra: { skipNonceCheck?: boolean } = {}) => {
+    const client = fakePublicClient(script);
+    const v = new ChainSettlementVerifier({ publicClient: client, net: LOCAL, waitMs: 500, pollMs: 20, ...extra });
+    return { client, v };
+  };
+
+  it("T-L3-NONCE-01 no PAYMENT-RESPONSE while the authorization is live → PENDING with settlesBy, and the nonce isn't read yet", async () => {
+    const { client, v } = run({ latestTimestamp: BigInt(VALID_BEFORE) });
+    const r = await v.verify(withNonce());
+    expect(r.status).toBe("PENDING");
+    expect(r.settlesBy).toBe(new Date((VALID_BEFORE + 60) * 1000).toISOString());
+    expect(r.verified.nonce).toBe(NONCE);
+    expect(client.calls.nonce).toBe(0);
+  });
+
+  it("T-L3-NONCE-01 after validBefore and its margin: an unused nonce is NOT_SETTLED, a used one a MISMATCH that keeps counting", async () => {
+    const after = BigInt(VALID_BEFORE + 60);
+    const unused = run({ latestTimestamp: after, authorizationUsed: false });
+    const r = await unused.v.verify(withNonce());
+    expect([r.status, r.settlesBy]).toEqual(["NOT_SETTLED", undefined]);
+    expect(unused.client.calls.nonceArgs).toEqual([PAYER, NONCE]);
+    const used = run({ latestTimestamp: after, authorizationUsed: true });
+    expect((await used.v.verify(withNonce())).status).toBe("MISMATCH");
+  });
+
+  it("T-L3-NONCE-01 a seller's failure claim and a reverted transaction wait for validBefore too", async () => {
+    const live = { latestTimestamp: 0n };
+    const failed = run(live);
+    expect((await failed.v.verify(withNonce({ paymentResponseHeader: header({ success: false, transaction: "", errorReason: "x" }) }))).status).toBe("PENDING");
+    const reverted = run({ ...live, receipt: { status: "reverted", blockNumber: 10n, logs: [] }, heads: [10n] });
+    const r = await reverted.v.verify(withNonce({ paymentResponseHeader: header() }));
+    expect([r.status, r.transaction]).toEqual(["PENDING", TX]);
+  });
+
+  it("T-L3-NONCE-01 a claim without a nonce (an L1 before 1.19) is NOT_SETTLED at once, as before", async () => {
+    const { client, v } = run({ latestTimestamp: 0n });
+    expect((await v.verify(claim("1000", { paymentResponseHeader: null }))).status).toBe("NOT_SETTLED");
+    expect(client.calls.latest).toBe(0);
+  });
+
+  it("T-L3-NONCE-01 must fail: on the seller's word alone (skipNonceCheck), a live authorization is NOT_SETTLED at once", async () => {
+    const { v } = run({ latestTimestamp: 0n }, { skipNonceCheck: true });
+    expect((await v.verify(withNonce())).status).toBe("NOT_SETTLED");
+  });
+});

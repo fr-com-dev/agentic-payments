@@ -1,5 +1,11 @@
 # Contract: the portal API delta (browser → portal)
 
+> **1.19 (2026-11-16, SPEC v1.19 L2-5, L2-8, SEC-35).** L2 verifies the administrator's own token, forwarded by the
+> portal in `X-Person-Authorization`, on every administration route: it needs `portal:admin` in it (403
+> `person_forbidden`), and the decider, `identityConfirmedAtMs` and the second-factor time
+> (`https://x402.dev/mfa_time`, also at most 15 minutes old for an approval) are the token's. The approve body is `{}`
+> and the reject body `{ reasonCode }`: `decidedBy` and `identityConfirmedAtMs` are refused (400).
+
 Normative for SPEC L2-8, `docs/portal.openapi.yaml` and `web/portal/src/api.ts`; T-API-12..15 fail until they match
 the service. It extends [specs/013 contracts/portal-api.md](../../013-l2-portal-onboarding/contracts/portal-api.md);
 everything there that is not named here is unchanged: the token checks, the limits, the headers, the CSP, the log

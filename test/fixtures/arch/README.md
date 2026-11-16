@@ -34,3 +34,12 @@ half never imports the user-account client. The test asserts that no other rule 
 a gate for a caller (`forCaller`) is taken only in `src/layer1-intent/hosted/server.ts` and `src/main.ts`. A15
 confines a machine caller's key (`MACHINE_CLIENT_KEY`, `MACHINE_CLIENT_KEY_ID`) to `src/machine-caller/token.ts`,
 which only `src/main.ts` and `src/smoke-main.ts` import. Each test asserts that no other rule catches its fixture.
+
+`a16-violation.ts` (1.19) is checked with `checkLedgerKeyConfinement`. A16 confines the ledger's MAC key
+(`LEDGER_MAC_KEY`) to `src/layer2-control/ledger-key.ts` and `env/l2-control.env.example`, like A9 and A11: the rest
+of L2 gets the parsed key, and no other process names it. The test asserts that no other rule catches its fixture.
+
+`a17-violation.ts` (1.19) is checked with `checkPersonTokenPath`. A17 keeps the person's portal token on one path,
+like A14 does for the caller's: the header it travels in to L2 (`X-Person-Authorization`) is named only in
+`src/portal/person-context.ts` and `src/layer2-control/person.ts`. The test asserts that no other rule catches its
+fixture.

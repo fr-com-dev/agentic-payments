@@ -165,7 +165,7 @@ describe("T-CDP-04..T-CDP-09 against the CDP stub", () => {
     }, 30_000);
   }
 
-  it("T-CDP-05 compliance decline during the paid retry → 402 with the reason; PAYMENT_FAILED; NOT_SETTLED; amount stays committed", async () => {
+  it("T-CDP-05 compliance decline during the paid retry → 402 with the reason; PAYMENT_FAILED; (1.19) PENDING until validBefore; amount stays committed", async () => {
     stub.setMode("ok");
     const rec = recordFetch();
     try {
@@ -173,7 +173,10 @@ describe("T-CDP-04..T-CDP-09 against the CDP stub", () => {
       const r = await orchestrator("sess_cdp05a").fetchPaid(`${h.urls.seller}/api/weather?city=Quito`, "decline");
       expect(r.outcome).toBe("PAYMENT_FAILED");
       expect(r.httpStatus).toBe(402);
-      expect(r.payment?.settlement?.status).toBe("NOT_SETTLED");
+      // 1.19 (L3-1): a decline is the seller's word; the authorization stays usable until validBefore, so L3 waits
+      // to read its nonce before it says nothing settled.
+      expect(r.payment?.settlement?.status).toBe("PENDING");
+      expect(r.payment?.settlement?.settlesBy).toBeDefined();
       const paidRetry = rec.exchanges.find((x) => x.url.startsWith(h.urls.seller) && x.reqHeaders["payment-signature"]);
       expect(paidRetry?.status).toBe(402);
       const challenge = paidRetry!.resHeaders.get("PAYMENT-REQUIRED");
@@ -232,11 +235,14 @@ describe("T-CDP-04..T-CDP-09 against the CDP stub", () => {
       rec.restore();
     }
 
-    // Must-fail proof: the same claim through v1.1 behavior is NOT_SETTLED, so the budget would under-count.
+    // Must-fail proof: the same claim through v1.1 behavior is NOT_SETTLED, so the budget would under-count. (1.19:
+    // v1.1 had no nonce rule either; with that rule alone, the claim waits for validBefore instead.)
     const publicClient = createPublicClient({ transport: http(h.net.rpcUrl) }) as unknown as ReadOnlyChainClient;
-    const v11 = new ChainSettlementVerifier({ publicClient, net: h.net, waitMs: 5_000, pollMs: 100, verifyFailedClaims: false });
+    const v11 = new ChainSettlementVerifier({ publicClient, net: h.net, waitMs: 5_000, pollMs: 100, verifyFailedClaims: false, skipNonceCheck: true });
+    const v11WithNonce = new ChainSettlementVerifier({ publicClient, net: h.net, waitMs: 5_000, pollMs: 100, verifyFailedClaims: false });
     const v12 = new ChainSettlementVerifier({ publicClient, net: h.net, waitMs: 5_000, pollMs: 100 });
     expect((await v11.verify(claim)).status).toBe("NOT_SETTLED");
+    expect((await v11WithNonce.verify(claim)).status).toBe("PENDING");
     expect((await v12.verify(claim)).status).toBe("CONFIRMED");
   }, 60_000);
 

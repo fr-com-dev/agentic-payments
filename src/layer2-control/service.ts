@@ -20,7 +20,7 @@ import { addressLimit } from "../shared/address-limit.js";
 import { requireRole } from "../shared/auth.js";
 import { apiDocsEnabled, ConfigError, CONTROL_BIND_HOST, controlPort, loadEnv, networkProfile, ROLE_TOKEN_VAR, tokenFor, type NetworkProfile } from "../shared/config.js";
 import { USER_ID_RE } from "../shared/user-id.js";
-import type { AuthorizationDecision, BudgetStatus, EscalationBudget, PaymentIntent, PolicyViolation } from "../shared/contracts.js";
+import { ACCEPTS_MAX, PURPOSE_MAX_CHARS, type AuthorizationDecision, type BudgetStatus, type EscalationBudget, type PaymentIntent, type PolicyViolation } from "../shared/contracts.js";
 import { mountAdminRoutes, toEscalationBudget, type AdminDeps } from "./admin-routes.js";
 import { mountApiDocs } from "./api-docs.js";
 import { issuerKeys } from "./approval-evidence.js";
@@ -32,13 +32,15 @@ import { ESCALATION_TTL_MS, findPendingEscalation, findRejection, sweep } from "
 import { AuditLedger, resourceKey, type LedgerEntry } from "./ledger.js";
 import { callerAuth, callerChecksPerMinute, callerDepsFor, callerSettingsFromEnv, forwardedIdentityOf, type CallerDeps } from "./caller.js";
 import { acquireLedgerLock } from "./ledger-lock.js";
+import { LEDGER_MAC_ENV, ledgerMacKeyFromEnv } from "./ledger-key.js";
 import { mountLedgerRoutes, type Serialize } from "./ledger-routes.js";
 import { AUTHORIZE_BODY_LIMIT, jsonBody, refuseUnreadBody } from "./json-body.js";
-import { loadMandate, type SpendingMandate } from "./mandate.js";
+import { checkPayeeBinding, loadMandate, type SpendingMandate } from "./mandate.js";
 import { loadPlatform, platformDigest, type PlatformConfig } from "./platform.js";
 import { decide, type PolicyContext } from "./policy.js";
 import { keyringFromEnv, PaymentSigner, refusePublishedDevKeys, USER_WALLET_ENV, type PaymentSignerLike } from "./signer.js";
 import { mountUserRoutes } from "./user-routes.js";
+import { personSettingsFromEnv, type PersonDeps } from "./person.js";
 import {
   effectiveMandate,
   highestAutoApprove,
@@ -83,10 +85,20 @@ export interface ControlServiceDeps {
    * names a user, and the platform account pays (the local scripted demo). main() requires it with user accounts.
    */
   caller?: CallerDeps;
+  /**
+   * 1.19 (L2-8, SEC-35): how L2 verifies the person's own portal token, which the portal forwards beside its role
+   * token on every user-account and administration route. Required with `users`.
+   */
+  person?: PersonDeps;
   /** 013: the network, for the effective mandate and the views. Required with `users`. */
   net?: Pick<NetworkProfile, "caip2" | "asset" | "decimals">;
   /** 014 (L2-8): the administration routes. Absent: off, each answers 404. Needs `users`. */
   admin?: AdminDeps;
+  /**
+   * Test hook (1.19 must-fail, never set by main()): skip the shape checks of `accepts` and `purpose`, to show what
+   * they prevent: a number for an amount signed and kept in the ledger as a number.
+   */
+  skipIntentShape?: boolean;
 }
 
 export interface ControlService {
@@ -126,17 +138,47 @@ function isHttpUrl(s: unknown): s is string {
   }
 }
 
+const isPlainObject = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
+
+/**
+ * 1.19 (L2-5): the shape of one payment option. The rules judge the values (R2–R9); this only makes sure each field
+ * the rules and the signer read is of the type they expect, so a number for an amount (which `String()` would pass
+ * through R9 and the ledger would keep as a number, breaking hard rule 8) or an object for a network never reaches
+ * them. `extra` is the signer's business and stays as the seller wrote it.
+ */
+function validRequirement(r: unknown): boolean {
+  if (!isPlainObject(r)) return false;
+  return (
+    typeof r.scheme === "string" &&
+    typeof r.network === "string" &&
+    typeof r.asset === "string" &&
+    typeof r.payTo === "string" &&
+    typeof r.amount === "string" &&
+    typeof r.maxTimeoutSeconds === "number" &&
+    (r.extra === undefined || isPlainObject(r.extra))
+  );
+}
+
 /**
  * 400 checks (L2-5): ids present, accepts is an array, resourceUrl is http(s). 016 (SEC-32): a request can't name
  * who the payment is for or whose phone to ask. `userId` and the retired `approvalSubject` are refused, because the
  * user comes from the caller's token alone. `trustUser` is the test-only must-fail switch that restores `userId`.
+ * 1.19: every option has the shape of a payment requirement, there are at most ACCEPTS_MAX of them, and `purpose`
+ * is a string of at most PURPOSE_MAX_CHARS characters. `skipShape` is the test-only must-fail switch for those.
  */
-function validIntent(body: unknown, trustUser = false): body is PaymentIntent {
+function validIntent(body: unknown, trustUser = false, skipShape = false): body is PaymentIntent {
   if (body === null || typeof body !== "object") return false;
   const b = body as Record<string, unknown>;
   const pr = b.paymentRequired as Record<string, unknown> | undefined;
   if ("approvalSubject" in b) return false;
   if ("userId" in b && !(trustUser && typeof b.userId === "string" && USER_ID_RE.test(b.userId))) return false;
+  const shaped =
+    skipShape ||
+    (Array.isArray(pr?.accepts) &&
+      pr.accepts.length <= ACCEPTS_MAX &&
+      pr.accepts.every(validRequirement) &&
+      (pr.resource === undefined || isPlainObject(pr.resource)) &&
+      (b.purpose === undefined || (typeof b.purpose === "string" && b.purpose.length <= PURPOSE_MAX_CHARS)));
   return (
     typeof b.intentId === "string" &&
     b.intentId.length > 0 &&
@@ -146,6 +188,7 @@ function validIntent(body: unknown, trustUser = false): body is PaymentIntent {
     pr !== null &&
     typeof pr === "object" &&
     Array.isArray(pr.accepts) &&
+    shaped &&
     // 012 FR-007: optional, boolean only.
     (b.operatorApprovalOnly === undefined || typeof b.operatorApprovalOnly === "boolean")
   );
@@ -265,6 +308,8 @@ export function createControlService(deps: ControlServiceDeps): ControlService {
   // 015 (FR-001): a request goes to the user a payment is for. Without user accounts no payment names a user, so
   // the feature would be on and could ask nobody.
   if (deps.backchannel && !users) throw new Error("backchannel approval needs user accounts (SPEC L2-7)");
+  // 1.19 (SEC-35): with user accounts, L2 takes the person from their own token, never from the portal's word.
+  if (users && !deps.person) throw new Error("user accounts need the person check (SPEC L2-8): L2 verifies the person's portal token");
   const backchannel = deps.backchannel ? new Backchannel({ ...deps.backchannel, ledger, serialize, now }) : undefined;
 
   type Decided = { decision: AuthorizationDecision; start?: StartPlan };
@@ -344,13 +389,19 @@ export function createControlService(deps: ControlServiceDeps): ControlService {
       }),
     };
 
-    // Step 4: pure decision.
-    const d = decide(accepts, m, ctx);
     const base = { authorizationId, intentId };
     const deny = (violations: PolicyViolation[]): Decided => {
       ledger.append({ type: "DENIED", sessionId, intentId, authorizationId, data: { violations, resourceKey: key, ...who } }, t);
       return { decision: { status: "DENIED", ...base, violations } };
     };
+    // Step 4: pure decision. 1.19: the INTENT above is always followed by exactly one outcome entry, so a decision
+    // that throws (a value no rule foresaw) is a denial with a fixed detail, never a 500 that leaves the intent alone.
+    let d: ReturnType<typeof decide>;
+    try {
+      d = decide(accepts, m, ctx);
+    } catch {
+      return deny([{ rule: "decision_failed", detail: "the payment request could not be evaluated" }]);
+    }
 
     if (d.status === "ESCALATE") {
       const chosen = d.chosen!;
@@ -451,6 +502,8 @@ export function createControlService(deps: ControlServiceDeps): ControlService {
           payTo: chosen.payTo,
           payer: signed.payer,
           validBefore: signed.validBefore,
+          // 1.19 (L2-4.1): the nonce a NOT_SETTLED report must name before the amount stops counting.
+          ...(signed.nonce !== undefined && { nonce: signed.nonce }),
           resourceUrl: intent.resourceUrl,
           mandateId: m.mandateId,
           approvalRef: usedApproval ? approvalData!.approvalId : null,
@@ -478,6 +531,7 @@ export function createControlService(deps: ControlServiceDeps): ControlService {
         paymentHeaders: signed.headers,
         payer: signed.payer,
         validBefore: signed.validBefore,
+        ...(signed.nonce !== undefined && { nonce: signed.nonce }),
         remainingSessionBudgetAtomic: remaining.toString(),
       },
     };
@@ -493,7 +547,7 @@ export function createControlService(deps: ControlServiceDeps): ControlService {
   const callerLimit = addressLimit({ max: callerChecksPerMinute(deps.caller) });
 
   app.post("/v1/authorize", requireRole("agent-control", tok(deps.tokens?.control)), callerLimit, caller, jsonBody(AUTHORIZE_BODY_LIMIT), async (req, res) => {
-    if (!validIntent(req.body, trustIntentUser)) {
+    if (!validIntent(req.body, trustIntentUser, deps.skipIntentShape === true)) {
       res.status(400).json({ error: "malformed PaymentIntent" });
       return;
     }
@@ -524,8 +578,9 @@ export function createControlService(deps: ControlServiceDeps): ControlService {
         return;
       }
       res.json(first.decision);
-    } catch (err) {
-      if (!res.headersSent) res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    } catch {
+      // 1.19: a fixed answer. An error's own text (a file path, a library's message) never reaches L1 or the model.
+      if (!res.headersSent) res.status(500).json({ error: "internal error" });
     }
   });
 
@@ -604,6 +659,7 @@ export function createControlService(deps: ControlServiceDeps): ControlService {
       serialize,
       now,
       users,
+      person: deps.person!,
       net: userNet,
       ...(deps.tokens?.portal !== undefined && { tokens: { portal: deps.tokens.portal } }),
     });
@@ -615,6 +671,7 @@ export function createControlService(deps: ControlServiceDeps): ControlService {
       ledger,
       serialize,
       now,
+      person: deps.person!,
       admin: deps.admin,
       budgetFor,
       tokens: {
@@ -732,12 +789,19 @@ export async function main(): Promise<void> {
   if (accounts.enabled && signIn === undefined) {
     throw new ConfigError("USER_ACCOUNTS=1 needs AUTH_ISSUER, AUTH_AUDIENCE and AGENT_CLIENT_IDS (SPEC L2-8): the user of a payment comes from the caller's token");
   }
+  // 1.19 (L2-8, SEC-35): with user accounts, the portal's client, whose tokens L2 verifies itself. Before the lock.
+  const personSettings = accounts.enabled ? personSettingsFromEnv(process.env) : undefined;
+  // 1.19 (L2-4): the ledger key, checked with the rest before the lock. Off (or unset): hashes only, as before.
+  const ledgerMac = ledgerMacKeyFromEnv(process.env);
   // L2-6: one writer. Wait in standby while another L2 holds the ledger, then read it only once ours.
   const lock = await acquireLedgerLock(ledgerPathFor());
   // The ledger loads and verifies first, so an integrity failure is reported before anything else.
-  const ledger = new AuditLedger(ledgerPathFor());
+  // 1.19: fenced by the lock, so a replaced holder never appends again (L2-6).
+  const ledger = new AuditLedger(ledgerPathFor(), { ...(ledgerMac !== undefined && { mac: ledgerMac }), fence: () => lock.assertHeld() });
   const net = networkProfile();
   const mandate = loadMandate(net, process.env);
+  // 1.19 (R5): outside local, the platform account's payees and every listed seller's are known, never "any".
+  checkPayeeBinding(net.name, mandate, accounts.enabled ? accounts.platform.sellers : []);
   const key = process.env.PAYER_PRIVATE_KEY;
   if (!key || !/^0x[0-9a-fA-F]{64}$/.test(key)) {
     throw new Error("PAYER_PRIVATE_KEY is missing or malformed (env/l2-control.env)");
@@ -765,8 +829,11 @@ export async function main(): Promise<void> {
     console.log(`l2-control: user accounts are off; ignoring ${accounts.ignored.join(", ")}`);
   }
   if (signIn !== undefined) console.log(`l2-control: callers' tokens verified (issuer ${signIn.issuer}); every payment request needs one`);
+  console.log(ledgerMac !== undefined ? `l2-control: ledger keyed (from entry ${ledgerMac.keyedFrom})` : `l2-control: ledger hashed only (${LEDGER_MAC_ENV} off)`);
   if (administration.enabled) console.log("l2-control: portal administration on");
   else if (administration.ignored.length > 0) console.log(`l2-control: portal administration is off; ignoring ${administration.ignored.join(", ")}`);
+  // One set of the tenant's keys for both checks: the caller's token and the person's.
+  const callerDeps = signIn !== undefined ? callerDepsFor(signIn) : undefined;
   const { app, sweep: sweepNow, backchannel } = createControlService({
     mandate,
     signer,
@@ -774,7 +841,10 @@ export async function main(): Promise<void> {
     asset: { address: net.asset, decimals: net.decimals },
     apiDocs,
     ...(backchannelDeps && { backchannel: backchannelDeps }),
-    ...(signIn !== undefined && { caller: callerDepsFor(signIn) }),
+    ...(signIn !== undefined && { caller: callerDeps }),
+    ...(signIn !== undefined && personSettings !== undefined && {
+      person: { issuer: signIn.issuer, audience: signIn.audience, keys: callerDeps!.keys, algorithms: callerDeps!.algorithms, ...personSettings },
+    }),
     ...(accounts.enabled && {
       users: { platform: accounts.platform, keyring: accounts.keyring },
       net,

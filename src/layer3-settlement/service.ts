@@ -115,8 +115,17 @@ export function createSettlementService(deps: SettlementServiceDeps): Settlement
     schedules.delete(authorizationId);
   }
 
+  /**
+   * 1.19: when the next re-check runs. A PENDING report with `settlesBy` waits for the authorization to expire (its
+   * nonce is checked after that time), so the re-check runs then, not every interval: attempts are not spent waiting.
+   */
+  const delayFor = (report: SettlementReport | undefined): number => {
+    const at = report?.settlesBy === undefined ? Number.NaN : Date.parse(report.settlesBy);
+    return Number.isFinite(at) ? Math.max(intervalMs, at - Date.now() + 1_000) : intervalMs;
+  };
+
   /** Re-checks a PENDING claim up to `attempts` times; a new schedule replaces an old one. */
-  function schedule(claim: SettlementClaim, attemptsLeft: number): void {
+  function schedule(claim: SettlementClaim, attemptsLeft: number, last?: SettlementReport): void {
     cancel(claim.authorizationId);
     if (attemptsLeft <= 0) return;
     const timer = setTimeout(async () => {
@@ -131,8 +140,8 @@ export function createSettlementService(deps: SettlementServiceDeps): Settlement
       }
       await pushReconcile(report);
       // A newer claim may have replaced this schedule while the re-check ran; it wins.
-      if (report.status === "PENDING" && !schedules.has(claim.authorizationId)) schedule(claim, attemptsLeft - 1);
-    }, intervalMs);
+      if (report.status === "PENDING" && !schedules.has(claim.authorizationId)) schedule(claim, attemptsLeft - 1, report);
+    }, delayFor(last));
     timer.unref();
     schedules.set(claim.authorizationId, { timer });
   }
@@ -151,7 +160,7 @@ export function createSettlementService(deps: SettlementServiceDeps): Settlement
       const claim = req.body;
       const report = await deps.verifier.verify(claim);
       await pushReconcile(report);
-      if (report.status === "PENDING") schedule(claim, attempts);
+      if (report.status === "PENDING") schedule(claim, attempts, report);
       else cancel(claim.authorizationId);
       res.status(200).json(report);
     },

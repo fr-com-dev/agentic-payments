@@ -139,10 +139,13 @@ export async function runGoal(o: RunGoalOptions): Promise<RunOutcome> {
     return p;
   };
 
+  // 1.19 (SEC-1): the model fetches the seller's host only. Neither the goal nor a fetched page can point the agent
+  // at an internal address or another site.
   const orchestrator = new PaidResourceOrchestrator({
     gate: o.gate,
     settlement: o.settlement,
     sessionId: o.sessionId,
+    allowedHosts: [new URL(o.sellerUrl).host],
   });
   const tools = {
     ...createRunTools({ orchestrator, gate: o.gate, sessionId: o.sessionId, record }),

@@ -18,6 +18,12 @@ export const AGENT_RUN_PERMISSION = "agent:run";
 export const PORTAL_ADMIN_PERMISSION = "portal:admin";
 /** The access-token claim the tenant's post-login Action sets to the time of the person's last sign-in. */
 export const DEFAULT_AUTH_TIME_CLAIM = "https://x402.dev/auth_time";
+/**
+ * 1.19 (finding #6): the access-token claim the same Action sets to the time of the person's most recent second
+ * factor (epoch seconds). An administrator's approval needs it fresh; the Action asks administrators for a second
+ * factor on every interactive sign-in.
+ */
+export const DEFAULT_MFA_TIME_CLAIM = "https://x402.dev/mfa_time";
 /** An Auth0 issuer as its tokens carry it: `https://<domain>/`, with the final slash and nothing after it. */
 export const PERSON_ISSUER_RE = /^https:\/\/[a-z0-9]([a-z0-9.-]*[a-z0-9])?\/$/;
 export const CLOCK_TOLERANCE_SEC = 60;
@@ -99,6 +105,8 @@ export interface PersonToken {
   permissions: string[];
   /** The value of the sign-in time claim, as found. The portal checks it, and checks it last. */
   signInTime: unknown;
+  /** 1.19: the value of the second-factor time claim, as found (`DEFAULT_MFA_TIME_CLAIM`). L2 judges it. */
+  mfaTime: unknown;
 }
 
 const hasLineBreak = (v: string) => /[\n\r]/.test(v);
@@ -149,6 +157,7 @@ export async function verifyPersonToken(token: string, o: PersonVerifyOptions): 
       client: clientOf(claims),
       permissions: Array.isArray(claims.permissions) ? claims.permissions.filter((p): p is string => typeof p === "string") : [],
       signInTime: claims[o.authTimeClaim ?? DEFAULT_AUTH_TIME_CLAIM],
+      mfaTime: claims[DEFAULT_MFA_TIME_CLAIM],
     },
   };
 }
@@ -158,7 +167,11 @@ export async function verifyPersonToken(token: string, o: PersonVerifyOptions): 
  * Null otherwise.
  */
 export function signInTimeOf(person: Pick<PersonToken, "signInTime">, nowMs: number, toleranceSec: number = CLOCK_TOLERANCE_SEC): number | null {
-  const t = person.signInTime;
+  return epochSecondsOf(person.signInTime, nowMs, toleranceSec);
+}
+
+/** 1.19: the same rule for any time claim (the second factor's included): an integer, not in the future. */
+export function epochSecondsOf(t: unknown, nowMs: number, toleranceSec: number = CLOCK_TOLERANCE_SEC): number | null {
   if (typeof t !== "number" || !Number.isInteger(t) || t < 0) return null;
   return t * 1000 > nowMs + toleranceSec * 1000 ? null : t;
 }

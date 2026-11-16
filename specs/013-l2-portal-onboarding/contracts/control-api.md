@@ -1,5 +1,11 @@
 # Contract: L2-5 delta (control API) and §7 contracts
 
+> **1.19 (2026-11-16, SPEC v1.19 L2-5, SEC-35).** The portal now forwards the person's own access token to L2 in
+> `X-Person-Authorization` on every route below but `GET /v1/platform`, and L2 verifies it itself (the portal's
+> client, a sign-in time) and takes the user from it: a path's `userId` must be the token's user (403
+> `person_mismatch`). No body carries `identityConfirmedAtMs` any more (400): the step-up time is the token's sign-in
+> time. Refusals of the token: 401 `person_token_required`, `person_token_invalid`; 403 `person_forbidden`.
+
 > **Since 014 (SPEC v1.15).** L2 also serves six administration routes under `/v1/admin/` to a sixth role,
 > `portal-admin` (`PORTAL_ADMIN_TOKEN`). They are defined in
 > [specs/014 contracts/control-api.md](../../014-portal-l2-control-api/contracts/control-api.md). `PORTAL_TOKEN` is

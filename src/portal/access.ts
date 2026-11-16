@@ -1,6 +1,6 @@
 // 013 portal access (SPEC.md §8.2 L2-8, §11 SEC-19, SEC-20; specs/013 contracts/portal-api.md "Access").
-// Verifies the person's access token before the body is read, then deletes it from the request so nothing downstream
-// can forward it (the person's token authenticates to the portal only). People sign in with the Auth0 tenant
+// Verifies the person's access token before the body is read, then deletes it from the request. 1.19: it is kept for
+// the length of the request in person-context.ts, from which the two clients of L2 forward it, and nothing else does. People sign in with the Auth0 tenant
 // (research R19); the basic checks are shared with the hosted agent (src/shared/identity-token.ts). The portal adds
 // its own: a token issued to the portal's client, not to an agent client, and a sign-in time. It asks for no
 // permission and no role (research R21): whoever signs in through the portal's client may use the portal, for their
@@ -9,6 +9,7 @@
 // the tenant gives to a person by hand; it is read here and nowhere else.
 import type { RequestHandler } from "express";
 import { bearerToken, PORTAL_ADMIN_PERMISSION, signInTimeOf, verifyPersonToken, type TokenKeys } from "../shared/identity-token.js";
+import { withPersonToken } from "./person-context.js";
 
 /** 014: the permission that opens the administration area. The only permission the portal reads. */
 export const ADMIN_PERMISSION = PORTAL_ADMIN_PERMISSION;
@@ -67,7 +68,7 @@ export function portalAccess(o: AccessOptions): RequestHandler {
     if (o.bypassAuth) {
       res.locals.person = { userId, identityConfirmedAtMs: now(), admin: false } satisfies Person;
       delete req.headers.authorization;
-      next();
+      withPersonToken(token, next);
       return;
     }
     // 403: a valid token that is not allowed here: one another client obtained (an agent client's, so a token meant
@@ -80,7 +81,9 @@ export function portalAccess(o: AccessOptions): RequestHandler {
     const admin = o.adminEnabled === true && person.permissions.includes(ADMIN_PERMISSION);
     res.locals.person = { userId, identityConfirmedAtMs: signedInAt * 1000, admin } satisfies Person;
     delete req.headers.authorization;
-    next();
+    // 1.19 (SEC-35): the rest of the request runs with the person's token at hand for L2, which verifies it again
+    // itself; it reaches nothing else.
+    withPersonToken(token, next);
   };
 }
 

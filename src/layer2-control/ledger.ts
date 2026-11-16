@@ -7,6 +7,7 @@ import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { SettlementReport } from "../shared/contracts.js";
+import { entryMac, LEDGER_MAC_ENV, macMatches, type LedgerMacKey } from "./ledger-key.js";
 
 export type EntryType =
   | "INTENT"
@@ -49,6 +50,11 @@ export interface LedgerEntry {
   data: Record<string, unknown>;
   prevHash: string;
   hash: string;
+  /**
+   * 1.19 (finding #7): HMAC-SHA256 of `hash` under the ledger key, on every entry written with a key. It is not part
+   * of what `hash` covers, so entries written before 1.19 verify exactly as they did.
+   */
+  mac?: string;
 }
 
 export interface AppendInput {
@@ -111,13 +117,20 @@ export function resourceKey(url: string): string {
 }
 
 export function hashEntry(entry: Omit<LedgerEntry, "hash">): string {
-  const { hash: _ignored, ...rest } = entry as LedgerEntry;
+  const { hash: _ignored, mac: _mac, ...rest } = entry as LedgerEntry;
   return createHash("sha256").update(canonicalJSON(rest), "utf8").digest("hex");
 }
 
-/** Verifies raw JSONL lines. `brokenAt` is the 0-based index of the first bad line. */
-export function verifyLines(lines: readonly string[]): ChainCheck {
+/**
+ * Verifies raw JSONL lines. `brokenAt` is the 0-based index of the first bad line.
+ * 1.19: with a key, also the keyed chain. Every MAC present must match. From `keyedFrom` on every entry must carry
+ * one, and after the first keyed entry every later one must too, so MACs can't be stripped to make a rewritten
+ * ledger look unkeyed. A ledger shorter than `keyedFrom` was cut back past the point the key was adopted: it is
+ * broken at its end. Without a key only the hashes are checked.
+ */
+export function verifyLines(lines: readonly string[], mac?: LedgerMacKey): ChainCheck {
   let prevHash = GENESIS_PREV_HASH;
+  let keyedSeen = false;
   for (let i = 0; i < lines.length; i++) {
     let e: LedgerEntry;
     try {
@@ -135,8 +148,15 @@ export function verifyLines(lines: readonly string[]): ChainCheck {
     ) {
       return { entries: lines.length, ok: false, brokenAt: i };
     }
+    if (mac !== undefined) {
+      const keyed = e.mac !== undefined;
+      const required = keyedSeen || i >= mac.keyedFrom;
+      if ((keyed && !macMatches(mac.key, e.hash, e.mac)) || (!keyed && required)) return { entries: lines.length, ok: false, brokenAt: i };
+      keyedSeen ||= keyed;
+    }
     prevHash = e.hash;
   }
+  if (mac !== undefined && lines.length < mac.keyedFrom) return { entries: lines.length, ok: false, brokenAt: lines.length };
   return { entries: lines.length, ok: true };
 }
 
@@ -151,22 +171,59 @@ function readLines(filePath: string): string[] {
   return lines;
 }
 
+/**
+ * L2-4.1: whether an AUTHORIZED amount no longer counts. Only a NOT_SETTLED report can release it, and only once its
+ * signature can no longer settle (`nowMs > validBefore`). 1.19: when L2 recorded the authorization's nonce, the
+ * report must also name that nonce and have been observed after validBefore, which is when L3 reads the nonce's state
+ * on-chain (L3-1). A NOT_SETTLED that only repeats the seller's word ("no PAYMENT-RESPONSE"), made while the seller
+ * still held a valid authorization, keeps the amount counted: the seller could settle it a moment later. An entry
+ * written before 1.19 has no nonce and keeps the old rule.
+ */
+function released(auth: LedgerEntry, report: Record<string, unknown>, nowMs: number, skipNonceCheck: boolean): boolean {
+  if (report.status !== "NOT_SETTLED") return false;
+  const validBeforeMs = BigInt(auth.data.validBefore as number) * 1000n;
+  if (BigInt(nowMs) <= validBeforeMs) return false;
+  const nonce = auth.data.nonce;
+  if (typeof nonce !== "string" || skipNonceCheck) return true;
+  const verified = (report.verified ?? {}) as Record<string, unknown>;
+  const observedMs = Date.parse(String(report.observedAt));
+  return typeof verified.nonce === "string" && verified.nonce.toLowerCase() === nonce.toLowerCase() && Number.isFinite(observedMs) && BigInt(observedMs) > validBeforeMs;
+}
+
 export class AuditLedger {
   private readonly items: LedgerEntry[];
+  /** Test-only (1.19 must-fail, T-LED-04): release on any NOT_SETTLED after validBefore, as before 1.19. */
+  skipNonceCheck = false;
   /** 012: in-memory observers of appended entries (they wake the authorize wait, L2-7). Never part of the chain. */
   private readonly listeners = new Set<(e: LedgerEntry) => void>();
 
-  constructor(readonly filePath: string) {
+  /** 1.19: the ledger key, when L2 runs with one. Every append is then keyed. */
+  private readonly mac: LedgerMacKey | undefined;
+
+  /** 1.19: checked before every append (the ledger lock's `assertHeld`); it throws when this process no longer holds it. */
+  private readonly fence: (() => void) | undefined;
+
+  constructor(
+    readonly filePath: string,
+    opts: { mac?: LedgerMacKey; fence?: () => void } = {},
+  ) {
+    this.mac = opts.mac;
+    this.fence = opts.fence;
     const lines = readLines(filePath);
-    const check = verifyLines(lines);
+    const check = verifyLines(lines, this.mac);
     if (!check.ok) {
       throw new Error(`integrity: ledger ${filePath} broken at line ${check.brokenAt}`);
     }
     this.items = lines.map((l) => JSON.parse(l) as LedgerEntry);
+    // 1.19: a keyed ledger is never opened without its key, which would write unkeyed entries after keyed ones.
+    if (this.mac === undefined && this.items.some((e) => e.mac !== undefined)) {
+      throw new Error(`integrity: ledger ${filePath} is keyed; start L2 with its ${LEDGER_MAC_ENV}`);
+    }
   }
 
   /** The only write path. Writes the line synchronously, then records it in memory. */
   append(input: AppendInput, atMs: number = Date.now()): LedgerEntry {
+    this.fence?.();
     const last = this.items[this.items.length - 1];
     const body: Omit<LedgerEntry, "hash"> = {
       seq: this.items.length,
@@ -179,7 +236,8 @@ export class AuditLedger {
       prevHash: last ? last.hash : GENESIS_PREV_HASH,
     };
     // Round-trip through JSON so the in-memory entry is exactly what was hashed and written.
-    const entry = JSON.parse(JSON.stringify({ ...body, hash: hashEntry(body) })) as LedgerEntry;
+    const hash = hashEntry(body);
+    const entry = JSON.parse(JSON.stringify({ ...body, hash, ...(this.mac !== undefined && { mac: entryMac(this.mac.key, hash) }) })) as LedgerEntry;
     mkdirSync(dirname(this.filePath), { recursive: true });
     appendFileSync(this.filePath, JSON.stringify(entry) + "\n");
     this.items.push(entry);
@@ -205,9 +263,9 @@ export class AuditLedger {
     return this.items;
   }
 
-  /** Re-reads the file so tampering after startup is also detected. */
+  /** Re-reads the file so tampering after startup is also detected (1.19: the keyed chain too, with the key). */
   verifyChain(): ChainCheck {
-    return verifyLines(readLines(this.filePath));
+    return verifyLines(readLines(this.filePath), this.mac);
   }
 
   findAuthorized(authorizationId: string): LedgerEntry | undefined {
@@ -231,10 +289,10 @@ export class AuditLedger {
    * MISMATCH and PENDING keep counting.
    */
   committedAtomic(filter: { sessionId?: string; sinceMs?: number } & OwnerFilter, nowMs: number): bigint {
-    const effective = new Map<string, string>();
+    const effective = new Map<string, Record<string, unknown>>();
     for (const e of this.items) {
       if (e.type === "SETTLEMENT" && e.authorizationId !== undefined && e.data.anomaly !== true) {
-        effective.set(e.authorizationId, e.data.status as string);
+        effective.set(e.authorizationId, e.data);
       }
     }
     let total = 0n;
@@ -243,9 +301,8 @@ export class AuditLedger {
       if (filter.sessionId !== undefined && e.sessionId !== filter.sessionId) continue;
       if (filter.sinceMs !== undefined && Date.parse(e.ts) < filter.sinceMs) continue;
       if (!ownedBy(e, filter)) continue;
-      const status = e.authorizationId === undefined ? undefined : effective.get(e.authorizationId);
-      const validBeforeMs = BigInt(e.data.validBefore as number) * 1000n;
-      if (status === "NOT_SETTLED" && BigInt(nowMs) > validBeforeMs) continue;
+      const report = e.authorizationId === undefined ? undefined : effective.get(e.authorizationId);
+      if (report !== undefined && released(e, report, nowMs, this.skipNonceCheck)) continue;
       total += BigInt(e.data.amount as string);
     }
     return total;
@@ -291,9 +348,13 @@ export class AuditLedger {
   reconcile(report: SettlementReport, atMs?: number): ReconcileResult {
     const auth = this.findAuthorized(report.authorizationId);
     if (!auth) return { found: false };
-    const diff = RECONCILED_FIELDS.filter(
+    const diff: string[] = RECONCILED_FIELDS.filter(
       (f) => String(report.verified[f]).toLowerCase() !== String(auth.data[f]).toLowerCase(),
     );
+    // 1.19: a report about another authorization's nonce is a mismatch too, when both sides name one.
+    if (typeof auth.data.nonce === "string" && report.verified.nonce !== undefined && String(report.verified.nonce).toLowerCase() !== auth.data.nonce.toLowerCase()) {
+      diff.push("nonce");
+    }
     let stored: StoredSettlement;
     if (diff.length > 0) {
       stored = { ...report, status: "MISMATCH", detail: `verified field mismatch: ${diff.join(",")}`, anomaly: true };

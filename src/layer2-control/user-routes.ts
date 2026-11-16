@@ -5,6 +5,7 @@
 // No request carries text typed by a person: bodies hold identifiers, seller hosts, ISO dates and atomic amounts.
 import { randomUUID } from "node:crypto";
 import type { Express, Request, RequestHandler, Response } from "express";
+import { addressLimit } from "../shared/address-limit.js";
 import { requireRole } from "../shared/auth.js";
 import type { NetworkProfile } from "../shared/config.js";
 import type { PlatformView, PolicyValues } from "../shared/contracts.js";
@@ -12,6 +13,7 @@ import { USER_ID_RE } from "../shared/user-id.js";
 import { jsonBody } from "./json-body.js";
 import type { AuditLedger, LedgerEntry } from "./ledger.js";
 import type { Serialize } from "./ledger-routes.js";
+import { MAX_PERSON_CHECKS_PER_MINUTE, personAuth, verifiedPersonOf, type PersonDeps } from "./person.js";
 import {
   CARD_ID_RE,
   isLoosening,
@@ -41,6 +43,8 @@ export interface UserRoutesDeps {
   now: () => number;
   users: UserAccountsDeps;
   net: Pick<NetworkProfile, "caip2" | "asset" | "decimals">;
+  /** 1.19 (SEC-35): how L2 verifies the person's portal token that the portal forwards beside its role token. */
+  person: PersonDeps;
   /** Test hook: an explicit token instead of resolving it from the environment. */
   tokens?: { portal?: string };
 }
@@ -77,7 +81,11 @@ const refuse = (res: Response, status: number, error: string, extra: Record<stri
 
 export function mountUserRoutes(app: Express, deps: UserRoutesDeps): void {
   const { ledger, users, net } = deps;
-  const guard = requireRole("portal-control", deps.tokens?.portal === undefined ? {} : { token: deps.tokens.portal });
+  const role = requireRole("portal-control", deps.tokens?.portal === undefined ? {} : { token: deps.tokens.portal });
+  // 1.19 (SEC-35): every user route takes the role token, then the person's own token (verified here, counted per
+  // address first), before its body is read. `/v1/platform` names nobody and takes the role token only.
+  const personLimit = addressLimit({ max: deps.person.maxChecksPerMinute ?? MAX_PERSON_CHECKS_PER_MINUTE });
+  const guard = [role, personLimit, personAuth(deps.person, { now: deps.now })];
   const json = jsonBody();
   // `unserializedUserWrites` is the must-fail proof of FR-036: writes then run beside a decision in flight.
   const write = <T>(fn: () => T): Promise<T> => (users.unserializedUserWrites ? Promise.resolve().then(fn) : deps.serialize(fn));
@@ -91,10 +99,15 @@ export function mountUserRoutes(app: Express, deps: UserRoutesDeps): void {
         refuse(res, 400, "invalid userId");
         return;
       }
+      // 1.19: a person acts on their own account only. The path's user must be the one the token proves.
+      if (verifiedPersonOf(res).userId !== userId) {
+        refuse(res, 403, "person_mismatch");
+        return;
+      }
       try {
         await handler(req, res, userId);
       } catch (err) {
-        if (!res.headersSent) res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+        if (!res.headersSent) res.status(500).json({ error: "internal error" });
       }
     };
 
@@ -115,7 +128,7 @@ export function mountUserRoutes(app: Express, deps: UserRoutesDeps): void {
   };
   const notFound = (res: Response) => refuse(res, 404, "not found");
 
-  app.get("/v1/platform", guard, (_req, res) => {
+  app.get("/v1/platform", role, (_req, res) => {
     // 015: false until the waiting-payments read lands (specs/015 tasks T034 sets it from the backchannel deps).
     const view: PlatformView = { ...platformView(users.platform, net), phoneApproval: false };
     res.json(view);
@@ -195,12 +208,13 @@ export function mountUserRoutes(app: Express, deps: UserRoutesDeps): void {
     json,
     route(async (req, res, userId) => {
       const body = req.body as unknown;
-      const values = isObject(body) && onlyKeys(body, [...POLICY_VALUE_KEYS, "identityConfirmedAtMs"]) ? parsePolicyValues(body) : undefined;
+      // 1.19: no `identityConfirmedAtMs` in the body: the step-up time is the person's token's sign-in time.
+      const values = isObject(body) && onlyKeys(body, POLICY_VALUE_KEYS) ? parsePolicyValues(body) : undefined;
       if (!values) {
         refuse(res, 400, "malformed policy");
         return;
       }
-      const confirmedAt = (body as Record<string, unknown>).identityConfirmedAtMs;
+      const confirmedAt = verifiedPersonOf(res).identityConfirmedAtMs;
       send(
         res,
         await write((): Outcome => {
@@ -240,14 +254,14 @@ export function mountUserRoutes(app: Express, deps: UserRoutesDeps): void {
     json,
     route(async (req, res, userId) => {
       const body = req.body as unknown;
-      const ok = isObject(body) && onlyKeys(body, [...POLICY_VALUE_KEYS, "expectedVersion", "identityConfirmedAtMs"]);
+      const ok = isObject(body) && onlyKeys(body, [...POLICY_VALUE_KEYS, "expectedVersion"]);
       const values = ok ? parsePolicyValues(body) : undefined;
       const expectedVersion = ok ? (body as Record<string, unknown>).expectedVersion : undefined;
       if (!values || typeof expectedVersion !== "number" || !Number.isInteger(expectedVersion) || expectedVersion < 1) {
         refuse(res, 400, "malformed policy");
         return;
       }
-      const confirmedAt = (body as Record<string, unknown>).identityConfirmedAtMs;
+      const confirmedAt = verifiedPersonOf(res).identityConfirmedAtMs;
       const policyId = String(req.params.policyId);
       send(
         res,
@@ -283,10 +297,11 @@ export function mountUserRoutes(app: Express, deps: UserRoutesDeps): void {
   const act = (action: Action) =>
     route(async (req, res, userId) => {
       const body = (req.body ?? {}) as unknown;
-      if (!isObject(body) || !onlyKeys(body, action === "resume" ? ["identityConfirmedAtMs"] : [])) {
+      if (!isObject(body) || !onlyKeys(body, [])) {
         refuse(res, 400, "malformed body");
         return;
       }
+      const confirmedAt = verifiedPersonOf(res).identityConfirmedAtMs;
       const policyId = String(req.params.policyId);
       send(
         res,
@@ -314,10 +329,10 @@ export function mountUserRoutes(app: Express, deps: UserRoutesDeps): void {
           }
           if (p.state === "active") return done();
           // Resuming restores spending: a loosening change, re-validated against today's sellers and policies.
-          if (!stepUpFresh(body.identityConfirmedAtMs, t)) return stepUp();
+          if (!stepUpFresh(confirmedAt, t)) return stepUp();
           const issues = validate(p.values, state, policyId, true, t);
           if (issues.length > 0) return fail(422, "invalid_policy", { issues });
-          ledger.append({ type: "POLICY_RESUMED", data: { ...base, identityConfirmedAtMs: body.identityConfirmedAtMs } }, t);
+          ledger.append({ type: "POLICY_RESUMED", data: { ...base, identityConfirmedAtMs: confirmedAt } }, t);
           return done();
         }),
       );
@@ -352,10 +367,11 @@ export function mountUserRoutes(app: Express, deps: UserRoutesDeps): void {
     json,
     route(async (req, res, userId) => {
       const body = (req.body ?? {}) as unknown;
-      if (!isObject(body) || !onlyKeys(body, ["identityConfirmedAtMs"])) {
+      if (!isObject(body) || !onlyKeys(body, [])) {
         refuse(res, 400, "malformed body");
         return;
       }
+      const confirmedAt = verifiedPersonOf(res).identityConfirmedAtMs;
       send(
         res,
         await write((): Outcome => {
@@ -363,7 +379,7 @@ export function mountUserRoutes(app: Express, deps: UserRoutesDeps): void {
           const state = userState(ledger.entries(), userId);
           if (!state.registered) return fail(409, "not_registered");
           if (state.enabled) return { status: 200, body: viewOf(state, t) };
-          if (!stepUpFresh(body.identityConfirmedAtMs, t)) return stepUp();
+          if (!stepUpFresh(confirmedAt, t)) return stepUp();
           // FR-039: every active policy comes back paused, recorded before the account is enabled, in this one
           // section. No decision can ever see an enabled account with a policy still active from before.
           for (const p of state.policies) {
@@ -371,7 +387,7 @@ export function mountUserRoutes(app: Express, deps: UserRoutesDeps): void {
               ledger.append({ type: "POLICY_PAUSED", data: { userId, policyId: p.policyId, version: p.version, cause: "account_enabled" } }, t);
             }
           }
-          ledger.append({ type: "USER_ENABLED", data: { userId, identityConfirmedAtMs: body.identityConfirmedAtMs } }, t);
+          ledger.append({ type: "USER_ENABLED", data: { userId, identityConfirmedAtMs: confirmedAt } }, t);
           return { status: 200, body: viewOf(userState(ledger.entries(), userId), t) };
         }),
       );

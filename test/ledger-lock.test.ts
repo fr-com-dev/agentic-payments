@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { AuditLedger } from "../src/layer2-control/ledger.js";
-import { acquireLedgerLock, STALE_MS } from "../src/layer2-control/ledger-lock.js";
+import { acquireLedgerLock, POLL_MS, SILENT_MS, STALE_MS } from "../src/layer2-control/ledger-lock.js";
 
 let dir: string;
 let children: ChildProcess[] = [];
@@ -52,12 +52,15 @@ describe("T-LED-05 one ledger writer", () => {
     expect(existsSync(`${path}.lock`)).toBe(false);
   }, 15_000);
 
-  it("a lock whose heartbeat is 31 s old is taken over, logged, and the stale file is kept aside", async () => {
+  it("a lock whose heartbeat is 31 s old and stays unchanged for two heartbeats is taken over, logged, and the stale file is kept aside", async () => {
     const path = fresh();
-    const now = Date.parse("2026-10-22T00:00:00Z");
+    let now = Date.parse("2026-10-22T00:00:00Z");
     writeFileSync(`${path}.lock`, JSON.stringify({ holder: "l2_old", pid: 1, host: "h", acquiredAt: "x", heartbeatAt: new Date(now - STALE_MS - 1_000).toISOString() }));
     const logs: string[] = [];
-    const lock = await acquireLedgerLock(path, { now: () => now, sleep: async () => undefined, log: (l) => logs.push(l) });
+    const started = now;
+    const lock = await acquireLedgerLock(path, { now: () => now, sleep: async (ms) => void (now += ms), log: (l) => logs.push(l) });
+    // 1.19: not at once: after SILENT_MS of this process's own time with no change.
+    expect(now - started).toBe(SILENT_MS);
     expect(logs).toContain("l2-control: took over a stale ledger lock from l2_old");
     expect(readdirSync(dir).some((f) => /^ledger-local\.jsonl\.lock\.stale\.l2_old\.\d+$/.test(f))).toBe(true);
     expect(JSON.parse(readFileSync(`${path}.lock`, "utf8")).holder).toBe(lock.holder);
@@ -110,5 +113,58 @@ describe("T-LED-05 one ledger writer", () => {
     const ledger = body.indexOf("new AuditLedger(");
     expect(lock).toBeGreaterThan(0);
     expect(ledger).toBeGreaterThan(lock);
+  });
+});
+
+describe("T-LED-06 the lock across clocks, and fenced appends (1.19, L2-6)", () => {
+  it("T-LED-06 a live holder whose clock runs 2 minutes behind ours is never taken over", async () => {
+    const path = fresh();
+    let now = Date.parse("2026-11-16T00:00:00Z");
+    const skew = 120_000;
+    const beat = () => writeFileSync(`${path}.lock`, JSON.stringify({ holder: "l2_live", pid: 1, host: "h", acquiredAt: "x", heartbeatAt: new Date(now - skew).toISOString() }));
+    beat();
+    let acquired = false;
+    // The holder beats every 5 s of (our) time; give up after 2 minutes of waiting.
+    const attempt = acquireLedgerLock(path, {
+      now: () => now,
+      log: () => undefined,
+      sleep: async (ms) => {
+        now += ms;
+        if ((now / POLL_MS) % 5 === 0) beat();
+        if (now - Date.parse("2026-11-16T00:00:00Z") > 120_000) throw new Error("still waiting");
+      },
+    }).then(() => (acquired = true));
+    await expect(attempt).rejects.toThrow("still waiting");
+    expect(acquired).toBe(false);
+  });
+
+  it("T-LED-06 must fail: judged by the other host's clock alone (skipLocalStaleness), the same live lock is taken over at once", async () => {
+    const path = fresh();
+    const now = Date.parse("2026-11-16T00:00:00Z");
+    writeFileSync(`${path}.lock`, JSON.stringify({ holder: "l2_live", pid: 1, host: "h", acquiredAt: "x", heartbeatAt: new Date(now - 120_000).toISOString() }));
+    let sleeps = 0;
+    const lock = await acquireLedgerLock(path, { now: () => now, log: () => undefined, sleep: async () => void sleeps++, skipLocalStaleness: true });
+    expect(sleeps).toBe(0);
+    lock.release();
+  });
+
+  it("T-LED-06 a replaced holder's next append is refused before anything is written, and the loss is reported", async () => {
+    const path = fresh();
+    let lost = 0;
+    const lock = await acquireLedgerLock(path, { onLost: () => void lost++ });
+    const ledger = new AuditLedger(path, { fence: () => lock.assertHeld() });
+    ledger.append({ type: "INTENT", sessionId: "s", intentId: "i1", data: {} });
+    writeFileSync(`${path}.lock`, JSON.stringify({ holder: "l2_new", pid: 2, host: "h", acquiredAt: "x", heartbeatAt: new Date().toISOString() }));
+    expect(() => ledger.append({ type: "INTENT", sessionId: "s", intentId: "i2", data: {} })).toThrow(/lost the ledger lock/);
+    expect(lost).toBe(1);
+    expect(new AuditLedger(path).entries()).toHaveLength(1);
+    lock.release();
+  });
+
+  it("T-LED-06 L2's main() opens the ledger fenced by the lock", () => {
+    const body = readFileSync("src/layer2-control/service.ts", "utf8");
+    const main = body.slice(body.indexOf("export async function main"));
+    const open = main.slice(main.indexOf("new AuditLedger("));
+    expect(open.slice(0, open.indexOf("\n"))).toContain("fence: () => lock.assertHeld()");
   });
 });

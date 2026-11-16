@@ -267,3 +267,29 @@ describe("US4 PENDING re-checks (005 T034, T035)", () => {
     // Timers are unref'd: stop() is not needed for the process to exit; afterEach still cancels them.
   });
 });
+
+describe("T-L3-NONCE-02 a PENDING that waits for validBefore is re-checked then, not every interval (1.19, L3-2)", () => {
+  it("T-L3-NONCE-02 the re-check runs after settlesBy and spends one attempt", async () => {
+    const calls: number[] = [];
+    let settlesBy = "";
+    const verifier = {
+      async verify(c: SettlementClaim) {
+        calls.push(Date.now());
+        if (calls.length === 1) {
+          settlesBy = new Date(Date.now() + 200).toISOString();
+          return { ...reportFor(c, "PENDING"), settlesBy };
+        }
+        return reportFor(c, "NOT_SETTLED");
+      },
+    };
+    const { base, reconciler } = await start({ verifier, recheckIntervalMs: 10, recheckAttempts: 2 });
+    expect((await post(base, claim("auth_wait"))).status).toBe(200);
+    await new Promise((r) => setTimeout(r, 300));
+    expect(calls).toHaveLength(1); // an interval of 10 ms would have re-checked many times by now
+    await waitFor(() => calls.length >= 2, 3_000);
+    expect(calls).toHaveLength(2);
+    expect(calls[1]! - calls[0]!).toBeGreaterThanOrEqual(Date.parse(settlesBy) - calls[0]!);
+    await waitFor(() => reconciler.reports.length >= 2);
+    expect(reconciler.reports.map((r) => r.status)).toEqual(["PENDING", "NOT_SETTLED"]);
+  });
+});

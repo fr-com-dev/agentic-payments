@@ -639,3 +639,62 @@ describe("013 user accounts in the ledger (T-LED-06)", () => {
     expect(l.findOpenApproval("sess_a", KEY, T0 + 2, ALICE)?.data.approvalId).toBe("apr_alice");
   });
 });
+
+// ---------------------------------------------------------------------------
+// 1.19 (Phase 3): a NOT_SETTLED releases an amount only for the recorded nonce, observed after validBefore (L2-4.1)
+// ---------------------------------------------------------------------------
+describe("T-LED-04 the nonce gates the release of a NOT_SETTLED amount", () => {
+  const NONCE = `0x${"ab".repeat(32)}`;
+  const validBefore = Math.floor(T0 / 1000) + 120;
+  /** AUTHORIZED with the nonce, as service.ts writes it since 1.19. */
+  const authorizeWithNonce = (l: AuditLedger, id: string) =>
+    l.append(
+      {
+        type: "AUTHORIZED",
+        sessionId: "sess_a",
+        authorizationId: id,
+        data: { amount: "1000", asset: ASSET, network: "eip155:31337", payTo: PAY_TO, payer: PAYER, validBefore, nonce: NONCE, resourceUrl: "http://127.0.0.1:4021/a", mandateId: "m", approvalRef: null },
+      },
+      T0,
+    );
+  const notSettled = (id: string, over: Partial<SettlementReport> = {}) =>
+    report(id, { status: "NOT_SETTLED", transaction: undefined, verified: { asset: ASSET, payer: PAYER, payTo: PAY_TO, amount: "1000", nonce: NONCE }, ...over });
+  const after = validBefore * 1000 + 1;
+
+  it("T-LED-04 an early NOT_SETTLED (the seller's word, while the authorization was live) keeps counting after validBefore", () => {
+    const l = new AuditLedger(file);
+    authorizeWithNonce(l, "auth_n");
+    l.reconcile(notSettled("auth_n", { observedAt: new Date(T0 + 5_000).toISOString() }), T0 + 5_000);
+    expect(l.committedAtomic({ sessionId: "sess_a" }, after)).toBe(1000n);
+  });
+
+  it("T-LED-04 a NOT_SETTLED for the recorded nonce, observed after validBefore, releases it", () => {
+    const l = new AuditLedger(file);
+    authorizeWithNonce(l, "auth_n");
+    l.reconcile(notSettled("auth_n", { observedAt: new Date(after + 60_000).toISOString() }), after + 60_000);
+    expect(l.committedAtomic({ sessionId: "sess_a" }, after + 60_000)).toBe(0n);
+  });
+
+  it("T-LED-04 a report about another nonce is a mismatch, and the amount keeps counting", () => {
+    const l = new AuditLedger(file);
+    authorizeWithNonce(l, "auth_n");
+    const other = { asset: ASSET, payer: PAYER, payTo: PAY_TO, amount: "1000", nonce: `0x${"cd".repeat(32)}` };
+    expect(l.reconcile(notSettled("auth_n", { verified: other, observedAt: new Date(after + 60_000).toISOString() }), after + 60_000)).toMatchObject({ anomaly: true });
+    expect(l.committedAtomic({ sessionId: "sess_a" }, after + 60_000)).toBe(1000n);
+  });
+
+  it("T-LED-04 an entry written before 1.19 (no nonce) keeps the old rule", () => {
+    const l = new AuditLedger(file);
+    authorize(l, "auth_old", { validBefore });
+    l.reconcile(report("auth_old", { status: "NOT_SETTLED", transaction: undefined }), T0 + 1);
+    expect(l.committedAtomic({ sessionId: "sess_a" }, after)).toBe(0n);
+  });
+
+  it("T-LED-04 must fail: without the nonce rule (skipNonceCheck), the early NOT_SETTLED releases the amount", () => {
+    const l = new AuditLedger(file);
+    l.skipNonceCheck = true;
+    authorizeWithNonce(l, "auth_n");
+    l.reconcile(notSettled("auth_n", { observedAt: new Date(T0 + 5_000).toISOString() }), T0 + 5_000);
+    expect(l.committedAtomic({ sessionId: "sess_a" }, after)).toBe(0n);
+  });
+});

@@ -10,7 +10,7 @@ import { describe, expect, it } from "vitest";
 // Scanner core (T004–T006)
 // ---------------------------------------------------------------------------
 
-export type Rule = "A1" | "A2" | "A3" | "A4" | "A5" | "A6" | "A7" | "A8" | "A9" | "A10" | "A11" | "A12" | "A13" | "A14" | "A15";
+export type Rule = "A1" | "A2" | "A3" | "A4" | "A5" | "A6" | "A7" | "A8" | "A9" | "A10" | "A11" | "A12" | "A13" | "A14" | "A15" | "A16" | "A17";
 export interface ArchViolation {
   rule: Rule;
   file: string;
@@ -406,6 +406,36 @@ export function checkMachineCallerConfinement(path: string, source: string): Arc
 }
 
 // ---------------------------------------------------------------------------
+// A16 (1.19, SPEC §4.1, finding #7): the ledger's MAC key is named only where it is read (ledger-key.ts) and in L2's
+// template. Same scope as A9 and A11: src/**, scripts/** and env templates (test/** is exempt).
+// ---------------------------------------------------------------------------
+
+const A16_ALLOWED = new Set(["src/layer2-control/ledger-key.ts", "env/l2-control.env.example"]);
+const A16_NAME = /\bLEDGER_MAC_KEY\b/;
+
+export function checkLedgerKeyConfinement(path: string, source: string): ArchViolation[] {
+  if (A16_ALLOWED.has(path)) return [];
+  const template = /^env\/[^/]+\.env\.example$/.test(path);
+  if (!template && !path.startsWith("src/") && !path.startsWith("scripts/")) return [];
+  const text = template ? source : lex(source).noComments;
+  return matches(text, A16_NAME).map((off) => ({ rule: "A16" as const, file: path, line: lineAt(source, off), detail: "LEDGER_MAC_KEY" }));
+}
+
+// ---------------------------------------------------------------------------
+// A17 (1.19, SPEC §4.1, INV-13, SEC-35): the person's portal token has one way to L2. The header it travels in is
+// named only where the portal puts it (person-context.ts) and where L2 reads it (person.ts). src/** only.
+// ---------------------------------------------------------------------------
+
+const A17_HEADER = /x-person-authorization/i;
+const A17_FILES = new Set(["src/portal/person-context.ts", "src/layer2-control/person.ts"]);
+
+export function checkPersonTokenPath(path: string, source: string): ArchViolation[] {
+  if (!path.startsWith("src/") || A17_FILES.has(path)) return [];
+  const text = lex(source).noComments;
+  return matches(text, A17_HEADER).map((off) => ({ rule: "A17" as const, file: path, line: lineAt(source, off), detail: "names the person's header" }));
+}
+
+// ---------------------------------------------------------------------------
 // Repository walk
 // ---------------------------------------------------------------------------
 
@@ -595,6 +625,9 @@ const TEMPLATES: Record<string, TemplateSpec> = {
       "AGENT_CLIENT_IDS",
       "AUTH_JWKS_FILE",
       "PORTAL_CLIENT_ID",
+      // 1.19: the ledger's MAC key (A16), and the person's token's sign-in time claim (SEC-35)
+      "LEDGER_MAC_KEY",
+      "AUTH_TIME_CLAIM",
       // 013 user accounts (CFG-2)
       "USER_ACCOUNTS",
       "PORTAL_TOKEN",
@@ -664,7 +697,7 @@ export function checkTemplate(name: string, entries: TemplateEntry[]): string[] 
     if (!entries.some((e) => e.key === k && !e.commented)) errors.push(`${name}: missing required key ${k}`);
   }
   for (const e of entries) {
-    if (/PRIVATE_KEY$|_SECRET$|_API_KEY$|_MNEMONIC$|^CARD_VAULT_KEY$/.test(e.key) && e.value !== "") errors.push(`${name}: ${e.key} must be empty in a template`);
+    if (/PRIVATE_KEY$|_SECRET$|_API_KEY$|_MNEMONIC$|^CARD_VAULT_KEY$|^LEDGER_MAC_KEY$/.test(e.key) && e.value !== "") errors.push(`${name}: ${e.key} must be empty in a template`);
   }
   if (name === "facilitator" && !entries.some((e) => e.key === "NETWORK" && e.value === "local")) {
     errors.push("facilitator: NETWORK must be local");
@@ -918,6 +951,38 @@ describe("T-ARCH-ENV per-process env templates (US4)", () => {
     }
     const imports = [...readFileSync("src/machine-caller/token.ts", "utf8").matchAll(/from "([^"]+)"/g)].map((m) => m[1]);
     expect(imports.filter((i) => i!.startsWith("."))).toEqual(["../shared/config.js", "../shared/identity-token.js"]);
+  });
+
+  // ---- 1.19: A17, the person's portal token has one way to L2 -----------------------------------------------
+
+  it("T-ARCH-A17 fixture trips exactly A17, and no other rule catches it", () => {
+    const { path, source } = fixture(17);
+    expect(checkFile(path, source)).toEqual([]);
+    expect(checkCallerTokenPath(path, source)).toEqual([]);
+    expect(checkPersonTokenPath(path, source).map((v) => [v.rule, v.detail])).toEqual([["A17", "names the person's header"]]);
+  });
+
+  it("T-ARCH-A17 repository is clean, and not vacuously: the two files really name the header", () => {
+    expect(walk("src").flatMap((f) => checkPersonTokenPath(f, readFileSync(f, "utf8"))).map(format)).toEqual([]);
+    for (const f of ["src/portal/person-context.ts", "src/layer2-control/person.ts"]) {
+      expect(checkPersonTokenPath("src/portal/x.ts", readFileSync(f, "utf8")).length, f).toBeGreaterThan(0);
+    }
+  });
+
+  // ---- 1.19: A16, the ledger's MAC key is confined to one file ------------------------------------------------
+
+  it("T-ARCH-A16 fixture trips exactly A16, and no other rule catches it", () => {
+    const { path, source } = fixture(16);
+    expect(checkFile(path, source)).toEqual([]);
+    expect(checkLedgerKeyConfinement(path, source).map((v) => [v.rule, v.detail])).toEqual([["A16", "LEDGER_MAC_KEY"]]);
+  });
+
+  it("T-ARCH-A16 repository is clean: only ledger-key.ts and L2's template name the key", () => {
+    const files = [...walk("src"), ...walk("scripts"), ...readdirSync("env").filter((f) => f.endsWith(".env.example")).map((f) => `env/${f}`)];
+    expect(files.flatMap((f) => checkLedgerKeyConfinement(f, readFileSync(f, "utf8"))).map(format)).toEqual([]);
+    // Not vacuous: the module and the template really name it.
+    expect(checkLedgerKeyConfinement("src/layer2-control/x.ts", readFileSync("src/layer2-control/ledger-key.ts", "utf8"))).toHaveLength(1);
+    expect(checkLedgerKeyConfinement("env/portal.env.example", readFileSync("env/l2-control.env.example", "utf8")).length).toBeGreaterThan(0);
   });
 
   it("T-ARCH-A15 comments, the client's public ID and the caller's ready-made token never trip it", () => {

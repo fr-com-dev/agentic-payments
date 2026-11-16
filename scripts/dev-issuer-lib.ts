@@ -6,7 +6,7 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { exportJWK, generateKeyPair, importJWK, SignJWT, type JWK } from "jose";
-import { AGENT_RUN_PERMISSION, DEFAULT_AUTH_TIME_CLAIM, DEV_ISSUER, PORTAL_ADMIN_PERMISSION } from "../src/shared/identity-token.js";
+import { AGENT_RUN_PERMISSION, DEFAULT_AUTH_TIME_CLAIM, DEFAULT_MFA_TIME_CLAIM, DEV_ISSUER, PORTAL_ADMIN_PERMISSION } from "../src/shared/identity-token.js";
 import { userIdFor } from "../src/shared/user-id.js";
 
 /** The API's identifier with the dev issuer: `AUTH_AUDIENCE` of the agent service, of L2 and of the portal. */
@@ -74,6 +74,8 @@ export interface DevTokenOptions {
   authTime?: unknown;
   /** The name of the sign-in time claim. Default `https://x402.dev/auth_time`. */
   authTimeClaim?: string;
+  /** 1.19: when the person last completed a second factor, epoch seconds (`https://x402.dev/mfa_time`). Absent: no claim. */
+  mfaTime?: unknown;
   /** The whole `sub`, instead of `dev|<subject>`; `null` omits it (tests only). */
   sub?: string | null;
 
@@ -124,6 +126,7 @@ export async function signDevToken(issuer: Pick<DevIssuer, "privateKey">, o: Dev
       ...(permissions !== null && { permissions }),
       ...(client !== null && { [o.clientClaim ?? "azp"]: client }),
       ...(o.authTime !== undefined && { [o.authTimeClaim ?? DEFAULT_AUTH_TIME_CLAIM]: o.authTime }),
+      ...(o.mfaTime !== undefined && { [DEFAULT_MFA_TIME_CLAIM]: o.mfaTime }),
     };
   }
   const jwt = new SignJWT({ ...claims, ...o.claims })

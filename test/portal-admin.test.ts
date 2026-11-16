@@ -123,9 +123,14 @@ describe("T-PRT-10 access by permission (FR-002, FR-003, FR-004, FR-006)", () =>
     expect(await p.call("GET", "/api/admin/escalations")).toMatchObject({ status: 401 });
   });
 
-  it("T-PRT-10 must-fail: with the test-only skipAdminCheck hook, an ordinary user gets past the check", async () => {
+  it("T-PRT-10 must-fail: with the test-only skipAdminCheck hook, an ordinary user gets past the portal's check, and (1.19) L2 refuses them itself", async () => {
     const p = await start({ admin: true, skipAdminCheck: true });
-    expect((await p.as("alice")("GET", "/api/admin/escalations")).status).not.toBe(403);
+    const before = p.l2Calls();
+    const r = await p.as("alice")("GET", "/api/admin/escalations");
+    // Past the portal (its own refusal is `forbidden`, with no call to L2): L2 judged the person's token, without
+    // portal:admin, and refused it.
+    expect([r.status, r.body]).toEqual([403, { error: "person_forbidden" }]);
+    expect(p.l2Calls()).toBeGreaterThan(before);
   });
 });
 
@@ -259,8 +264,8 @@ describe("T-PRT-11 the waiting list through the portal (US1, FR-007..FR-010)", (
     expect(r.text).toBe(JSON.stringify({ error: "control_unavailable" }));
   });
 
-  it("T-PRT-10 must-fail (completed): with skipAdminCheck an ordinary user reads the waiting list", async () => {
-    const p = await start({ admin: true, skipAdminCheck: true });
+  it("T-PRT-10 must-fail (completed): with skipAdminCheck, and L2's own person check off (1.19), an ordinary user reads the waiting list", async () => {
+    const p = await start({ admin: true, skipAdminCheck: true, l2: { person: { skipPersonCheck: true } } });
     await escalate(p);
     const r = await p.as("alice")<Listed>("GET", "/api/admin/escalations");
     expect(r.status).toBe(200);
@@ -423,10 +428,14 @@ describe("T-PRT-12 deciding through the portal (US2, FR-011..FR-017, FR-030)", (
     expect(decisionEntries(p)).toEqual([]);
   });
 
-  it("T-PRT-10 must-fail (completed): with skipAdminCheck an ordinary user approves a payment", async () => {
-    const p = await start({ admin: true, skipAdminCheck: true });
+  it("T-PRT-10 must-fail (completed): with skipAdminCheck an ordinary user's approval reaches L2, which (1.19) refuses it; with L2's person check off too, it approves", async () => {
+    const guarded = await start({ admin: true, skipAdminCheck: true });
+    const first = await escalate(guarded);
+    expect((await guarded.as("alice")("POST", approvePath(first), {})).body).toEqual({ error: "person_forbidden" });
+    expect(decisionEntries(guarded)).toEqual([]);
+    const p = await start({ admin: true, skipAdminCheck: true, l2: { person: { skipPersonCheck: true } } });
     const id = await escalate(p);
-    expect((await p.as("alice")("POST", approvePath(id), {})).body).toMatchObject({ ok: true, state: "approved", decidedBy: p.userId("alice") });
+    expect((await p.as("alice")("POST", approvePath(id), {})).body).toMatchObject({ ok: true, state: "approved" });
     expect(decisionEntries(p)).toHaveLength(1);
   });
 });
