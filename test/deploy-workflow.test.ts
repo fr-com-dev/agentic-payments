@@ -847,8 +847,8 @@ describe("T-CI-01 the pull request check", () => {
 
   it("T-CI-01 checks.yml: every pull request to main and push to main, contents: read only, no environment, actions pinned by SHA, deploy.yml's Bicep CLI checked by SHA-256, then deploy.yml's step 1 and the local demo on Node 22 and 26", () => {
     expect(checksProblems(checks, deploy)).toEqual([]);
-    // Not vacuous: deploy.yml's step 1 is the four commands .github/dependabot.yml says a merge needs.
-    expect(gateCommands(deploy)).toEqual(["npm install --no-audit --no-fund", "npm run audit:shipped", "npm run typecheck", "npm test"]);
+    // Not vacuous: deploy.yml's step 1 is the commands .github/dependabot.yml says a merge needs, the images' builds included (T-IMG-03).
+    expect(gateCommands(deploy)).toEqual(["npm install --no-audit --no-fund", "npm run audit:shipped", "npm run typecheck", "npm run build", "npm run build:web", "npm test"]);
     expect(readFileSync(".github/dependabot.yml", "utf8")).toContain(CHECKS_FILE);
   });
 
@@ -876,15 +876,18 @@ describe("T-CI-01 the pull request check", () => {
     expect(checksProblems(withStep("every suite", (s) => ({ ...s, run: "npx vitest run test/policy.test.ts" })), deploy)).toEqual([COMMANDS]);
     expect(checksProblems(withJob((j) => ({ ...j, steps: j.steps!.filter((s) => s.name !== "the local demo against its baseline") })), deploy)).toEqual([COMMANDS]);
     expect(checksProblems(withJob((j) => ({ ...j, steps: j.steps!.filter((s) => s.name !== "audit of what the images ship (T-IMG-02)") })), deploy)).toEqual([COMMANDS]);
+    for (const build of ["build of the images' code", "build of the portal's web app"]) {
+      expect(checksProblems(withJob((j) => ({ ...j, steps: j.steps!.filter((s) => s.name !== build) })), deploy), build).toEqual([COMMANDS]);
+    }
     expect(checksProblems(withStep("every suite", (s) => ({ ...s, "continue-on-error": true })), deploy)).toEqual([UNSKIPPABLE("every suite")]);
     expect(checksProblems(withStep("typecheck", (s) => ({ ...s, if: "${{ github.actor != 'dependabot[bot]' }}" })), deploy)).toEqual([UNSKIPPABLE("typecheck")]);
     for (const k of ["if", "continue-on-error", "needs"] as const) {
       expect(checksProblems(withJob((j) => ({ ...j, [k]: k === "needs" ? ["build"] : "${{ true }}" })), deploy), k).toEqual([`${CHECKS_FILE}'s job may not be skipped or allowed to fail`]);
     }
     expect(checksProblems(withJob((j) => ({ ...j, "timeout-minutes": undefined })), deploy)).toEqual([`${CHECKS_FILE}'s job must time out within 60 minutes`]);
-    const gained = withSteps(deploy, stepsOf(deploy).map((s) => (s.id === "tests" ? { ...s, run: `${s.run!}npm run build\n` } : s)));
+    const gained = withSteps(deploy, stepsOf(deploy).map((s) => (s.id === "tests" ? { ...s, run: `${s.run!}npm run lint\n` } : s)));
     expect(checksProblems(checks, gained)).toEqual([commandsProblem(gained)]);
-    expect(commandsProblem(gained)).toContain("npm test; npm run build; npm run demo:local");
+    expect(commandsProblem(gained)).toContain("npm test; npm run lint; npm run demo:local");
   });
 
   it("T-CI-01 must-fail: an action by tag, a checkout that keeps its credential, another Node or a cache, another Bicep CLI, no checksum or one checked too late, or no BICEP_PATH, is reported", () => {

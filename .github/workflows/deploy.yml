@@ -170,12 +170,16 @@ jobs:
 
       # With BICEP_PATH set, every suite runs, T-IAC-01 on the compiled templates included. The audit covers only the
       # packages the images install (scripts/audit-shipped.ts, T-IMG-02): a high or critical advisory stops the run.
+      # The builds are the ones the images' build stages run (T-IMG-03), so a change that breaks only the build (a
+      # dependency's new types, say) stops here and in the pull request check, not in step 2.
       - name: "1 typecheck and tests"
         id: tests
         run: |
           npm install --no-audit --no-fund
           npm run audit:shipped
           npm run typecheck
+          npm run build
+          npm run build:web
           npm test
 
       - name: "2 build and push the unit's image, tagged with the commit"
