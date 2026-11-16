@@ -168,11 +168,13 @@ jobs:
           node-version: "22"
           package-manager-cache: false
 
-      # With BICEP_PATH set, every suite runs, T-IAC-01 on the compiled templates included.
+      # With BICEP_PATH set, every suite runs, T-IAC-01 on the compiled templates included. The audit covers only the
+      # packages the images install (scripts/audit-shipped.ts, T-IMG-02): a high or critical advisory stops the run.
       - name: "1 typecheck and tests"
         id: tests
         run: |
           npm install --no-audit --no-fund
+          npm run audit:shipped
           npm run typecheck
           npm test
 

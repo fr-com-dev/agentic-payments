@@ -1,9 +1,10 @@
 // L2 ledger endpoints (SPEC.md §8.2 L2-5): POST /v1/reconcile and GET /v1/ledger/verify. Owner: feature 003.
 // The L2 service bootstrap (feature 002) mounts these on its app. Each route's guard runs before
 // body parsing, so a wrong token never appends an entry (INV-13).
-import express, { type Express } from "express";
+import type { Express } from "express";
 import { requireRole, type RequireRoleOptions } from "../shared/auth.js";
 import type { SettlementReport } from "../shared/contracts.js";
+import { jsonBody } from "./json-body.js";
 import type { AuditLedger } from "./ledger.js";
 
 /** Runs `fn` inside the L2 serialized section (single writer, shared with authorize). */
@@ -34,7 +35,7 @@ export function mountLedgerRoutes(app: Express, deps: LedgerRoutesDeps): void {
   app.post(
     "/v1/reconcile",
     requireRole("verifier-control", opt(deps.tokens?.settlement)),
-    express.json(),
+    jsonBody(),
     async (req, res) => {
       if (!isWellFormedReport(req.body)) {
         res.status(400).json({ error: "malformed settlement report" });

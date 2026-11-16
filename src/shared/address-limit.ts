@@ -11,13 +11,14 @@ import { ConfigError } from "./config.js";
 /** Requests one address may make in a minute before it gets 429. Above any one person's own limit: people share addresses. */
 export const MAX_REQUESTS_PER_ADDRESS = 300;
 const WINDOW_MS = 60_000;
-const MAX_HOPS = 3;
+/** The Azure ingress is one proxy. More would let a caller's own X-Forwarded-For entries name its address. */
+const MAX_HOPS = 1;
 
-/** `TRUSTED_PROXY_HOPS`: how many reverse proxies stand in front of the service (0 by default, 1 behind the Azure ingress). */
+/** `TRUSTED_PROXY_HOPS`: how many reverse proxies stand in front of the service: 0 (the default) or 1, behind the Azure ingress. */
 export function trustedProxyHops(env: NodeJS.ProcessEnv): number {
   const raw = env.TRUSTED_PROXY_HOPS;
   if (raw === undefined || raw === "") return 0;
-  if (!/^\d$/.test(raw) || Number.parseInt(raw, 10) > MAX_HOPS) throw new ConfigError(`TRUSTED_PROXY_HOPS must be a whole number from 0 to ${MAX_HOPS}`);
+  if (!/^\d$/.test(raw) || Number.parseInt(raw, 10) > MAX_HOPS) throw new ConfigError(`TRUSTED_PROXY_HOPS must be 0 or ${MAX_HOPS}`);
   return Number.parseInt(raw, 10);
 }
 

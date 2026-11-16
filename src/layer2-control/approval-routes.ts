@@ -12,6 +12,7 @@ import { randomUUID } from "node:crypto";
 import express, { type Express } from "express";
 import { requireRole, type RequireRoleOptions } from "../shared/auth.js";
 import type { RejectionReasonCode } from "../shared/contracts.js";
+import { jsonBody } from "./json-body.js";
 import { decisionEntry, escalationState, expiresAtMsOf, findEscalation, OPERATOR_LABEL_MAX, REASON_MAX, sweep } from "./escalations.js";
 import type { AuditLedger, LedgerEntry } from "./ledger.js";
 import type { Serialize } from "./ledger-routes.js";
@@ -200,7 +201,7 @@ export function mountApprovalRoutes(app: Express, deps: ApprovalRoutesDeps): voi
   app.post(
     "/v1/approvals/:authorizationId",
     requireRole("operator", opt),
-    express.json(),
+    jsonBody(),
     async (req, res) => {
       const parsed = parseApprovalBody(req.body);
       if (!parsed.ok) {
@@ -231,7 +232,7 @@ export function mountApprovalRoutes(app: Express, deps: ApprovalRoutesDeps): voi
   app.post(
     "/v1/rejections/:authorizationId",
     requireRole("operator", opt),
-    express.json(),
+    jsonBody(),
     async (req, res) => {
       const parsed = parseRejectionBody(req.body);
       if (!parsed.ok) {

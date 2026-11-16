@@ -5,7 +5,10 @@ import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import express from "express";
 import { afterEach, describe, expect, it } from "vitest";
+import { DEV_USER_WALLET_MNEMONIC } from "../scripts/demo-lib.js";
+import { LOCAL_MNEMONIC } from "../scripts/local-chain-lib.js";
 import { findSecretShapes } from "../scripts/secret-scan-lib.js";
+import { TEST_MNEMONIC } from "./helpers/users.js";
 import { fakePorts, mockModel, startHostedApp, text, toolCall, type HostedTestApp } from "./helpers/hosted.js";
 
 let cleanups: (() => Promise<void>)[] = [];
@@ -131,6 +134,9 @@ describe("T-AGT-05 secret shapes", () => {
     ["secret assignment", "PAYER_PRIVATE_KEY=0xabc"],
     ["secret assignment", "SESSION_REF_SECRET=deadbeef"],
     ["secret assignment", "CONTROL_TOKEN=dev-control-token"],
+    ["development mnemonic", `wallet ${LOCAL_MNEMONIC}`],
+    ["development mnemonic", `{"phrase":"${DEV_USER_WALLET_MNEMONIC}"}`],
+    ["development mnemonic", TEST_MNEMONIC],
   ])("finds a %s", (name, text) => {
     expect(findSecretShapes(text)).toContain(name);
   });

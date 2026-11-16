@@ -43,6 +43,7 @@ npm run fund-user -- <address> [usdc]        # local only: mint test USDC to a u
 npm run wallet-mnemonic                      # print one new 24-word mnemonic for USER_WALLET_MNEMONIC
 npx vitest run web/portal                    # the web app's tests (T-WEB-01..08), jsdom
 npm run ledger-verify                        # operator: exit 0 only when the hash chain verifies
+npm run audit:shipped                        # npm audit over what the images install (deploy step 1); a root `npm audit` never passes (ganache)
 npm run build                                # dist/ (tsconfig.build.json); each image's build stage runs it
 docker build -f docker/l1-agent.Dockerfile -t x402-l1-agent .   # one image per unit (docker/, the operator's included); the seller's is the root Dockerfile
 BICEP_PATH=~/.azure/bin/bicep npm test       # every suite: T-IAC-01, and the cleanup and github-setup tests, need the Bicep CLI
@@ -123,6 +124,8 @@ npx vitest run test/policy.test.ts -t "<name>"   # single test
 - In Azure, L2 always references the l2 vault's `ciba-client-credential` (rule 19). Seed it before an environment's first L2 deployment with 012, as `off` while `ciba.enabled` is false; otherwise the L2 revision fails and the pipeline rolls back. `ciba` in `main.bicep` is a plain object: a user-defined type switches the template to `languageVersion` 2.0, which T-IAC-01 rule 13 can't read.
 - The authorize call that creates an eligible escalation waits up to 120 s outside the lock (L2-7). A must-fail switch (`serializeOutcomes`, `skipChecks`, `approvalRequestCap`) is a test-only dep of the backchannel, never env.
 - Ignore ganache's `uws_linux` warning.
+- `npm audit --omit=dev` at the root always reports ganache's bundled packages (webpack, sha.js, pbkdf2, …): they are extraneous in the lockfile and in no image. The gate is `npm run audit:shipped` (`scripts/audit-shipped.ts`, T-IMG-02). `@coinbase/cdp-sdk` asks for zod 3, which has no patched release; `overrides` gives it the root zod, and its `./auth` subpath reaches neither zod nor abitype.
+- L2 refuses to start outside local with a published development key or mnemonic (`PUBLISHED_DEV_ADDRESSES` in `signer.ts`, T-DEVKEY-01). A new published phrase (a script's or a test's) needs its ten addresses there.
 - Development runs on Node 26 (SPEC §5 floor is Node ≥ 22). npm 11 skips some native install scripts; ganache falls back to JS.
 - Base Sepolia USDC's EIP-712 name is `"USDC"`; the local mock's is `"USD Coin"`.
 - Concurrency tests need `signerLatencyMs`; local signing is too fast to expose races.

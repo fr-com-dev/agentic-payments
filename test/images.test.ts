@@ -8,6 +8,7 @@
 // dist/portal-web at build time, which its Dockerfile copies).
 import { readFileSync } from "node:fs";
 import { beforeAll, describe, expect, it } from "vitest";
+import { auditManifest, shippedPackages } from "../scripts/audit-shipped.js";
 import { IMAGES, closure, problems, type Closure, type ImageName } from "../scripts/image-closure.js";
 
 const DEPS = (JSON.parse(readFileSync("package.json", "utf8")) as { dependencies: Record<string, string> }).dependencies;
@@ -92,5 +93,38 @@ describe("T-IMG-01 per-layer images", { timeout: 30_000 }, () => {
   it("T-IMG-01 must-fail: an imported package missing from dependencies is reported", () => {
     const { express: _express, ...rest } = DEPS;
     expect(problems(IMAGES["l3-verifier"], closures.get("l3-verifier")!, rest)).toContain("express is not in package.json dependencies");
+  });
+});
+
+describe("T-IMG-02 the dependency audit covers what the images install", { timeout: 30_000 }, () => {
+  const PKG = JSON.parse(readFileSync("package.json", "utf8")) as Record<string, unknown> & { dependencies: Record<string, string>; devDependencies: Record<string, string> };
+
+  it("T-IMG-02 the audited set is the union of every image's packages: runtime dependencies only, never ganache", async () => {
+    const shipped = await shippedPackages();
+    const union = new Set<string>();
+    for (const n of NAMES) {
+      const c = await closure(IMAGES[n].entries);
+      for (const p of [...c.packages, ...(IMAGES[n].extraPackages ?? [])]) union.add(p);
+    }
+    expect(shipped).toEqual([...union].sort());
+    for (const p of shipped) expect(DEPS, p).toHaveProperty([p]);
+    expect(shipped.filter((p) => p in PKG.devDependencies)).toEqual([]);
+    expect(shipped).not.toContain("ganache");
+  });
+
+  it("T-IMG-02 the audit's manifest is package.json as an image sees it: overrides kept, no dev dependencies or scripts", () => {
+    const m = auditManifest(PKG, ["express", "zod"]);
+    expect(Object.keys(m.dependencies)).toEqual(["express", "zod"]);
+    expect(m).not.toHaveProperty("devDependencies");
+    expect(m).not.toHaveProperty("scripts");
+    // The images install with the same overrides (image-closure keeps them), so the audit must too.
+    expect(m.overrides).toEqual(PKG.overrides);
+    expect(PKG.overrides).toHaveProperty(["@coinbase/cdp-sdk"]);
+  });
+
+  it("T-IMG-02 the deploy pipeline runs the audit before the typecheck and the suites", () => {
+    const run = readFileSync(".github/workflows/deploy.yml", "utf8").match(/id: tests\n\s+run: \|\n((?:\s{10}.+\n)+)/)?.[1] ?? "";
+    expect(run.trim().split("\n").map((l) => l.trim())).toEqual(["npm install --no-audit --no-fund", "npm run audit:shipped", "npm run typecheck", "npm test"]);
+    expect((PKG.scripts as Record<string, string>)["audit:shipped"]).toBe("tsx scripts/audit-shipped.ts");
   });
 });

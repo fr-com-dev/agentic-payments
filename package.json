@@ -34,6 +34,7 @@
     "ledger-verify": "tsx scripts/ledger-verify.ts",
     "payer-balance": "tsx scripts/payer-balance.ts",
     "scan-logs": "tsx scripts/scan-logs.ts",
+    "audit:shipped": "tsx scripts/audit-shipped.ts",
     "build": "tsc -p tsconfig.build.json"
   },
   "dependencies": {
