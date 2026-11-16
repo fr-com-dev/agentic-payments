@@ -1,9 +1,9 @@
 # Weekly version-update pull requests, runtime packages (package.json `dependencies`, what the images install) and
 # development tools in separate groups. Security-update pull requests are a repository setting (Dependabot security
 # updates), not this file. Merging one still needs the deploy pipeline's step 1 (npm run audit:shipped, typecheck,
-# every suite), which the pull request check .github/workflows/checks.yml runs on every one of these pull requests,
-# with the local demo, on Node 22 and 26 (T-CI-01); and, for @x402/* and zod, the base-sepolia demo, by hand, since
-# they parse and sign payment payloads.
+# the images' builds, every suite), which the pull request check .github/workflows/checks.yml runs on every one of
+# these pull requests, with the local demo, on Node 22 and 26 (T-CI-01); and, for @x402/* and zod, the base-sepolia
+# demo, by hand, since they parse and sign payment payloads.
 version: 2
 updates:
   - package-ecosystem: npm

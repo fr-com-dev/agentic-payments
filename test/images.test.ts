@@ -122,9 +122,61 @@ describe("T-IMG-02 the dependency audit covers what the images install", { timeo
     expect(PKG.overrides).toHaveProperty(["@coinbase/cdp-sdk"]);
   });
 
-  it("T-IMG-02 the deploy pipeline runs the audit before the typecheck and the suites", () => {
-    const run = readFileSync(".github/workflows/deploy.yml", "utf8").match(/id: tests\n\s+run: \|\n((?:\s{10}.+\n)+)/)?.[1] ?? "";
-    expect(run.trim().split("\n").map((l) => l.trim())).toEqual(["npm install --no-audit --no-fund", "npm run audit:shipped", "npm run typecheck", "npm test"]);
+  it("T-IMG-02 the deploy pipeline runs the audit before the typecheck, the builds and the suites", () => {
+    expect(stepOne()).toEqual(["npm install --no-audit --no-fund", "npm run audit:shipped", "npm run typecheck", "npm run build", "npm run build:web", "npm test"]);
     expect((PKG.scripts as Record<string, string>)["audit:shipped"]).toBe("tsx scripts/audit-shipped.ts");
+  });
+});
+
+/** The commands of deploy.yml's step 1, which the pull request check runs too (T-CI-01), one per line. */
+function stepOne(deploy = readFileSync(".github/workflows/deploy.yml", "utf8")): string[] {
+  const run = deploy.match(/id: tests\n\s+run: \|\n((?:\s{10}.+\n)+)/)?.[1] ?? "";
+  return run.trim().split("\n").map((l) => l.trim());
+}
+
+/** The npm scripts a Dockerfile's build stage runs (`RUN … npm run <script> …`), in order. */
+export function buildStageScripts(dockerfile: string): string[] {
+  const stage = dockerfile.split(/^FROM /m).find((s) => / AS build\n/.test(`${s.split("\n")[0]}\n`)) ?? "";
+  return [...stage.matchAll(/^RUN .+$/gm)].flatMap((m) => [...m[0].matchAll(/\bnpm run ([\w:.-]+)/g)].map((r) => r[1]!));
+}
+
+/**
+ * T-IMG-03: deploy.yml's step 1 runs every npm script an image's build stage runs, before the suites. Step 2 builds the
+ * images, but the pull request check only runs step 1: without this a change that breaks only the build (a dependency's
+ * new types, a web app that no longer bundles) merges green and fails at deployment.
+ */
+export function stepOneBuildProblems(dockerfiles: Record<string, string>, step1: string[]): string[] {
+  const out = new Set<string>();
+  const tests = step1.indexOf("npm test");
+  for (const [file, text] of Object.entries(dockerfiles)) {
+    for (const s of buildStageScripts(text)) {
+      const at = step1.indexOf(`npm run ${s}`);
+      if (at < 0 || at > tests) out.add(`${file}'s build stage runs npm run ${s}: deploy.yml's step 1 must run it before npm test`);
+    }
+  }
+  return [...out];
+}
+
+describe("T-IMG-03 the deploy pipeline's step 1 runs the images' builds", () => {
+  const dockerfiles = Object.fromEntries(NAMES.map((n) => [IMAGES[n].dockerfile, readFileSync(IMAGES[n].dockerfile, "utf8")]));
+
+  it("T-IMG-03 every script an image's build stage runs is in step 1, before the suites", () => {
+    expect(stepOneBuildProblems(dockerfiles, stepOne())).toEqual([]);
+    // Not vacuous: every image builds its code, and the portal's also builds the web app.
+    for (const n of NAMES) expect(buildStageScripts(dockerfiles[IMAGES[n].dockerfile]!), n).toEqual(n === "portal" ? ["build", "build:web"] : ["build"]);
+  });
+
+  it("T-IMG-03 must-fail: a build step 1 doesn't run, a build after the suites, or a script a build stage gained, is reported", () => {
+    const portal = IMAGES.portal.dockerfile;
+    const web = `${portal}'s build stage runs npm run build:web: deploy.yml's step 1 must run it before npm test`;
+    expect(stepOneBuildProblems(dockerfiles, stepOne().filter((c) => c !== "npm run build:web"))).toEqual([web]);
+    const late = stepOne().filter((c) => c !== "npm run build").concat("npm run build");
+    expect(stepOneBuildProblems(dockerfiles, late)).toEqual(NAMES.map((n) => `${IMAGES[n].dockerfile}'s build stage runs npm run build: deploy.yml's step 1 must run it before npm test`));
+    const gained = { ...dockerfiles, [portal]: dockerfiles[portal]!.replace("npm run build:web &&", "npm run build:web && npm run build:docs &&") };
+    expect(gained[portal]).not.toBe(dockerfiles[portal]);
+    expect(stepOneBuildProblems(gained, stepOne())).toEqual([`${portal}'s build stage runs npm run build:docs: deploy.yml's step 1 must run it before npm test`]);
+    // A script the runtime stage runs is not a build.
+    const runtime = { [portal]: `${dockerfiles[portal]!}RUN npm run build:docs\n` };
+    expect(stepOneBuildProblems(runtime, stepOne())).toEqual([]);
   });
 });

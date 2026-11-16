@@ -1,11 +1,12 @@
 # The pull request check (SPEC.md §3.1 Azure profile, §12 T-CI-01): every pull request to main, Dependabot's included,
 # and every push to main run the repository's own checks. They are deploy.yml's step 1, what .github/dependabot.yml
-# says a merge needs: npm install (never npm ci: ganache's lockfile), the audit of what the images ship, the typecheck
-# and every suite, T-IAC-01 and the infra scripts' tests included (the pinned Bicep CLI, in BICEP_PATH); then the local
-# demo, which exits non-zero when its summary leaves the baseline. On Node 22, what the images and deploy.yml run, and
-# on Node 26, what development runs (SPEC §5). Before this file a pull request's only check was CodeQL, which skips
-# Dependabot's: on 2026-11-16 Dependabot's tooling update merged with solc 0.8.38, which can't compile
-# contracts/MockUSDC.sol, so every on-chain suite and the demo failed on main.
+# says a merge needs: npm install (never npm ci: ganache's lockfile), the audit of what the images ship, the typecheck,
+# the builds the images' build stages run (the code, and the portal's web app), and every suite, T-IAC-01 and the infra
+# scripts' tests included (the pinned Bicep CLI, in BICEP_PATH); then the local demo, which exits non-zero when its
+# summary leaves the baseline. On Node 22, what the images and deploy.yml run, and on Node 26, what development runs
+# (SPEC §5). Before this file a pull request's only check was CodeQL, which skips Dependabot's: on 2026-11-16
+# Dependabot's tooling update merged with solc 0.8.38, which can't compile contracts/MockUSDC.sol, so every on-chain
+# suite and the demo failed on main.
 #
 # It deploys nothing and holds nothing: no GitHub secret or variable, no GitHub environment, no OIDC token, a
 # read-only GITHUB_TOKEN that the checkout doesn't keep (npm install runs the pull request's install scripts), and
@@ -23,7 +24,8 @@ on:
 permissions:
   contents: read
 
-# A new push to a pull request cancels its older run; runs on main all finish.
+# A new push to a pull request cancels its older run. On main a running check always finishes, but GitHub keeps one
+# waiting run per group: a newer push replaces the waiting one, and its commit holds the replaced one's.
 concurrency:
   group: checks-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -74,6 +76,12 @@ jobs:
 
       - name: typecheck
         run: npm run typecheck
+
+      - name: build of the images' code
+        run: npm run build
+
+      - name: build of the portal's web app
+        run: npm run build:web
 
       - name: every suite
         run: npm test
