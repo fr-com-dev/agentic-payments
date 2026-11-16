@@ -85,9 +85,10 @@ const AUTH0 = "provision-auth0.yml";
 const AUTH0_SECRETS = ["AUTH0_CLIENT_ID", "AUTH0_CLIENT_SECRET"];
 /**
  * The only GitHub variables a workflow reads: the Auth0 pipeline's Terraform variables, from the same environment.
- * 016 adds the deployed agent's origin and the machine callers' public keys (never a private one: T-IAC-02).
+ * 016 adds the deployed agent's origin and the machine callers' public keys (never a private one: T-IAC-02). Phase 3
+ * removes the approver (SPEC v1.16) and adds the switches for the local origins and for sign-ups.
  */
-const AUTH0_VARIABLES = /^AUTH0_(TENANT_DOMAIN|API_IDENTIFIER|APPROVER_USER_ID|CLIENT_PUBLIC_KEY|MANAGE_GUARDIAN|GUARDIAN_POLICY|PORTAL_ORIGIN|AGENT_ORIGIN|MACHINE_CALLER_KEYS)$/;
+const AUTH0_VARIABLES = /^AUTH0_(TENANT_DOMAIN|API_IDENTIFIER|CLIENT_PUBLIC_KEY|MANAGE_GUARDIAN|GUARDIAN_POLICY|PORTAL_ORIGIN|AGENT_ORIGIN|MACHINE_CALLER_KEYS|LOCAL_ORIGINS|ALLOW_SIGN_UPS)$/;
 const FILES = [SHARED, AUTH0, ...Object.keys(PIPELINES)].sort();
 /** The image each unit's run builds, promotes and rolls back; the platform has none. */
 const UNIT_IMAGES: Record<Exclude<Unit, "platform">, ImageName> = { l1: "l1-agent", l2: "l2-control", l3: "l3-verifier", operator: "operator", portal: "portal", seller: "seller" };

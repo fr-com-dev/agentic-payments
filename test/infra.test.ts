@@ -17,6 +17,8 @@
 // is one Entra registration, the deploy app. Rule 21 no longer keeps the sign-in settings from the agent. Rule 23 is
 // new: the agent and L2 get the same sign-in settings and nothing of the directory; API_DOCS is on the agent only,
 // as agent.apiDocs; the machine caller's key reaches L1's two jobs only. Rules 12 and 15 know the smoke job.
+// Phase 3 (SPEC 1.19): rule 16's condition also refuses a role assignment to the deploy app itself (finding #2), and
+// rule 24 is new: the ledger's MAC key reaches L2's control container only, from the l2 vault (finding #7).
 import { cpSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -213,6 +215,14 @@ const STANDARD: Record<string, { type: string; app?: string; compact?: boolean; 
 };
 /** The {app} segments: the layers, the operator, the portal, the sellers, the smoke run (016), what the layers share, the deploy app, and the Terraform state. */
 const APPS = ["l1", "l2", "l3", "op", "portal", "seller", "seller-alias", "smoke", "x402", "deploy", "tfstate"];
+/** An ARM format() expression's text, each {N} replaced by «its argument» ({{, }} and '' unescaped): rule 16's condition. */
+function formatText(expr: unknown): string {
+  const m = /^\[format\('((?:[^']|'')*)', ([\s\S]*)\)\]$/.exec(String(expr));
+  if (!m) return String(expr);
+  const args = splitArgs(m[2]!);
+  return m[1]!.replace(/\{\{|\}\}|\{(\d+)\}/g, (t: string, i?: string) => (t === "{{" ? "{" : t === "}}" ? "}" : `«${args[Number(i)]}»`)).replace(/''/g, "'");
+}
+
 /** Payment key material (INV-2): each reaches only L2's control app (container l2), from the l2 vault (rule 2). */
 const PAYMENT_KEYS = ["PAYER_PRIVATE_KEY", "USER_WALLET_MNEMONIC"];
 /**
@@ -258,6 +268,12 @@ const TARGET = ["tenantId", "subscriptionId", "location", "names.resourceGroup"]
 /** GitHub's immutable OIDC subject for a deploy job: the owner and repository by name and ID (rule 16). */
 const IMMUTABLE_SUBJECT = "repo:<owner>@<githubOwnerId>/<name>@<githubRepositoryId>:environment:<githubEnvironment>";
 const FIC_PROBLEM = `rule 16: the deploy app's two federated credentials must trust only ${IMMUTABLE_SUBJECT}, for the deploy environment and the Auth0 environment`;
+/** Rule 16 (Phase 3): the condition, as text, for one action: main.bicep's roles only, and never to the deploy app itself. */
+const ASSIGNMENT_CLAUSE = (action: "write" | "delete", source: "Request" | "Resource") =>
+  `((!(ActionMatches{'Microsoft.Authorization/roleAssignments/${action}'})) OR (@${source}[Microsoft.Authorization/roleAssignments:RoleDefinitionId] ForAnyOfAnyValues:GuidEquals {«variables('assignable')»} AND @${source}[Microsoft.Authorization/roleAssignments:PrincipalId] ForAnyOfAllValues:GuidNotEquals {«parameters('principalId')»}))`;
+const SELF_GRANT = "rule 16: the deploy app's Role Based Access Control Administrator condition must be exactly: a role assignment written or deleted holds one of main.bicep's roles and is not the deploy app's own (its principalId)";
+/** Rule 24 (Phase 3): the ledger's MAC key, in L2's control container only. */
+const MAC_SECRET: Record<string, string> = { LEDGER_MAC_KEY: "ledger-mac-key" };
 /** The compiled subject of a federated credential for the GitHub environment a parameter names. */
 const subjectFor = (envParam: string) =>
   `[format('repo:{0}@{1}/{2}@{3}:environment:{4}', split(parameters('githubRepository'), '/')[0], parameters('githubOwnerId'), split(parameters('githubRepository'), '/')[1], parameters('githubRepositoryId'), parameters('${envParam}'))]`;
@@ -304,7 +320,7 @@ const vaultKeysOf = (r: Res, url: string | undefined) => [...withVars(url ?? "",
 const paramLines = (text: string) => new Map([...text.matchAll(/^param (\w+) = (.+)$/gm)].map((m) => [m[1]!, m[2]!.trim()]));
 
 /**
- * Rules 1–23 of contracts/cloud-topology.md (21: specs/013 contracts/config-and-secrets.md; 22: specs/014; 23: specs/016
+ * Rules 1–24 of contracts/cloud-topology.md (21: specs/013 contracts/config-and-secrets.md; 22: specs/014; 23: specs/016
  * contracts/tenant-and-config.md; there is no rule 11 since 016), on the compiled templates, the compiled parameter
  * files (`params`, by file name) and the infra sources. Returns one message per violation, prefixed `rule N:`.
  */
@@ -478,7 +494,7 @@ export function violations(arms: Templates, params: Params, infraFiles: Record<s
   for (const a of apps(main)) {
     for (const c of containersOf(a)) {
       for (const e of c.env ?? []) {
-        if (/PRIVATE_KEY|SECRET|TOKEN|MNEMONIC|CARD_VAULT_KEY|^MACHINE_CLIENT_KEY$/.test(e.name) && e.value !== undefined) v.push(`rule 8: ${label(a)}/${c.name} ${e.name} is a literal`);
+        if (/PRIVATE_KEY|SECRET|TOKEN|MNEMONIC|CARD_VAULT_KEY|^MACHINE_CLIENT_KEY$|^LEDGER_MAC_KEY$/.test(e.name) && e.value !== undefined) v.push(`rule 8: ${label(a)}/${c.name} ${e.name} is a literal`);
       }
     }
   }
@@ -649,7 +665,9 @@ export function violations(arms: Templates, params: Params, infraFiles: Record<s
   // 013 first made for the portal. The deploy app has no API, no permissions and no secret: GitHub signs in as it
   // through two federated credentials, for the repository's deploy environment and its Auth0 environment
   // (provision-auth0.yml). The deploy app's roles are Contributor and Role Based Access Control Administrator on the
-  // resource group only, the latter limited by condition to exactly the roles main.bicep assigns.
+  // resource group only, the latter limited by condition to exactly the roles main.bicep assigns. Phase 3: the
+  // condition also refuses an assignment whose principal is the deploy app itself, written or deleted, so it can't
+  // give itself one of those roles (Key Vault Secrets User on a vault).
   const graph = (type: string) => pre.filter((r) => r.type === `Microsoft.Graph/${type}@v1.0`);
   const entraApps = graph("applications");
   const deployApp = entraApps.find((r) => namesOf(r).includes(PN.deployApp));
@@ -702,6 +720,7 @@ export function violations(arms: Templates, params: Params, infraFiles: Record<s
     v.push(`rule 16: the deploy app's Role Based Access Control Administrator must be limited to main.bicep's roles (${mainRoles.join(", ")})`);
   }
   if (deploymentParam(pre, "deploy-access", "principalId") !== JSON.stringify({ value: "[reference('deploySp').id]" })) v.push("rule 16: the deploy app's roles must go to its service principal");
+  if (formatText(administrator?.properties.condition) !== `${ASSIGNMENT_CLAUSE("write", "Request")} AND ${ASSIGNMENT_CLAUSE("delete", "Resource")}`) v.push(SELF_GRANT);
 
   // Rule 17: every value a deployment uses is in its parameter file, the target and the names included. Each
   // template parameter is set there; only deploy.yml's five per-run values come from the environment. Both files of
@@ -1089,6 +1108,26 @@ export function violations(arms: Templates, params: Params, infraFiles: Record<s
   const agentChecked = String(((arms.main.variables ?? {}) as Json).agentChecked ?? "");
   if (!agentChecked.startsWith(`[if(and(and(${unitsChecked}, ${docsChecked}), ${machineChecked}), ${AG}.apiDocs, fail(`)) v.push(AGENT_CHECK);
 
+  // Rule 24 (Phase 3, SPEC 1.19): the ledger's MAC key. L2's control container always references the l2 vault's
+  // ledger-mac-key, as LEDGER_MAC_KEY, so every environment seeds it (the placeholder off until an operator seeds a
+  // real key). No other app, job or container holds the secret or the variable (the operator job verifies the chain
+  // through L2), and it is never a literal (rule 8).
+  if (l2 && !alwaysReferenced(l2, "l2", MAC_SECRET, "l2")) v.push(`rule 24: ${MN.apps.l2}/l2 must always reference the l2 vault's ledger-mac-key, as LEDGER_MAC_KEY`);
+  for (const a of apps(main)) {
+    const isL2 = namesOf(a).includes(MN.apps.l2);
+    for (const s of secretsOf(a)) {
+      if ((s.name === MAC_SECRET.LEDGER_MAC_KEY || String(s.keyVaultUrl ?? "").includes(`secrets/${MAC_SECRET.LEDGER_MAC_KEY}`)) && !isL2) v.push(`rule 24: ${label(a)} has the ledger's MAC key`);
+    }
+    for (const c of containersOf(a)) {
+      const mine = isL2 && c.name === "l2";
+      for (const e of c.env ?? []) {
+        if ((e.name === "LEDGER_MAC_KEY" || e.secretRef === MAC_SECRET.LEDGER_MAC_KEY) && !mine) v.push(`rule 24: ${e.name} in ${label(a)}/${c.name}: only L2's control container holds the ledger's MAC key`);
+        // One secret, one variable: the key never arrives under another name, nor another secret under its name.
+        if (mine && (e.name === "LEDGER_MAC_KEY") !== (e.secretRef === MAC_SECRET.LEDGER_MAC_KEY)) v.push(`rule 24: ${e.name} in ${label(a)}/${c.name} must be the ledger-mac-key secret and nothing else`);
+      }
+    }
+  }
+
   // Rule 18: each module is deployed by exactly one unit's runs: the platform's modules by the platform's
   // (deploy-infra.yml), each unit's apps by that unit's (deploy-<unit>.yml), so a pipeline changes nothing of another
   // unit's. `unit` is required and names one of them.
@@ -1173,7 +1212,7 @@ describe.skipIf(!BICEP_PATH)("T-IAC-01 Azure identity, secret, exposure and nami
     return violations(arms, params, infraSources(dir));
   }
 
-  it("T-IAC-01 the real templates and parameter files pass rules 1–23", async () => {
+  it("T-IAC-01 the real templates and parameter files pass rules 1–24", async () => {
     const { arms, params } = await compile("infra");
     expect(violations(arms, params, infraSources("infra"))).toEqual([]);
   }, 60_000);
@@ -1412,6 +1451,19 @@ resource extraRead 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
     expect(owner.some((m) => m.startsWith("rule 16: the deploy app's Role Based Access Control Administrator must be limited"))).toBe(true);
   }, 60_000);
 
+  it("T-IAC-01 must-fail rule 16 (Phase 3): a condition that lets the deploy app assign a role to itself, or delete one of its own, is reported", async () => {
+    const write = " AND @Request[Microsoft.Authorization/roleAssignments:PrincipalId] ForAnyOfAllValues:GuidNotEquals {${principalId}}";
+    const remove = " AND @Resource[Microsoft.Authorization/roleAssignments:PrincipalId] ForAnyOfAllValues:GuidNotEquals {${principalId}}";
+    const selfWrite = await mutant("modules/deploy-access.bicep", write, "");
+    expect(selfWrite).toEqual([SELF_GRANT]);
+    const selfDelete = await mutant("modules/deploy-access.bicep", remove, "");
+    expect(selfDelete).toEqual([SELF_GRANT]);
+    const either = await mutant("modules/deploy-access.bicep", `{\${assignable}}${write}`, `{\${assignable}}${write.replace(" AND ", " OR ")}`);
+    expect(either).toEqual([SELF_GRANT]);
+    const onlyItself = await mutant("modules/deploy-access.bicep", "ForAnyOfAllValues:GuidNotEquals {${principalId}}))'", "ForAnyOfAllValues:GuidEquals {${principalId}}))'");
+    expect(onlyItself).toEqual([SELF_GRANT]);
+  }, 120_000);
+
   it("T-IAC-01 must-fail rule 12: the portal on L2's image, or running an entry point its image doesn't contain, is reported", async () => {
     const image = await mutant("main.bicep", "image: '${acrServer}/x402-portal:${imageTag}'", "image: '${acrServer}/x402-l2-control:${imageTag}'");
     expect(image).toContain("rule 12: portal-apps's image is not x402-portal:<imageTag> from the platform's registry");
@@ -1506,6 +1558,23 @@ resource extraRead 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
     const unchecked = await mutant("main.bicep", " && (!userAccounts.administration || userAccounts.enabled)", "");
     expect(unchecked).toContain("rule 22: main must refuse (fail()) userAccounts.administration without userAccounts.enabled");
   }, 300_000);
+
+  it("T-IAC-01 must-fail rule 24 (Phase 3): the ledger's MAC key missing, a literal, from another vault, under another name, or on another app, is reported", async () => {
+    const always = `rule 24: ${N.main.apps.l2}/l2 must always reference the l2 vault's ledger-mac-key, as LEDGER_MAC_KEY`;
+    const env = "            { name: 'LEDGER_MAC_KEY', secretRef: 'ledger-mac-key' }";
+    const missing = await mutant("modules/l2-apps.bicep", `${env}\n`, "");
+    expect(missing).toEqual([always]);
+    const literal = await mutant("modules/l2-apps.bicep", env, "            { name: 'LEDGER_MAC_KEY', value: 'off' }");
+    expect(literal).toEqual(expect.arrayContaining([always, `rule 8: ${N.main.apps.l2}/l2 LEDGER_MAC_KEY is a literal`, "rule 24: LEDGER_MAC_KEY in " + N.main.apps.l2 + "/l2 must be the ledger-mac-key secret and nothing else"]));
+    const elsewhere = await mutant("modules/l2-apps.bicep", "keyVaultUrl: '${vaultL2}secrets/ledger-mac-key'", "keyVaultUrl: 'https://${names.vaults.l1}${az.environment().suffixes.keyvaultDns}/secrets/ledger-mac-key'");
+    expect(elsewhere).toContain(always);
+    const renamed = await mutant("modules/l2-apps.bicep", env, "            { name: 'LEDGER_KEY', secretRef: 'ledger-mac-key' }");
+    expect(renamed).toEqual(expect.arrayContaining([always, `rule 24: LEDGER_KEY in ${N.main.apps.l2}/l2 must be the ledger-mac-key secret and nothing else`]));
+    const onOperator = await mutant("modules/operator-apps.bicep", "            { name: 'OPERATOR_TOKEN', secretRef: 'operator-token' }\n", "            { name: 'OPERATOR_TOKEN', secretRef: 'operator-token' }\n            { name: 'LEDGER_MAC_KEY', secretRef: 'operator-token' }\n");
+    expect(onOperator).toContain(`rule 24: LEDGER_MAC_KEY in ${N.main.jobs.l2}/operator: only L2's control container holds the ledger's MAC key`);
+    const onL3 = await mutant("modules/l3-apps.bicep", "      secrets: [\n", "      secrets: [\n        { name: 'ledger-mac-key', keyVaultUrl: '${vaultL3}secrets/ledger-mac-key', identity: idL3.id }\n");
+    expect(onL3).toContain(`rule 24: ${N.main.apps.l3} has the ledger's MAC key`);
+  }, 180_000);
 
   it("T-IAC-01 must-fail rule 21: L2 without one of its always-referenced secrets, with one behind the flag's value, or with a literal USER_ACCOUNTS, is reported", async () => {
     const always = `rule 21: ${N.main.apps.l2}/l2 must always reference the l2 vault's portal-token and user-wallet-mnemonic, as PORTAL_TOKEN and USER_WALLET_MNEMONIC`;

@@ -1,7 +1,9 @@
 // The deploy identity's Azure roles, on its resource group only (specs/011 contracts/cloud-topology.md "Role
 // assignments"). Contributor deploys main.bicep. Role Based Access Control Administrator lets it make main.bicep's
-// role assignments, and a condition limits it to those roles: it can't grant Owner, Contributor or itself more.
-// Deployed by pre-deploy.bicep; T-IAC-01 rule 16 asserts the condition lists exactly the roles main.bicep assigns.
+// role assignments, and a condition limits it to those roles: it can't grant Owner or Contributor. Phase 3: the
+// condition also refuses any assignment to the deploy app itself, written or deleted, so it can't give itself one of
+// those roles either (Key Vault Secrets User on a vault, say). Deployed by pre-deploy.bicep; T-IAC-01 rule 16 asserts
+// the condition lists exactly the roles main.bicep assigns, and refuses the deploy app as the principal.
 @description('The deploy app\'s service principal.')
 param principalId string
 
@@ -32,6 +34,6 @@ resource rbacAdministrator 'Microsoft.Authorization/roleAssignments@2022-04-01' 
     principalId: principalId
     principalType: 'ServicePrincipal'
     conditionVersion: '2.0'
-    condition: '((!(ActionMatches{\'Microsoft.Authorization/roleAssignments/write\'})) OR (@Request[Microsoft.Authorization/roleAssignments:RoleDefinitionId] ForAnyOfAnyValues:GuidEquals {${assignable}})) AND ((!(ActionMatches{\'Microsoft.Authorization/roleAssignments/delete\'})) OR (@Resource[Microsoft.Authorization/roleAssignments:RoleDefinitionId] ForAnyOfAnyValues:GuidEquals {${assignable}}))'
+    condition: '((!(ActionMatches{\'Microsoft.Authorization/roleAssignments/write\'})) OR (@Request[Microsoft.Authorization/roleAssignments:RoleDefinitionId] ForAnyOfAnyValues:GuidEquals {${assignable}} AND @Request[Microsoft.Authorization/roleAssignments:PrincipalId] ForAnyOfAllValues:GuidNotEquals {${principalId}})) AND ((!(ActionMatches{\'Microsoft.Authorization/roleAssignments/delete\'})) OR (@Resource[Microsoft.Authorization/roleAssignments:RoleDefinitionId] ForAnyOfAnyValues:GuidEquals {${assignable}} AND @Resource[Microsoft.Authorization/roleAssignments:PrincipalId] ForAnyOfAllValues:GuidNotEquals {${principalId}}))'
   }
 }

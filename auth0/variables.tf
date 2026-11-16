@@ -30,15 +30,6 @@ variable "api_identifier" {
   }
 }
 
-variable "approver_user_id" {
-  description = "The approver's existing user ID (auth0|...), which becomes CIBA_APPROVER. Users and passwords are never managed here; the approver enrolls their phone in Guardian themselves."
-  type        = string
-  validation {
-    condition     = length(var.approver_user_id) > 0 && length(var.approver_user_id) <= 255 && !can(regex("\\s", var.approver_user_id))
-    error_message = "approver_user_id must be 1-255 characters with no whitespace."
-  }
-}
-
 variable "credential" {
   description = "How L2 authenticates to Auth0: key (private_key_jwt with RS256, preferred; Enterprise plan) or secret (client_secret_post)."
   type        = string
@@ -90,7 +81,7 @@ variable "guardian_policy" {
 }
 
 variable "portal_origin" {
-  description = "The deployed portal's origin, https://<host> (infra/main.bicep's portalFqdn output), which becomes an allowed callback, web origin and logout URL of the portal's client beside http://localhost:4025. Empty until the portal is deployed."
+  description = "The deployed portal's origin, https://<host> (infra/main.bicep's portalFqdn output), which becomes an allowed callback, web origin and logout URL of the portal's client (beside http://localhost:4025 where var.local_origins is on). Empty until the portal is deployed."
   type        = string
   default     = ""
   validation {
@@ -100,7 +91,7 @@ variable "portal_origin" {
 }
 
 variable "agent_origin" {
-  description = "The deployed hosted agent's origin, https://<host> (infra/main.bicep's agentFqdn output), whose docs page (/docs) then may sign people in through the agent's client, beside http://localhost:4024 and http://127.0.0.1:4024. Empty until the agent is deployed; needed only where its docs page is on (agent.apiDocs)."
+  description = "The deployed hosted agent's origin, https://<host> (infra/main.bicep's agentFqdn output), whose docs page (/docs) then may sign people in through the agent's client (beside http://localhost:4024 and http://127.0.0.1:4024 where var.local_origins is on). Empty until the agent is deployed; needed only where its docs page is on (agent.apiDocs)."
   type        = string
   default     = ""
   validation {
@@ -121,4 +112,16 @@ variable "machine_caller_keys" {
     condition     = alltrue([for name, pem in var.machine_caller_keys : startswith(trimspace(pem), "-----BEGIN PUBLIC KEY-----") && !strcontains(pem, "PRIVATE KEY")])
     error_message = "Each value of machine_caller_keys must be a PEM public key (-----BEGIN PUBLIC KEY-----), never a private key."
   }
+}
+
+variable "local_origins" {
+  description = "Add the local portal's and the local agent's origins (http://localhost:4025, http://localhost:4024 and http://127.0.0.1:4024) to the portal's and the agent's clients, for development against this tenant. Off by default: a deployed environment's clients accept their deployed origins only. infra/github-setup.sh creates AUTH0_LOCAL_ORIGINS as true for dev and false elsewhere."
+  type        = bool
+  default     = false
+}
+
+variable "allow_sign_ups" {
+  description = "Let anyone create an account in the tenant's database and passwordless connections. True by default, as before. False binds the pre-user-registration Action deny-sign-up.js, which refuses every such registration, those made in the Dashboard or with the Management API included. A first sign-in through a social or enterprise connection doesn't run that trigger: turn those connections off for the applications too."
+  type        = bool
+  default     = true
 }
