@@ -36,7 +36,7 @@ value.
 | `CARD_VAULT_PUBLISHABLE_KEY` | with `CARD_VAULT=stripe` | `pk_test_…`; public |
 | `BASE_SEPOLIA_RPC_URL` | no | as for L3 |
 | `PORTAL_PORT`, `PORTAL_BIND_HOST` | no | defaults 4025 and 127.0.0.1 |
-| `TRUSTED_PROXY_HOPS` | no | a whole number 0–3, default 0: how many reverse proxies stand in front, for the per-address request limit. 1 in Azure (the ingress). Also read by the hosted agent (`env/l1-hosted.env`) |
+| `TRUSTED_PROXY_HOPS` | no | a whole number 0–3 (since 2026-11-15: 0 or 1, SPEC CFG-2), default 0: how many reverse proxies stand in front, for the per-address request limit. 1 in Azure (the ingress). Also read by the hosted agent (`env/l1-hosted.env`) |
 | `API_DOCS` | no | `1` mounts `/docs`; never set in Azure |
 
 `src/portal-main.ts` loads this file and then **exits 1 if `PAYER_PRIVATE_KEY` or `USER_WALLET_MNEMONIC` is

@@ -445,7 +445,7 @@ describe("T-CTK-08 the token is verified before the serialized section, with no 
 
   it("T-CTK-08 the caller check is mounted before the body parser and before the serialized section", () => {
     const service = readFileSync("src/layer2-control/service.ts", "utf8");
-    expect(service).toMatch(/app\.post\("\/v1\/authorize", requireRole\("agent-control", [^)]*\)\), callerLimit, caller, express\.json\(/);
+    expect(service).toMatch(/app\.post\("\/v1\/authorize", requireRole\("agent-control", [^)]*\)\), callerLimit, caller, jsonBody\(AUTHORIZE_BODY_LIMIT\)/);
     expect(service).toMatch(/app\.get\("\/v1\/budget\/:sessionId", requireRole\("agent-control", [^)]*\)\), callerLimit, caller, \(req, res\)/);
     // The caller module reaches nothing of L2's state: it imports the shared verifier and nothing of its own layer.
     const imports = [...readFileSync("src/layer2-control/caller.ts", "utf8").matchAll(/from "([^"]+)"/g)].map((m) => m[1]);

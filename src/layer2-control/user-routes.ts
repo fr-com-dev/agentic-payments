@@ -4,11 +4,12 @@
 // or account change and a payment decision are always ordered against each other (FR-036, FR-040).
 // No request carries text typed by a person: bodies hold identifiers, seller hosts, ISO dates and atomic amounts.
 import { randomUUID } from "node:crypto";
-import express, { type Express, type Request, type RequestHandler, type Response } from "express";
+import type { Express, Request, RequestHandler, Response } from "express";
 import { requireRole } from "../shared/auth.js";
 import type { NetworkProfile } from "../shared/config.js";
 import type { PlatformView, PolicyValues } from "../shared/contracts.js";
 import { USER_ID_RE } from "../shared/user-id.js";
+import { jsonBody } from "./json-body.js";
 import type { AuditLedger, LedgerEntry } from "./ledger.js";
 import type { Serialize } from "./ledger-routes.js";
 import {
@@ -45,7 +46,6 @@ export interface UserRoutesDeps {
 }
 
 const DAY_MS = 86_400_000;
-const BODY_LIMIT = "16kb";
 
 /** Amounts of the user's authorizations that can still settle: no report yet, or PENDING, and the signature still valid. */
 export function pendingAtomic(entries: readonly LedgerEntry[], userId: string, nowMs: number): bigint {
@@ -78,7 +78,7 @@ const refuse = (res: Response, status: number, error: string, extra: Record<stri
 export function mountUserRoutes(app: Express, deps: UserRoutesDeps): void {
   const { ledger, users, net } = deps;
   const guard = requireRole("portal-control", deps.tokens?.portal === undefined ? {} : { token: deps.tokens.portal });
-  const json = express.json({ limit: BODY_LIMIT });
+  const json = jsonBody();
   // `unserializedUserWrites` is the must-fail proof of FR-036: writes then run beside a decision in flight.
   const write = <T>(fn: () => T): Promise<T> => (users.unserializedUserWrites ? Promise.resolve().then(fn) : deps.serialize(fn));
 

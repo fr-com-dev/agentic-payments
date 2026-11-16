@@ -998,3 +998,74 @@ describe("T-ARCH-TRACE threat matrix → test titles (007 T051)", () => {
     expect(missingIds(rows, testTitles())).toEqual(["SEC-99: T-NOPE-99", "SEC-98: no test named"]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// T-ARCH-SWITCH: the must-fail switches stay test-only (Constitution VIII; CLAUDE.md "Gotchas")
+// ---------------------------------------------------------------------------
+
+/** The must-fail switches: every `skip…` and `bypass…` dep, and the others CLAUDE.md lists by name. */
+const SWITCH = String.raw`(?:skip[A-Z]\w*|bypass\w*|sharedSigner|sharedBudgets|trustIntentUser|echoCaller|fallbackToPlatform|unserialized\w*|singlePortalRole|serializeOutcomes)`;
+/** A switch turned on with a literal: `name: true`, a list of string literals, or a set. */
+const SWITCH_ON = new RegExp(String.raw`\b(${SWITCH})\s*:\s*(?:true\b|\[\s*["'\x60]|new Set\()`, "g");
+/** Passing a caller's own switch on, `...(deps.name && { name: true })`, turns nothing on by itself. */
+const SWITCH_FORWARD = new RegExp(String.raw`\.(${SWITCH})\s*&&\s*\{\s*\1\s*:\s*true\s*\}`, "g");
+/** An environment variable that would turn one on, read in code. */
+const SWITCH_ENV_READ = /\benv(?:\.|\[\s*["'`])([A-Z0-9_]*(?:SKIP|BYPASS)[A-Z0-9_]*)/g;
+/** The same name written in an env template, a workflow, a template or a Dockerfile. */
+const SWITCH_ENV_NAME = /\b[A-Z0-9_]*(?:SKIP|BYPASS)[A-Z0-9_]*\b/g;
+
+/** `path:line what` for each switch `source` turns on outside the tests. Code files are read without comments. */
+export function switchProblems(path: string, source: string): string[] {
+  const at = (offset: number) => `${path}:${lineAt(source, offset)}`;
+  if (!/\.(ts|tsx)$/.test(path)) return [...source.matchAll(SWITCH_ENV_NAME)].map((m) => `${at(m.index)} names ${m[0]}`);
+  const code = lex(source).noComments.replace(SWITCH_FORWARD, (m) => " ".repeat(m.length));
+  return [
+    ...[...code.matchAll(SWITCH_ON)].map((m) => `${at(m.index)} turns on ${m[1]}`),
+    ...[...code.matchAll(SWITCH_ENV_READ)].map((m) => `${at(m.index)} reads ${m[1]} from the environment`),
+  ];
+}
+
+const configFiles = (dir: string, re: RegExp): string[] =>
+  existsSync(dir)
+    ? readdirSync(dir).flatMap((name) => {
+        const p = posix.join(dir, name);
+        return statSync(p).isDirectory() ? configFiles(p, re) : re.test(name) ? [p] : [];
+      })
+    : [];
+
+describe("T-ARCH-SWITCH must-fail switches are test-only deps, never on outside the tests and never env", () => {
+  it("T-ARCH-SWITCH the services, the scripts, the web app and every deployment file are clean", () => {
+    const code = [...walk("src"), ...walk("scripts"), ...configFiles("web/portal/src", /\.tsx?$/)];
+    const config = [
+      ...configFiles("env", /\.env\.example$/),
+      ...configFiles(".github/workflows", /\.yml$/),
+      ...configFiles("infra", /\.(bicep|bicepparam|sh)$/),
+      ...configFiles("docker", /Dockerfile$/),
+      "Dockerfile",
+    ];
+    expect(code.length).toBeGreaterThan(50);
+    expect(config).toContain("env/l2-control.env.example");
+    expect([...code, ...config].flatMap((f) => switchProblems(f, readFileSync(f, "utf8")))).toEqual([]);
+  });
+
+  it("T-ARCH-SWITCH forwarding a caller's own switch is allowed; it is still declared and read in src/", () => {
+    // Not vacuous: the switches exist in src/ and are passed on there.
+    expect(readFileSync("src/shared/identity-token.ts", "utf8")).toMatch(/skipChecks\?: readonly/);
+    expect(readFileSync("src/portal/server.ts", "utf8")).toMatch(/\.\.\.\(deps\.bypassAuth && \{ bypassAuth: true \}\)/);
+    expect(switchProblems("src/portal/server.ts", "const o = { ...(deps.bypassAuth && { bypassAuth: true }) };")).toEqual([]);
+    expect(switchProblems("src/x.ts", "// skipChecks: true is only for tests\nexport {};\n")).toEqual([]);
+  });
+
+  it("T-ARCH-SWITCH must-fail: a switch turned on in code, read from the environment or set in a deployment file is reported", () => {
+    expect(switchProblems("src/layer2-control/x.ts", 'verifyCaller(t, { skipChecks: ["client"] });')).toEqual(["src/layer2-control/x.ts:1 turns on skipChecks"]);
+    expect(switchProblems("src/portal/x.ts", "createPortal({ bypassAuth: true });")).toEqual(["src/portal/x.ts:1 turns on bypassAuth"]);
+    expect(switchProblems("src/layer2-control/x.ts", "\nconst b = { skipChecks: new Set([\"replay\"]) };")).toEqual(["src/layer2-control/x.ts:2 turns on skipChecks"]);
+    expect(switchProblems("src/layer2-control/x.ts", "const users = { sharedSigner: true, trustIntentUser: true };")).toHaveLength(2);
+    expect(switchProblems("src/layer2-control/x.ts", "const on = { skipOwnershipCheck: process.env.SKIP_OWNERSHIP === '1' };")).toEqual([
+      "src/layer2-control/x.ts:1 reads SKIP_OWNERSHIP from the environment",
+    ]);
+    expect(switchProblems("scripts/x.ts", 'if (env["X402_BYPASS_AUTH"]) start();')).toEqual(["scripts/x.ts:1 reads X402_BYPASS_AUTH from the environment"]);
+    expect(switchProblems("env/l2-control.env.example", "NETWORK=local\nL2_SKIP_CHECKS=1\n")).toEqual(["env/l2-control.env.example:2 names L2_SKIP_CHECKS"]);
+    expect(switchProblems("infra/modules/l2-apps.bicep", "{ name: 'SKIP_USER_GATE', value: '1' }")).toEqual(["infra/modules/l2-apps.bicep:1 names SKIP_USER_GATE"]);
+  });
+});

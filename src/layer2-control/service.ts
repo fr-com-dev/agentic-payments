@@ -14,7 +14,7 @@
 import { randomUUID } from "node:crypto";
 import type { Server } from "node:http";
 import { pathToFileURL } from "node:url";
-import express, { type ErrorRequestHandler, type Express } from "express";
+import express, { type Express } from "express";
 import type { PaymentRequirements } from "@x402/core/types";
 import { addressLimit } from "../shared/address-limit.js";
 import { requireRole } from "../shared/auth.js";
@@ -33,10 +33,11 @@ import { AuditLedger, resourceKey, type LedgerEntry } from "./ledger.js";
 import { callerAuth, callerChecksPerMinute, callerDepsFor, callerSettingsFromEnv, forwardedIdentityOf, type CallerDeps } from "./caller.js";
 import { acquireLedgerLock } from "./ledger-lock.js";
 import { mountLedgerRoutes, type Serialize } from "./ledger-routes.js";
+import { AUTHORIZE_BODY_LIMIT, jsonBody, refuseUnreadBody } from "./json-body.js";
 import { loadMandate, type SpendingMandate } from "./mandate.js";
 import { loadPlatform, platformDigest, type PlatformConfig } from "./platform.js";
 import { decide, type PolicyContext } from "./policy.js";
-import { keyringFromEnv, PaymentSigner, USER_WALLET_ENV, type PaymentSignerLike } from "./signer.js";
+import { keyringFromEnv, PaymentSigner, refusePublishedDevKeys, USER_WALLET_ENV, type PaymentSignerLike } from "./signer.js";
 import { mountUserRoutes } from "./user-routes.js";
 import {
   effectiveMandate,
@@ -151,20 +152,13 @@ function validIntent(body: unknown, trustUser = false): body is PaymentIntent {
 }
 
 /**
- * 015 (FR-020, T-CIBA-20): answers an authorize body that could not be read (not JSON, too large, cut off). Without
- * it the error reaches Express's default handler, which logs it outside the test environment, and a body-parser
- * error carries the raw body: `approvalSubject` (or `purpose`) would be in L2's log. Nothing of the request is
- * logged or repeated here. Any other error is passed on unchanged.
+ * 015 (FR-020, T-CIBA-20): answers an authorize body that could not be read (not JSON, too large, compressed, cut
+ * off). Without it the error reaches Express's default handler, which logs it outside the test environment, and a
+ * body-parser error carries the raw body: `approvalSubject` (or `purpose`) would be in L2's log. Nothing of the
+ * request is logged or repeated here. Any other error is passed on unchanged. Every other route that takes a body
+ * gets the same treatment with generic messages (T-BODY-02).
  */
-const refuseUnreadBody: ErrorRequestHandler = (err: unknown, _req, res, next) => {
-  const e = err as { type?: unknown; status?: unknown } | null;
-  const status = typeof e?.status === "number" && e.status >= 400 && e.status < 500 ? e.status : undefined;
-  if (res.headersSent || typeof e?.type !== "string" || status === undefined) {
-    next(err);
-    return;
-  }
-  res.status(status).json({ error: status === 400 ? "malformed PaymentIntent" : "PaymentIntent body refused" });
-};
+const refuseUnreadIntent = refuseUnreadBody({ malformed: "malformed PaymentIntent", refused: "PaymentIntent body refused" });
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 const maxZero = (n: bigint) => (n < 0n ? 0n : n);
@@ -498,7 +492,7 @@ export function createControlService(deps: ControlServiceDeps): ControlService {
   // verified, parsed, decided or appended. No bound where sign-in is not configured (nothing is verified there).
   const callerLimit = addressLimit({ max: callerChecksPerMinute(deps.caller) });
 
-  app.post("/v1/authorize", requireRole("agent-control", tok(deps.tokens?.control)), callerLimit, caller, express.json({ limit: "256kb" }), async (req, res) => {
+  app.post("/v1/authorize", requireRole("agent-control", tok(deps.tokens?.control)), callerLimit, caller, jsonBody(AUTHORIZE_BODY_LIMIT), async (req, res) => {
     if (!validIntent(req.body, trustIntentUser)) {
       res.status(400).json({ error: "malformed PaymentIntent" });
       return;
@@ -535,7 +529,7 @@ export function createControlService(deps: ControlServiceDeps): ControlService {
     }
   });
 
-  app.use("/v1/authorize", refuseUnreadBody);
+  app.use("/v1/authorize", refuseUnreadIntent);
 
   app.get("/v1/budget/:sessionId", requireRole("agent-control", tok(deps.tokens?.control)), callerLimit, caller, (req, res) => {
     const sessionId = String(req.params.sessionId);
@@ -631,6 +625,8 @@ export function createControlService(deps: ControlServiceDeps): ControlService {
   }
 
   if (deps.apiDocs) mountApiDocs(app);
+  // Every other route's unreadable body: a fixed JSON answer, never Express's default handler (T-BODY-02).
+  app.use(refuseUnreadBody());
 
   return { app, serialize, sweep: () => serialize(() => sweep(ledger, now())), ...(backchannel && { backchannel }) };
 }
@@ -747,6 +743,8 @@ export async function main(): Promise<void> {
     throw new Error("PAYER_PRIVATE_KEY is missing or malformed (env/l2-control.env)");
   }
   const signer = new PaymentSigner(key as `0x${string}`, net, mandate.hardCapPerPaymentAtomic);
+  // A published development key or mnemonic is refused outside local, before anything is served (T-DEVKEY-01).
+  refusePublishedDevKeys(net.name, signer.address, accounts.enabled ? accounts.keyring : undefined);
   const apiDocs = apiDocsEnabled();
   // 012 (L2-7): the client holds the credential; the rest of L2 sees only the non-secret settings. No network call.
   let backchannelDeps: BackchannelDeps | undefined;

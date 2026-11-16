@@ -306,7 +306,12 @@ components:
           schema:
             type: object
             additionalProperties: false
-            description: Always empty.
+            description: |
+              The challenge's `error`, repeated (`@x402/*` 2.31 and later), or empty when the challenge has none
+              (a failed settlement).
+            properties:
+              error:
+                type: string
     FacilitatorFailed:
       description: The facilitator failed while verifying or settling a paid retry. The resource is not served.
       content:

@@ -361,15 +361,22 @@ describe("T-PRT-01 access (FR-003, FR-005, SEC-19, SEC-20)", () => {
     const proxied = await start({ maxRequestsPerAddress: 2, env: { TRUSTED_PROXY_HOPS: "1" } });
     expect([await from(proxied.base, "203.0.113.7"), await from(proxied.base, "203.0.113.7"), await from(proxied.base, "203.0.113.7")]).toEqual([401, 401, 429]);
     expect(await from(proxied.base, "203.0.113.8")).toBe(401);
+    // Entries the caller writes itself come before the one the proxy appends, so they never reset its count.
+    const spoofed = await start({ maxRequestsPerAddress: 2, env: { TRUSTED_PROXY_HOPS: "1" } });
+    expect([
+      await from(spoofed.base, "198.51.100.1, 203.0.113.7"),
+      await from(spoofed.base, "198.51.100.2, 203.0.113.7"),
+      await from(spoofed.base, "198.51.100.3, 203.0.113.7"),
+    ]).toEqual([401, 401, 429]);
     // Not behind a proxy: a caller can't pick its own address by sending the header.
     const direct = await start({ maxRequestsPerAddress: 2 });
     expect([await from(direct.base, "203.0.113.7"), await from(direct.base, "203.0.113.8"), await from(direct.base, "203.0.113.9")]).toEqual([401, 401, 429]);
   });
 
-  it("T-PRT-09 TRUSTED_PROXY_HOPS is a whole number from 0 to 3, and 0 by default", async () => {
+  it("T-PRT-09 TRUSTED_PROXY_HOPS is 0 or 1, and 0 by default", async () => {
     const { trustedProxyHops } = await import("../src/shared/address-limit.js");
     expect([trustedProxyHops({}), trustedProxyHops({ TRUSTED_PROXY_HOPS: "" }), trustedProxyHops({ TRUSTED_PROXY_HOPS: "0" }), trustedProxyHops({ TRUSTED_PROXY_HOPS: "1" })]).toEqual([0, 0, 0, 1]);
-    for (const bad of ["true", "-1", "4", "1.5", "one", "10"]) expect(() => trustedProxyHops({ TRUSTED_PROXY_HOPS: bad }), bad).toThrow(/TRUSTED_PROXY_HOPS must be a whole number from 0 to 3/);
+    for (const bad of ["true", "-1", "2", "3", "4", "1.5", "one", "10"]) expect(() => trustedProxyHops({ TRUSTED_PROXY_HOPS: bad }), bad).toThrow(/TRUSTED_PROXY_HOPS must be 0 or 1/);
   });
 
   it("T-PRT-01 the 121st request in a minute gets 429 with Retry-After; another person is unaffected", async () => {

@@ -7,7 +7,7 @@
 // run the shared decision core of approval-routes.ts inside the serialized section, with two extra checks that only
 // this path has: nobody decides their own payment, and an approval needs a fresh identity confirmation.
 // No request carries text typed by a person: bodies hold an identifier, a time and a code from a fixed list.
-import express, { type Express, type RequestHandler, type Response } from "express";
+import type { Express, RequestHandler, Response } from "express";
 import { addressLimit } from "../shared/address-limit.js";
 import { requireRole } from "../shared/auth.js";
 import { ESCALATION_ID_RE, REJECTION_REASON_CODES, type BudgetLine, type DecisionOutcome, type EscalationBudget, type RejectionReasonCode } from "../shared/contracts.js";
@@ -15,11 +15,10 @@ import { USER_ID_RE } from "../shared/user-id.js";
 import { recordApproval, recordRejection, type DecisionCtx, type DecisionOptions, type DecisionRefusal, type DecisionResult } from "./approval-routes.js";
 import { channelOf, deciderOf, escalationDetail, escalationOwner, EVENT_PAGE_DEFAULT, EVENT_PAGE_MAX, eventPage, expiresAtMsOf, findEscalation, pendingEscalations } from "./escalations.js";
 import type { AuditLedger, LedgerEntry } from "./ledger.js";
+import { jsonBody } from "./json-body.js";
 import type { Serialize } from "./ledger-routes.js";
 import type { SpendingMandate } from "./mandate.js";
 import { STEP_UP_MAX_AGE_MS, stepUpFresh, type UserGate } from "./users.js";
-
-const BODY_LIMIT = "16kb";
 
 /** Must-fail switches (Constitution VIII). Test-only deps, never set by main() and never read from the environment. */
 export interface AdminDeps {
@@ -148,7 +147,7 @@ export function mountAdminRoutes(app: Express, deps: AdminRoutesDeps): void {
   // The guard covers the whole prefix, so a path that matches no route still needs the token: 401 before 404.
   app.use("/v1/admin", guard);
   const { ledger, admin } = deps;
-  const json = express.json({ limit: BODY_LIMIT });
+  const json = jsonBody();
   // The ledger check's own limit, after the guard: a caller without the token is refused before it counts. The
   // must-fail switch lifts the bound and leaves the route's shape as it is.
   const ledgerCheckLimit = addressLimit({ max: admin.skipLedgerCheckLimit ? Number.MAX_SAFE_INTEGER : (admin.maxLedgerChecksPerMinute ?? MAX_LEDGER_CHECKS_PER_MINUTE) });

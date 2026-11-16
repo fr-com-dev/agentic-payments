@@ -7,7 +7,7 @@ import { ExactEvmScheme } from "@x402/evm/exact/client";
 import { createHash } from "node:crypto";
 import { english, mnemonicToAccount, privateKeyToAccount } from "viem/accounts";
 import type { LocalAccount } from "viem";
-import type { NetworkProfile } from "../shared/config.js";
+import { ConfigError, type NetworkProfile } from "../shared/config.js";
 
 export interface SignedAuthorization {
   headers: Record<string, string>;
@@ -122,4 +122,63 @@ export function keyringFromEnv(env: Record<string, string | undefined>, net: Pic
   const phrase = env[USER_WALLET_ENV];
   if (phrase === undefined || phrase.trim() === "") throw new KeyringError(`missing ${USER_WALLET_ENV}`);
   return new WalletKeyring(phrase, net);
+}
+
+/**
+ * The first ten accounts of each mnemonic this repository publishes: the local chain's (`LOCAL_MNEMONIC` in
+ * scripts/local-chain-lib.ts), the local user wallets' (`DEV_USER_WALLET_MNEMONIC` in scripts/demo-lib.ts) and the
+ * tests' (`TEST_MNEMONIC` in test/helpers/users.ts). Anyone can sign for them. Addresses only, lower-cased: no
+ * phrase or key is written under src/. T-DEVKEY-01 derives the list again from the three phrases.
+ */
+export const PUBLISHED_DEV_ADDRESSES: ReadonlySet<string> = new Set(
+  [
+    // LOCAL_MNEMONIC, HD indexes 0-9 (deployer, facilitator, payer, seller payTo, ...)
+    "0x90F8bf6A479f320ead074411a4B0e7944Ea8c9C1",
+    "0xFFcf8FDEE72ac11b5c542428B35EEF5769C409f0",
+    "0x22d491Bde2303f2f43325b2108D26f1eAbA1e32b",
+    "0xE11BA2b4D45Eaed5996Cd0823791E0C93114882d",
+    "0xd03ea8624C8C5987235048901fB614fDcA89b117",
+    "0x95cED938F7991cd0dFcb48F0a06a40FA1aF46EBC",
+    "0x3E5e9111Ae8eB78Fe1CC3bb8915d5D461F3Ef9A9",
+    "0x28a8746e75304c0780E011BEd21C72cD78cd535E",
+    "0xACa94ef8bD5ffEE41947b4585a84BdA5a3d3DA6E",
+    "0x1dF62f291b2E969fB0849d99D9Ce41e2F137006e",
+    // DEV_USER_WALLET_MNEMONIC, indexes 0-9
+    "0xF278cF59F82eDcf871d630F28EcC8056f25C1cdb",
+    "0xf785bD075874b8423D3583728a981399f31e95aA",
+    "0x60Af1c6A5D03F9f1B1b74931499bC99E72fF8DA9",
+    "0xDF7F9c4b9B9b9580B265DCD892173e9bD90e067F",
+    "0xC1080BB846F3B862d04e72EAd4B92A4D47233D98",
+    "0xEf253B9Bb0eeBd09e16E77AB3482153570332472",
+    "0x18e90265AC4994FC6305Bfe6C935b511705c818A",
+    "0x8B19EDa4De09B98ffc1d1692Bbf810053E91d5AE",
+    "0xe1a74C3903A574466aE3E7e428c92178504e1317",
+    "0x72f17042AB498FB9F5a9F9695F58A449fC6b1f1e",
+    // TEST_MNEMONIC, indexes 0-9
+    "0x2f826cb22E80a2c40f149Ecb92b2Fa5ecBf67170",
+    "0x300bd41A86F051B7d2ef63052Dc0c66B5164f8b5",
+    "0x24B989513890DC57220f34671b1c3Eb8Ea73c639",
+    "0xb675AA318107eC27a654e0a92f40Ef2c42542176",
+    "0xc0976e22de1b032e1B20091Ac55BDF561E75996A",
+    "0x3190B818CB25f8e949950da7063182BA4461F93c",
+    "0xdA2d940a49f5197DeB84D1D9cfc26b82BaE5f931",
+    "0x5173e13Eda1eDACAd7c5fee0567C5658A99E0c68",
+    "0xA5686579A46C7998a8d71773F401DFAe8bD81604",
+    "0x265dA5968099e9838a1B023B9F292992374A2CdA",
+  ].map((a) => a.toLowerCase()),
+);
+
+/**
+ * Outside `NETWORK=local`, L2 refuses to start with a payer key or a user wallet mnemonic from the published list:
+ * every payment it signed could be taken by anyone. The message names the variable, never its value. A keyring is
+ * recognised by its first account.
+ */
+export function refusePublishedDevKeys(network: string, payerAddress: string, keyring?: { addressOf(index: number): string }): void {
+  if (network === "local") return;
+  if (PUBLISHED_DEV_ADDRESSES.has(payerAddress.toLowerCase())) {
+    throw new ConfigError(`PAYER_PRIVATE_KEY is a published development key; NETWORK=${network} needs a key of its own`);
+  }
+  if (keyring !== undefined && PUBLISHED_DEV_ADDRESSES.has(keyring.addressOf(0).toLowerCase())) {
+    throw new ConfigError(`${USER_WALLET_ENV} is a published development mnemonic; NETWORK=${network} needs a phrase of its own`);
+  }
 }
