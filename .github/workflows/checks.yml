@@ -1,0 +1,82 @@
+# The pull request check (SPEC.md §3.1 Azure profile, §12 T-CI-01): every pull request to main, Dependabot's included,
+# and every push to main run the repository's own checks. They are deploy.yml's step 1, what .github/dependabot.yml
+# says a merge needs: npm install (never npm ci: ganache's lockfile), the audit of what the images ship, the typecheck
+# and every suite, T-IAC-01 and the infra scripts' tests included (the pinned Bicep CLI, in BICEP_PATH); then the local
+# demo, which exits non-zero when its summary leaves the baseline. On Node 22, what the images and deploy.yml run, and
+# on Node 26, what development runs (SPEC §5). Before this file a pull request's only check was CodeQL, which skips
+# Dependabot's: on 2026-11-16 Dependabot's tooling update merged with solc 0.8.38, which can't compile
+# contracts/MockUSDC.sol, so every on-chain suite and the demo failed on main.
+#
+# It deploys nothing and holds nothing: no GitHub secret or variable, no GitHub environment, no OIDC token, a
+# read-only GITHUB_TOKEN that the checkout doesn't keep (npm install runs the pull request's install scripts), and
+# pull_request only, never pull_request_target. No dependency cache, as in deploy.yml: the check is what a fresh
+# install gives. No paths filter: a required check that never starts blocks the merge. Making it required is a branch
+# protection setting of the repository, set by hand. T-CI-01 (test/deploy-workflow.test.ts) checks this file.
+name: checks
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# A new push to a pull request cancels its older run; runs on main all finish.
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  # deploy.yml's Bicep CLI (T-CI-01 compares the two), checked against the SHA-256 GitHub publishes for the release
+  # asset (gh api repos/Azure/bicep/releases/tags/<version> --jq '.assets[] | select(.name == "bicep-linux-x64") | .digest').
+  BICEP_VERSION: v0.47.16
+  BICEP_SHA256: 64c345a58e0c3e48b1bc98a4e62d6b3adb1d238281297de3400aeafb2697aa5a
+
+jobs:
+  checks:
+    name: checks (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["22", "26"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ matrix.node }}
+          package-manager-cache: false
+
+      - name: the pinned Bicep CLI, in BICEP_PATH
+        run: |
+          mkdir -p "$RUNNER_TEMP/bicep"
+          curl -fsSL -o "$RUNNER_TEMP/bicep/bicep" "https://github.com/Azure/bicep/releases/download/${BICEP_VERSION}/bicep-linux-x64"
+          echo "$BICEP_SHA256  $RUNNER_TEMP/bicep/bicep" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/bicep/bicep"
+          echo "$RUNNER_TEMP/bicep" >> "$GITHUB_PATH"
+          echo "BICEP_PATH=$RUNNER_TEMP/bicep/bicep" >> "$GITHUB_ENV"
+
+      - name: install
+        run: npm install --no-audit --no-fund
+
+      - name: audit of what the images ship (T-IMG-02)
+        run: npm run audit:shipped
+
+      - name: typecheck
+        run: npm run typecheck
+
+      - name: every suite
+        run: npm test
+
+      - name: the local demo against its baseline
+        run: npm run demo:local

@@ -3,7 +3,8 @@
 // deploy-l1/l2/l3/operator/portal/seller.yml for one unit each), on deploy.yml, the steps they all call with their
 // unit, and on the infra scripts. Checked:
 // - one pipeline per unit, and nothing else in the folder but the Auth0 tenant's pipeline (provision-auth0.yml, which
-//   T-IAC-02 checks; the only workflow that reads GitHub secrets and variables, and only its own): each runs by hand or on its own tag, holds the one
+//   T-IAC-02 checks; the only workflow that reads GitHub secrets and variables, and only its own) and the pull request
+//   check (checks.yml, T-CI-01 below): each runs by hand or on its own tag, holds the one
 //   concurrency group, and only calls deploy.yml with its unit; each image of scripts/image-closure.ts is built by
 //   exactly one pipeline;
 // - OIDC only, with the sign-in, target and resource names compiled from infra/main.<environment>.bicepparam by the
@@ -29,8 +30,14 @@
 // - no resource name hard-coded;
 // - no secret-shaped literal.
 // The live part of T-E2E-AZ is the workflow runs themselves (quickstart §4).
+// T-CI-01, the pull request check (checks.yml): every pull request to main and every push to main, never
+// pull_request_target and no paths filter; read-only contents and nothing else, no GitHub environment, no secret or
+// variable, a checkout that keeps no credential; every action pinned by commit SHA; deploy.yml's Bicep CLI, checked
+// against its SHA-256 before it runs, in BICEP_PATH; then exactly deploy.yml's step 1 and the local demo, on Node 22
+// and 26, none of it skippable or allowed to fail.
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -89,7 +96,9 @@ const AUTH0_SECRETS = ["AUTH0_CLIENT_ID", "AUTH0_CLIENT_SECRET"];
  * removes the approver (SPEC v1.16) and adds the switches for the local origins and for sign-ups.
  */
 const AUTH0_VARIABLES = /^AUTH0_(TENANT_DOMAIN|API_IDENTIFIER|CLIENT_PUBLIC_KEY|MANAGE_GUARDIAN|GUARDIAN_POLICY|PORTAL_ORIGIN|AGENT_ORIGIN|MACHINE_CALLER_KEYS|LOCAL_ORIGINS|ALLOW_SIGN_UPS)$/;
-const FILES = [SHARED, AUTH0, ...Object.keys(PIPELINES)].sort();
+/** The pull request check (T-CI-01): not a pipeline, it deploys nothing. */
+const CHECKS_FILE = "checks.yml";
+const FILES = [SHARED, AUTH0, CHECKS_FILE, ...Object.keys(PIPELINES)].sort();
 /** The image each unit's run builds, promotes and rolls back; the platform has none. */
 const UNIT_IMAGES: Record<Exclude<Unit, "platform">, ImageName> = { l1: "l1-agent", l2: "l2-control", l3: "l3-verifier", operator: "operator", portal: "portal", seller: "seller" };
 /** What each pipeline passes to deploy.yml: its unit, its environment, and each input it offers. */
@@ -207,10 +216,12 @@ export function tokenProblems(file: string, text: string): string[] {
     .map((c) => `${file} asks for an access token (${c.split(" ").slice(0, 5).join(" ")}): the pipeline holds no caller's token; the smoke job and the regression job get their own`);
 }
 
-/** The folder holds the seven pipelines and deploy.yml, and the pipelines' units build every image exactly once. */
+const FOLDER_PROBLEM = `${DIR} must hold exactly ${FILES.join(", ")}: one pipeline per unit, the steps they share, the Auth0 tenant's pipeline and the pull request check`;
+
+/** The folder holds the seven pipelines, deploy.yml, the Auth0 pipeline and the pull request check, and the pipelines' units build every image exactly once. */
 export function folderProblems(files: string[]): string[] {
   const out: string[] = [];
-  if (JSON.stringify([...files].sort()) !== JSON.stringify(FILES)) out.push(`${DIR} must hold exactly ${FILES.join(", ")}: one pipeline per unit, the steps they share, and the Auth0 tenant's pipeline`);
+  if (JSON.stringify([...files].sort()) !== JSON.stringify(FILES)) out.push(FOLDER_PROBLEM);
   const built = Object.values(PIPELINES).flatMap((p) => (p.unit === "platform" ? [] : [UNIT_IMAGES[p.unit]]));
   if (JSON.stringify([...built].sort()) !== JSON.stringify(Object.keys(IMAGES).sort())) out.push("each image of scripts/image-closure.ts must be built by exactly one pipeline");
   return out;
@@ -237,6 +248,88 @@ export function pipelineProblems(file: string, w: Workflow): string[] {
   const want = { unit: spec.unit, ...Object.fromEntries(spec.inputs.map((i) => [i, PASSED[i]])) };
   if (JSON.stringify(Object.entries(job?.with ?? {}).sort()) !== JSON.stringify(Object.entries(want).sort())) out.push(`${file} must pass ${SHARED} unit ${spec.unit} and its own inputs only`);
   if (job?.secrets !== undefined) out.push(`${file} passes secrets: the pipelines take every value from the parameter file`);
+  return out;
+}
+
+/** A step or job of the pull request check, with the keys that could skip it, excuse it or let it outlive its run. */
+type CheckStep = Step & { "continue-on-error"?: unknown; "timeout-minutes"?: unknown };
+type CheckJob = Omit<Job, "steps"> & {
+  steps?: CheckStep[];
+  if?: string;
+  needs?: unknown;
+  "continue-on-error"?: unknown;
+  "timeout-minutes"?: number;
+  strategy?: { "fail-fast"?: boolean; matrix?: Record<string, unknown> };
+};
+/** Node 22, what the images and deploy.yml run, and Node 26, what development runs (SPEC §5). */
+const CHECKS_NODES = ["22", "26"];
+/** After deploy.yml's step 1, the local demo, which exits non-zero when its summary leaves the baseline. */
+const CHECKS_DEMO = "npm run demo:local";
+/** An action pinned by its full commit SHA: a tag can be moved to other code. */
+const PINNED_ACTION = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+@[0-9a-f]{40}$/;
+/** The Bicep CLI's checksum, checked before the binary is made executable or put on PATH. */
+const BICEP_CHECKSUM = 'echo "$BICEP_SHA256  $RUNNER_TEMP/bicep/bicep" | sha256sum -c -';
+const CHECKS_TRIGGER = `${CHECKS_FILE} must run on every pull request to main and every push to main: pull_request and push with branches [main] only, no paths filter, never pull_request_target`;
+/** The commands deploy.yml's step 1 runs, one per line. */
+const gateCommands = (deploy: Workflow) =>
+  (stepsOf(deploy).find((s) => s.id === "tests")?.run ?? "")
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+
+/**
+ * T-CI-01, the pull request check: on every pull request to main and every push to main, with nothing a deployment
+ * has (no secret, variable, GitHub environment or token beyond reading the code), it runs deploy.yml's Bicep CLI,
+ * checked against its SHA-256, then exactly deploy.yml's step 1 and the local demo, on Node 22 and 26. Nothing in it
+ * may be skipped or allowed to fail, or the check is green without the checks.
+ */
+export function checksProblems(w: Workflow, deploy: Workflow): string[] {
+  const out: string[] = [];
+  if (w.name !== "checks") out.push(`${CHECKS_FILE} must be named checks`);
+  const on = w.on ?? {};
+  if (
+    JSON.stringify(Object.keys(on).sort()) !== JSON.stringify(["pull_request", "push"]) ||
+    JSON.stringify(on.pull_request) !== JSON.stringify({ branches: ["main"] }) ||
+    JSON.stringify(on.push) !== JSON.stringify({ branches: ["main"] })
+  ) {
+    out.push(CHECKS_TRIGGER);
+  }
+  if (JSON.stringify(w.permissions) !== JSON.stringify({ contents: "read" })) out.push(`${CHECKS_FILE}'s permissions must be contents: read and nothing else: the check deploys nothing`);
+  if (w.concurrency?.group !== "checks-${{ github.ref }}") out.push(`${CHECKS_FILE} must hold its own concurrency group per ref (checks-\${{ github.ref }}), never deploy-azure`);
+  if (w.defaults?.run?.shell !== "bash") out.push(`${CHECKS_FILE}'s steps must run with pipefail (defaults.run.shell: bash)`);
+  if (w.env?.BICEP_VERSION === undefined || w.env.BICEP_VERSION !== deploy.env?.BICEP_VERSION) out.push(`${CHECKS_FILE}'s BICEP_VERSION must be deploy.yml's (${deploy.env?.BICEP_VERSION}): the check compiles the templates with the CLI that deploys them`);
+  if (!/^[0-9a-f]{64}$/.test(w.env?.BICEP_SHA256 ?? "")) out.push(`${CHECKS_FILE}'s BICEP_SHA256 must be the release asset's SHA-256 (64 hex digits)`);
+  const jobs = Object.values(w.jobs ?? {}) as CheckJob[];
+  const job = jobs[0];
+  if (jobs.length !== 1 || !job) return [...out, `${CHECKS_FILE} must have one job`];
+  if (job.environment !== undefined) out.push(`${CHECKS_FILE}'s job must run in no GitHub environment: the deploy environments' federated credentials trust their jobs`);
+  if (job.permissions !== undefined || job.secrets !== undefined || job.uses !== undefined) out.push(`${CHECKS_FILE}'s job must widen no permission, pass no secret and call no workflow`);
+  if (job.if !== undefined || job.needs !== undefined || job["continue-on-error"] !== undefined) out.push(`${CHECKS_FILE}'s job may not be skipped or allowed to fail`);
+  const timeout = job["timeout-minutes"];
+  if (typeof timeout !== "number" || timeout < 1 || timeout > 60) out.push(`${CHECKS_FILE}'s job must time out within 60 minutes`);
+  if (JSON.stringify(job.strategy) !== JSON.stringify({ "fail-fast": false, matrix: { node: CHECKS_NODES } })) out.push(`${CHECKS_FILE} must run on Node ${CHECKS_NODES.join(" and ")}, each to the end (fail-fast: false)`);
+  const steps = job.steps ?? [];
+  for (const s of steps) {
+    if (s.uses !== undefined && !PINNED_ACTION.test(s.uses)) out.push(`${CHECKS_FILE} uses ${s.uses}: pin every action by its full commit SHA`);
+    if (s.if !== undefined || s["continue-on-error"] !== undefined) out.push(`${CHECKS_FILE}'s step ${s.name ?? s.uses} may not be skipped or allowed to fail`);
+  }
+  if (!steps[0]?.uses?.startsWith("actions/checkout@") || steps[0].with?.["persist-credentials"] !== false) out.push(`${CHECKS_FILE} must start with a checkout that keeps no credential (persist-credentials: false): npm install runs the pull request's install scripts`);
+  const node = steps[1];
+  if (!node?.uses?.startsWith("actions/setup-node@") || node.with?.["node-version"] !== "${{ matrix.node }}" || node.with["package-manager-cache"] !== false) {
+    out.push(`${CHECKS_FILE}'s second step must set up the matrix's Node, with no dependency cache`);
+  }
+  const bicepAt = steps.findIndex((s) => (s.run ?? "").includes("bicep-linux-x64"));
+  const bicep = steps[bicepAt]?.run ?? "";
+  const download = bicep.indexOf('curl -fsSL -o "$RUNNER_TEMP/bicep/bicep" "https://github.com/Azure/bicep/releases/download/${BICEP_VERSION}/bicep-linux-x64"');
+  const checksum = bicep.indexOf(BICEP_CHECKSUM);
+  const used = ["chmod +x", "$GITHUB_PATH", "BICEP_PATH="].map((t) => bicep.indexOf(t));
+  if (bicepAt !== 2 || download < 0 || checksum < download || used.some((i) => i < checksum)) {
+    out.push(`${CHECKS_FILE}'s third step must download deploy.yml's Bicep CLI and check its SHA-256 before making it executable or putting it on PATH`);
+  }
+  if (!bicep.includes('echo "BICEP_PATH=$RUNNER_TEMP/bicep/bicep" >> "$GITHUB_ENV"')) out.push(`${CHECKS_FILE} must set BICEP_PATH, or T-IAC-01 and the infra scripts' tests are skipped`);
+  const commands = steps.slice(bicepAt + 1).flatMap((s) => (s.uses !== undefined ? [`uses ${s.uses}`] : (s.run ?? "").split("\n").map((l) => l.trim()).filter(Boolean)));
+  const want = [...gateCommands(deploy), CHECKS_DEMO];
+  if (JSON.stringify(commands) !== JSON.stringify(want)) out.push(`after the Bicep CLI, ${CHECKS_FILE} must run exactly deploy.yml's step 1 and then the local demo: ${want.join("; ")}`);
   return out;
 }
 
@@ -559,12 +652,12 @@ describe("T-E2E-AZ deployment workflow gates", () => {
     const l1Job = Object.values(l1.jobs)[0]!;
     expect(pipelineProblems("deploy-l1.yml", { ...l1, jobs: { deploy: { ...l1Job, with: { ...l1Job.with, "seed-ip": PASSED["seed-ip"] } } } })).toEqual(["deploy-l1.yml must pass deploy.yml unit l1 and its own inputs only"]);
     expect(folderProblems(readdirSync(DIR).filter((f) => f !== "deploy-operator.yml"))).toEqual([
-      `${DIR} must hold exactly ${FILES.join(", ")}: one pipeline per unit, the steps they share, and the Auth0 tenant's pipeline`,
+      FOLDER_PROBLEM,
     ]);
     expect(folderProblems([...readdirSync(DIR), "deploy-all.yml"])).toHaveLength(1);
     // 013: without the portal's pipeline, its image is built by none.
     expect(folderProblems(readdirSync(DIR).filter((f) => f !== "deploy-portal.yml"))).toEqual([
-      `${DIR} must hold exactly ${FILES.join(", ")}: one pipeline per unit, the steps they share, and the Auth0 tenant's pipeline`,
+      FOLDER_PROBLEM,
     ]);
     const portal = read("deploy-portal.yml");
     const portalJob = Object.values(portal.jobs)[0]!;
@@ -735,5 +828,110 @@ describe("T-E2E-AZ deployment workflow gates", () => {
     expect(infraScriptProblems([...readdirSync("infra"), "naming.sh"])).toEqual([
       "infra/naming.sh: infra/ holds only cleanup.sh and github-setup.sh; everything else is Bicep or its parameter files",
     ]);
+  });
+});
+
+describe("T-CI-01 the pull request check", () => {
+  const deploy = read(SHARED);
+  const checks = read(CHECKS_FILE);
+  const text = readFileSync(`${DIR}/${CHECKS_FILE}`, "utf8");
+  const job = () => Object.values(checks.jobs)[0] as CheckJob;
+  const withJob = (f: (j: CheckJob) => CheckJob): Workflow => ({ ...checks, jobs: { checks: f(job()) as Job } });
+  const withStep = (name: string, f: (s: CheckStep) => CheckStep) => withJob((j) => ({ ...j, steps: j.steps!.map((s) => (s.name === name ? f(s) : s)) }));
+  const BICEP_STEP = "the pinned Bicep CLI, in BICEP_PATH";
+  const bicepRun = () => job().steps!.find((s) => s.name === BICEP_STEP)!.run!;
+  const commandsProblem = (d: Workflow) => `after the Bicep CLI, ${CHECKS_FILE} must run exactly deploy.yml's step 1 and then the local demo: ${[...gateCommands(d), CHECKS_DEMO].join("; ")}`;
+  const COMMANDS = commandsProblem(deploy);
+  const BICEP_ORDER = `${CHECKS_FILE}'s third step must download deploy.yml's Bicep CLI and check its SHA-256 before making it executable or putting it on PATH`;
+  const UNSKIPPABLE = (step: string) => `${CHECKS_FILE}'s step ${step} may not be skipped or allowed to fail`;
+
+  it("T-CI-01 checks.yml: every pull request to main and push to main, contents: read only, no environment, actions pinned by SHA, deploy.yml's Bicep CLI checked by SHA-256, then deploy.yml's step 1 and the local demo on Node 22 and 26", () => {
+    expect(checksProblems(checks, deploy)).toEqual([]);
+    // Not vacuous: deploy.yml's step 1 is the four commands .github/dependabot.yml says a merge needs.
+    expect(gateCommands(deploy)).toEqual(["npm install --no-audit --no-fund", "npm run audit:shipped", "npm run typecheck", "npm test"]);
+    expect(readFileSync(".github/dependabot.yml", "utf8")).toContain(CHECKS_FILE);
+  });
+
+  it("T-CI-01 must-fail: pull_request_target, a paths filter, no pull request trigger, wider permissions, a GitHub environment, a secret, or the deploy concurrency group, is reported", () => {
+    expect(checksProblems({ ...checks, on: { ...checks.on, pull_request_target: { branches: ["main"] } } }, deploy)).toEqual([CHECKS_TRIGGER]);
+    expect(checksProblems({ ...checks, on: { ...checks.on, pull_request: { branches: ["main"], paths: ["src/**"] } } }, deploy)).toEqual([CHECKS_TRIGGER]);
+    expect(checksProblems({ ...checks, on: { push: { branches: ["main"] } } }, deploy)).toEqual([CHECKS_TRIGGER]);
+    expect(checksProblems({ ...checks, permissions: { "id-token": "write", contents: "read" } }, deploy)).toEqual([`${CHECKS_FILE}'s permissions must be contents: read and nothing else: the check deploys nothing`]);
+    expect(checksProblems(withJob((j) => ({ ...j, permissions: { contents: "write" } })), deploy)).toEqual([`${CHECKS_FILE}'s job must widen no permission, pass no secret and call no workflow`]);
+    expect(checksProblems(withJob((j) => ({ ...j, environment: "dev" })), deploy)).toEqual([
+      `${CHECKS_FILE}'s job must run in no GitHub environment: the deploy environments' federated credentials trust their jobs`,
+    ]);
+    const secret = text.replace("run: npm test\n", "run: npm test\n        env:\n          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}\n");
+    expect(secret).not.toBe(text);
+    expect(secretProblems(CHECKS_FILE, secret)).toEqual([`${CHECKS_FILE} reads secrets.NPM_TOKEN: values come from infra/main.<environment>.bicepparam`]);
+    expect(secretProblems(CHECKS_FILE, text.replace("npm run typecheck", "npm run typecheck ${{ vars.EXTRA }}"))).toEqual([`${CHECKS_FILE} reads vars.EXTRA: values come from infra/main.<environment>.bicepparam`]);
+    expect(checksProblems({ ...checks, concurrency: { group: "deploy-azure", "cancel-in-progress": false } }, deploy)).toEqual([
+      `${CHECKS_FILE} must hold its own concurrency group per ref (checks-\${{ github.ref }}), never deploy-azure`,
+    ]);
+  });
+
+  it("T-CI-01 must-fail: npm ci, a check that can't fail, a dropped check, a skipped or excused step or job, or a command deploy.yml's step 1 gained and the check didn't, is reported", () => {
+    expect(checksProblems(withStep("install", (s) => ({ ...s, run: "npm ci" })), deploy)).toEqual([COMMANDS]);
+    expect(checksProblems(withStep("every suite", (s) => ({ ...s, run: "npm test || true" })), deploy)).toEqual([COMMANDS]);
+    expect(checksProblems(withStep("every suite", (s) => ({ ...s, run: "npx vitest run test/policy.test.ts" })), deploy)).toEqual([COMMANDS]);
+    expect(checksProblems(withJob((j) => ({ ...j, steps: j.steps!.filter((s) => s.name !== "the local demo against its baseline") })), deploy)).toEqual([COMMANDS]);
+    expect(checksProblems(withJob((j) => ({ ...j, steps: j.steps!.filter((s) => s.name !== "audit of what the images ship (T-IMG-02)") })), deploy)).toEqual([COMMANDS]);
+    expect(checksProblems(withStep("every suite", (s) => ({ ...s, "continue-on-error": true })), deploy)).toEqual([UNSKIPPABLE("every suite")]);
+    expect(checksProblems(withStep("typecheck", (s) => ({ ...s, if: "${{ github.actor != 'dependabot[bot]' }}" })), deploy)).toEqual([UNSKIPPABLE("typecheck")]);
+    for (const k of ["if", "continue-on-error", "needs"] as const) {
+      expect(checksProblems(withJob((j) => ({ ...j, [k]: k === "needs" ? ["build"] : "${{ true }}" })), deploy), k).toEqual([`${CHECKS_FILE}'s job may not be skipped or allowed to fail`]);
+    }
+    expect(checksProblems(withJob((j) => ({ ...j, "timeout-minutes": undefined })), deploy)).toEqual([`${CHECKS_FILE}'s job must time out within 60 minutes`]);
+    const gained = withSteps(deploy, stepsOf(deploy).map((s) => (s.id === "tests" ? { ...s, run: `${s.run!}npm run build\n` } : s)));
+    expect(checksProblems(checks, gained)).toEqual([commandsProblem(gained)]);
+    expect(commandsProblem(gained)).toContain("npm test; npm run build; npm run demo:local");
+  });
+
+  it("T-CI-01 must-fail: an action by tag, a checkout that keeps its credential, another Node or a cache, another Bicep CLI, no checksum or one checked too late, or no BICEP_PATH, is reported", () => {
+    expect(checksProblems(withJob((j) => ({ ...j, steps: j.steps!.map((s, i) => (i === 0 ? { ...s, uses: "actions/checkout@v7" } : s)) })), deploy)).toEqual([
+      `${CHECKS_FILE} uses actions/checkout@v7: pin every action by its full commit SHA`,
+    ]);
+    expect(checksProblems(withJob((j) => ({ ...j, steps: j.steps!.map((s, i) => (i === 0 ? { ...s, with: {} } : s)) })), deploy)).toEqual([
+      `${CHECKS_FILE} must start with a checkout that keeps no credential (persist-credentials: false): npm install runs the pull request's install scripts`,
+    ]);
+    expect(checksProblems(withJob((j) => ({ ...j, steps: j.steps!.map((s, i) => (i === 1 ? { ...s, with: { ...s.with, "package-manager-cache": true } } : s)) })), deploy)).toEqual([
+      `${CHECKS_FILE}'s second step must set up the matrix's Node, with no dependency cache`,
+    ]);
+    expect(checksProblems(withJob((j) => ({ ...j, strategy: { "fail-fast": false, matrix: { node: ["26"] } } })), deploy)).toEqual([`${CHECKS_FILE} must run on Node 22 and 26, each to the end (fail-fast: false)`]);
+    expect(checksProblems(withJob((j) => ({ ...j, strategy: { matrix: { node: CHECKS_NODES } } })), deploy)).toEqual([`${CHECKS_FILE} must run on Node 22 and 26, each to the end (fail-fast: false)`]);
+    expect(checksProblems({ ...checks, env: { ...checks.env, BICEP_VERSION: "v0.49.2" } }, deploy)).toEqual([
+      `${CHECKS_FILE}'s BICEP_VERSION must be deploy.yml's (${deploy.env?.BICEP_VERSION}): the check compiles the templates with the CLI that deploys them`,
+    ]);
+    expect(checksProblems({ ...checks, env: { ...checks.env, BICEP_SHA256: "" } }, deploy)).toEqual([`${CHECKS_FILE}'s BICEP_SHA256 must be the release asset's SHA-256 (64 hex digits)`]);
+    const run = bicepRun();
+    expect(run).toContain(`${BICEP_CHECKSUM}\n`);
+    expect(checksProblems(withStep(BICEP_STEP, (s) => ({ ...s, run: run.replace(`${BICEP_CHECKSUM}\n`, "") })), deploy)).toEqual([BICEP_ORDER]);
+    const late = run.replace(`${BICEP_CHECKSUM}\n`, "").replace(/(chmod \+x [^\n]+\n)/, `$1${BICEP_CHECKSUM}\n`);
+    expect(late).not.toBe(run);
+    expect(checksProblems(withStep(BICEP_STEP, (s) => ({ ...s, run: late })), deploy)).toEqual([BICEP_ORDER]);
+    const noPath = run.replace('echo "BICEP_PATH=$RUNNER_TEMP/bicep/bicep" >> "$GITHUB_ENV"\n', "");
+    expect(noPath).not.toBe(run);
+    expect(checksProblems(withStep(BICEP_STEP, (s) => ({ ...s, run: noPath })), deploy)).toEqual([BICEP_ORDER, `${CHECKS_FILE} must set BICEP_PATH, or T-IAC-01 and the infra scripts' tests are skipped`]);
+  });
+
+  it.skipIf(spawnSync("sha256sum", ["--version"]).status !== 0)("T-CI-01 the step's SHA-256 check, run as the step runs it, passes the published bytes and refuses any other", () => {
+    const dir = mkdtempSync(join(tmpdir(), "bicep-checksum-"));
+    try {
+      mkdirSync(join(dir, "bicep"));
+      const published = "the bytes GitHub published";
+      const status = (bytes: string) => {
+        writeFileSync(join(dir, "bicep", "bicep"), bytes);
+        const env = { PATH: process.env.PATH ?? "", RUNNER_TEMP: dir, BICEP_SHA256: createHash("sha256").update(published).digest("hex") };
+        return spawnSync("bash", ["--noprofile", "--norc", "-eo", "pipefail", "-c", BICEP_CHECKSUM], { env, encoding: "utf8" }).status;
+      };
+      expect(status(published)).toBe(0);
+      expect(status(`${published}, and a planted payload`)).not.toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("T-CI-01 must-fail: a folder without the pull request check is reported", () => {
+    expect(folderProblems(readdirSync(DIR).filter((f) => f !== CHECKS_FILE))).toEqual([FOLDER_PROBLEM]);
   });
 });
