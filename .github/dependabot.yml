@@ -17,3 +17,17 @@ updates:
     ignore:
       # The local chain only; its last release bundles its own node_modules (dev-only advisories, T-IMG-02).
       - dependency-name: ganache
+      # Pinned to contracts/MockUSDC.sol's exact pragma (0.8.24) and ganache's `shanghai`: any other compiler stops the
+      # local chain, so the two move together, by hand (SPEC §5).
+      - dependency-name: solc
+      # The AI SDK line Mastra's model types accept (SPEC §5: `ai` 6 and `@ai-sdk/provider` 3 for the test model,
+      # `@ai-sdk/anthropic` 3 for the hosted agent). A new major moves together with `@mastra/core`, by hand: alone, `ai`
+      # 7 broke the tests' typecheck and `@ai-sdk/anthropic` 4 broke `npm run build` (src/hosted-main.ts).
+      - dependency-name: ai
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@ai-sdk/*"
+        update-types: ["version-update:semver-major"]
+      # The types of the runtime the images run (`node:22-bookworm-slim`): a newer major would type-check calls that
+      # don't exist there.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
