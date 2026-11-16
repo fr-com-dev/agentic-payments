@@ -11,13 +11,13 @@ import type { Express, RequestHandler, Response } from "express";
 import { addressLimit } from "../shared/address-limit.js";
 import { requireRole } from "../shared/auth.js";
 import { ESCALATION_ID_RE, REJECTION_REASON_CODES, type BudgetLine, type DecisionOutcome, type EscalationBudget, type RejectionReasonCode } from "../shared/contracts.js";
-import { USER_ID_RE } from "../shared/user-id.js";
 import { recordApproval, recordRejection, type DecisionCtx, type DecisionOptions, type DecisionRefusal, type DecisionResult } from "./approval-routes.js";
 import { channelOf, deciderOf, escalationDetail, escalationOwner, EVENT_PAGE_DEFAULT, EVENT_PAGE_MAX, eventPage, expiresAtMsOf, findEscalation, pendingEscalations } from "./escalations.js";
 import type { AuditLedger, LedgerEntry } from "./ledger.js";
 import { jsonBody } from "./json-body.js";
 import type { Serialize } from "./ledger-routes.js";
 import type { SpendingMandate } from "./mandate.js";
+import { MAX_PERSON_CHECKS_PER_MINUTE, personAuth, verifiedPersonOf, type PersonDeps } from "./person.js";
 import { STEP_UP_MAX_AGE_MS, stepUpFresh, type UserGate } from "./users.js";
 
 /** Must-fail switches (Constitution VIII). Test-only deps, never set by main() and never read from the environment. */
@@ -26,6 +26,8 @@ export interface AdminDeps {
   skipOwnPaymentCheck?: boolean;
   /** T-ADM-05: without the identity confirmation, a sign-in from a day ago approves. */
   skipDecisionStepUp?: boolean;
+  /** 1.19 T-ADM-14: without the second-factor check, an approval needs a fresh password only. */
+  skipDecisionMfa?: boolean;
   /** T-ADM-07: without the pending check, a second final-state entry is recorded for one escalation. */
   skipPendingCheck?: boolean;
   /** T-ADM-02: with one portal role for both halves, the user-account token approves. */
@@ -49,6 +51,8 @@ export interface AdminRoutesDeps {
   admin: AdminDeps;
   /** The budget behind an escalation as of `nowMs`, from the same figures the decision uses (service.ts). Reads only. */
   budgetFor: (escalated: LedgerEntry, nowMs: number) => EscalationBudget;
+  /** 1.19 (SEC-35): how L2 verifies the administrator's own portal token, forwarded beside the role token. */
+  person: PersonDeps;
   /** Test hook: explicit tokens instead of resolving them from the environment. */
   tokens?: { portalAdmin?: string; portal?: string };
 }
@@ -145,7 +149,9 @@ export function mountAdminRoutes(app: Express, deps: AdminRoutesDeps): void {
     ? requireRole("portal-control", deps.tokens?.portal === undefined ? {} : { token: deps.tokens.portal })
     : requireRole("portal-admin", deps.tokens?.portalAdmin === undefined ? {} : { token: deps.tokens.portalAdmin });
   // The guard covers the whole prefix, so a path that matches no route still needs the token: 401 before 404.
-  app.use("/v1/admin", guard);
+  // 1.19 (SEC-35): then the administrator's own token, verified here with `portal:admin` in it, before any body.
+  const personLimit = addressLimit({ max: deps.person.maxChecksPerMinute ?? MAX_PERSON_CHECKS_PER_MINUTE });
+  app.use("/v1/admin", guard, personLimit, personAuth(deps.person, { admin: true, now: deps.now }));
   const { ledger, admin } = deps;
   const json = jsonBody();
   // The ledger check's own limit, after the guard: a caller without the token is refused before it counts. The
@@ -160,7 +166,7 @@ export function mountAdminRoutes(app: Express, deps: AdminRoutesDeps): void {
    * identity, and L2 judges (FR-014, FR-015).
    */
   const guardsFor =
-    (decidedBy: string, approval?: { identityConfirmedAtMs: number }): NonNullable<DecisionOptions["guards"]> =>
+    (decidedBy: string, approval?: { identityConfirmedAtMs: number; mfaConfirmedAtMs: number | undefined }): NonNullable<DecisionOptions["guards"]> =>
     (escalated, entries, t) => {
       // Nobody decides their own payment. An escalation of the platform account has no owner.
       if (!admin.skipOwnPaymentCheck && escalationOwner(entries, escalated.authorizationId) === decidedBy) {
@@ -168,6 +174,11 @@ export function mountAdminRoutes(app: Express, deps: AdminRoutesDeps): void {
       }
       // An approval loosens: it needs credentials entered recently, exactly as a loosening policy change does.
       if (approval && !admin.skipDecisionStepUp && !stepUpFresh(approval.identityConfirmedAtMs, t)) {
+        return { status: 403, body: { error: "step_up_required", maxAgeSec: STEP_UP_MAX_AGE_MS / 1000 } };
+      }
+      // 1.19 (SEC-35): and a second factor in that same window. The tenant asks administrators for one on every
+      // interactive sign-in, so "Confirm it's you" gives a fresh one.
+      if (approval && !admin.skipDecisionMfa && !stepUpFresh(approval.mfaConfirmedAtMs, t)) {
         return { status: 403, body: { error: "step_up_required", maxAgeSec: STEP_UP_MAX_AGE_MS / 1000 } };
       }
       return undefined;
@@ -224,12 +235,11 @@ export function mountAdminRoutes(app: Express, deps: AdminRoutesDeps): void {
   app.post("/v1/admin/escalations/:authorizationId/approve", guard, json, async (req, res) => {
     const id = String(req.params.authorizationId);
     const b = req.body as unknown;
-    if (!ESCALATION_ID_RE.test(id) || !isObject(b) || !onlyKeys(b, ["decidedBy", "identityConfirmedAtMs"])) return void refuse(res, 400, "malformed request");
-    const { decidedBy, identityConfirmedAtMs } = b;
-    if (typeof decidedBy !== "string" || !USER_ID_RE.test(decidedBy)) return void refuse(res, 400, "invalid decidedBy");
-    if (typeof identityConfirmedAtMs !== "number" || !Number.isSafeInteger(identityConfirmedAtMs)) return void refuse(res, 400, "invalid identityConfirmedAtMs");
+    // 1.19: the body is empty. Who decides and when they confirmed their identity come from their own token.
+    if (!ESCALATION_ID_RE.test(id) || !isObject(b) || !onlyKeys(b, [])) return void refuse(res, 400, "malformed request");
+    const { userId: decidedBy, identityConfirmedAtMs, mfaConfirmedAtMs } = verifiedPersonOf(res);
     const out = await deps.serialize(() =>
-      answer(recordApproval(ctx, id, { channel: "portal", decidedBy, identityConfirmedAtMs }, options(guardsFor(decidedBy, { identityConfirmedAtMs })))),
+      answer(recordApproval(ctx, id, { channel: "portal", decidedBy, identityConfirmedAtMs }, options(guardsFor(decidedBy, { identityConfirmedAtMs, mfaConfirmedAtMs })))),
     );
     res.status(out.status).json(out.body);
   });
@@ -238,9 +248,9 @@ export function mountAdminRoutes(app: Express, deps: AdminRoutesDeps): void {
   app.post("/v1/admin/escalations/:authorizationId/reject", guard, json, async (req, res) => {
     const id = String(req.params.authorizationId);
     const b = req.body as unknown;
-    if (!ESCALATION_ID_RE.test(id) || !isObject(b) || !onlyKeys(b, ["decidedBy", "reasonCode"])) return void refuse(res, 400, "malformed request");
-    const { decidedBy, reasonCode } = b;
-    if (typeof decidedBy !== "string" || !USER_ID_RE.test(decidedBy)) return void refuse(res, 400, "invalid decidedBy");
+    if (!ESCALATION_ID_RE.test(id) || !isObject(b) || !onlyKeys(b, ["reasonCode"])) return void refuse(res, 400, "malformed request");
+    const { reasonCode } = b;
+    const decidedBy = verifiedPersonOf(res).userId;
     if (!(REJECTION_REASON_CODES as readonly unknown[]).includes(reasonCode)) return void refuse(res, 400, "invalid reasonCode");
     const out = await deps.serialize(() =>
       answer(recordRejection(ctx, id, { channel: "portal", decidedBy, reasonCode: reasonCode as RejectionReasonCode }, options(guardsFor(decidedBy)))),

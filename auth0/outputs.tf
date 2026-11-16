@@ -20,13 +20,12 @@ output "bicepparam_ciba" {
 }
 
 output "l2_env" {
-  description = "The non-secret lines for a local env/l2-control.env: the CIBA_* ones, then the callers' sign-in (the same three values as l1_env). Add CIBA_CLIENT_KEY (the private half) or CIBA_CLIENT_SECRET yourself."
+  description = "The non-secret lines for a local env/l2-control.env: the CIBA_* ones (no approver: each request goes to the person the payment is for, SPEC v1.16), then the callers' sign-in (the same three values as l1_env). Add CIBA_CLIENT_KEY (the private half) or CIBA_CLIENT_SECRET yourself."
   value = join("\n", [
     "CIBA_APPROVAL=1",
     "CIBA_ISSUER=${local.issuer}",
     "CIBA_CLIENT_ID=${auth0_client.l2.client_id}",
     "CIBA_AUDIENCE=${auth0_resource_server.payments.identifier}",
-    "CIBA_APPROVER=${data.auth0_user.approver.user_id}",
     "AUTH_ISSUER=${local.issuer}",
     "AUTH_AUDIENCE=${auth0_resource_server.identity.identifier}",
     "AGENT_CLIENT_IDS=${auth0_client.agent.client_id}",

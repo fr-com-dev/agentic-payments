@@ -4,16 +4,17 @@
 # machine token can request the payment details. Users, passwords and private keys are never managed here.
 #
 # And what people's sign-in needs (SPEC L2-8, specs/013 research R19), further down: one API, the portal's public
-# client and the post-login Action that dates the sign-in. Using the portal needs no permission and no role (research
-# R21): whoever signs in through the portal's client may use it, for their own account only.
+# client and the post-login Actions that date the sign-in and its second factor, and ask an administrator for one.
+# Using the portal needs no permission and no role (research R21): whoever signs in through the portal's client may
+# use it, for their own account only.
 #
 # And what the hosted agent's callers need (specs/016 research R9, R10), last: the agent's public client, through
 # which the agent's docs page signs a person in, and one confidential client per machine caller, with a key and no
 # secret. The tenant's applications are exactly L2's, the portal's, the agent's and the machine callers' (T-IAC-02
 # fails on any other). People's API has two permissions, portal:admin (014) and agent:run (016), each held by one
 # role. A tenant administrator assigns a role per person, by hand: nobody is assigned here, and no user is created
-# here. To keep one person out, block that user in Auth0; to keep strangers out, turn sign-ups off on the tenant's
-# connection.
+# here. To keep one person out, block that user in Auth0; to keep strangers out, set var.allow_sign_ups to false
+# (the pre-user-registration Action at the end), or turn sign-ups off on the tenant's connection.
 
 locals {
   # Must equal DETAILS_TYPE in src/layer2-control/payment-details.ts (T-IAC-02): Auth0's Guardian schema, the only
@@ -28,17 +29,17 @@ locals {
   # Must equal AGENT_RUN_PERMISSION in src/shared/identity-token.ts (T-IAC-02): what the agent and L2 look for.
   agent_permission = "agent:run"
   auth_time_claim  = "https://x402.dev/auth_time"
-  # The local portal (its default port), and the deployed one once var.portal_origin is set.
-  portal_origins = concat(["http://localhost:4025"], var.portal_origin == "" ? [] : [var.portal_origin])
-  # The agent's docs page: the local agent (its default port, under both names a browser may use), and the deployed
-  # one once var.agent_origin is set. The page's sign-in returns to one address under each origin, and nowhere else.
-  agent_origins   = concat(["http://localhost:4024", "http://127.0.0.1:4024"], var.agent_origin == "" ? [] : [var.agent_origin])
+  # The time of the latest second factor, written by mfa-time.js: the services require it, fresh, for an
+  # administrator's decision (Phase 3).
+  mfa_time_claim = "https://x402.dev/mfa_time"
+  # The local portal (its default port) only where var.local_origins is on (dev), and the deployed one once
+  # var.portal_origin is set. A deployed environment's client accepts no localhost address.
+  portal_origins = concat(var.local_origins ? ["http://localhost:4025"] : [], var.portal_origin == "" ? [] : [var.portal_origin])
+  # The agent's docs page: the local agent (its default port, under both names a browser may use) only where
+  # var.local_origins is on, and the deployed one once var.agent_origin is set. The page's sign-in returns to one
+  # address under each origin, and nowhere else.
+  agent_origins   = concat(var.local_origins ? ["http://localhost:4024", "http://127.0.0.1:4024"] : [], var.agent_origin == "" ? [] : [var.agent_origin])
   agent_callbacks = [for origin in local.agent_origins : "${origin}/docs/oauth2-redirect.html"]
-}
-
-# The approver must already exist (plan fails otherwise). Their Guardian enrollment is theirs to do, on their phone.
-data "auth0_user" "approver" {
-  user_id = var.approver_user_id
 }
 
 # The approval API: its identifier is CIBA_AUDIENCE. L2 verifies its access tokens (RS256, RFC 9068 profile, so they
@@ -75,7 +76,7 @@ resource "auth0_resource_server" "payments" {
 # Its client ID is CIBA_CLIENT_ID.
 resource "auth0_client" "l2" {
   name                                 = "app-l2-ciba-${var.environment}"
-  description                          = "x402 L2 control (${var.environment}): asks the approver to approve escalated payments, by CIBA (SPEC L2-7). No user signs in to it."
+  description                          = "x402 L2 control (${var.environment}): asks the person an escalated payment is for to approve it, by CIBA (SPEC L2-7). No user signs in to it."
   app_type                             = "regular_web"
   is_first_party                       = true
   oidc_conformant                      = true
@@ -127,9 +128,13 @@ resource "auth0_client_credentials" "l2" {
 
 # Guardian push through the Guardian app: CIBA delivers the approval request this way, and only for requests that
 # live 300 s or less. A tenant-wide singleton: destroying it would disable every MFA factor, so it never is.
+# One-time codes (otp, an authenticator app; the Guardian app shows one too) are on as well (Phase 3): sign-in-time.js
+# challenges an administrator with push or a code, and Auth0 skips a factor that is off. Turning a factor on asks
+# nobody for it: with guardian_policy never, only that Action asks, and only administrators.
 resource "auth0_guardian" "this" {
   count  = var.manage_guardian ? 1 : 0
   policy = var.guardian_policy
+  otp    = true
 
   push {
     enabled  = true
@@ -139,6 +144,15 @@ resource "auth0_guardian" "this" {
   lifecycle {
     prevent_destroy = true
   }
+}
+
+# The tenant setting without which a post-login Action can't choose the second factor (Auth0's "Customize MFA
+# Factors using Actions"): sign-in-time.js's challenge needs it. It sets nothing else of the tenant's, and goes with
+# Guardian: where another configuration owns the MFA settings (manage_guardian = false), that one turns it on.
+# Removing this resource changes nothing in the tenant.
+resource "auth0_tenant" "mfa_actions" {
+  count                             = var.manage_guardian ? 1 : 0
+  customize_mfa_in_postlogin_action = true
 }
 
 # ---- People's sign-in (specs/013 research R19) ---------------------------------------------------------------------
@@ -261,9 +275,11 @@ resource "auth0_client_credentials" "portal" {
   authentication_method = "none"
 }
 
-# The post-login Action: it writes the time of the person's most recent authentication on the access token, as
-# local.auth_time_claim (Auth0 puts auth_time in the ID token only). L2 judges from it whether a loosening policy
-# change follows a fresh sign-in. It sets nothing else, holds no secret and uses no package. T-IAC-02 runs its code.
+# The first post-login Action: it writes the time of the person's most recent authentication on the access token,
+# as local.auth_time_claim (Auth0 puts auth_time in the ID token only). L2 judges from it whether a loosening policy
+# change follows a fresh sign-in. Phase 3: on an administrator's (auth0_role.admin) interactive sign-in in a browser
+# without a second factor as recent as the rest of it, it asks Auth0 for one (push or a one-time code). It sets
+# nothing else, holds no secret and uses no package. T-IAC-02 runs its code.
 resource "auth0_action" "sign_in_time" {
   name    = "x402-sign-in-time-${var.environment}"
   runtime = "node22"
@@ -287,6 +303,39 @@ resource "auth0_action" "sign_in_time" {
 resource "auth0_trigger_action" "sign_in_time" {
   trigger   = "post-login"
   action_id = auth0_action.sign_in_time.id
+}
+
+# The second post-login Action (Phase 3): it writes the time of the person's most recent second factor on the
+# access token, as local.mfa_time_claim. The services require it, fresh, for an administrator's decision on a
+# payment. It must run after sign_in_time: Auth0 asks for the second factor an Action requests once that Action has
+# run, before the next one, so only an Action bound later sees it. It sets nothing else, holds no secret and uses
+# no package. T-IAC-02 runs its code.
+resource "auth0_action" "mfa_time" {
+  name    = "x402-mfa-time-${var.environment}"
+  runtime = "node22"
+  deploy  = true
+  code    = file("${path.module}/mfa-time.js")
+
+  supported_triggers {
+    id      = "post-login"
+    version = "v3"
+  }
+
+  lifecycle {
+    precondition {
+      condition     = strcontains(file("${path.module}/mfa-time.js"), "\"${local.mfa_time_claim}\"")
+      error_message = "mfa-time.js must write local.mfa_time_claim, the claim the services read."
+    }
+  }
+}
+
+# Appended to the post-login flow after sign_in_time's binding (depends_on): a binding is appended where it is
+# created, so this one comes later in a new tenant as in one that already has sign_in_time.
+resource "auth0_trigger_action" "mfa_time" {
+  trigger   = "post-login"
+  action_id = auth0_action.mfa_time.id
+
+  depends_on = [auth0_trigger_action.sign_in_time]
 }
 
 # ---- The hosted agent's callers (specs/016 research R9, R10) -------------------------------------------------------
@@ -366,4 +415,34 @@ resource "auth0_client_grant" "machine" {
   scopes    = [local.agent_permission]
 
   depends_on = [auth0_resource_server_scopes.identity]
+}
+
+# ---- Closed sign-ups (Phase 3, var.allow_sign_ups) -----------------------------------------------------------------
+
+# With var.allow_sign_ups false, a pre-user-registration Action refuses every new account in the tenant's database
+# and passwordless connections: through the sign-up page, the public sign-up endpoint, the Dashboard and the
+# Management API alike (to add a person then, turn it off for that time, or create them through a connection that
+# doesn't run it). A first sign-in through a social or enterprise connection makes a user without running this
+# trigger: turn such connections off for the applications too, or block the users they make. It holds no secret
+# and uses no package. T-IAC-02 runs its code.
+resource "auth0_action" "deny_sign_up" {
+  count = var.allow_sign_ups ? 0 : 1
+
+  name    = "x402-deny-sign-up-${var.environment}"
+  runtime = "node22"
+  deploy  = true
+  code    = file("${path.module}/deny-sign-up.js")
+
+  supported_triggers {
+    id      = "pre-user-registration"
+    version = "v2"
+  }
+}
+
+# Appended to the tenant's pre-user-registration flow: an Action another configuration bound there stays.
+resource "auth0_trigger_action" "deny_sign_up" {
+  count = var.allow_sign_ups ? 0 : 1
+
+  trigger   = "pre-user-registration"
+  action_id = auth0_action.deny_sign_up[0].id
 }

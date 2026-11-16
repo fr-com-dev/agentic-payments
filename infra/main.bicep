@@ -9,7 +9,8 @@
 // is (incremental mode). Every name comes from the parameter file's `names` ({type}-{app}-{location}-{environment},
 // the registry's and storage's without hyphens; T-IAC-01 rule 15): no template names a resource itself. T-IAC-01
 // (test/infra.test.ts) asserts the identity, secret and exposure rules. No secret value appears here: vaults are
-// seeded by hand (quickstart §4), never by a template.
+// seeded by hand (quickstart §4), never by a template. Every secret an app references must exist before its unit's
+// deployment, as the placeholder off where a feature is off: in the l2 vault, ledger-mac-key too (Phase 3, rule 24).
 targetScope = 'resourceGroup'
 
 // Every value comes from main.<environment>.bicepparam, the target and every name included: the pipelines sign in to

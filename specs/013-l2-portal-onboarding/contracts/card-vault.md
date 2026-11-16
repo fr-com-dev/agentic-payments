@@ -22,7 +22,7 @@ No Stripe SDK on the server: six calls with global `fetch` ([R7](../research.md#
 ## Startup checks (fail closed)
 
 With `CARD_VAULT=stripe`, the portal refuses to start unless:
-- `CARD_VAULT_KEY` starts with `rk_test_` or `sk_test_`, and
+- `CARD_VAULT_KEY` starts with `rk_test_` (1.19: a secret test key, `sk_test_`, is refused; it is not scoped to the six calls), and
 - `CARD_VAULT_PUBLISHABLE_KEY` starts with `pk_test_`.
 
 A live key (`sk_live_`, `rk_live_`, `pk_live_`) is always a startup error, naming the variable and never the value.
@@ -34,7 +34,7 @@ unset, cards are off: the wallet says so and the card routes answer 503 `cards_u
 | # | Purpose | Call | Sends | Reads |
 |---|---|---|---|---|
 | 1 | One customer per user, on the first setup | `POST /v1/customers` | `metadata[x402_user_id]=<userId>` | `id` |
-| 2 | Start a card setup | `POST /v1/setup_intents` | `customer`, `allowed_payment_method_types[]=card`, `usage=off_session`, `metadata[x402_user_id]` | `id`, `client_secret`, `livemode` |
+| 2 | Start a card setup | `POST /v1/setup_intents` | `customer`, `allowed_payment_method_types[]=card`, `usage=on_session` (1.19; it was `off_session`: cards are never charged), `metadata[x402_user_id]` | `id`, `client_secret`, `livemode` |
 | 3 | Read the result | `GET /v1/setup_intents/{id}?expand[]=payment_method` | — | `status`, `customer`, `payment_method.{id, created, card.{brand, last4, exp_month, exp_year, fingerprint}}`, `last_setup_error.code` |
 | 4 | List a user's cards | `GET /v1/customers/{id}/payment_methods?type=card&limit=100` | — | `data[].{id, created, metadata, card.*}` |
 | 5 | Label a card | `POST /v1/payment_methods/{id}` | `metadata[x402_card_id]`, `metadata[nickname]` | `id` |

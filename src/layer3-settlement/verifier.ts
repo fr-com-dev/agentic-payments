@@ -3,7 +3,7 @@
 // Transfer(payer → payTo, amount) emitted by requirement.asset. INV-4: read-only; this module takes a
 // public client and never anything that can sign or write.
 import { decodePaymentResponseHeader } from "@x402/core/http";
-import { erc20Abi, parseEventLogs, type Hex, type Log } from "viem";
+import { erc20Abi, parseAbi, parseEventLogs, type Hex, type Log } from "viem";
 import type { NetworkProfile } from "../shared/config.js";
 import type {
   FinalityClass,
@@ -13,7 +13,13 @@ import type {
   SettlementVerifierPort,
 } from "../shared/contracts.js";
 
-/** The only chain reads L3 makes (contracts/verifier.md). A viem PublicClient satisfies this shape. */
+/** EIP-3009's read of whether an authorization's nonce was used (or canceled). USDC and the local mock have it. */
+export const EIP3009_ABI = parseAbi(["function authorizationState(address authorizer, bytes32 nonce) view returns (bool)"]);
+
+/**
+ * The only chain reads L3 makes (contracts/verifier.md). A viem PublicClient satisfies this shape. 1.19: the latest
+ * block's time and `authorizationState`, both reads.
+ */
 export interface ReadOnlyChainClient {
   waitForTransactionReceipt(args: { hash: Hex; timeout: number; pollingInterval: number }): Promise<{
     status: "success" | "reverted";
@@ -21,7 +27,8 @@ export interface ReadOnlyChainClient {
     logs: readonly Log[];
   }>;
   getBlockNumber(): Promise<bigint>;
-  getBlock(args: { blockTag: "safe" }): Promise<{ number: bigint | null }>;
+  getBlock(args: { blockTag: "safe" | "latest" }): Promise<{ number: bigint | null; timestamp?: bigint }>;
+  readContract(args: { address: Hex; abi: typeof EIP3009_ABI; functionName: "authorizationState"; args: readonly [Hex, Hex] }): Promise<boolean>;
 }
 
 export interface VerifierDeps {
@@ -35,9 +42,17 @@ export interface VerifierDeps {
    * Default true. Test-only switch: `false` restores v1.1 for the T-CDP-06 must-fail proof.
    */
   verifyFailedClaims?: boolean;
+  /** Test-only (1.19 must-fail): NOT_SETTLED on the seller's word, as before 1.19, even for a claim with a nonce. */
+  skipNonceCheck?: boolean;
 }
 
 const TX_HASH = /^0x[0-9a-fA-F]{64}$/;
+const NONCE = /^0x[0-9a-fA-F]{64}$/;
+/**
+ * 1.19: how far past validBefore the chain's latest block must be before an unused nonce counts as never usable. A
+ * block with a timestamp at or after validBefore can't include the transfer; the margin covers a short reorg.
+ */
+export const NONCE_FINAL_MARGIN_SEC = 60n;
 
 export const DEFAULT_WAIT_MS = 45_000;
 export const DEFAULT_POLL_MS = 1_000;
@@ -64,6 +79,7 @@ export class ChainSettlementVerifier implements SettlementVerifierPort {
   readonly #waitMs: number;
   readonly #pollMs: number;
   readonly #verifyFailedClaims: boolean;
+  readonly #skipNonceCheck: boolean;
 
   constructor(deps: VerifierDeps) {
     this.#client = deps.publicClient;
@@ -71,6 +87,7 @@ export class ChainSettlementVerifier implements SettlementVerifierPort {
     this.#waitMs = deps.waitMs ?? DEFAULT_WAIT_MS;
     this.#pollMs = deps.pollMs ?? DEFAULT_POLL_MS;
     this.#verifyFailedClaims = deps.verifyFailedClaims ?? true;
+    this.#skipNonceCheck = deps.skipNonceCheck === true;
   }
 
   async verify(claim: SettlementClaim): Promise<SettlementReport> {
@@ -86,7 +103,7 @@ export class ChainSettlementVerifier implements SettlementVerifierPort {
       authorizationId: claim.authorizationId,
       network: req.network,
       finalityClass,
-      verified: { asset: req.asset, payer: claim.payer, payTo: req.payTo, amount: req.amount },
+      verified: { asset: req.asset, payer: claim.payer, payTo: req.payTo, amount: req.amount, ...(claim.nonce !== undefined && { nonce: String(claim.nonce).toLowerCase() }) },
     };
     // Set in step 2 when the facilitator reported failure but named a transaction (v1.2).
     let prefix = "";
@@ -97,27 +114,51 @@ export class ChainSettlementVerifier implements SettlementVerifierPort {
       ...extra,
       observedAt: new Date().toISOString(),
     });
+    /**
+     * 1.19 (L3-1): every outcome that says "nothing settled". The seller's answer, or a reverted transaction, is no
+     * proof: while validBefore has not passed, the seller still holds a valid authorization and can settle it in
+     * another transaction. So, for a claim with a nonce: PENDING (with `settlesBy`) until the chain is past
+     * validBefore, then the nonce's state decides. Unused: NOT_SETTLED, and the amount stops counting. Used: the
+     * transfer happened without a transaction anyone reported, a MISMATCH that keeps the amount counted. A claim
+     * without a nonce (an L1 before 1.19) gets NOT_SETTLED as before, which L2 no longer releases for an
+     * authorization whose nonce it recorded.
+     */
+    const notSettled = async (detail: string, extra: Partial<SettlementReport> = {}): Promise<SettlementReport> => {
+      if (claim.nonce === undefined || this.#skipNonceCheck) return report("NOT_SETTLED", detail, extra);
+      if (typeof claim.nonce !== "string" || !NONCE.test(claim.nonce)) return report("MISMATCH", `${detail}; the claim's nonce is not 32 bytes of hex`, extra);
+      const finalAfter = BigInt(Math.trunc(Number(claim.validBefore))) + NONCE_FINAL_MARGIN_SEC;
+      const head = await this.#client.getBlock({ blockTag: "latest" });
+      if (head.timestamp === undefined || head.timestamp < finalAfter) {
+        return report("PENDING", `${detail}; the authorization can still be used until validBefore, so its nonce is checked after it`, {
+          ...extra,
+          settlesBy: new Date(Number(finalAfter) * 1000).toISOString(),
+        });
+      }
+      const used = await this.#client.readContract({ address: req.asset as Hex, abi: EIP3009_ABI, functionName: "authorizationState", args: [claim.payer as Hex, claim.nonce as Hex] });
+      if (used === true) return report("MISMATCH", `${detail}; but the authorization's nonce was used on-chain`, extra);
+      return report("NOT_SETTLED", `${detail}; the authorization's nonce is unused after validBefore`, extra);
+    };
 
     try {
       if (amount < 0n) return report("MISMATCH", `requirement amount is not an atomic integer: "${req.amount}"`);
 
       // Step 2: the seller's claim, decoded only with the SDK helper (§10).
       if (claim.paymentResponseHeader === null || claim.paymentResponseHeader === "") {
-        return report("NOT_SETTLED", "no PAYMENT-RESPONSE header");
+        return await notSettled("no PAYMENT-RESPONSE header");
       }
       let settle: ReturnType<typeof decodePaymentResponseHeader>;
       try {
         settle = decodePaymentResponseHeader(claim.paymentResponseHeader);
       } catch (err) {
-        return report("NOT_SETTLED", `PAYMENT-RESPONSE could not be decoded: ${(err as Error).message}`);
+        return await notSettled(`PAYMENT-RESPONSE could not be decoded: ${(err as Error).message}`);
       }
       // v1.2 (FR-020, SEC-11): a failure claim is not proof that nothing settled. Without a 32-byte hash
       // there is nothing to check; with one, the chain decides exactly as for a success claim.
       const hasHash = typeof settle.transaction === "string" && TX_HASH.test(settle.transaction);
       if (!settle.success && (!hasHash || !this.#verifyFailedClaims)) {
-        return report("NOT_SETTLED", `seller reported failure: ${settle.errorReason ?? "unknown"}`);
+        return await notSettled(`seller reported failure: ${settle.errorReason ?? "unknown"}`);
       }
-      if (!hasHash) return report("NOT_SETTLED", "PAYMENT-RESPONSE has no transaction");
+      if (!hasHash) return await notSettled("PAYMENT-RESPONSE has no transaction");
       if (!settle.success) prefix = `facilitator reported failure (${settle.errorReason ?? "unknown"}); `;
       const tx = settle.transaction as Hex;
 
@@ -142,7 +183,7 @@ export class ChainSettlementVerifier implements SettlementVerifierPort {
         return report("PENDING", `rpc error while waiting for the receipt: ${(err as Error).message}`, { transaction: tx });
       }
       if (receipt.status !== "success") {
-        return report("NOT_SETTLED", `transaction ${receipt.status}`, { transaction: tx, blockNumber: receipt.blockNumber.toString() });
+        return await notSettled(`transaction ${receipt.status}`, { transaction: tx, blockNumber: receipt.blockNumber.toString() });
       }
 
       // Step 5: a Transfer from requirement.asset matching (payer, payTo, amount).

@@ -1,6 +1,7 @@
 // 008 e2e harness (contracts/e2e-harness.md, research R3). One in-process stack per call:
 // ganache + MockUSDC, local facilitator, seller on 0.0.0.0, L2 control, L3 verifier.
 // The harness may wire layers together (INV-1 permits test/**).
+import { DEV_PORTAL_CLIENT } from "../../scripts/dev-issuer-lib.js";
 import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -184,6 +185,10 @@ export async function startHarness(opts: HarnessOptions = {}): Promise<Harness> 
       tokens: { control: TOKENS.control, settlement: TOKENS.settlement, operator: TOKENS.operator, portal: TOKENS.portal, portalAdmin: TOKENS.portalAdmin },
       ...(platform && keyring && { users: { platform, keyring, ...opts.users?.switches }, net }),
       ...(callers && { caller: { ...callers.deps, ...callerOpts?.switches } }),
+      // 1.19 (SEC-35): L2 verifies the person's portal token, from the same tenant as the callers'.
+      ...(platform && callers && {
+        person: { issuer: callers.issuer, audience: callers.audience, portalClientId: DEV_PORTAL_CLIENT, keys: callers.deps.keys, algorithms: callers.deps.algorithms },
+      }),
       ...(platform && opts.admin && { admin: {} }),
       ...(opts.signerLatencyMs !== undefined && { signerLatencyMs: opts.signerLatencyMs }),
       ...(opts.controlNow !== undefined && { now: opts.controlNow }),
@@ -218,10 +223,28 @@ export async function startHarness(opts: HarnessOptions = {}): Promise<Harness> 
       addresses: { payer, payTo, asset: net.asset },
       balanceOf,
       portal: async (method, path, body) => {
+        // 1.19 (SEC-35): as the portal sends it, with the person's own portal token for the path's user. A body's
+        // numeric `identityConfirmedAtMs` becomes that token's sign-in time and is taken off the body.
+        let sent = body;
+        let authMs: number | undefined;
+        if (body !== null && typeof body === "object" && !Array.isArray(body) && typeof (body as Record<string, unknown>).identityConfirmedAtMs === "number") {
+          const { identityConfirmedAtMs, ...rest } = body as Record<string, unknown>;
+          authMs = identityConfirmedAtMs as number;
+          sent = rest;
+        }
+        const named = /^\/v1\/users\/(usr_[0-9a-f]{32})(?:[/?]|$)/.exec(path)?.[1];
+        const person =
+          named !== undefined && callers?.subjectOf(named) !== undefined
+            ? await callers.forUser(named, { azp: DEV_PORTAL_CLIENT, authTime: Math.floor((authMs ?? Date.now()) / 1000) })
+            : undefined;
         const res = await fetch(`${controlUrl}${path}`, {
           method,
-          headers: { authorization: `Bearer ${TOKENS.portal}`, ...(body !== undefined && { "content-type": "application/json" }) },
-          ...(body !== undefined && { body: JSON.stringify(body) }),
+          headers: {
+            authorization: `Bearer ${TOKENS.portal}`,
+            ...(person !== undefined && { "x-person-authorization": `Bearer ${person}` }),
+            ...(sent !== undefined && { "content-type": "application/json" }),
+          },
+          ...(sent !== undefined && { body: JSON.stringify(sent) }),
         });
         return { status: res.status, body: (await res.json()) as never };
       },

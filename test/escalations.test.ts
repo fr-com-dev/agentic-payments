@@ -706,7 +706,7 @@ describe("014 the operator's decisions are unchanged (FR-019)", () => {
     const s = await startOperatorRoutes(l);
     try {
       expect(await s.call("/v1/approvals/auth_p", {}, "wrong")).toEqual({ status: 401, body: { error: "unauthorized" } });
-      expect(await s.call("/v1/approvals/auth_p", { ttlSeconds: 0 })).toEqual({ status: 400, body: { error: "ttlSeconds must be a positive integer" } });
+      expect(await s.call("/v1/approvals/auth_p", { ttlSeconds: 0 })).toEqual({ status: 400, body: { error: "ttlSeconds must be a whole number from 1 to 3600" } });
       expect(await s.call("/v1/approvals/auth_none")).toEqual({ status: 404, body: { error: "not found" } });
       const before = l.entries().length;
 

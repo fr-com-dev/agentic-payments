@@ -53,20 +53,20 @@ async function addCard(p: PortalTestApp, vault: CardVaultStub, subject: string, 
 // ---------------------------------------------------------------------------
 
 describe("T-CARD-01 configuration: test keys only (FR-018, SEC-22)", () => {
-  it("T-CARD-01 unset: cards are off; stripe with test keys: on", () => {
+  it("T-CARD-01 unset: cards are off; stripe with a restricted test key: on", () => {
     expect(cardVaultFromEnv({})).toBeUndefined();
     expect(cardVaultFromEnv({ CARD_VAULT: "" })).toBeUndefined();
-    for (const key of ["rk_test_abc", "sk_test_abc"]) {
-      expect(cardVaultFromEnv({ CARD_VAULT: "stripe", CARD_VAULT_KEY: key, CARD_VAULT_PUBLISHABLE_KEY: "pk_test_abc" })).toEqual({ key, publishableKey: "pk_test_abc" });
-    }
+    expect(cardVaultFromEnv({ CARD_VAULT: "stripe", CARD_VAULT_KEY: "rk_test_abc", CARD_VAULT_PUBLISHABLE_KEY: "pk_test_abc" })).toEqual({ key: "rk_test_abc", publishableKey: "pk_test_abc" });
   });
 
   it("T-CARD-01 a live key, a missing key or another vault refuses startup, naming the variable and never the value", () => {
     const base = { CARD_VAULT: "stripe", CARD_VAULT_KEY: "rk_test_abc", CARD_VAULT_PUBLISHABLE_KEY: "pk_test_abc" };
     const bad: Array<[Record<string, string>, RegExp]> = [
-      [{ ...base, CARD_VAULT_KEY: "sk_live_SECRETLIVEKEY" }, /CARD_VAULT_KEY must be a test key/],
-      [{ ...base, CARD_VAULT_KEY: "rk_live_SECRETLIVEKEY" }, /CARD_VAULT_KEY must be a test key/],
-      [{ ...base, CARD_VAULT_KEY: "SECRETLIVEKEY" }, /CARD_VAULT_KEY must be a test key/],
+      [{ ...base, CARD_VAULT_KEY: "sk_live_SECRETLIVEKEY" }, /CARD_VAULT_KEY must be a restricted test key/],
+      [{ ...base, CARD_VAULT_KEY: "rk_live_SECRETLIVEKEY" }, /CARD_VAULT_KEY must be a restricted test key/],
+      // 1.19: a secret test key is refused too: it isn't scoped to the vault's six calls.
+      [{ ...base, CARD_VAULT_KEY: "sk_test_SECRETTESTKEY" }, /CARD_VAULT_KEY must be a restricted test key/],
+      [{ ...base, CARD_VAULT_KEY: "SECRETLIVEKEY" }, /CARD_VAULT_KEY must be a restricted test key/],
       [{ ...base, CARD_VAULT_KEY: "" }, /missing CARD_VAULT_KEY/],
       [{ ...base, CARD_VAULT_PUBLISHABLE_KEY: "pk_live_SECRETLIVEKEY" }, /CARD_VAULT_PUBLISHABLE_KEY must be a test key/],
       [{ ...base, CARD_VAULT_PUBLISHABLE_KEY: "" }, /missing CARD_VAULT_PUBLISHABLE_KEY/],
@@ -85,7 +85,7 @@ describe("T-CARD-01 configuration: test keys only (FR-018, SEC-22)", () => {
     }
     // The portal's config loader refuses the same way.
     const dev = { NETWORK: "local", AUTH_ISSUER: "urn:x402:dev-issuer", AUTH_AUDIENCE: "api://x402-l1-agent", PORTAL_CLIENT_ID: "x402-portal-dev", AUTH_JWKS_FILE: "jwks.json" };
-    expect(() => loadPortalConfig({ ...dev, ...base, CARD_VAULT_KEY: "sk_live_SECRETLIVEKEY" })).toThrow(/CARD_VAULT_KEY must be a test key/);
+    expect(() => loadPortalConfig({ ...dev, ...base, CARD_VAULT_KEY: "sk_live_SECRETLIVEKEY" })).toThrow(/CARD_VAULT_KEY must be a restricted test key/);
   });
 
   it("T-CARD-01 the vault address and version are constants, not configuration", () => {
@@ -460,7 +460,7 @@ describe("T-CARD-06 what the vault is sent, and what never appears anywhere (SEC
     const customer = vault.requests.find((r) => r.path === "/v1/customers")!;
     expect(customer.form).toEqual({ "metadata[x402_user_id]": p.userId("alice") });
     const setup = vault.requests.find((r) => r.path === "/v1/setup_intents")!;
-    expect(setup.form).toEqual({ customer: expect.stringMatching(/^cus_stub_/), "allowed_payment_method_types[]": "card", usage: "off_session", "metadata[x402_user_id]": p.userId("alice") });
+    expect(setup.form).toEqual({ customer: expect.stringMatching(/^cus_stub_/), "allowed_payment_method_types[]": "card", usage: "on_session", "metadata[x402_user_id]": p.userId("alice") });
     expect("payment_method_types" in setup.form).toBe(false);
     const label = vault.requests.find((r) => /^\/v1\/payment_methods\/[^/]+$/.test(r.path))!;
     expect(label.form).toEqual({ "metadata[x402_card_id]": expect.stringMatching(CARD_ID), "metadata[nickname]": "Travel" });

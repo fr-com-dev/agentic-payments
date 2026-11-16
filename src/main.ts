@@ -38,8 +38,15 @@ async function main(argv: string[]): Promise<void> {
   const gate = callerToken !== undefined ? control.forCaller(callerToken) : control;
   const settlement = new HttpSettlementVerifier(urls.settlement, tokenFor("agent-verifier"));
   const scripted = argv.includes("--scripted");
-  // 012 FR-007: the scripted regression (L1-4) is operator-only, so it never notifies the approver.
-  const orchestrator = new PaidResourceOrchestrator({ gate, settlement, sessionId, ...(scripted && { operatorApprovalOnly: true }) });
+  // 012 FR-007: the scripted regression (L1-4) is operator-only, so it never notifies the approver. 1.19: the model
+  // fetches the seller's host only; the fixed plan keeps its second, disallowed host (step 6), which L2 refuses.
+  const orchestrator = new PaidResourceOrchestrator({
+    gate,
+    settlement,
+    sessionId,
+    ...(scripted && { operatorApprovalOnly: true }),
+    ...(!scripted && { allowedHosts: [new URL(urls.seller).host] }),
+  });
   console.log(`session ${sessionId}`);
 
   if (scripted) {

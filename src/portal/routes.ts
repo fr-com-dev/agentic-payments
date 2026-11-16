@@ -341,7 +341,7 @@ export function mountPortalRoutes(r: Express, d: RoutesDeps): void {
     "/api/policies",
     json,
     handle(async (req, res) => {
-      const { userId, identityConfirmedAtMs } = person(res);
+      const { userId } = person(res);
       if (isObject(req.body) && "expectedVersion" in req.body) {
         res.status(400).json({ error: "malformed body" });
         return;
@@ -356,7 +356,7 @@ export function mountPortalRoutes(r: Express, d: RoutesDeps): void {
         res.status(422).json({ error: "invalid_policy", issues: input.issues });
         return;
       }
-      const policy = await d.control.createPolicy(userId, input.values, identityConfirmedAtMs);
+      const policy = await d.control.createPolicy(userId, input.values);
       // L2 accepted: only now is the name kept, in the portal's own store.
       setName(userId, policy.policyId, input.name);
       res.status(201).json(named(userId, policy));
@@ -375,7 +375,7 @@ export function mountPortalRoutes(r: Express, d: RoutesDeps): void {
     "/api/policies/:policyId",
     json,
     handle(async (req, res) => {
-      const { userId, identityConfirmedAtMs } = person(res);
+      const { userId } = person(res);
       const policyId = String(req.params.policyId);
       const expectedVersion = isObject(req.body) ? req.body.expectedVersion : undefined;
       const platform = await d.control.platform();
@@ -389,7 +389,7 @@ export function mountPortalRoutes(r: Express, d: RoutesDeps): void {
         return;
       }
       // The same values with a new name is a rename: L2 records nothing for it, and the name is the portal's.
-      const policy = await d.control.changePolicy(userId, policyId, input.values, expectedVersion, identityConfirmedAtMs);
+      const policy = await d.control.changePolicy(userId, policyId, input.values, expectedVersion);
       setName(userId, policyId, input.name);
       res.json(named(userId, policy));
     }),
@@ -397,13 +397,13 @@ export function mountPortalRoutes(r: Express, d: RoutesDeps): void {
 
   const act = (action: "pause" | "resume" | "remove") =>
     handle(async (req, res) => {
-      const { userId, identityConfirmedAtMs } = person(res);
+      const { userId } = person(res);
       const policyId = String(req.params.policyId);
       const policy =
         action === "pause"
           ? await d.control.pausePolicy(userId, policyId)
           : action === "resume"
-            ? await d.control.resumePolicy(userId, policyId, identityConfirmedAtMs)
+            ? await d.control.resumePolicy(userId, policyId)
             : await d.control.removePolicy(userId, policyId);
       res.json(named(userId, policy));
     });
@@ -431,8 +431,8 @@ export function mountPortalRoutes(r: Express, d: RoutesDeps): void {
   r.post(
     "/api/account/enable",
     handle(async (_req, res) => {
-      const { userId, identityConfirmedAtMs } = person(res);
-      res.json(me(res, await d.control.enable(userId, identityConfirmedAtMs)));
+      const { userId } = person(res);
+      res.json(me(res, await d.control.enable(userId)));
     }),
   );
 }

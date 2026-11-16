@@ -6,6 +6,7 @@ import type { Server } from "node:http";
 import { pathToFileURL } from "node:url";
 import express, { type ErrorRequestHandler, type Express } from "express";
 import { createPublicClient, http } from "viem";
+import { addressLimit } from "../shared/address-limit.js";
 import { requireRole } from "../shared/auth.js";
 import {
   loadEnv,
@@ -27,6 +28,11 @@ import { ChainSettlementVerifier, type ReadOnlyChainClient } from "./verifier.js
 export const DEFAULT_RECHECK_ATTEMPTS = 5;
 export const DEFAULT_RECHECK_INTERVAL_MS = 30_000;
 export const RECONCILE_TIMEOUT_MS = 5_000;
+/**
+ * Settlement claims a minute, from one address. L1 sends one per paid payment; in Azure every caller reaches L3
+ * through the same ingress address, so this bounds L3 as a whole: L2's bound on caller checks, far above a run's need.
+ */
+export const MAX_SETTLEMENT_CLAIMS_PER_MINUTE = 600;
 
 /** Read-only chain client (research R1). No account, no key, no write actions. */
 export function createReadOnlyClient(net: Pick<NetworkProfile, "rpcUrl">): ReadOnlyChainClient {
@@ -64,6 +70,8 @@ export interface SettlementServiceDeps {
   reconcileTimeoutMs?: number;
   /** Test hook: the expected VERIFIER_TOKEN instead of resolving it from the environment. */
   token?: string;
+  /** Test hook: a lower bound on claims a minute per address (default MAX_SETTLEMENT_CLAIMS_PER_MINUTE). Never set by main(). */
+  maxClaimsPerMinute?: number;
   log?: (msg: string) => void;
 }
 
@@ -115,8 +123,17 @@ export function createSettlementService(deps: SettlementServiceDeps): Settlement
     schedules.delete(authorizationId);
   }
 
+  /**
+   * 1.19: when the next re-check runs. A PENDING report with `settlesBy` waits for the authorization to expire (its
+   * nonce is checked after that time), so the re-check runs then, not every interval: attempts are not spent waiting.
+   */
+  const delayFor = (report: SettlementReport | undefined): number => {
+    const at = report?.settlesBy === undefined ? Number.NaN : Date.parse(report.settlesBy);
+    return Number.isFinite(at) ? Math.max(intervalMs, at - Date.now() + 1_000) : intervalMs;
+  };
+
   /** Re-checks a PENDING claim up to `attempts` times; a new schedule replaces an old one. */
-  function schedule(claim: SettlementClaim, attemptsLeft: number): void {
+  function schedule(claim: SettlementClaim, attemptsLeft: number, last?: SettlementReport): void {
     cancel(claim.authorizationId);
     if (attemptsLeft <= 0) return;
     const timer = setTimeout(async () => {
@@ -131,8 +148,8 @@ export function createSettlementService(deps: SettlementServiceDeps): Settlement
       }
       await pushReconcile(report);
       // A newer claim may have replaced this schedule while the re-check ran; it wins.
-      if (report.status === "PENDING" && !schedules.has(claim.authorizationId)) schedule(claim, attemptsLeft - 1);
-    }, intervalMs);
+      if (report.status === "PENDING" && !schedules.has(claim.authorizationId)) schedule(claim, attemptsLeft - 1, report);
+    }, delayFor(last));
     timer.unref();
     schedules.set(claim.authorizationId, { timer });
   }
@@ -142,6 +159,8 @@ export function createSettlementService(deps: SettlementServiceDeps): Settlement
     "/v1/settlements",
     // 401 precedes 400: the guard runs before the body is parsed or validated.
     requireRole("agent-verifier", deps.token !== undefined ? { token: deps.token } : {}),
+    // Counted after the guard, before the body is read: each claim may read the chain several times.
+    addressLimit({ max: deps.maxClaimsPerMinute ?? MAX_SETTLEMENT_CLAIMS_PER_MINUTE }),
     express.json({ limit: "64kb" }),
     async (req, res) => {
       if (!validClaim(req.body)) {
@@ -151,7 +170,7 @@ export function createSettlementService(deps: SettlementServiceDeps): Settlement
       const claim = req.body;
       const report = await deps.verifier.verify(claim);
       await pushReconcile(report);
-      if (report.status === "PENDING") schedule(claim, attempts);
+      if (report.status === "PENDING") schedule(claim, attempts, report);
       else cancel(claim.authorizationId);
       res.status(200).json(report);
     },

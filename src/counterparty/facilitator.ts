@@ -7,7 +7,11 @@ import { x402Facilitator } from "@x402/core/facilitator";
 import type { PaymentPayload, PaymentRequirements } from "@x402/core/types";
 import { toFacilitatorEvmSigner } from "@x402/evm";
 import { ExactEvmScheme } from "@x402/evm/exact/facilitator";
+import { addressLimit } from "../shared/address-limit.js";
 import type { Caip2 } from "../shared/config.js";
+
+/** Requests a minute, from one address: the seller calls it twice per payment. Wide: it bounds a runaway caller only. */
+export const MAX_FACILITATOR_REQUESTS_PER_MINUTE = 6_000;
 
 export interface FacilitatorAppOptions {
   /** The facilitator's own gas-paying account (#1 locally), already constructed by the caller. */
@@ -52,6 +56,7 @@ export function createFacilitatorApp({ account, rpcUrl, caip2 }: FacilitatorAppO
   const facilitator = new x402Facilitator().register(caip2, new ExactEvmScheme(signer));
 
   const app = express();
+  app.use(addressLimit({ max: MAX_FACILITATOR_REQUESTS_PER_MINUTE }));
   app.use(express.json({ limit: "1mb" }));
 
   app.get("/supported", (_req, res) => {

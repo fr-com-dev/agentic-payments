@@ -1,4 +1,5 @@
 // npm run dev-token -- [--subject <name>] [--no-role] [--expired] [--service] [--portal [--admin]] [--auth-age <seconds>]
+// 1.19: --admin also writes the second-factor time (https://x402.dev/mfa_time) at the sign-in time.
 // Prints one access token from the local dev issuer (NETWORK=local only). By default a person's token for the hosted
 // agent service: `sub` dev|<name>, the `agent:run` permission, the agent CLI's client. With --portal the same person's
 // token from the portal's client, with a fresh sign-in time; --auth-age backdates that time, to try the "confirm
@@ -49,6 +50,8 @@ async function main(argv: string[]): Promise<number> {
     subject: named ?? (service ? DEV_MACHINE_CLIENT : "dev-user"),
     ...(service && { service: true }),
     ...(portal && { azp: DEV_PORTAL_CLIENT, authTime: Math.floor(Date.now() / 1000) - Number(ageRaw ?? 0) }),
+    // 1.19 (SEC-35): an administrator signs in with a second factor (the tenant asks for one), at the same time.
+    ...(portal && argv.includes("--admin") && { mfaTime: Math.floor(Date.now() / 1000) - Number(ageRaw ?? 0) }),
     ...(service ? noRole && { scope: null } : permissions),
     ...(argv.includes("--expired") && { exp: Math.floor(Date.now() / 1000) - 120 }),
   });

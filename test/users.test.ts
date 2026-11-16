@@ -575,11 +575,13 @@ describe("T-USR-02 role isolation (INV-13, FR-049)", () => {
     expect(l2.entries().filter((e) => e.type !== "PLATFORM_CONFIG")).toEqual([]);
   });
 
-  it("T-USR-02 401 precedes 400: a malformed user ID with a wrong token is 401, with the right token 400", async () => {
+  it("T-USR-02 401 precedes 400: a malformed user ID with a wrong token, or (1.19) without the person's token, is 401; with both tokens 400", async () => {
     const l2 = await start();
-    expect((await l2.call("GET", "/v1/users/not-a-user", { token: TOKENS.control })).status).toBe(401);
-    expect((await l2.call("GET", "/v1/users/not-a-user")).status).toBe(400);
-    expect((await l2.call("PUT", "/v1/users/usr_SHOUTING/wallet")).status).toBe(400);
+    const person = await l2.portalToken(ALICE);
+    expect((await l2.call("GET", "/v1/users/not-a-user", { token: TOKENS.control, person })).status).toBe(401);
+    expect((await l2.call("GET", "/v1/users/not-a-user")).body).toEqual({ error: "person_token_required" });
+    expect((await l2.call("GET", "/v1/users/not-a-user", { person })).status).toBe(400);
+    expect((await l2.call("PUT", "/v1/users/usr_SHOUTING/wallet", { person })).status).toBe(400);
   });
 });
 
@@ -781,7 +783,8 @@ describe("T-USR-05 creating a policy (US3)", () => {
   it("T-USR-05 a create is always loosening: without a fresh sign-in time it is 403 and nothing is appended", async () => {
     const l2 = await start();
     await l2.withWallet(ALICE);
-    for (const identityConfirmedAtMs of [null, T0 - STEP_UP_MAX_AGE_MS - 1]) {
+    // 1.19: the sign-in time is the person's token's; a token always has one, so "not fresh" is an old one.
+    for (const identityConfirmedAtMs of [T0 - 86_400_000, T0 - STEP_UP_MAX_AGE_MS - 1]) {
       const res = await l2.createPolicy(ALICE, {}, { identityConfirmedAtMs });
       expect(res.status).toBe(403);
       expect(res.body).toEqual({ error: "step_up_required", maxAgeSec: 900 });
@@ -1089,12 +1092,12 @@ describe("T-USR-09 policy lifecycle through the routes (US5, FR-035)", () => {
       { ...base, expiresAt: new Date(T0 + 31 * DAY).toISOString() },
     ];
     for (const over of loosenings) {
-      expect((await change(l2, ALICE, policyId, over)).body, JSON.stringify(over)).toEqual({ error: "step_up_required", maxAgeSec: 900 });
-      expect((await change(l2, ALICE, policyId, over, { identityConfirmedAtMs: stale })).status).toBe(403);
+      expect((await change(l2, ALICE, policyId, over, { identityConfirmedAtMs: stale })).body, JSON.stringify(over)).toEqual({ error: "step_up_required", maxAgeSec: 900 });
+      expect((await change(l2, ALICE, policyId, over, { identityConfirmedAtMs: T0 - DAY })).status).toBe(403);
     }
     expect(l2.entries("POLICY_CHANGED")).toEqual([]);
-    // Tightening: no sign-in time at all.
-    expect((await change(l2, ALICE, policyId, { ...base, dailyBudgetAtomic: "200000" })).status).toBe(200);
+    // Tightening: an old sign-in is enough.
+    expect((await change(l2, ALICE, policyId, { ...base, dailyBudgetAtomic: "200000" }, { identityConfirmedAtMs: T0 - DAY })).status).toBe(200);
     // Loosening with a fresh one: recorded with the time.
     const fresh = await change(l2, ALICE, policyId, { ...base, dailyBudgetAtomic: "250000" }, { expectedVersion: 2, identityConfirmedAtMs: T0 - STEP_UP_MAX_AGE_MS });
     expect(fresh.status).toBe(200);
@@ -1109,7 +1112,7 @@ describe("T-USR-09 policy lifecycle through the routes (US5, FR-035)", () => {
     expect((await post("pause")).body.state).toBe("paused");
     expect(l2.entries("POLICY_PAUSED").map((e) => e.data)).toEqual([{ userId: ALICE, policyId, version: 1, cause: "user" }]);
     // Resuming restores spending: it needs a fresh sign-in.
-    expect((await post("resume")).status).toBe(403);
+    expect((await post("resume", { identityConfirmedAtMs: T0 - STEP_UP_MAX_AGE_MS - 60_001 })).status).toBe(403);
     expect((await post("resume", { identityConfirmedAtMs: T0 })).body.state).toBe("active");
     expect((await post("resume", { identityConfirmedAtMs: T0 })).body.state).toBe("active");
     expect(l2.entries("POLICY_RESUMED")).toHaveLength(1);
@@ -1119,7 +1122,12 @@ describe("T-USR-09 policy lifecycle through the routes (US5, FR-035)", () => {
     expect((await post("pause")).body).toEqual({ error: "policy_removed" });
     expect((await post("resume", { identityConfirmedAtMs: T0 })).body).toEqual({ error: "policy_removed" });
     // A body the route does not expect is a 400, before anything is looked up.
-    expect((await post("pause", { identityConfirmedAtMs: T0 })).status).toBe(400);
+    expect((await post("pause", { reason: "x" })).status).toBe(400);
+    // 1.19: the sign-in time is never a request field any more, on any route: it is the person's token's.
+    const person = await l2.portalToken(ALICE);
+    for (const action of ["pause", "resume", "remove"]) {
+      expect((await l2.call("POST", `/v1/users/${ALICE}/policies/${policyId}/${action}`, { person, body: { identityConfirmedAtMs: T0 } })).status, action).toBe(400);
+    }
     expect((await change(l2, ALICE, policyId, { dailyBudgetAtomic: "100000" })).body).toEqual({ error: "policy_removed" });
     const view = (await l2.portal<PolicyView>("GET", `/v1/users/${ALICE}/policies/${policyId}`)).body;
     expect(view.history?.map((h) => h.kind)).toEqual(["created", "paused", "resumed", "removed"]);
@@ -1363,7 +1371,7 @@ describe("T-USR-01 the account, T-USR-11 a disabled user (US7, FR-037..FR-040)",
     const second = await l2.createPolicy(ALICE, { sellers: [OTHER_HOST] });
     await l2.portal("POST", `/v1/users/${ALICE}/policies/${second.body.policyId}/pause`, {});
     await l2.portal("POST", `/v1/users/${ALICE}/disable`);
-    expect((await l2.portal("POST", `/v1/users/${ALICE}/enable`, {})).body).toEqual({ error: "step_up_required", maxAgeSec: 900 });
+    expect((await l2.portal("POST", `/v1/users/${ALICE}/enable`, { identityConfirmedAtMs: T0 - 86_400_000 })).body).toEqual({ error: "step_up_required", maxAgeSec: 900 });
     expect(l2.entries("USER_ENABLED")).toEqual([]);
     const on = await l2.portal<UserView>("POST", `/v1/users/${ALICE}/enable`, { identityConfirmedAtMs: T0 });
     expect(on.status).toBe(200);

@@ -95,8 +95,25 @@ const isL2 = (v: unknown): v is UsersL2 => typeof v === "object" && v !== null &
 export async function startPortal(o: StartPortalOptions = {}): Promise<PortalTestApp> {
   const dir = mkdtempSync(join(tmpdir(), "x402-portal-"));
   const ownL2 = !isL2(o.l2);
-  const l2 = isL2(o.l2) ? o.l2 : await startUsersL2({ ...o.l2, ...(o.admin && o.l2?.admin === undefined && { admin: true as const }) });
   const issuer = await loadOrCreateDevIssuer(join(dir, "issuer"), { NETWORK: "local" });
+  // 1.19 (SEC-35): L2 verifies the person's token the portal forwards, so the L2 this helper starts trusts the same
+  // issuer, audience, client and keys as the portal does (the same tenant, as in a deployment).
+  const person = {
+    issuer: o.callers?.issuer ?? o.env?.AUTH_ISSUER ?? DEV_ISSUER,
+    audience: o.callers?.audience ?? o.env?.AUTH_AUDIENCE ?? DEV_AUDIENCE,
+    portalClientId: o.env?.PORTAL_CLIENT_ID ?? DEV_PORTAL_CLIENT,
+    ...(o.callers ? { keys: o.callers.deps.keys, algorithms: o.callers.deps.algorithms } : { keys: createLocalJWKSet(issuer.jwks), algorithms: ["ES256"] }),
+  };
+  const l2 = isL2(o.l2)
+    ? o.l2
+    : await startUsersL2({
+        ...o.l2,
+        ...(o.admin && o.l2?.admin === undefined && { admin: true as const }),
+        person: { ...person, ...(o.l2 as UsersL2Options | undefined)?.person },
+        signPortalToken: o.callers
+          ? (sub, po) => o.callers!.person(sub, po)
+          : (sub, po) => signDevToken(issuer, { subject: "", sub, issuer: person.issuer, audience: person.audience, ...po }),
+      });
   const profilesDir = join(dir, "profiles");
   const config = loadPortalConfig({
     NETWORK: "local",
@@ -172,7 +189,9 @@ export async function startPortal(o: StartPortalOptions = {}): Promise<PortalTes
     return { status: res.status, body: parsed as never, headers: res.headers, text };
   };
 
-  const adminToken: PortalTestApp["adminToken"] = (subject, to = {}) => token(subject, { permissions: [DEV_ADMIN_PERMISSION], ...to });
+  // 1.19: an administrator's sign-in includes a second factor (the tenant asks for one), at the same time.
+  const adminToken: PortalTestApp["adminToken"] = (subject, to = {}) =>
+    token(subject, { permissions: [DEV_ADMIN_PERMISSION], mfaTime: Math.floor(l2.clock.now() / 1000), ...to });
 
   return {
     base,

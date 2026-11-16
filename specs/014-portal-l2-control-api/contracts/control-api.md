@@ -1,5 +1,11 @@
 # Contract: L2-5 delta (control API) and §7 contracts
 
+> **1.19 (2026-11-16, SPEC v1.19 L2-5, L2-8, SEC-35).** L2 verifies the administrator's own token, forwarded by the
+> portal in `X-Person-Authorization`, on every administration route: it needs `portal:admin` in it (403
+> `person_forbidden`), and the decider, `identityConfirmedAtMs` and the second-factor time
+> (`https://x402.dev/mfa_time`, also at most 15 minutes old for an approval) are the token's. The approve body is `{}`
+> and the reject body `{ reasonCode }`: `decidedBy` and `identityConfirmedAtMs` are refused (400).
+
 Normative for the SPEC L2-5 table, §7 and `docs/l2-control.openapi.yaml`; T-API-01..04 fail until all three match
 the service. L2 still binds 127.0.0.1 only. Every route below exists only when user accounts and the
 administration area are both on (`USER_ACCOUNTS=1` and `PORTAL_ADMIN=1`); otherwise each answers 404.

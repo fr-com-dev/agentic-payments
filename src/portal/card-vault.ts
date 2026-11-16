@@ -44,7 +44,8 @@ export class CardVaultConfigError extends Error {
 
 /**
  * Reads the card vault settings. Unset `CARD_VAULT`: cards are off (undefined). `stripe`: both keys are required and
- * both must be TEST keys; a live key is always a startup error. Errors name the variable, never its value.
+ * both must be TEST keys, the vault key a restricted one (1.19); a live key is always a startup error. Errors name
+ * the variable, never its value.
  */
 export function cardVaultFromEnv(env: Env): CardVaultConfig | undefined {
   const mode = env.CARD_VAULT;
@@ -53,7 +54,9 @@ export function cardVaultFromEnv(env: Env): CardVaultConfig | undefined {
   const key = env.CARD_VAULT_KEY ?? "";
   const publishableKey = env.CARD_VAULT_PUBLISHABLE_KEY ?? "";
   if (key === "") throw new CardVaultConfigError("missing CARD_VAULT_KEY (CARD_VAULT=stripe)");
-  if (!/^(rk|sk)_test_/.test(key)) throw new CardVaultConfigError("CARD_VAULT_KEY must be a test key (rk_test_… or sk_test_…); a live key is never accepted");
+  // 1.19 (finding #13): a restricted test key only. A secret key (sk_test_…) can do anything in the account's test
+  // mode, charges and refunds included; a restricted one is scoped to the six calls below when it is made.
+  if (!/^rk_test_/.test(key)) throw new CardVaultConfigError("CARD_VAULT_KEY must be a restricted test key (rk_test_…); a secret or live key is never accepted");
   if (publishableKey === "") throw new CardVaultConfigError("missing CARD_VAULT_PUBLISHABLE_KEY (CARD_VAULT=stripe)");
   if (!/^pk_test_/.test(publishableKey)) throw new CardVaultConfigError("CARD_VAULT_PUBLISHABLE_KEY must be a test key (pk_test_…); a live key is never accepted");
   return { key, publishableKey };
@@ -197,7 +200,8 @@ export class CardVault {
     const body = await this.#call("POST", "/v1/setup_intents", {
       customer,
       "allowed_payment_method_types[]": "card",
-      usage: "off_session",
+      // 1.19: cards are never charged, least of all without the person: no off-session use is requested.
+      usage: "on_session",
       "metadata[x402_user_id]": userId,
     });
     return { id: String(body.id), clientSecret: String(body.client_secret) };

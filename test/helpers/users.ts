@@ -1,7 +1,9 @@
 // 013 in-process L2 with user accounts on (specs/013 research R15), shared by test/users.test.ts and the portal
 // tests. Real ledger on a temp file, real keyring (so each user signs with their own derived account), real routes;
 // only the platform account's signer is fake. Every must-fail switch arrives as a dep, never through the environment.
-import { devUserId } from "../../scripts/dev-issuer-lib.js";
+import { DEV_PORTAL_CLIENT, devUserId } from "../../scripts/dev-issuer-lib.js";
+import type { PersonDeps } from "../../src/layer2-control/person.js";
+import { PORTAL_ADMIN_PERMISSION } from "../../src/shared/identity-token.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -36,6 +38,8 @@ export const STEP_UP_AGE = 900;
 
 export const ALICE = devUserId("alice");
 export const BOB = devUserId("bob");
+/** 1.19: the administrator `admin()` calls as when a body names no decider. */
+export const CAROL = devUserId("carol");
 
 const MANDATE_JSON = {
   mandateId: "mandate-test-013",
@@ -116,6 +120,13 @@ export interface UsersL2Options {
   caller?: Partial<CallerDeps> | false;
   /** 014: the administration routes on (`true`), or on with must-fail switches. Absent: off, each is 404. */
   admin?: true | AdminDeps;
+  /** 1.19: overrides (must-fail switches) on L2's check of the person's portal token. */
+  person?: Partial<PersonDeps>;
+  /**
+   * 1.19: who signs the person's portal tokens this helper sends (`portal()`, `admin()`, `portalToken()`), when L2
+   * trusts another issuer's keys than this helper's own (the portal helper's). Takes the whole `sub`.
+   */
+  signPortalToken?: (sub: string, o: import("./caller-tokens.js").PersonTokenOptions) => Promise<string>;
   signerLatencyMs?: number;
   /** Reuse a ledger file (restart tests). */
   ledgerFile?: string;
@@ -138,11 +149,26 @@ export interface UsersL2 {
   mandate: SpendingMandate;
   /** 016: the issuer of the callers' tokens this L2 verifies. People are known to it by `sub`. */
   callers: TestIssuer;
-  /** Any route with any token (default: the portal's). `caller` is a caller's token to forward, as L1 does. */
-  call<T = Record<string, unknown>>(method: string, path: string, o?: { token?: string | null; body?: unknown; caller?: string }): Promise<Reply<T>>;
+  /**
+   * Any route with any token (default: the portal's). `caller` is a caller's token to forward, as L1 does; `person`
+   * (1.19) a person's portal token to forward, as the portal does.
+   */
+  call<T = Record<string, unknown>>(method: string, path: string, o?: { token?: string | null; body?: unknown; caller?: string; person?: string }): Promise<Reply<T>>;
+  /**
+   * A user-account route as the portal sends it (1.19): the portal's role token and the person's own portal token, for
+   * the user the path names. A body's `identityConfirmedAtMs` (a number) becomes that token's sign-in time and is taken
+   * off the body, which may no longer carry it; without one the sign-in is fresh on L2's clock.
+   */
   portal<T = Record<string, unknown>>(method: string, path: string, body?: unknown): Promise<Reply<T>>;
-  /** 014: an administration route, with the administration role's token. */
+  /**
+   * 014: an administration route as the portal sends it: the administration role's token and (1.19) the
+   * administrator's own token, with `portal:admin` and a second factor. A body's `decidedBy` (a known user) names
+   * the administrator, and its `identityConfirmedAtMs` (a number) the token's sign-in and second-factor times; both
+   * are taken off the body. Without them the administrator is CAROL, signed in now.
+   */
   admin<T = Record<string, unknown>>(method: string, path: string, body?: unknown): Promise<Reply<T>>;
+  /** 1.19: a person's portal token for `userId` (a known user), as the portal holds it. */
+  portalToken(userId: string, o?: { authMs?: number; admin?: boolean; mfaMs?: number | null }): Promise<string>;
   /** 014: an operator route, with the operator's token. */
   operator<T = Record<string, unknown>>(method: string, path: string, body?: unknown): Promise<Reply<T>>;
   /** 014: how many HTTP requests this L2 has received (to prove a refusal made no call). */
@@ -195,6 +221,9 @@ export async function startUsersL2(o: UsersL2Options = {}): Promise<UsersL2> {
     ...(!o.off && { users: { platform, keyring, ...o.users }, net }),
     ...(signIn && { caller: signIn }),
     ...(o.admin !== undefined && { admin: o.admin === true ? {} : o.admin }),
+    ...(!o.off && {
+      person: { issuer: callers.issuer, audience: callers.audience, portalClientId: DEV_PORTAL_CLIENT, keys: callers.deps.keys, algorithms: callers.deps.algorithms, ...o.person },
+    }),
   });
   const server = await new Promise<Server>((r) => {
     const s = service.app.listen(0, "127.0.0.1", () => r(s));
@@ -212,6 +241,7 @@ export async function startUsersL2(o: UsersL2Options = {}): Promise<UsersL2> {
       headers: {
         ...(token !== null && { authorization: `Bearer ${token}` }),
         ...(co.caller !== undefined && callerHeader(co.caller)),
+        ...(co.person !== undefined && { "x-person-authorization": `Bearer ${co.person}` }),
         ...(co.body !== undefined && { "content-type": "application/json" }),
       },
       ...(co.body !== undefined && { body: JSON.stringify(co.body) }),
@@ -225,7 +255,32 @@ export async function startUsersL2(o: UsersL2Options = {}): Promise<UsersL2> {
     }
     return { status: res.status, body: body as never };
   };
-  const portal: UsersL2["portal"] = (method, path, body) => call(method, path, body === undefined ? {} : { body });
+  const portalToken: UsersL2["portalToken"] = (userId, po = {}) => {
+    const at = Math.floor((po.authMs ?? clock.now()) / 1000);
+    const mfa = po.mfaMs === null ? undefined : Math.floor((po.mfaMs ?? po.authMs ?? clock.now()) / 1000);
+    const claims = { azp: DEV_PORTAL_CLIENT, authTime: at, ...(po.admin && { permissions: [PORTAL_ADMIN_PERMISSION], ...(mfa !== undefined && { mfaTime: mfa }) }) };
+    if (!o.signPortalToken) return callers.forUser(userId, claims);
+    const sub = callers.subjectOf(userId);
+    if (sub === undefined) throw new Error(`users helper: ${userId} is not a registered person`);
+    return o.signPortalToken(sub, claims);
+  };
+  /** Takes the fields the portal no longer sends off a body, and returns them (1.19). */
+  const lift = (body: unknown): { body: unknown; authMs?: number; decidedBy?: string } => {
+    if (body === null || typeof body !== "object" || Array.isArray(body)) return { body };
+    const { identityConfirmedAtMs, decidedBy, ...rest } = body as Record<string, unknown>;
+    const out: { body: unknown; authMs?: number; decidedBy?: string } = { body: { ...rest } };
+    if (typeof identityConfirmedAtMs === "number") out.authMs = identityConfirmedAtMs;
+    else if (identityConfirmedAtMs !== undefined) (out.body as Record<string, unknown>).identityConfirmedAtMs = identityConfirmedAtMs;
+    if (typeof decidedBy === "string" && callers.subjectOf(decidedBy) !== undefined) out.decidedBy = decidedBy;
+    else if (decidedBy !== undefined) (out.body as Record<string, unknown>).decidedBy = decidedBy;
+    return out;
+  };
+  const portal: UsersL2["portal"] = async (method, path, body) => {
+    const named = /^\/v1\/users\/(usr_[0-9a-f]{32})(?:[/?]|$)/.exec(path)?.[1];
+    const lifted = lift(body);
+    const person = named !== undefined && callers.subjectOf(named) !== undefined ? await portalToken(named, lifted.authMs === undefined ? {} : { authMs: lifted.authMs }) : undefined;
+    return call(method, path, { ...(body !== undefined && { body: lifted.body }), ...(person !== undefined && { person }) });
+  };
 
   const requirement = (amount: string, payTo: string): PaymentRequirements =>
     ({ scheme: "exact", network: CAIP2, asset: ASSET, amount, payTo, maxTimeoutSeconds: 120, extra: { name: "USD Coin", version: "2" } }) as PaymentRequirements;
@@ -256,7 +311,12 @@ export async function startUsersL2(o: UsersL2Options = {}): Promise<UsersL2> {
     mandate,
     call,
     portal,
-    admin: (method, path, body) => call(method, path, { token: TOKENS.portalAdmin, ...(body !== undefined && { body }) }),
+    admin: async (method, path, body) => {
+      const lifted = lift(body);
+      const person = await portalToken(lifted.decidedBy ?? CAROL, { admin: true, ...(lifted.authMs !== undefined && { authMs: lifted.authMs }) });
+      return call(method, path, { token: TOKENS.portalAdmin, person, ...(body !== undefined && { body: lifted.body }) });
+    },
+    portalToken,
     operator: (method, path, body) => call(method, path, { token: TOKENS.operator, ...(body !== undefined && { body }) }),
     requestCount: () => requests,
     intentFor: (path, amount, io = {}) => {

@@ -7,7 +7,7 @@ import { resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { CHAIN_PORT, DEFAULT_DEPLOYMENT_FILE, DEFAULT_PORTS, DEV_TOKENS, formatAtomic } from "../src/shared/config.js";
 import { DEV_ISSUER } from "../src/shared/identity-token.js";
-import { DEV_AGENT_CLIENT, DEV_AUDIENCE } from "./dev-issuer-lib.js";
+import { DEV_AGENT_CLIENT, DEV_AUDIENCE, DEV_PORTAL_CLIENT } from "./dev-issuer-lib.js";
 import { GANACHE_NOISE, localAddress, localDevKeys } from "./local-chain-lib.js";
 import { RegressionBaseline } from "../test/helpers/baseline.js";
 
@@ -108,6 +108,8 @@ export function childEnv(
     if (opts.users) {
       env.USER_ACCOUNTS = "1";
       if (!value("USER_WALLET_MNEMONIC")) env.USER_WALLET_MNEMONIC = DEV_USER_WALLET_MNEMONIC;
+      // 1.19 (SEC-35): L2 verifies the person's portal token itself, so it knows the portal's client.
+      if (!value("PORTAL_CLIENT_ID")) env.PORTAL_CLIENT_ID = DEV_PORTAL_CLIENT;
       // 014 (`--admin`, with `--users` only): the administration routes, for the portal's administration area.
       if (opts.admin) env.PORTAL_ADMIN = "1";
     }

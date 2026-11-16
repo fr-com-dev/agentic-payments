@@ -6,6 +6,7 @@
 // (INV-13, FR-027, FR-028). It carries identifiers, times and codes only: never text a person typed.
 import type { DecisionOutcome, EscalationDetail, EscalationView, EventPage, LedgerCheck, RejectionReasonCode } from "../shared/contracts.js";
 import { ControlError, ControlUnavailable } from "./control-errors.js";
+import { personHeader } from "./person-context.js";
 
 const TIMEOUT_MS = 5_000;
 
@@ -13,10 +14,13 @@ const TIMEOUT_MS = 5_000;
 export interface AdminPort {
   /** The pending escalations, oldest first, with the time L2 read them. */
   pending(): Promise<{ pending: EscalationView[]; cursor: number; readAt: string }>;
-  /** Approves a pending escalation for `decidedBy`, who confirmed their identity at `identityConfirmedAtMs`. L2 judges both. */
-  approve(authorizationId: string, decidedBy: string, identityConfirmedAtMs: number): Promise<DecisionOutcome>;
-  /** Rejects a pending escalation for `decidedBy`, with a reason from the fixed list. */
-  reject(authorizationId: string, decidedBy: string, reasonCode: RejectionReasonCode): Promise<DecisionOutcome>;
+  /**
+   * Approves a pending escalation. 1.19: who decides, when they confirmed their identity and their second factor are
+   * read by L2 from the administrator's own token, which every call forwards.
+   */
+  approve(authorizationId: string): Promise<DecisionOutcome>;
+  /** Rejects a pending escalation, with a reason from the fixed list. */
+  reject(authorizationId: string, reasonCode: RejectionReasonCode): Promise<DecisionOutcome>;
   /** One escalation in any state, with how it ended and the budget behind it. */
   escalation(authorizationId: string): Promise<EscalationDetail>;
   /** One page of escalation events: after a cursor, before one, or the latest. */
@@ -42,7 +46,8 @@ export class AdminClient implements AdminPort {
         method,
         redirect: "error",
         signal: AbortSignal.timeout(TIMEOUT_MS),
-        headers: { authorization: `Bearer ${this.adminToken}`, ...(body !== undefined && { "content-type": "application/json" }) },
+        // 1.19 (SEC-35): the administrator's own token beside the role token.
+        headers: { authorization: `Bearer ${this.adminToken}`, ...personHeader(), ...(body !== undefined && { "content-type": "application/json" }) },
         ...(body !== undefined && { body: JSON.stringify(body) }),
       });
     } catch {
@@ -65,10 +70,8 @@ export class AdminClient implements AdminPort {
   }
 
   pending = () => this.call<{ pending: EscalationView[]; cursor: number; readAt: string }>("GET", "/v1/admin/escalations");
-  approve = (authorizationId: string, decidedBy: string, identityConfirmedAtMs: number) =>
-    this.call<DecisionOutcome>("POST", this.e(authorizationId, "/approve"), { decidedBy, identityConfirmedAtMs });
-  reject = (authorizationId: string, decidedBy: string, reasonCode: RejectionReasonCode) =>
-    this.call<DecisionOutcome>("POST", this.e(authorizationId, "/reject"), { decidedBy, reasonCode });
+  approve = (authorizationId: string) => this.call<DecisionOutcome>("POST", this.e(authorizationId, "/approve"), {});
+  reject = (authorizationId: string, reasonCode: RejectionReasonCode) => this.call<DecisionOutcome>("POST", this.e(authorizationId, "/reject"), { reasonCode });
   verifyLedger = () => this.call<LedgerCheck>("GET", "/v1/admin/ledger/verify");
   escalation = (authorizationId: string) => this.call<EscalationDetail>("GET", this.e(authorizationId));
   events = (q: { after?: number; before?: number; limit?: number }) => {

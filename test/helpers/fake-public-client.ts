@@ -1,5 +1,6 @@
 // Scripted read-only chain client for L3 unit tests (005 T002). It implements only the reads the
-// verifier is allowed to make: receipt, head block number and the `safe` block.
+// verifier is allowed to make: receipt, head block number, the `safe` block, and (1.19) the latest block's time and
+// EIP-3009's authorizationState.
 import { encodeAbiParameters, keccak256, pad, toHex, type Hex, type Log } from "viem";
 import type { ReadOnlyChainClient } from "../../src/layer3-settlement/verifier.js";
 
@@ -30,14 +31,18 @@ export interface FakeChainScript {
   heads?: bigint[];
   /** Safe block numbers returned by successive getBlock({blockTag:"safe"}) calls; the last value repeats. */
   safe?: bigint[];
+  /** 1.19: the latest block's timestamp (epoch seconds) for getBlock({blockTag:"latest"}); default 0 (long ago). */
+  latestTimestamp?: bigint;
+  /** 1.19: what authorizationState answers; default false (unused). */
+  authorizationUsed?: boolean;
 }
 
 export interface FakeChainClient extends ReadOnlyChainClient {
-  calls: { receipt: number; head: number; safe: number; lastTimeout?: number };
+  calls: { receipt: number; head: number; safe: number; latest: number; nonce: number; lastTimeout?: number; nonceArgs?: readonly unknown[] };
 }
 
 export function fakePublicClient(script: FakeChainScript): FakeChainClient {
-  const calls: FakeChainClient["calls"] = { receipt: 0, head: 0, safe: 0 };
+  const calls: FakeChainClient["calls"] = { receipt: 0, head: 0, safe: 0, latest: 0, nonce: 0 };
   const next = (arr: bigint[] | undefined, i: number, fallback: bigint) =>
     arr && arr.length > 0 ? arr[Math.min(i, arr.length - 1)]! : fallback;
   return {
@@ -61,10 +66,19 @@ export function fakePublicClient(script: FakeChainScript): FakeChainClient {
       calls.head += 1;
       return v;
     },
-    async getBlock() {
+    async getBlock({ blockTag }) {
+      if (blockTag === "latest") {
+        calls.latest += 1;
+        return { number: 0n, timestamp: script.latestTimestamp ?? 0n };
+      }
       const v = next(script.safe, calls.safe, 0n);
       calls.safe += 1;
       return { number: v };
+    },
+    async readContract({ args }) {
+      calls.nonce += 1;
+      calls.nonceArgs = args;
+      return script.authorizationUsed === true;
     },
   };
 }

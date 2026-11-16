@@ -19,6 +19,8 @@ import { CibaClient, type CibaClientOptions, type CibaPort, type CibaSettings } 
 import { AuditLedger, type LedgerEntry } from "../../src/layer2-control/ledger.js";
 import { buildMandate, type SpendingMandate } from "../../src/layer2-control/mandate.js";
 import { createControlService, recordPlatformConfig, type ControlService } from "../../src/layer2-control/service.js";
+import { DEV_PORTAL_CLIENT } from "../../scripts/dev-issuer-lib.js";
+import { PORTAL_ADMIN_PERMISSION } from "../../src/shared/identity-token.js";
 import { WalletKeyring, type PaymentSignerLike } from "../../src/layer2-control/signer.js";
 import type { AuthorizationDecision, PaymentIntent, PolicyValues, UserView } from "../../src/shared/contracts.js";
 import { userIdFor } from "../../src/shared/user-id.js";
@@ -222,6 +224,8 @@ export async function startBackchannelL2(o: BackchannelL2Options = {}): Promise<
     ...(o.off !== true && { backchannel: deps }),
     users: { platform, keyring: new WalletKeyring(TEST_MNEMONIC, { caip2: CAIP2, asset: ASSET }) },
     caller: { ...callers.deps, ...o.caller },
+    // 1.19 (SEC-35): the person's portal token, from the same tenant.
+    person: { issuer: callers.issuer, audience: callers.audience, portalClientId: DEV_PORTAL_CLIENT, keys: callers.deps.keys, algorithms: callers.deps.algorithms },
     net: { caip2: CAIP2, asset: ASSET, decimals: 6 },
     ...(o.admin !== undefined && { admin: o.admin === true ? {} : o.admin }),
   });
@@ -229,20 +233,56 @@ export async function startBackchannelL2(o: BackchannelL2Options = {}): Promise<
     const s = service.app.listen(0, "127.0.0.1", () => r(s));
   });
   const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-  const call = async (method: string, path: string, token: string, body?: unknown, signal?: AbortSignal, caller?: string) => {
+  const call = async (method: string, path: string, token: string, body?: unknown, signal?: AbortSignal, caller?: string, person?: string) => {
     const res = await fetch(`${url}${path}`, {
       method,
-      headers: { authorization: `Bearer ${token}`, ...(caller !== undefined && callerHeader(caller)), ...(body !== undefined && { "content-type": "application/json" }) },
+      headers: {
+        authorization: `Bearer ${token}`,
+        ...(caller !== undefined && callerHeader(caller)),
+        ...(person !== undefined && { "x-person-authorization": `Bearer ${person}` }),
+        ...(body !== undefined && { "content-type": "application/json" }),
+      },
       ...(body !== undefined && { body: JSON.stringify(body) }),
       ...(signal && { signal }),
     });
     return { status: res.status, body: (await res.json()) as never };
   };
 
+  // 1.19 (SEC-35): what the portal forwards beside its role tokens: the person's own portal token. The administrator
+  // is a person of this tenant too.
+  const adminUserId = callers.register("auth0|admin-carol");
+  const portalToken = (userId: string, po: { authMs?: number; admin?: boolean } = {}) => {
+    const at = Math.floor((po.authMs ?? clock.now()) / 1000);
+    return callers.forUser(userId, { azp: DEV_PORTAL_CLIENT, authTime: at, ...(po.admin && { permissions: [PORTAL_ADMIN_PERMISSION], mfaTime: at }) });
+  };
+  /** Takes the fields the portal no longer sends off a body (1.19): a known decider and a numeric confirmation time. */
+  const lift = (body: unknown): { body: unknown; authMs?: number; decidedBy?: string } => {
+    if (body === null || typeof body !== "object" || Array.isArray(body)) return { body };
+    const { identityConfirmedAtMs, decidedBy, ...rest } = body as Record<string, unknown>;
+    const out: { body: Record<string, unknown>; authMs?: number; decidedBy?: string } = { body: rest };
+    if (typeof identityConfirmedAtMs === "number") out.authMs = identityConfirmedAtMs;
+    else if (identityConfirmedAtMs !== undefined) out.body.identityConfirmedAtMs = identityConfirmedAtMs;
+    if (typeof decidedBy === "string" && callers.subjectOf(decidedBy) !== undefined) out.decidedBy = decidedBy;
+    else if (decidedBy !== undefined && typeof decidedBy === "string" && /^usr_[0-9a-f]{32}$/.test(decidedBy)) out.decidedBy = adminUserId;
+    else if (decidedBy !== undefined) out.body.decidedBy = decidedBy;
+    return out;
+  };
+  const portalCall = async (method: string, path: string, body?: unknown) => {
+    const named = /^\/v1\/users\/(usr_[0-9a-f]{32})(?:[/?]|$)/.exec(path)?.[1];
+    const lifted = lift(body);
+    const person = named !== undefined && callers.subjectOf(named) !== undefined ? await portalToken(named, lifted.authMs === undefined ? {} : { authMs: lifted.authMs }) : undefined;
+    return call(method, path, TOKENS.portal, body === undefined ? undefined : lifted.body, undefined, undefined, person);
+  };
+  const adminCall = async (method: string, path: string, body?: unknown) => {
+    const lifted = lift(body);
+    const person = await portalToken(lifted.decidedBy ?? adminUserId, { admin: true, ...(lifted.authMs !== undefined && { authMs: lifted.authMs }) });
+    return call(method, path, TOKENS.portalAdmin, body === undefined ? undefined : lifted.body, undefined, undefined, person);
+  };
+
   /** Profile, crypto account and one policy, through L2's own user-account routes. A restart on the same ledger adds nothing. */
   const onboardUser = async (userId: string): Promise<string> => {
     const portal = async (method: string, path: string, body?: unknown) => {
-      const r = (await call(method, path, TOKENS.portal, body)) as { status: number; body: unknown };
+      const r = (await portalCall(method, path, body)) as { status: number; body: unknown };
       if (r.status !== 200 && r.status !== 201) throw new Error(`onboarding ${method} ${path} failed: ${r.status} ${JSON.stringify(r.body)}`);
       return r.body as UserView;
     };
@@ -297,8 +337,8 @@ export async function startBackchannelL2(o: BackchannelL2Options = {}): Promise<
     },
     approve: (id, body = {}) => call("POST", `/v1/approvals/${id}`, TOKENS.operator, body),
     reject: (id, body = {}) => call("POST", `/v1/rejections/${id}`, TOKENS.operator, body),
-    admin: (method, path, body) => call(method, path, TOKENS.portalAdmin, body),
-    portal: (method, path, body) => call(method, path, TOKENS.portal, body),
+    admin: adminCall,
+    portal: portalCall,
     pending: async () => (await call("GET", "/v1/escalations", TOKENS.operator)).body,
     events: async (after = -1) => (await call("GET", `/v1/escalations/events?after=${after}`, TOKENS.operator)).body,
     budget: async (sessionId, bo = {}) =>

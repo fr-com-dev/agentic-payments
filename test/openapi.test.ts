@@ -2,7 +2,7 @@
 // docs/l2-control.openapi.yaml is a copy of L2-5 for tools. These tests fail when the copy and the service
 // disagree on routes (T-API-01), bearer tokens (T-API-02) or response shapes and statuses (T-API-03).
 // T-API-04 covers the token-free Swagger UI routes: off by default, same-origin only, fixed files (SEC-13).
-import { devUserId } from "../scripts/dev-issuer-lib.js";
+import { DEV_PORTAL_CLIENT, devUserId } from "../scripts/dev-issuer-lib.js";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -111,8 +111,12 @@ async function startService(opts: { apiDocs?: boolean; users?: boolean; admin?: 
     }),
     // `callerChecks`: a low bound on token checks, so a scenario reaches the two agent routes' documented 429.
     ...(callers && { caller: { ...callers.deps, ...(opts.callerChecks !== undefined && { maxChecksPerMinute: opts.callerChecks }) } }),
+    // 1.19 (SEC-35): the person's portal token, from the same tenant.
+    ...(callers && { person: { issuer: callers.issuer, audience: callers.audience, portalClientId: DEV_PORTAL_CLIENT, keys: callers.deps.keys, algorithms: callers.deps.algorithms } }),
     // A low limit for the ledger check, so the scenario reaches its documented 429 in a few requests.
     ...(opts.users !== false && opts.admin !== false && { admin: { maxLedgerChecksPerMinute: 3 } }),
+    // And for the operator's, likewise.
+    maxLedgerVerifiesPerMinute: 2,
   });
   const server = await new Promise<Server>((r) => {
     const s = svc.app.listen(0, "127.0.0.1", () => r(s));
@@ -138,13 +142,20 @@ async function authMismatches(doc: OpenApiDoc, base: string, callers?: TestIssue
   // 016: an operation that documents the caller's header gets a machine caller's token with every request, so what
   // is compared is the role token alone, as before. The header never changes a 401 for a wrong role token.
   const caller = callers ? callerHeader(await callers.machine()) : {};
+  // 1.19: likewise an operation that documents the person's header gets an administrator's valid portal token, so
+  // only the role token is compared.
+  const person: Record<string, string> = callers
+    ? { "x-person-authorization": `Bearer ${await callers.forUser(devUserId("carol"), { azp: DEV_PORTAL_CLIENT, authTime: Math.floor(NOW / 1000), permissions: ["portal:admin"], mfaTime: Math.floor(NOW / 1000) })}` }
+    : {};
   for (const [method, path, op] of operations(doc)) {
     const open = op.security?.length === 0;
     const documented = Object.keys(op.security?.[0] ?? {});
     const concrete = path.replace(/\{\w+\}/g, "x");
-    const takesCaller = JSON.stringify((op as { parameters?: unknown }).parameters ?? []).includes("CallerAuthorization");
+    const params = JSON.stringify((op as { parameters?: unknown }).parameters ?? []);
+    const takesCaller = params.includes("CallerAuthorization");
+    const takesPerson = params.includes("PersonAuthorization");
     for (const [scheme, token] of [["none", undefined], ...Object.entries(SCHEME_TOKENS)] as [string, string | undefined][]) {
-      const { status } = await send(base, method, concrete, token, undefined, takesCaller ? caller : {});
+      const { status } = await send(base, method, concrete, token, undefined, { ...(takesCaller && caller), ...(takesPerson && person) });
       const passedGuard = status !== 401;
       if (passedGuard !== (open || documented.includes(scheme))) out.push(`${method} ${path} ${scheme}: ${status}`);
     }
@@ -242,13 +253,41 @@ describe("T-API-03 live responses match the documented status and schema", () =>
     const { base, advance, now, callers } = await startService();
     const seen = new Set<string>();
     const errors: string[] = [];
+    // 1.19 (SEC-35): a user-account or administration call carries the person's own portal token, as the portal sends
+    // it. The user is the path's (a known person), the administrator the body's `decidedBy` (default carol); a body's
+    // numeric `identityConfirmedAtMs` becomes the token's sign-in time and second-factor time, and both fields are
+    // taken off the body, which may no longer carry them. Without one, a user's sign-in is an hour old (so a
+    // loosening change still reaches its documented 403) and an administrator's is fresh. `person: null` sends none.
+    const personFor = async (pth: string, o: { params?: Record<string, string>; body?: unknown; person?: string | null }): Promise<{ body: unknown; header: Record<string, string> }> => {
+      if (o.person !== undefined) return { body: o.body, header: o.person === null ? {} : { "x-person-authorization": `Bearer ${o.person}` } };
+      const admin = pth.startsWith("/v1/admin");
+      if (!admin && !pth.startsWith("/v1/users")) return { body: o.body, header: {} };
+      let body = o.body;
+      let authMs: number | undefined;
+      let decider: string | undefined;
+      if (body !== null && typeof body === "object" && !Array.isArray(body)) {
+        const { identityConfirmedAtMs, decidedBy, ...rest } = body as Record<string, unknown>;
+        const kept: Record<string, unknown> = { ...rest };
+        if (typeof identityConfirmedAtMs === "number") authMs = identityConfirmedAtMs;
+        else if (identityConfirmedAtMs !== undefined) kept.identityConfirmedAtMs = identityConfirmedAtMs;
+        if (typeof decidedBy === "string" && callers!.subjectOf(decidedBy) !== undefined) decider = decidedBy;
+        else if (decidedBy !== undefined) kept.decidedBy = decidedBy;
+        body = kept;
+      }
+      const who = admin ? (decider ?? devUserId("carol")) : o.params?.userId;
+      if (who === undefined || callers!.subjectOf(who) === undefined) return { body, header: {} };
+      const at = Math.floor((authMs ?? (admin ? now() : now() - 3_600_000)) / 1000);
+      const token = await callers!.forUser(who, { azp: DEV_PORTAL_CLIENT, authTime: at, ...(admin && { permissions: ["portal:admin"], mfaTime: at }) });
+      return { body, header: { "x-person-authorization": `Bearer ${token}` } };
+    };
     const call = async (
       method: string,
       path: string,
-      opts: { token?: string; params?: Record<string, string>; query?: string; body?: unknown; caller?: string; base?: string } = {},
+      opts: { token?: string; params?: Record<string, string>; query?: string; body?: unknown; caller?: string; base?: string; person?: string | null } = {},
     ) => {
       const concrete = path.replace(/\{(\w+)\}/g, (_, k: string) => opts.params?.[k] ?? "x") + (opts.query ?? "");
-      const res = await send(opts.base ?? base, method, concrete, opts.token, opts.body, opts.caller !== undefined ? callerHeader(opts.caller) : {});
+      const personal = await personFor(path, opts);
+      const res = await send(opts.base ?? base, method, concrete, opts.token, personal.body, { ...(opts.caller !== undefined && callerHeader(opts.caller)), ...personal.header });
       seen.add(`${method} ${path} ${res.status}`);
       const content = responseContent(doc, method, path, res.status);
       const schema = content?.[res.type]?.schema;
@@ -408,7 +447,8 @@ describe("T-API-03 live responses match the documented status and schema", () =>
     await call("POST", "/v1/reconcile", { token: TOKENS.settlement, body: { ...report, authorizationId: "auth_unknown" } });
     await call("POST", "/v1/reconcile", { token: TOKENS.settlement, body: { authorizationId: "auth_x" } });
 
-    await call("GET", "/v1/ledger/verify", O);
+    // the operator's ledger check, until its limit refuses one (429, with nothing read)
+    for (let i = 0; i < 3; i++) await call("GET", "/v1/ledger/verify", O);
 
     // v1.15 portal administration: every admin operation and each of its statuses
     const A = { token: TOKENS.portalAdmin };
@@ -478,6 +518,19 @@ describe("T-API-03 live responses match the documented status and schema", () =>
     await call("GET", "/v1/budget/{sessionId}", { ...C, base: limited.base, params: { sessionId: "sess_a" }, caller: theirs });
     await call("POST", "/v1/authorize", { ...C, base: limited.base, body: intent("sess_a", "/api/weather", "1000"), caller: theirs });
     expect(seen.has("GET /v1/budget/{sessionId} 429") && seen.has("POST /v1/authorize 429")).toBe(true);
+
+    // 1.19 (SEC-35): with the role token accepted, every user-account route refuses another person's token (403
+    // person_mismatch) and, past that check, a malformed user ID (400); every administration route refuses a person's
+    // token without portal:admin (403 person_forbidden).
+    const bobs = await callers!.forUser(B, { azp: DEV_PORTAL_CLIENT, authTime: Math.floor(now() / 1000) });
+    for (const [m, pth, op] of operations(doc)) {
+      const admin = pth.startsWith("/v1/admin");
+      if (!admin && !pth.startsWith("/v1/users")) continue;
+      const body = m === "GET" || m === "DELETE" ? undefined : {};
+      const params = { userId: U, policyId: p1, cardId: card, authorizationId: "auth_00000000-0000-4000-8000-000000000000" };
+      await call(m, pth, { token: admin ? TOKENS.portalAdmin : TOKENS.portal, params, body, person: bobs });
+      if (!admin && "400" in op.responses) await call(m, pth, { token: TOKENS.portal, params: { ...params, userId: "x" }, body, person: bobs });
+    }
 
     expect(errors).toEqual([]);
     const documented = operations(doc).flatMap(([m, p, op]) => Object.keys(op.responses).map((s) => `${m} ${p} ${s}`));

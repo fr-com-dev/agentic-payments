@@ -22,6 +22,10 @@
 //   AUTH_AUDIENCE from the identity parameter and AGENT_CLIENT_IDS from agent.clientId, the same values the agent
 //   gets, and PORTAL_CLIENT_ID from userAccounts.portalClientId, the client it never accepts as a caller's. Nothing
 //   of the directory, no docs switch and no machine key reaches it.
+// - Phase 3 (rule 24): the ledger's MAC key reaches only the l2 container, as LEDGER_MAC_KEY, a reference to the l2
+//   vault's ledger-mac-key. It is always referenced like the CIBA credential, so every environment seeds it: the
+//   placeholder off (no key: the plain hash chain) until an operator seeds a real key of at least 32 bytes. No other
+//   app or job holds it; the operator job verifies the chain through L2.
 param location string
 @description('Every resource name (main.<environment>.bicepparam).')
 param names object
@@ -74,6 +78,7 @@ resource control 'Microsoft.App/containerApps@2025-01-01' = {
         { name: 'portal-token', keyVaultUrl: '${vaultL2}secrets/portal-token', identity: idL2.id }
         { name: 'user-wallet-mnemonic', keyVaultUrl: '${vaultL2}secrets/user-wallet-mnemonic', identity: idL2.id }
         { name: 'portal-admin-token', keyVaultUrl: '${vaultL2}secrets/portal-admin-token', identity: idL2.id }
+        { name: 'ledger-mac-key', keyVaultUrl: '${vaultL2}secrets/ledger-mac-key', identity: idL2.id }
         // The proxy config is not a secret; Container Apps mounts files only through secret volumes.
         #disable-next-line use-secure-value-for-secure-inputs
         { name: 'nginx-conf', value: loadTextContent('../proxy/nginx-l2.conf') }
@@ -107,6 +112,8 @@ resource control 'Microsoft.App/containerApps@2025-01-01' = {
             { name: 'USER_WALLET_MNEMONIC', secretRef: 'user-wallet-mnemonic' }
             { name: 'PORTAL_ADMIN', value: userAccounts.administration ? '1' : '0' }
             { name: 'PORTAL_ADMIN_TOKEN', secretRef: 'portal-admin-token' }
+            // Phase 3: the key of the ledger's keyed hash chain, or the placeholder off.
+            { name: 'LEDGER_MAC_KEY', secretRef: 'ledger-mac-key' }
             // 016: the caller's token. A person's must come from the agent's client, never from the portal's.
             { name: 'AUTH_ISSUER', value: identity.issuer }
             { name: 'AUTH_AUDIENCE', value: identity.audience }

@@ -4,6 +4,7 @@
 // approvals, rejections, reconcile or ledger verification (INV-13, FR-049).
 import type { PlatformView, PolicyValues, PolicyView, UserView } from "../shared/contracts.js";
 import { ControlError, ControlUnavailable } from "./control-errors.js";
+import { personHeader } from "./person-context.js";
 
 // 014: the two error classes live in ./control-errors.ts, shared with the administration client.
 export { ControlError, ControlUnavailable };
@@ -15,14 +16,15 @@ export interface ControlPort {
   user(userId: string): Promise<UserView>;
   register(userId: string): Promise<UserView>;
   createWallet(userId: string): Promise<UserView>;
-  createPolicy(userId: string, values: PolicyValues, identityConfirmedAtMs: number): Promise<PolicyView>;
+  // 1.19: no step-up time is passed: L2 reads it from the person's own token, which every call forwards.
+  createPolicy(userId: string, values: PolicyValues): Promise<PolicyView>;
   policy(userId: string, policyId: string): Promise<PolicyView>;
-  changePolicy(userId: string, policyId: string, values: PolicyValues, expectedVersion: number, identityConfirmedAtMs: number): Promise<PolicyView>;
+  changePolicy(userId: string, policyId: string, values: PolicyValues, expectedVersion: number): Promise<PolicyView>;
   pausePolicy(userId: string, policyId: string): Promise<PolicyView>;
-  resumePolicy(userId: string, policyId: string, identityConfirmedAtMs: number): Promise<PolicyView>;
+  resumePolicy(userId: string, policyId: string): Promise<PolicyView>;
   removePolicy(userId: string, policyId: string): Promise<PolicyView>;
   disable(userId: string): Promise<UserView>;
-  enable(userId: string, identityConfirmedAtMs: number): Promise<UserView>;
+  enable(userId: string): Promise<UserView>;
   addCard(userId: string, cardId: string): Promise<{ cards: string[] }>;
   removeCard(userId: string, cardId: string): Promise<{ cards: string[] }>;
 }
@@ -44,7 +46,8 @@ export class ControlClient implements ControlPort {
         method,
         redirect: "error",
         signal: AbortSignal.timeout(TIMEOUT_MS),
-        headers: { authorization: `Bearer ${this.portalToken}`, ...(body !== undefined && { "content-type": "application/json" }) },
+        // 1.19 (SEC-35): the person's own token beside the role token, on every route but the platform view.
+        headers: { authorization: `Bearer ${this.portalToken}`, ...(path !== "/v1/platform" && personHeader()), ...(body !== undefined && { "content-type": "application/json" }) },
         ...(body !== undefined && { body: JSON.stringify(body) }),
       });
     } catch {
@@ -73,17 +76,15 @@ export class ControlClient implements ControlPort {
   user = (userId: string) => this.call<UserView>("GET", this.u(userId));
   register = (userId: string) => this.call<UserView>("PUT", this.u(userId, "/registration"), { acknowledgedTestFunds: true });
   createWallet = (userId: string) => this.call<UserView>("PUT", this.u(userId, "/wallet"));
-  createPolicy = (userId: string, values: PolicyValues, identityConfirmedAtMs: number) =>
-    this.call<PolicyView>("POST", this.u(userId, "/policies"), { ...values, identityConfirmedAtMs });
+  createPolicy = (userId: string, values: PolicyValues) => this.call<PolicyView>("POST", this.u(userId, "/policies"), { ...values });
   policy = (userId: string, policyId: string) => this.call<PolicyView>("GET", this.p(userId, policyId));
-  changePolicy = (userId: string, policyId: string, values: PolicyValues, expectedVersion: number, identityConfirmedAtMs: number) =>
-    this.call<PolicyView>("PUT", this.p(userId, policyId), { ...values, expectedVersion, identityConfirmedAtMs });
+  changePolicy = (userId: string, policyId: string, values: PolicyValues, expectedVersion: number) =>
+    this.call<PolicyView>("PUT", this.p(userId, policyId), { ...values, expectedVersion });
   pausePolicy = (userId: string, policyId: string) => this.call<PolicyView>("POST", this.p(userId, policyId, "/pause"), {});
-  resumePolicy = (userId: string, policyId: string, identityConfirmedAtMs: number) =>
-    this.call<PolicyView>("POST", this.p(userId, policyId, "/resume"), { identityConfirmedAtMs });
+  resumePolicy = (userId: string, policyId: string) => this.call<PolicyView>("POST", this.p(userId, policyId, "/resume"), {});
   removePolicy = (userId: string, policyId: string) => this.call<PolicyView>("POST", this.p(userId, policyId, "/remove"), {});
   disable = (userId: string) => this.call<UserView>("POST", this.u(userId, "/disable"));
-  enable = (userId: string, identityConfirmedAtMs: number) => this.call<UserView>("POST", this.u(userId, "/enable"), { identityConfirmedAtMs });
+  enable = (userId: string) => this.call<UserView>("POST", this.u(userId, "/enable"), {});
   addCard = (userId: string, cardId: string) => this.call<{ cards: string[] }>("PUT", this.u(userId, `/cards/${encodeURIComponent(cardId)}`));
   removeCard = (userId: string, cardId: string) => this.call<{ cards: string[] }>("DELETE", this.u(userId, `/cards/${encodeURIComponent(cardId)}`));
 }

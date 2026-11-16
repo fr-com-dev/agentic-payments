@@ -68,8 +68,8 @@ export function evaluateRequirement(
   if (!m.allowedSchemes.includes(req.scheme)) deny("scheme_not_allowed", `scheme ${req.scheme} not allowed`);
   // R3
   if (!m.allowedNetworks.includes(req.network)) deny("network_not_allowed", `network ${req.network} not allowed`);
-  // R4
-  const assets = m.allowedAssets[req.network] ?? [];
+  // R4. 1.19: an own key only, so a network named like an Object member (`__proto__`, `constructor`) finds no list.
+  const assets = Object.hasOwn(m.allowedAssets, req.network) ? (m.allowedAssets[req.network] ?? []) : [];
   if (!assets.includes(String(req.asset).toLowerCase())) deny("asset_not_allowed", `asset ${req.asset} not allowed`);
   // R5
   if (m.allowedPayees.length > 0 && !m.allowedPayees.includes(String(req.payTo).toLowerCase())) {

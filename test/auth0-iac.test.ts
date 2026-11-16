@@ -15,6 +15,12 @@
 // authorization code only, and returns to the docs page only; a machine caller's client has client credentials
 // only, a key and no secret, and one grant, for people's API with agent:run alone; people's API has exactly two
 // permissions, portal:admin and agent:run, each held by exactly one role, and nobody is assigned one here.
+// Phase 3 (SPEC 1.19): no approver is configured (SPEC v1.16), so no user is read either; the localhost origins only
+// where var.local_origins is on (dev); the second post-login Action, mfa-time.js, bound after sign-in-time.js, writes
+// the second factor's time, and sign-in-time.js asks an administrator for a second factor on every interactive
+// sign-in (push or a one-time code, both on in Guardian, with the tenant's setting that lets an Action choose); with
+// var.allow_sign_ups false, a pre-user-registration Action (deny-sign-up.js) refuses every new account. Each Action's
+// code is run here.
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -22,25 +28,26 @@ import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { DETAILS_TYPE } from "../src/layer2-control/payment-details.js";
-import { AGENT_RUN_PERMISSION } from "../src/shared/identity-token.js";
+import { AGENT_RUN_PERMISSION, DEFAULT_AUTH_TIME_CLAIM, DEFAULT_MFA_TIME_CLAIM } from "../src/shared/identity-token.js";
 
 const DIR = "auth0";
 const WORKFLOW = ".github/workflows/provision-auth0.yml";
 /** The only GitHub secrets any workflow reads: the Management API credential. Never a credential of L2's (Constitution V). */
 const SECRETS = ["AUTH0_CLIENT_ID", "AUTH0_CLIENT_SECRET"];
-/** The variables the plan refuses to run without: the three with no default, and the public key that credential = "key" needs. */
-const REQUIRED = ["tenant_domain", "api_identifier", "approver_user_id", "client_public_key_pem"];
+/** The variables the plan refuses to run without: the two with no default, and the public key that credential = "key" needs. */
+const REQUIRED = ["tenant_domain", "api_identifier", "client_public_key_pem"];
 /** The GitHub environment variable behind each Terraform variable the pipeline sets; none is a secret. */
 const VARIABLES: Record<string, string> = {
   tenant_domain: "AUTH0_TENANT_DOMAIN",
   api_identifier: "AUTH0_API_IDENTIFIER",
-  approver_user_id: "AUTH0_APPROVER_USER_ID",
   client_public_key_pem: "AUTH0_CLIENT_PUBLIC_KEY",
   manage_guardian: "AUTH0_MANAGE_GUARDIAN",
   guardian_policy: "AUTH0_GUARDIAN_POLICY",
   portal_origin: "AUTH0_PORTAL_ORIGIN",
   agent_origin: "AUTH0_AGENT_ORIGIN",
   machine_caller_keys: "AUTH0_MACHINE_CALLER_KEYS",
+  local_origins: "AUTH0_LOCAL_ORIGINS",
+  allow_sign_ups: "AUTH0_ALLOW_SIGN_UPS",
 };
 /**
  * The variables infra/github-setup.sh doesn't create: they have no value until later (the portal's origin exists
@@ -67,10 +74,30 @@ const LOCAL_AGENT = ["http://localhost:4024", "http://127.0.0.1:4024"];
 const DOCS_REDIRECT = "/docs/oauth2-redirect.html";
 /** The machine caller the deployment pipeline's checks run as (016 research R9): the one bicepparam_agent names. */
 const PIPELINE_CALLER = "checks";
-/** The access-token claim the Action sets: the services' default AUTH_TIME_CLAIM (contracts/config-and-secrets.md). */
+/** The access-token claim the first Action sets: the services' default AUTH_TIME_CLAIM (contracts/config-and-secrets.md). */
 const AUTH_TIME_CLAIM = "https://x402.dev/auth_time";
-/** The Action's code, a file of its own so that this suite can run it. */
+/** Phase 3: the claim the second Action sets, the time of the latest second factor: the services' DEFAULT_MFA_TIME_CLAIM. */
+const MFA_TIME_CLAIM = "https://x402.dev/mfa_time";
+/** The first Action's code, a file of its own so that this suite can run it. */
 const ACTION_FILE = "sign-in-time.js";
+/** Phase 3: the second post-login Action's code, and the pre-user-registration one's. */
+const MFA_ACTION_FILE = "mfa-time.js";
+const SIGN_UP_ACTION_FILE = "deny-sign-up.js";
+/**
+ * The tenant's Actions: each one's resource (and its binding's), file, trigger, trigger version and handler.
+ * deny_sign_up exists only while var.allow_sign_ups is false.
+ */
+const ACTIONS: [resource: string, file: string, trigger: string, version: string, handler: string][] = [
+  ["deny_sign_up", SIGN_UP_ACTION_FILE, "pre-user-registration", "v2", "onExecutePreUserRegistration"],
+  ["mfa_time", MFA_ACTION_FILE, "post-login", "v3", "onExecutePostLogin"],
+  ["sign_in_time", ACTION_FILE, "post-login", "v3", "onExecutePostLogin"],
+];
+/** The interactive sign-ins in a browser, where Auth0 can show a challenge (event.transaction.protocol). */
+const BROWSER_PROTOCOLS = ["oidc-basic-profile", "oidc-hybrid-profile", "oidc-implicit-profile"];
+/** The second factors sign-in-time.js asks an administrator for, each on in auth0_guardian. */
+const SECOND_FACTORS = [{ type: "push-notification" }, { type: "otp" }];
+/** Phase 3: what the deny Action answers a sign-up. */
+const SIGN_UP_CLOSED = ["sign_up_closed", "Sign-ups are closed"];
 const DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code";
 /** 016 research R10 (FR-026): the tenant's applications. A machine caller's is one resource, by for_each. */
 const APPLICATIONS = ["agent", "l2", "machine", "portal"];
@@ -85,6 +112,23 @@ const ENV_OUTPUTS = "outputs l1_env and l2_env must give the same AUTH_ISSUER, A
 /** How the lock file gets the checksum of each platform that runs Terraform: the pipeline's runner and a Mac. */
 const LOCK_COMMAND = "terraform -chdir=auth0 providers lock -platform=linux_amd64 -platform=darwin_arm64";
 const SETUP_VARIABLES = "infra/github-setup.sh must create exactly the variables the pipeline reads, but the ones set later (the portal's origin, the agent's origin)";
+/** Phase 3 (finding #11): no localhost address in a deployed environment's clients. */
+const LOCAL_ORIGINS = "the localhost origins of the portal's and the agent's clients must come only with var.local_origins, a bool that is false by default";
+/** Phase 3 (finding #6): the tenant's MFA settings the administrators' challenge needs. */
+const MFA_SETTINGS = "every factor sign-in-time.js challenges with must be on in auth0_guardian (push through Guardian, and otp), and auth0_tenant.mfa_actions must turn on customize_mfa_in_postlogin_action and nothing else, with Guardian (count = var.manage_guardian)";
+/** Phase 3 (finding #6): the Action asks for the role the tenant defines. */
+const ADMIN_ROLE_IN_ACTION = `sign-in-time.js must challenge the holders of ${ADMIN_ROLE}, auth0_role.admin's name, and nobody else`;
+/** Phase 3 (finding #12). */
+const SIGN_UPS = "var.allow_sign_ups must be a bool, true by default, and the pre-user-registration Action and its binding exist only while it is false (count = var.allow_sign_ups ? 0 : 1)";
+/** The pipeline's variables: each one from its GitHub environment variable, the ones without a usable default required. */
+const VARS_WIRED = "Terraform's variables must come from the GitHub environment's variables, as TF_VAR_* in the plan step: every one wired, the three without a usable default required";
+const ONE_ACTION = `the Actions must be exactly ${ACTIONS.map(([resource, file, trigger]) => `${resource} (${file}, ${trigger})`).join(", ")}, with no secret and no package, each appended to its flow (auth0_trigger_action), never replacing it`;
+const ONE_CLAIM = `the sign-in time Action must write one namespaced claim, ${AUTH_TIME_CLAIM}, on the access token and challenge ${ADMIN_ROLE}'s holders with ${SECOND_FACTORS.map((f) => f.type).join(" or ")}, and do nothing else`;
+const ONE_MFA_CLAIM = `the second-factor time Action must write one namespaced claim, ${MFA_TIME_CLAIM}, on the access token, and do nothing else`;
+const DENY_ONLY = `the sign-up Action must refuse every sign-up, api.access.deny("${SIGN_UP_CLOSED.join('", "')}"), and do nothing else`;
+const NO_USER_READ = "no user is read here: there is no configured approver (SPEC v1.16), each request goes to the person the payment is for";
+const NO_APPROVER_OUTPUT = "no output may give CIBA_APPROVER: L2 refuses to start with it (SPEC v1.16)";
+const ONE_ACTION_ORDER = "the second-factor time Action's binding must come after the sign-in time Action's (depends_on): Auth0 asks for the second factor the first one requests before the next Action runs";
 const LOCKED_FOR_RUNNER = `auth0/.terraform.lock.hcl must hold the provider's h1 checksum for the pipeline's Linux runner as well as a Mac's (${LOCK_COMMAND})`;
 
 interface Sources {
@@ -327,6 +371,16 @@ export function auth0Problems(s: Sources): string[] {
     }
     if (has(agentClient, /\brefresh_token\s*\{/)) p.push(AGENT_NO_REFRESH);
   }
+  // Phase 3 (finding #11): the localhost origins only where var.local_origins is on, and it is off by default.
+  const localOrigins = block(tf, /variable\s+"local_origins"\s*\{/) ?? "";
+  if (
+    !origins.includes(`concat(var.local_origins ? ["${LOCAL_PORTAL}"] : [], `) ||
+    !agentOrigins.includes(`concat(var.local_origins ? [${LOCAL_AGENT.map((o) => `"${o}"`).join(", ")}] : [], `) ||
+    !/type\s*=\s*bool\b/.test(localOrigins) ||
+    !/default\s*=\s*false\b/.test(localOrigins)
+  ) {
+    p.push(LOCAL_ORIGINS);
+  }
   for (const name of ["portal_origin", "agent_origin"]) {
     const condition = new RegExp(`condition\\s*=\\s*var\\.${name} == "" \\|\\| can\\(regex\\("\\^https:\\/\\/\\[a-z0-9\\]\\[a-z0-9\\.-\\]\\*\\$", var\\.${name}\\)\\)`);
     if (!condition.test(block(tf, new RegExp(`variable\\s+"${name}"\\s*\\{`)) ?? "")) p.push(`var.${name} must be empty or one https origin: a host, with no path, port, wildcard or trailing slash`);
@@ -372,35 +426,68 @@ export function auth0Problems(s: Sources): string[] {
   // The applications: exactly these four kinds, each with its own credentials resource (FR-026).
   if (JSON.stringify(names("auth0_client")) !== JSON.stringify(APPLICATIONS) || JSON.stringify(names("auth0_client_credentials")) !== JSON.stringify(APPLICATIONS)) p.push(FOUR_KINDS);
 
-  // The post-login Action: its code is the file this suite runs (actionProblems), it holds no secret and no package,
-  // and it is appended to the tenant's flow, never replacing it. It writes one namespaced claim on the access token.
-  const action = block(tf, /resource\s+"auth0_action"\s+"sign_in_time"\s*\{/);
-  const binding = block(tf, /resource\s+"auth0_trigger_action"\s+"sign_in_time"\s*\{/);
-  const triggers = blocks(action, /\bsupported_triggers\s*\{/g);
-  if (
-    !has(action, new RegExp(`code\\s*=\\s*file\\("\\$\\{path\\.module\\}/${ACTION_FILE.replace(".", "\\.")}"\\)`)) ||
-    triggers.length !== 1 ||
-    !/id\s*=\s*"post-login"/.test(triggers[0]!) ||
-    has(action, /\b(secrets|secrets_wo|dependencies|modules)\s*\{/) ||
-    !has(binding, /trigger\s*=\s*"post-login"/) ||
-    !has(binding, /action_id\s*=\s*auth0_action\.sign_in_time\.id/) ||
-    count("auth0_action") !== 1 ||
-    count("auth0_trigger_action") !== 1 ||
-    count("auth0_trigger_actions") !== 0
-  ) {
-    p.push(`the one Action must be the post-login sign-in time Action (${ACTION_FILE}, no secret, no package), appended to the flow (auth0_trigger_action), never replacing it`);
+  // The Actions: each one's code is the file this suite runs (actionProblems and the like), it holds no secret and no
+  // package, and it is appended to its flow, never replacing it. Phase 3: two post-login Actions, the second-factor
+  // time one bound after the sign-in time one, and the pre-user-registration one only while sign-ups are closed.
+  const actionOk = ([resource, file, trigger, version]: (typeof ACTIONS)[number]) => {
+    const action = block(tf, new RegExp(`resource\\s+"auth0_action"\\s+"${resource}"\\s*\\{`));
+    const binding = block(tf, new RegExp(`resource\\s+"auth0_trigger_action"\\s+"${resource}"\\s*\\{`));
+    const triggers = blocks(action, /\bsupported_triggers\s*\{/g);
+    const instance = resource === "deny_sign_up" ? "\\[0\\]" : "";
+    return (
+      has(action, new RegExp(`code\\s*=\\s*file\\("\\$\\{path\\.module\\}/${file.replace(".", "\\.")}"\\)`)) &&
+      triggers.length === 1 &&
+      new RegExp(`id\\s*=\\s*"${trigger}"`).test(triggers[0]!) &&
+      new RegExp(`version\\s*=\\s*"${version}"`).test(triggers[0]!) &&
+      !has(action, /\b(secrets|secrets_wo|dependencies|modules)\s*\{/) &&
+      has(binding, new RegExp(`trigger\\s*=\\s*"${trigger}"`)) &&
+      has(binding, new RegExp(`action_id\\s*=\\s*auth0_action\\.${resource}${instance}\\.id\\b`))
+    );
+  };
+  const resources = JSON.stringify(ACTIONS.map(([resource]) => resource));
+  if (!ACTIONS.every(actionOk) || JSON.stringify(names("auth0_action")) !== resources || JSON.stringify(names("auth0_trigger_action")) !== resources || count("auth0_trigger_actions") !== 0) {
+    p.push(ONE_ACTION);
   }
+  if (!has(block(tf, /resource\s+"auth0_trigger_action"\s+"mfa_time"\s*\{/), /depends_on\s*=\s*\[auth0_trigger_action\.sign_in_time\]/)) p.push(ONE_ACTION_ORDER);
+  const signUps = block(tf, /variable\s+"allow_sign_ups"\s*\{/) ?? "";
+  const whileClosed = (type: string) => has(block(tf, new RegExp(`resource\\s+"${type}"\\s+"deny_sign_up"\\s*\\{`)), /^\s*count\s*=\s*var\.allow_sign_ups \? 0 : 1$/m);
+  if (!/type\s*=\s*bool\b/.test(signUps) || !/default\s*=\s*true\b/.test(signUps) || !whileClosed("auth0_action") || !whileClosed("auth0_trigger_action")) p.push(SIGN_UPS);
   const claim = /^\s*auth_time_claim\s*=\s*"([^"]+)"/m.exec(tf)?.[1];
-  if (claim !== AUTH_TIME_CLAIM) p.push(`local.auth_time_claim must be ${AUTH_TIME_CLAIM}, the services' default AUTH_TIME_CLAIM`);
-  const js = (s.all[ACTION_FILE] ?? "").replace(/\/\*[\s\S]*?\*\//g, "").replace(/(?<!:)\/\/.*$/gm, "");
-  const apiUses = [...js.matchAll(/\bapi\s*\.\s*([\w.]+)/g)].map((m) => m[1]);
-  const strings = [...js.matchAll(/"([^"]*)"|'([^']*)'|`([^`]*)`/g)].map((m) => m[1] ?? m[2] ?? m[3]);
-  if (JSON.stringify(apiUses) !== '["accessToken.setCustomClaim"]' || JSON.stringify(strings) !== JSON.stringify([AUTH_TIME_CLAIM]) || /\bapi\s*\[|\brequire\s*\(|\bimport\b|\bfetch\s*\(|\bevent\.secrets\b/.test(js)) {
-    p.push(`the Action must write one namespaced claim, ${AUTH_TIME_CLAIM}, on the access token, and do nothing else`);
+  if (claim !== AUTH_TIME_CLAIM || claim !== DEFAULT_AUTH_TIME_CLAIM) p.push(`local.auth_time_claim must be ${AUTH_TIME_CLAIM}, the services' default AUTH_TIME_CLAIM`);
+  const mfaClaim = /^\s*mfa_time_claim\s*=\s*"([^"]+)"/m.exec(tf)?.[1];
+  if (mfaClaim !== MFA_TIME_CLAIM || mfaClaim !== DEFAULT_MFA_TIME_CLAIM || !has(block(tf, /resource\s+"auth0_action"\s+"mfa_time"\s*\{/), /local\.mfa_time_claim/)) {
+    p.push(`local.mfa_time_claim must be ${MFA_TIME_CLAIM}, the services' DEFAULT_MFA_TIME_CLAIM, and mfa-time.js must write it`);
+  }
+  // Each Action's code calls exactly these methods of Auth0's api and holds exactly these strings, and loads nothing.
+  const jsOf = (file: string) => (s.all[file] ?? "").replace(/\/\*[\s\S]*?\*\//g, "").replace(/(?<!:)\/\/.*$/gm, "");
+  const apiUses = (js: string) => JSON.stringify([...js.matchAll(/\bapi\s*\.\s*([\w.]+)/g)].map((m) => m[1]));
+  const strings = (js: string) => JSON.stringify([...js.matchAll(/"([^"]*)"|'([^']*)'|`([^`]*)`/g)].map((m) => m[1] ?? m[2] ?? m[3]));
+  const loads = (js: string) => /\bapi\s*\[|\brequire\s*\(|\bimport\b|\bfetch\s*\(|\bevent\.secrets\b/.test(js);
+  const signInJs = jsOf(ACTION_FILE);
+  const signInStrings = [AUTH_TIME_CLAIM, ADMIN_ROLE, ...BROWSER_PROTOCOLS, ...SECOND_FACTORS.map((f) => f.type), "mfa"];
+  if (apiUses(signInJs) !== '["accessToken.setCustomClaim","authentication.challengeWithAny"]' || strings(signInJs) !== JSON.stringify(signInStrings) || loads(signInJs)) p.push(ONE_CLAIM);
+  if (/^const ADMIN_ROLE = "([^"]+)";$/m.exec(signInJs)?.[1] !== ADMIN_ROLE || !has(block(tf, /resource\s+"auth0_role"\s+"admin"\s*\{/), new RegExp(`name\\s*=\\s*"${ADMIN_ROLE}"`))) p.push(ADMIN_ROLE_IN_ACTION);
+  const mfaJs = jsOf(MFA_ACTION_FILE);
+  if (apiUses(mfaJs) !== '["accessToken.setCustomClaim"]' || strings(mfaJs) !== JSON.stringify([MFA_TIME_CLAIM, "mfa"]) || loads(mfaJs)) p.push(ONE_MFA_CLAIM);
+  const denyJs = jsOf(SIGN_UP_ACTION_FILE);
+  if (apiUses(denyJs) !== '["access.deny"]' || strings(denyJs) !== JSON.stringify(SIGN_UP_CLOSED) || loads(denyJs)) p.push(DENY_ONLY);
+  // Phase 3 (finding #6): the second factors the first Action asks for are on, and so is the tenant's setting that
+  // lets an Action choose them, with Guardian; the tenant resource sets nothing else.
+  const tenant = block(tf, /resource\s+"auth0_tenant"\s+"mfa_actions"\s*\{/) ?? "";
+  if (
+    !/^\s*otp\s*=\s*true$/m.test(guardian) ||
+    !/enabled\s*=\s*true/.test(block(guardian, /push\s*\{/) ?? "") ||
+    JSON.stringify([...tenant.matchAll(/^\s*(\w+)\s*=\s*(.+)$/gm)].map((m) => `${m[1]} = ${m[2]!.trim()}`)) !== JSON.stringify(["count = var.manage_guardian ? 1 : 0", "customize_mfa_in_postlogin_action = true"]) ||
+    count("auth0_tenant") !== 1
+  ) {
+    p.push(MFA_SETTINGS);
   }
 
   // Nothing here manages users, assigns a role or holds secrets.
   if (/resource\s+"auth0_user"/.test(tf) || /\bpassword\s*=/.test(tf)) p.push("users and passwords are never managed here");
+  // SPEC v1.16: no approver is configured, so no user is read either, and no output gives L2 one (it refuses it).
+  if (/data\s+"auth0_user"/.test(tf)) p.push(NO_USER_READ);
+  if (/CIBA_APPROVER=/.test(tf)) p.push(NO_APPROVER_OUTPUT);
   if (/resource\s+"auth0_(user_roles?|user_permissions?|role_users?|role_members?|organization_member\w*)"/.test(tf)) p.push(NOBODY_ASSIGNED);
   for (const [f, text] of Object.entries(s.all)) {
     if (/-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(text)) p.push(`${f} holds a private key`);
@@ -462,7 +549,7 @@ export function auth0Problems(s: Sources): string[] {
   const declared = [...tf.matchAll(/variable\s+"(\w+)"\s*\{/g)].map((m) => m[1]!);
   for (const name of Object.keys(VARIABLES)) if (!declared.includes(name)) p.push(`the pipeline sets var.${name}, which auth0/ doesn't declare`);
   const noDefault = declared.filter((name) => !/^\s*default\s*=/m.test(block(tf, new RegExp(`variable\\s+"${name}"\\s*\\{`)) ?? "")).sort();
-  if (JSON.stringify(noDefault) !== JSON.stringify(["api_identifier", "approver_user_id", "environment", "tenant_domain"])) p.push(`only environment, tenant_domain, api_identifier and approver_user_id may have no default (the pipeline requires them), got ${noDefault.join(", ")}`);
+  if (JSON.stringify(noDefault) !== JSON.stringify(["api_identifier", "environment", "tenant_domain"])) p.push(`only environment, tenant_domain and api_identifier may have no default (the pipeline requires them), got ${noDefault.join(", ")}`);
 
   // Local state, plans and tfvars never reach git or an image.
   for (const pattern of ["auth0/.terraform/", "auth0/*.tfstate", "auth0/*.tfstate.*", "auth0/*.tfplan", "auth0/*.tfvars"]) {
@@ -507,7 +594,7 @@ export function pipelineProblems(s: Sources): string[] {
   const exported = /for name in ([a-z_ ]+); do\n\s+source="VAR_\$name"\n\s+if \[\[ -n "\$\{!source\}" \]\]; then export "TF_VAR_\$name=\$\{!source\}"; fi/.exec(run("plan"))?.[1];
   const required = /for required in ([A-Za-z0-9_: ]+); do\n\s+source="VAR_\$\{required%%:\*\}"\n\s+if \[\[ -z "\$\{!source\}" \]\]; then\n[^\n]+\n\s+exit 1/.exec(run("plan"))?.[1];
   if (!wired || Object.keys(planEnv).filter((k) => k.startsWith("VAR_")).length !== Object.keys(VARIABLES).length || exported !== Object.keys(VARIABLES).join(" ") || required !== REQUIRED.map((name) => `${name}:${VARIABLES[name]}`).join(" ")) {
-    p.push("Terraform's variables must come from the GitHub environment's variables, as TF_VAR_* in the plan step: all nine wired, the four without a usable default required");
+    p.push(VARS_WIRED);
   }
   // Constitution V: L2's credential is held by L2 only. The pipeline provisions the key path alone, where GitHub
   // holds the public half; it never takes L2's client secret, from a secret, a variable or a file.
@@ -585,10 +672,11 @@ function bicepObject(bicepparam: string, name: string): Record<string, string> {
 type ApiCall = [path: string, args: unknown[]];
 
 /**
- * Runs the Action's code as Auth0 does (CommonJS, `exports.onExecutePostLogin(event, api)`), in a context of its own,
- * with a stand-in `api` that records every call on it, whatever its path. Throws when the Action does.
+ * Runs an Action's code as Auth0 does (CommonJS, `exports.<handler>(event, api)`; onExecutePostLogin by default), in a
+ * context of its own, with a stand-in `api` that records every call on it, whatever its path. Throws when the Action
+ * does.
  */
-export async function runAction(source: string, event: unknown): Promise<ApiCall[]> {
+export async function runAction(source: string, event: unknown, handler = "onExecutePostLogin"): Promise<ApiCall[]> {
   const calls: ApiCall[] = [];
   const recorder = (path: string): unknown =>
     new Proxy(function () {}, {
@@ -600,8 +688,8 @@ export async function runAction(source: string, event: unknown): Promise<ApiCall
     });
   const exports: Record<string, unknown> = {};
   runInNewContext(source, { exports, module: { exports } });
-  if (JSON.stringify(Object.keys(exports)) !== '["onExecutePostLogin"]' || typeof exports.onExecutePostLogin !== "function") throw new Error("the Action must export onExecutePostLogin only");
-  await (exports.onExecutePostLogin as (event: unknown, api: unknown) => unknown)(event, recorder(""));
+  if (JSON.stringify(Object.keys(exports)) !== JSON.stringify([handler]) || typeof exports[handler] !== "function") throw new Error(`the Action must export ${handler} only`);
+  await (exports[handler] as (event: unknown, api: unknown) => unknown)(event, recorder(""));
   return calls;
 }
 
@@ -610,29 +698,89 @@ const signIn = (first: string, last: string) => ({ authentication: { methods: [{
 const FIRST = "2026-11-10T10:00:00.000Z";
 const LAST = "2026-11-10T10:05:30.900Z";
 
-/**
- * What the Action does, by running it: the claim is the time of the most recent authentication, in whole seconds, and
- * the only thing it sets; an event without a usable time sets nothing (never the current time, which would make a
- * token renewal look like a new sign-in). One message per problem.
- */
-export async function actionProblems(source: string): Promise<string[]> {
+/** A method of the post-login event, and the time in whole seconds a claim carries. */
+const method = (name: string, timestamp: unknown) => ({ name, timestamp });
+const seconds = (iso: string) => Math.floor(Date.parse(iso) / 1000);
+/** An administrator's post-login event: the methods so far, and the protocol of the request (null: no transaction). */
+const admin = (methods: unknown[], protocol: string | null = "oidc-basic-profile") => ({
+  authentication: { methods },
+  authorization: { roles: ["x402-agent", ADMIN_ROLE] },
+  ...(protocol === null ? {} : { transaction: { protocol } }),
+  user: { user_id: "auth0|1" },
+});
+const authTime = (iso: string): ApiCall => ["accessToken.setCustomClaim", [AUTH_TIME_CLAIM, seconds(iso)]];
+const mfaTime = (iso: string): ApiCall => ["accessToken.setCustomClaim", [MFA_TIME_CLAIM, seconds(iso)]];
+const CHALLENGE: ApiCall = ["authentication.challengeWithAny", [SECOND_FACTORS]];
+type Case = [label: string, event: unknown, want: ApiCall[]];
+
+/** Runs each case; one message per case whose calls differ, or that throws (a failing Action stops sign-ins). */
+async function caseProblems(source: string, cases: Case[], handler = "onExecutePostLogin"): Promise<string[]> {
   const p: string[] = [];
-  const cases: [string, unknown, ApiCall[]][] = [
-    ["a sign-in with two methods", signIn(FIRST, LAST), [["accessToken.setCustomClaim", [AUTH_TIME_CLAIM, Math.floor(Date.parse(LAST) / 1000)]]]],
-    ["the same methods in the other order", { authentication: { methods: [...signIn(FIRST, LAST).authentication.methods].reverse() } }, [["accessToken.setCustomClaim", [AUTH_TIME_CLAIM, Math.floor(Date.parse(LAST) / 1000)]]]],
-    ["an event without authentication details", { user: { user_id: "auth0|1" } }, []],
-    ["an event without methods", { authentication: { methods: [] } }, []],
-    ["a method without a readable time", { authentication: { methods: [{ name: "pwd", timestamp: "yesterday" }, { name: "mfa" }, null] } }, []],
-  ];
   for (const [label, event, want] of cases) {
     try {
-      const got = await runAction(source, event);
+      const got = await runAction(source, event, handler);
       if (JSON.stringify(got) !== JSON.stringify(want)) p.push(`the Action, for ${label}, must call ${JSON.stringify(want)}, not ${JSON.stringify(got)}`);
     } catch (e) {
       p.push(`the Action, for ${label}, must not throw (a failing Action stops every sign-in of the tenant): ${(e as Error).message}`);
     }
   }
   return p;
+}
+
+/**
+ * What sign-in-time.js does, by running it: the claim is the time of the most recent authentication, in whole
+ * seconds; an event without a usable time sets none (never the current time, which would make a token renewal look
+ * like a new sign-in). Phase 3: an administrator's interactive sign-in in a browser without a second factor at least
+ * as recent as the rest of it is challenged with push or a one-time code; a refresh-token exchange or another
+ * protocol never is, and nobody else ever is. Nothing else is set. One message per problem.
+ */
+export async function actionProblems(source: string): Promise<string[]> {
+  return caseProblems(source, [
+    ["a sign-in with two methods", signIn(FIRST, LAST), [authTime(LAST)]],
+    ["the same methods in the other order", { authentication: { methods: [...signIn(FIRST, LAST).authentication.methods].reverse() } }, [authTime(LAST)]],
+    ["an event without authentication details", { user: { user_id: "auth0|1" } }, []],
+    ["an event without methods", { authentication: { methods: [] } }, []],
+    ["a method without a readable time", { authentication: { methods: [{ name: "pwd", timestamp: "yesterday" }, { name: "mfa" }, null] } }, []],
+    ["an administrator's sign-in without a second factor", admin([method("pwd", FIRST)]), [authTime(FIRST), CHALLENGE]],
+    ["an administrator's sign-in with a second factor after the password", admin([method("pwd", FIRST), method("mfa", LAST)]), [authTime(LAST)]],
+    ["an administrator's sign-in with a second factor at the password's time", admin([method("pwd", FIRST), method("mfa", FIRST)]), [authTime(FIRST)]],
+    ["an administrator's new password after an older second factor", admin([method("mfa", FIRST), method("pwd", LAST)]), [authTime(LAST), CHALLENGE]],
+    ["an administrator's sign-in with no readable time", admin([method("pwd", "yesterday")]), [CHALLENGE]],
+    ...BROWSER_PROTOCOLS.slice(1).map((protocol): Case => [`an administrator's sign-in by ${protocol}`, admin([method("pwd", FIRST)], protocol), [authTime(FIRST), CHALLENGE]]),
+    ...["oauth2-refresh-token", "oauth2-resource-owner", "oauth2-token-exchange", "oidc-ciba", "samlp"].map((protocol): Case => [`an administrator's token by ${protocol}`, admin([method("pwd", FIRST)], protocol), [authTime(FIRST)]]),
+    ["an administrator's event without a transaction", admin([method("pwd", FIRST)], null), [authTime(FIRST)]],
+    ["a person without the administrator's role", { ...admin([method("pwd", FIRST)]), authorization: { roles: ["x402-agent"] } }, [authTime(FIRST)]],
+    ["a role named like the administrator's", { ...admin([method("pwd", FIRST)]), authorization: { roles: [`${ADMIN_ROLE}istrator`] } }, [authTime(FIRST)]],
+  ]);
+}
+
+/**
+ * What mfa-time.js does, by running it: the claim is the time of the most recent second factor (a method named mfa),
+ * in whole seconds, whatever the other methods' times; without one it sets nothing, never the current time.
+ */
+export async function mfaActionProblems(source: string): Promise<string[]> {
+  return caseProblems(source, [
+    ["a sign-in with a second factor", signIn(FIRST, LAST), [mfaTime(LAST)]],
+    ["a second factor older than the password", { authentication: { methods: [method("mfa", FIRST), method("pwd", LAST)] } }, [mfaTime(FIRST)]],
+    ["two second factors", { authentication: { methods: [method("mfa", FIRST), method("mfa", LAST), method("pwd", FIRST)] } }, [mfaTime(LAST)]],
+    ["a password only", { authentication: { methods: [method("pwd", LAST)] } }, []],
+    ["an event without authentication details", { user: { user_id: "auth0|1" } }, []],
+    ["a second factor without a readable time", { authentication: { methods: [method("mfa", "yesterday"), { name: "mfa" }, null] } }, []],
+    ["an administrator after a challenge", admin([method("pwd", FIRST), method("mfa", LAST)]), [mfaTime(LAST)]],
+  ]);
+}
+
+/** What deny-sign-up.js does, by running it: every registration is refused, with the same reason, whatever the event. */
+export async function signUpActionProblems(source: string): Promise<string[]> {
+  const refused: ApiCall[] = [["access.deny", SIGN_UP_CLOSED]];
+  return caseProblems(
+    source,
+    [
+      ["a sign-up", { user: { email: "someone@example.com" }, connection: { strategy: "auth0", name: "Username-Password-Authentication" } }, refused],
+      ["an event with nothing in it", {}, refused],
+    ],
+    "onExecutePreUserRegistration",
+  );
 }
 
 const mutate = (s: Sources, file: string, from: string | RegExp, to: string): Sources => {
@@ -675,7 +823,9 @@ describe("T-IAC-02 Auth0 tenant as code (auth0/)", () => {
     ["a non-ephemeral secret variable", "variables.tf", "  ephemeral   = true\n", "", "var.client_secret must be sensitive and ephemeral"],
     ["provider credentials in a file", "versions.tf", "domain = var.tenant_domain", 'domain = var.tenant_domain\n  client_id = "abc"', "the provider block must take credentials from the environment only, never from a file"],
     ["an unpinned provider", "versions.tf", '">= 1.60.0, < 2.0.0"', '">= 1.0.0"', "the provider must be auth0/auth0 pinned to >= 1.60.0, < 2.0.0"],
-    ["a managed user", "main.tf", "data \"auth0_user\" \"approver\" {", 'resource "auth0_user" "approver" {\n  password = "x"\n}\ndata "auth0_user" "approver" {', "users and passwords are never managed here"],
+    ["a managed user", "main.tf", 'resource "auth0_client" "portal" {', 'resource "auth0_user" "approver" {\n  password = "x"\n}\n\nresource "auth0_client" "portal" {', "users and passwords are never managed here"],
+    ["Phase 3: the approver read again", "main.tf", 'resource "auth0_client" "portal" {', 'data "auth0_user" "approver" {\n  user_id = "auth0|someone"\n}\n\nresource "auth0_client" "portal" {', NO_USER_READ],
+    ["Phase 3: the approver back in L2's env lines", "outputs.tf", '    "CIBA_AUDIENCE=${auth0_resource_server.payments.identifier}",\n', '    "CIBA_AUDIENCE=${auth0_resource_server.payments.identifier}",\n    "CIBA_APPROVER=auth0|someone",\n', NO_APPROVER_OUTPUT],
     ["a local state", "versions.tf", /  backend "azurerm" \{\n    use_azuread_auth = true\n  \}\n/, "", 'the state must be in Azure with an Entra sign-in (backend "azurerm", use_azuread_auth = true)'],
     ["a state account key", "versions.tf", "    use_azuread_auth = true\n", '    use_azuread_auth = true\n    access_key       = "abc"\n', "the backend block must hold no key and no name: the pipeline passes the account, container and key from the parameter file"],
     ["an output missing clientKeyId", "outputs.tf", '    clientKeyId = ""\n', "", "output bicepparam_ciba must have exactly the ciba keys of the parameter file (audience, clientId, clientKeyId, credential, enabled, issuer), got audience, clientId, credential, enabled, issuer"],
@@ -694,8 +844,6 @@ describe("T-IAC-02 Auth0 tenant as code (auth0/)", () => {
   const PORTAL_PUBLIC = "the portal's client must be a public spa client: authentication_method none, no secret and no key";
   const PORTAL_GRANT = "the portal's client must have only its own grant (authorization_code, refresh_token)";
   const PORTAL_URLS = `the portal client's callbacks, web origins and logout URLs must be exactly ${LOCAL_PORTAL} and var.portal_origin when set`;
-  const ONE_ACTION = `the one Action must be the post-login sign-in time Action (${ACTION_FILE}, no secret, no package), appended to the flow (auth0_trigger_action), never replacing it`;
-  const ONE_CLAIM = `the Action must write one namespaced claim, ${AUTH_TIME_CLAIM}, on the access token, and do nothing else`;
   it.each<[string, string, string | RegExp, string, string]>([
     ["an API without RBAC", "main.tf", /enforce_policies(\s*)= true/, "enforce_policies$1= false", "people's API must enforce RBAC (enforce_policies = true)"],
     ["permissions left out of the token", "main.tf", '"access_token_authz"', '"access_token"', 'people\'s API must put the permissions in the access token (token_dialect = "access_token_authz")'],
@@ -709,7 +857,7 @@ describe("T-IAC-02 Auth0 tenant as code (auth0/)", () => {
     ["a confidential portal client", "main.tf", 'app_type        = "spa"', 'app_type        = "regular_web"', PORTAL_PUBLIC],
     ["a portal client with the implicit grant", "main.tf", '["authorization_code", "refresh_token"]', '["authorization_code", "refresh_token", "implicit"]', PORTAL_GRANT],
     ["a portal client with the device grant", "main.tf", '["authorization_code", "refresh_token"]', `["authorization_code", "refresh_token", "${DEVICE_GRANT}"]`, PORTAL_GRANT],
-    ["a second callback URL", "main.tf", `concat(["${LOCAL_PORTAL}"], `, `concat(["${LOCAL_PORTAL}", "https://portal.example"], `, PORTAL_URLS],
+    ["a second callback URL", "main.tf", `var.local_origins ? ["${LOCAL_PORTAL}"] : []`, `var.local_origins ? ["${LOCAL_PORTAL}", "https://portal.example"] : []`, PORTAL_URLS],
     ["another local origin", "main.tf", `"${LOCAL_PORTAL}"`, '"http://localhost:3000"', PORTAL_URLS],
     ["a callback written in the client", "main.tf", /callbacks(\s*)= local\.portal_origins/, 'callbacks$1= ["https://portal.example/callback"]', PORTAL_URLS],
     ["a cross-origin URL of its own", "main.tf", /(\n  web_origins\s*= local\.portal_origins)/, "$1\n  allowed_origins     = local.portal_origins", PORTAL_URLS],
@@ -734,8 +882,8 @@ describe("T-IAC-02 Auth0 tenant as code (auth0/)", () => {
     ["014: no administrator's role", "main.tf", /resource "auth0_role" "admin" \{[\s\S]*?\n\}\n\n/, "", TWO_ROLES],
     ["014: an administrator's role with a second permission", "main.tf", /(resource "auth0_role_permissions" "admin" \{[\s\S]*?\n  permissions \{\n[^}]*\})/, '$1\n\n  permissions {\n    name                       = "read:users"\n    resource_server_identifier = "https://x402-dev.us.auth0.com/api/v2/"\n  }', TWO_ROLES],
     ["014: an administrator's role holding a permission of the approval API", "main.tf", /(resource "auth0_role_permissions" "admin" \{[\s\S]*?resource_server_identifier\s*= )auth0_resource_server\.identity\.identifier/, "$1auth0_resource_server.payments.identifier", TWO_ROLES],
-    ["014: the administrator's role assigned to a person", "main.tf", 'resource "auth0_role_permissions" "admin" {', 'resource "auth0_user_roles" "someone" {\n  user_id = var.approver_user_id\n  roles   = [auth0_role.admin.id]\n}\n\nresource "auth0_role_permissions" "admin" {', NOBODY_ASSIGNED],
-    ["a role assigned to a person", "main.tf", 'resource "auth0_client" "portal" {', 'resource "auth0_user_roles" "someone" {\n  user_id = var.approver_user_id\n  roles   = ["rol_x"]\n}\n\nresource "auth0_client" "portal" {', NOBODY_ASSIGNED],
+    ["014: the administrator's role assigned to a person", "main.tf", 'resource "auth0_role_permissions" "admin" {', 'resource "auth0_user_roles" "someone" {\n  user_id = "auth0|someone"\n  roles   = [auth0_role.admin.id]\n}\n\nresource "auth0_role_permissions" "admin" {', NOBODY_ASSIGNED],
+    ["a role assigned to a person", "main.tf", 'resource "auth0_client" "portal" {', 'resource "auth0_user_roles" "someone" {\n  user_id = "auth0|someone"\n  roles   = ["rol_x"]\n}\n\nresource "auth0_client" "portal" {', NOBODY_ASSIGNED],
     ["a connection with a password in code", "main.tf", 'resource "auth0_client" "portal" {', 'resource "auth0_connection" "db" {\n  name     = "db"\n  strategy = "auth0"\n  options {\n    password = "x"\n  }\n}\n\nresource "auth0_client" "portal" {', "users and passwords are never managed here"],
     ["a client in the identity object", "outputs.tf", /(output "bicepparam_identity" \{[\s\S]*?audience\s*= auth0_resource_server\.identity\.identifier)/, "$1\n    agentClientIds = [auth0_client.portal.client_id]", IDENTITY_OUTPUT],
     ["an identity output for the approval API", "outputs.tf", /(output "bicepparam_identity" \{[\s\S]*?audience\s*= )auth0_resource_server\.identity\.identifier/, "$1auth0_resource_server.payments.identifier", IDENTITY_OUTPUT],
@@ -765,10 +913,10 @@ describe("T-IAC-02 Auth0 tenant as code (auth0/)", () => {
     ["an agent role that holds the administrator's permission", "main.tf", /(resource "auth0_role_permissions" "agent" \{[\s\S]*?name\s*= )local\.agent_permission/, "$1local.admin_permission", TWO_ROLES],
     ["an agent role with a second permission", "main.tf", /(resource "auth0_role_permissions" "agent" \{[\s\S]*?\n  permissions \{\n[^}]*\})/, "$1\n\n  permissions {\n    name                       = local.admin_permission\n    resource_server_identifier = auth0_resource_server.identity.identifier\n  }", TWO_ROLES],
     ["an administrator's role that also starts runs", "main.tf", /(resource "auth0_role_permissions" "admin" \{[\s\S]*?\n  permissions \{\n[^}]*\})/, "$1\n\n  permissions {\n    name                       = local.agent_permission\n    resource_server_identifier = auth0_resource_server.identity.identifier\n  }", TWO_ROLES],
-    ["the agent role assigned to a person", "main.tf", 'resource "auth0_role_permissions" "agent" {', 'resource "auth0_user_roles" "someone" {\n  user_id = var.approver_user_id\n  roles   = [auth0_role.agent.id]\n}\n\nresource "auth0_role_permissions" "agent" {', NOBODY_ASSIGNED],
-    ["the agent role assigned to a person, one role at a time", "main.tf", 'resource "auth0_role_permissions" "agent" {', 'resource "auth0_user_role" "someone" {\n  user_id = var.approver_user_id\n  role_id = auth0_role.agent.id\n}\n\nresource "auth0_role_permissions" "agent" {', NOBODY_ASSIGNED],
-    ["a role's people listed in code", "main.tf", 'resource "auth0_role_permissions" "agent" {', 'resource "auth0_role_users" "agent" {\n  role_id = auth0_role.agent.id\n  users   = [var.approver_user_id]\n}\n\nresource "auth0_role_permissions" "agent" {', NOBODY_ASSIGNED],
-    ["a permission given to a person directly", "main.tf", 'resource "auth0_role_permissions" "agent" {', 'resource "auth0_user_permission" "someone" {\n  user_id                    = var.approver_user_id\n  permission                 = "agent:run"\n  resource_server_identifier = auth0_resource_server.identity.identifier\n}\n\nresource "auth0_role_permissions" "agent" {', NOBODY_ASSIGNED],
+    ["the agent role assigned to a person", "main.tf", 'resource "auth0_role_permissions" "agent" {', 'resource "auth0_user_roles" "someone" {\n  user_id = "auth0|someone"\n  roles   = [auth0_role.agent.id]\n}\n\nresource "auth0_role_permissions" "agent" {', NOBODY_ASSIGNED],
+    ["the agent role assigned to a person, one role at a time", "main.tf", 'resource "auth0_role_permissions" "agent" {', 'resource "auth0_user_role" "someone" {\n  user_id = "auth0|someone"\n  role_id = auth0_role.agent.id\n}\n\nresource "auth0_role_permissions" "agent" {', NOBODY_ASSIGNED],
+    ["a role's people listed in code", "main.tf", 'resource "auth0_role_permissions" "agent" {', 'resource "auth0_role_users" "agent" {\n  role_id = auth0_role.agent.id\n  users   = ["auth0|someone"]\n}\n\nresource "auth0_role_permissions" "agent" {', NOBODY_ASSIGNED],
+    ["a permission given to a person directly", "main.tf", 'resource "auth0_role_permissions" "agent" {', 'resource "auth0_user_permission" "someone" {\n  user_id                    = "auth0|someone"\n  permission                 = "agent:run"\n  resource_server_identifier = auth0_resource_server.identity.identifier\n}\n\nresource "auth0_role_permissions" "agent" {', NOBODY_ASSIGNED],
     // The agent's client (FR-024).
     ["an agent client with a secret", "main.tf", /(resource "auth0_client_credentials" "agent" \{[\s\S]*?authentication_method\s*=\s*)"none"/, '$1"client_secret_post"', AGENT_PUBLIC],
     ["an agent client with a key", "main.tf", /(resource "auth0_client_credentials" "agent" \{[\s\S]*?authentication_method\s*=\s*)"none"/, '$1"private_key_jwt"', AGENT_PUBLIC],
@@ -822,10 +970,56 @@ describe("T-IAC-02 Auth0 tenant as code (auth0/)", () => {
     expect(auth0Problems(mutate(load(), file, from, to))).toContain(message);
   });
 
+  // Phase 3 (SPEC 1.19): the localhost origins (finding #11), the administrators' second factor (#6) and closed
+  // sign-ups (#12). One mutant, at least, for each check.
+  it.each<[string, string, string | RegExp, string, string]>([
+    ["the local portal in every environment", "main.tf", `concat(var.local_origins ? ["${LOCAL_PORTAL}"] : [], `, `concat(["${LOCAL_PORTAL}"], `, LOCAL_ORIGINS],
+    ["the local agent in every environment", "main.tf", `concat(var.local_origins ? ["${LOCAL_AGENT[0]}", "${LOCAL_AGENT[1]}"] : [], `, `concat(["${LOCAL_AGENT[0]}", "${LOCAL_AGENT[1]}"], `, LOCAL_ORIGINS],
+    ["the local origins on by default", "variables.tf", /(variable "local_origins" \{[\s\S]*?default\s*= )false/, "$1true", LOCAL_ORIGINS],
+    ["one-time codes off in Guardian", "main.tf", "  otp    = true\n", "", MFA_SETTINGS],
+    ["push off in Guardian", "main.tf", /(push \{\n\s+enabled\s*= )true/, "$1false", MFA_SETTINGS],
+    ["no tenant setting for an Action's choice of factor", "main.tf", /resource "auth0_tenant" "mfa_actions" \{[\s\S]*?\n\}\n/, "", MFA_SETTINGS],
+    ["the tenant setting off", "main.tf", "customize_mfa_in_postlogin_action = true", "customize_mfa_in_postlogin_action = false", MFA_SETTINGS],
+    ["the tenant setting managed beside another configuration's Guardian", "main.tf", /(resource "auth0_tenant" "mfa_actions" \{\n\s+count\s*= )var\.manage_guardian \? 1 : 0/, "$11", MFA_SETTINGS],
+    ["another tenant setting changed with it", "main.tf", /(\n\s+customize_mfa_in_postlogin_action = true)/, '$1\n  session_lifetime                  = 720', MFA_SETTINGS],
+    ["the second-factor time bound in any order", "main.tf", "\n\n  depends_on = [auth0_trigger_action.sign_in_time]", "", ONE_ACTION_ORDER],
+    ["no second-factor time Action", "main.tf", /resource "auth0_action" "mfa_time" \{[\s\S]*?\n\}\n/, "", ONE_ACTION],
+    ["the second-factor time Action's code written elsewhere", "main.tf", 'code    = file("${path.module}/mfa-time.js")', 'code    = "exports.onExecutePostLogin = async () => {};"', ONE_ACTION],
+    ["the second-factor time Action never bound", "main.tf", /resource "auth0_trigger_action" "mfa_time" \{[\s\S]*?\n\}\n/, "", ONE_ACTION],
+    ["another claim name for the second factor", "main.tf", `mfa_time_claim = "${MFA_TIME_CLAIM}"`, 'mfa_time_claim = "https://x402.dev/amr_time"', `local.mfa_time_claim must be ${MFA_TIME_CLAIM}, the services' DEFAULT_MFA_TIME_CLAIM, and mfa-time.js must write it`],
+    ["sign-ups refused whatever the switch", "main.tf", /(resource "auth0_action" "deny_sign_up" \{\n)\s+count = var\.allow_sign_ups \? 0 : 1\n/, "$1", SIGN_UPS],
+    ["the sign-up refusal bound whatever the switch", "main.tf", /(resource "auth0_trigger_action" "deny_sign_up" \{\n)\s+count = var\.allow_sign_ups \? 0 : 1\n/, "$1", SIGN_UPS],
+    ["sign-ups closed by default", "variables.tf", /(variable "allow_sign_ups" \{[\s\S]*?default\s*= )true/, "$1false", SIGN_UPS],
+    ["the sign-up refusal on another trigger", "main.tf", /(supported_triggers \{\n\s+id\s*= )"pre-user-registration"/, '$1"post-user-registration"', ONE_ACTION],
+    ["the sign-up refusal replacing the flow", "main.tf", /resource "auth0_trigger_action" "deny_sign_up" \{[\s\S]*?\n\}\n/, 'resource "auth0_trigger_actions" "deny_sign_up" {\n  trigger = "pre-user-registration"\n  actions {\n    id           = auth0_action.deny_sign_up[0].id\n    display_name = "x"\n  }\n}\n', ONE_ACTION],
+    ["a challenge of another role", ACTION_FILE, `const ADMIN_ROLE = "${ADMIN_ROLE}";`, 'const ADMIN_ROLE = "x402-agent";', ADMIN_ROLE_IN_ACTION],
+    ["a challenge that also denies", ACTION_FILE, "    api.authentication.challengeWithAny(SECOND_FACTORS);", '    api.authentication.challengeWithAny(SECOND_FACTORS);\n    api.access.deny("mfa");', ONE_CLAIM],
+    ["a challenge by text message", ACTION_FILE, '{ type: "otp" }', '{ type: "phone" }', ONE_CLAIM],
+    ["the second-factor time on the ID token too", MFA_ACTION_FILE, /(\n\s+api\.accessToken\.setCustomClaim\(CLAIM, [^\n]+)/, "$1\n    api.idToken.setCustomClaim(CLAIM, 1);", ONE_MFA_CLAIM],
+    ["the second-factor time under another name", MFA_ACTION_FILE, `"${MFA_TIME_CLAIM}"`, '"mfa_time"', ONE_MFA_CLAIM],
+    ["a sign-up refusal that reads a package", SIGN_UP_ACTION_FILE, "exports.onExecutePreUserRegistration", 'const x = require("axios");\nexports.onExecutePreUserRegistration', DENY_ONLY],
+    ["a sign-up refusal that lets some through", SIGN_UP_ACTION_FILE, '  api.access.deny("sign_up_closed", "Sign-ups are closed");', '  if (event.user.email.endsWith("@example.com")) api.access.deny("sign_up_closed", "Sign-ups are closed");', DENY_ONLY],
+  ])("Phase 3 must fail: %s is reported", (_label, file, from, to, message) => {
+    expect(auth0Problems(mutate(load(), file, from, to))).toContain(message);
+  });
+
   it("013: the Action, run against a stand-in for Auth0's api, sets the one claim to the most recent sign-in time and nothing else", async () => {
     const source = load().all[ACTION_FILE]!;
     expect(await actionProblems(source)).toEqual([]);
     expect(await runAction(source, signIn(FIRST, LAST))).toEqual([["accessToken.setCustomClaim", [AUTH_TIME_CLAIM, 1794305130]]]);
+  });
+
+  it("Phase 3: the Actions, run: an administrator's interactive sign-in without a fresh second factor is challenged, nobody else and nothing else is; the second factor's time is its own claim; a closed tenant refuses every sign-up", async () => {
+    const s = load();
+    expect(await actionProblems(s.all[ACTION_FILE]!)).toEqual([]);
+    expect(await runAction(s.all[ACTION_FILE]!, admin([method("pwd", FIRST)]))).toEqual([
+      ["accessToken.setCustomClaim", [AUTH_TIME_CLAIM, 1794304800]],
+      ["authentication.challengeWithAny", [[{ type: "push-notification" }, { type: "otp" }]]],
+    ]);
+    expect(await runAction(s.all[ACTION_FILE]!, admin([method("pwd", FIRST)], "oauth2-refresh-token"))).toEqual([["accessToken.setCustomClaim", [AUTH_TIME_CLAIM, 1794304800]]]);
+    expect(await mfaActionProblems(s.all[MFA_ACTION_FILE]!)).toEqual([]);
+    expect(await runAction(s.all[MFA_ACTION_FILE]!, signIn(FIRST, LAST))).toEqual([["accessToken.setCustomClaim", [MFA_TIME_CLAIM, 1794305130]]]);
+    expect(await signUpActionProblems(s.all[SIGN_UP_ACTION_FILE]!)).toEqual([]);
   });
 
   it.each<[string, string | RegExp, string, RegExp]>([
@@ -839,6 +1033,32 @@ describe("T-IAC-02 Auth0 tenant as code (auth0/)", () => {
     const source = load().all[ACTION_FILE]!;
     expect(typeof from === "string" ? source.includes(from) : from.test(source), "the Action contains the mutation anchor").toBe(true);
     const problems = await actionProblems(source.replace(from, to));
+    expect(problems.some((m) => message.test(m)), problems.join("\n")).toBe(true);
+  });
+
+  const RUNS: Record<string, (source: string) => Promise<string[]>> = { [ACTION_FILE]: actionProblems, [MFA_ACTION_FILE]: mfaActionProblems, [SIGN_UP_ACTION_FILE]: signUpActionProblems };
+  it.each<[string, string, string | RegExp, string, RegExp]>([
+    ["a challenge on a refresh-token exchange", ACTION_FILE, "BROWSER_PROTOCOLS.includes(event.transaction && event.transaction.protocol)", "true", /for an administrator's token by oauth2-refresh-token, must call/],
+    ["a challenge of everyone", ACTION_FILE, "Array.isArray(roles) && roles.includes(ADMIN_ROLE)", "true", /for a person without the administrator's role, must call/],
+    ["a role matched by its start", ACTION_FILE, "roles.includes(ADMIN_ROLE)", "roles.some((r) => r.startsWith(ADMIN_ROLE))", /for a role named like the administrator's, must call/],
+    ["no challenge", ACTION_FILE, "    api.authentication.challengeWithAny(SECOND_FACTORS);\n", "", /for an administrator's sign-in without a second factor, must call/],
+    ["a challenge despite a fresh second factor", ACTION_FILE, "latestMfa > 0 && latestMfa >= latestOther", "false", /for an administrator's sign-in with a second factor after the password, must call/],
+    ["an older second factor taken as fresh", ACTION_FILE, "latestMfa > 0 && latestMfa >= latestOther", "latestMfa > 0", /for an administrator's new password after an older second factor, must call/],
+    ["a password taken as a second factor", ACTION_FILE, 'method.name === "mfa"', "method.name !== undefined", /for an administrator's sign-in without a second factor, must call/],
+    ["a challenge with push only", ACTION_FILE, '[{ type: "push-notification" }, { type: "otp" }]', '[{ type: "push-notification" }]', /for an administrator's sign-in without a second factor, must call/],
+    ["an error without authorization details", ACTION_FILE, "(event.authorization && event.authorization.roles) || []", "event.authorization.roles", /for a sign-in with two methods, must not throw/],
+    ["an error without a transaction", ACTION_FILE, "event.transaction && event.transaction.protocol", "event.transaction.protocol", /for an administrator's event without a transaction, must not throw/],
+    ["any method's time as the second factor's", MFA_ACTION_FILE, 'method && method.name === "mfa" && ', "method && ", /for a second factor older than the password, must call/],
+    ["the first second factor, not the latest", MFA_ACTION_FILE, "at > latest", "latest === 0", /for two second factors, must call/],
+    ["milliseconds", MFA_ACTION_FILE, "Math.floor(latest / 1000)", "latest", /for a sign-in with a second factor, must call/],
+    ["the current time without a second factor", MFA_ACTION_FILE, /if \(latest > 0\) \{\n(\s+)api\.accessToken\.setCustomClaim\(CLAIM, [^\n]+/, "{\n$1api.accessToken.setCustomClaim(CLAIM, Math.floor((latest || Date.now()) / 1000));", /for a password only, must call \[\], not/],
+    ["an error without authentication details", MFA_ACTION_FILE, "(event.authentication && event.authentication.methods) || []", "event.authentication.methods", /for an event without authentication details, must not throw/],
+    ["a sign-up let through", SIGN_UP_ACTION_FILE, '  api.access.deny("sign_up_closed", "Sign-ups are closed");\n', "", /for a sign-up, must call/],
+    ["the refusal on the wrong trigger's handler", SIGN_UP_ACTION_FILE, "exports.onExecutePreUserRegistration", "exports.onExecutePostLogin", /must not throw[^:]*: the Action must export onExecutePreUserRegistration only/],
+  ])("Phase 3 must fail (an Action, run): %s is reported", async (_label, file, from, to, message) => {
+    const source = load().all[file]!;
+    expect(typeof from === "string" ? source.includes(from) : from.test(source), `${file} contains the mutation anchor`).toBe(true);
+    const problems = await RUNS[file]!(source.replace(from, to));
     expect(problems.some((m) => message.test(m)), problems.join("\n")).toBe(true);
   });
 
@@ -858,7 +1078,6 @@ describe("T-IAC-02 Auth0 tenant as code (auth0/)", () => {
 
   const SECRET_SCOPE = "the secrets must reach only the plan and apply steps, as their environment: never the job, another step or a script";
   const VARS_SCOPE = "the variables must reach only the plan step, and no tfvars file or -var argument may be used";
-  const VARS_WIRED = "Terraform's variables must come from the GitHub environment's variables, as TF_VAR_* in the plan step: all nine wired, the four without a usable default required";
   const KEY_ONLY = 'the pipeline must provision credential = "key" only, and never hold L2\'s client secret (Constitution V)';
   const ONLY_APPLY = "the only change to the tenant must be the apply step, when the apply input is checked, applying exactly the saved plan";
   it.each<[string, string | RegExp, string, string]>([
@@ -871,17 +1090,20 @@ describe("T-IAC-02 Auth0 tenant as code (auth0/)", () => {
     ["a variable in every step", "  TF_INPUT: \"0\"", "  TF_INPUT: \"0\"\n  TENANT: ${{ vars.AUTH0_TENANT_DOMAIN }}", VARS_SCOPE],
     ["a tfvars file", '-out="$RUNNER_TEMP/auth0.tfplan"\n          {\n            echo "### Plan', '-var-file="$ENVIRONMENT.tfvars" -out="$RUNNER_TEMP/auth0.tfplan"\n          {\n            echo "### Plan', VARS_SCOPE],
     ["a variable that is never set", "          VAR_guardian_policy: ${{ vars.AUTH0_GUARDIAN_POLICY }}\n", "", VARS_WIRED],
-    ["a portal origin that never reaches Terraform", "manage_guardian guardian_policy portal_origin agent_origin machine_caller_keys; do", "manage_guardian guardian_policy agent_origin machine_caller_keys; do", VARS_WIRED],
-    ["016: an agent origin that never reaches Terraform", "portal_origin agent_origin machine_caller_keys; do", "portal_origin machine_caller_keys; do", VARS_WIRED],
-    ["016: machine callers' keys that never reach Terraform", "portal_origin agent_origin machine_caller_keys; do", "portal_origin agent_origin; do", VARS_WIRED],
+    ["a portal origin that never reaches Terraform", "manage_guardian guardian_policy portal_origin agent_origin", "manage_guardian guardian_policy agent_origin", VARS_WIRED],
+    ["016: an agent origin that never reaches Terraform", "portal_origin agent_origin machine_caller_keys", "portal_origin machine_caller_keys", VARS_WIRED],
+    ["016: machine callers' keys that never reach Terraform", "agent_origin machine_caller_keys local_origins", "agent_origin local_origins", VARS_WIRED],
+    ["Phase 3: the local origins' switch that never reaches Terraform", "machine_caller_keys local_origins allow_sign_ups; do", "machine_caller_keys allow_sign_ups; do", VARS_WIRED],
+    ["Phase 3: the sign-ups' switch that is never set", "          VAR_allow_sign_ups: ${{ vars.AUTH0_ALLOW_SIGN_UPS }}\n", "", VARS_WIRED],
+    ["Phase 3: the approver back", "          VAR_api_identifier: ${{ vars.AUTH0_API_IDENTIFIER }}\n", "          VAR_api_identifier: ${{ vars.AUTH0_API_IDENTIFIER }}\n          VAR_approver_user_id: ${{ vars.AUTH0_APPROVER_USER_ID }}\n", "the pipeline reads vars.AUTH0_APPROVER_USER_ID: only its two secrets and its Terraform variables may be read"],
     ["016: an agent origin that is never set", "          VAR_agent_origin: ${{ vars.AUTH0_AGENT_ORIGIN }}\n", "", VARS_WIRED],
     ["016: machine callers' keys taken from a secret", "VAR_machine_caller_keys: ${{ vars.AUTH0_MACHINE_CALLER_KEYS }}", "VAR_machine_caller_keys: ${{ secrets.AUTH0_MACHINE_CALLER_KEYS }}", "the pipeline reads secrets.AUTH0_MACHINE_CALLER_KEYS: only its two secrets and its Terraform variables may be read"],
     ["016: an empty value exported over a default", 'if [[ -n "${!source}" ]]; then export "TF_VAR_$name=${!source}"; fi', 'export "TF_VAR_$name=${!source}"', VARS_WIRED],
     ["016: a summary without the agent values", "            terraform -chdir=auth0 output -json bicepparam_agent\n", "", "the apply step must show the output bicepparam_agent in the run's summary, for infra/main.<environment>.bicepparam"],
     ["a summary without the identity values", "            terraform -chdir=auth0 output -json bicepparam_identity\n", "", "the apply step must show the output bicepparam_identity in the run's summary, for infra/main.<environment>.bicepparam"],
-    ["a variable taken from another one", "VAR_approver_user_id: ${{ vars.AUTH0_APPROVER_USER_ID }}", "VAR_approver_user_id: ${{ vars.AUTH0_TENANT_DOMAIN }}", VARS_WIRED],
+    ["a variable taken from another one", "VAR_api_identifier: ${{ vars.AUTH0_API_IDENTIFIER }}", "VAR_api_identifier: ${{ vars.AUTH0_TENANT_DOMAIN }}", VARS_WIRED],
     ["a plan with a placeholder", 'if [[ "${!source}" == REPLACE_ME ]]; then', 'if [[ "${!source}" == NEVER ]]; then', "the plan step must refuse a variable that still holds infra/github-setup.sh's placeholder, before it plans"],
-    ["an approver that may be missing", " approver_user_id:AUTH0_APPROVER_USER_ID", "", VARS_WIRED],
+    ["an API identifier that may be missing", " api_identifier:AUTH0_API_IDENTIFIER", "", VARS_WIRED],
     ["a public key that may be missing", " client_public_key_pem:AUTH0_CLIENT_PUBLIC_KEY; do", "; do", VARS_WIRED],
     ["L2's client secret in GitHub", "          VAR_tenant_domain: ${{ vars.AUTH0_TENANT_DOMAIN }}", "          L2_CLIENT_SECRET: ${{ secrets.AUTH0_L2_CLIENT_SECRET }}\n          VAR_tenant_domain: ${{ vars.AUTH0_TENANT_DOMAIN }}", KEY_ONLY],
     ["a credential kind chosen by a variable", 'export TF_VAR_environment="$ENVIRONMENT" TF_VAR_credential=key', 'export TF_VAR_environment="$ENVIRONMENT" TF_VAR_credential="$VAR_credential"', KEY_ONLY],
@@ -909,6 +1131,8 @@ describe("T-IAC-02 Auth0 tenant as code (auth0/)", () => {
     ["013: creates the portal's origin, which has no value yet", '  "AUTH0_GUARDIAN_POLICY=never"\n', '  "AUTH0_GUARDIAN_POLICY=never"\n  "AUTH0_PORTAL_ORIGIN=$PLACEHOLDER"\n'],
     ["016: creates the agent's origin, which has no value yet", '  "AUTH0_GUARDIAN_POLICY=never"\n', '  "AUTH0_GUARDIAN_POLICY=never"\n  "AUTH0_AGENT_ORIGIN=$PLACEHOLDER"\n'],
     ["016: doesn't create the machine callers' keys", '  "AUTH0_MACHINE_CALLER_KEYS={}"\n', ""],
+    ["Phase 3: doesn't create the local origins' switch", '  "AUTH0_LOCAL_ORIGINS=$LOCAL_ORIGINS"\n', ""],
+    ["Phase 3: creates the approver again", '  "AUTH0_GUARDIAN_POLICY=never"\n', '  "AUTH0_GUARDIAN_POLICY=never"\n  "AUTH0_APPROVER_USER_ID=$PLACEHOLDER"\n'],
   ])("must fail (pipeline): a set-up script that %s is reported", (_label, from, to) => {
     const s = load();
     expect(s.setup.includes(from), "github-setup.sh contains the mutation anchor").toBe(true);

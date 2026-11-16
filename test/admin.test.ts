@@ -207,7 +207,7 @@ describe("T-ADM-02 the sixth role and its token (INV-13, FR-027, FR-028)", () =>
   it("T-ADM-02 must-fail: with one portal role for both halves (singlePortalRole), the user-account token reads the list", async () => {
     const l2 = await start({ admin: { singlePortalRole: true } });
     await escalate(l2, {});
-    const r = await l2.call<{ pending: unknown[] }>("GET", "/v1/admin/escalations", { token: TOKENS.portal });
+    const r = await l2.call<{ pending: unknown[] }>("GET", "/v1/admin/escalations", { token: TOKENS.portal, person: await l2.portalToken(CAROL, { admin: true }) });
     expect(r.status).toBe(200);
     expect(r.body.pending).toHaveLength(1);
   });
@@ -255,28 +255,31 @@ const retry = (l2: UsersL2, o: { userId?: string; amount?: string; sessionId?: s
   l2.authorize(l2.intentFor(REPORT, o.amount ?? "50000", { ...(o.userId !== undefined && { userId: o.userId }), ...(o.sessionId !== undefined && { sessionId: o.sessionId }) }));
 
 describe("T-ADM-01 the decision routes: what is refused before anything is decided (US2)", () => {
-  it("T-ADM-01 a malformed ID, decider, confirmation time or reason, and any unknown field, is 400 and appends nothing", async () => {
+  it("T-ADM-01 a malformed ID or reason, any unknown field, and (1.19) a decider or a confirmation time in the body, is 400 and appends nothing", async () => {
     const l2 = await start({ admin: true });
     const id = await escalate(l2, {});
     const before = l2.ledger.entries().length;
+    // Raw bodies, exactly as given, with the administrator's own token beside the role token (what the portal sends).
+    const person = await l2.portalToken(CAROL, { admin: true });
+    const post = (path: string, body: unknown) => l2.call("POST", path, { token: TOKENS.portalAdmin, person, body });
     const bad: Array<[string, string, Body]> = [
-      ["a malformed ID", approvePath("auth_nope"), { decidedBy: CAROL, identityConfirmedAtMs: T0 }],
-      ["an ID of another shape", rejectPath("esc_00000000-0000-4000-8000-000000000000"), { decidedBy: CAROL, reasonCode: "other" }],
-      ["no decider", approvePath(id), { identityConfirmedAtMs: T0 }],
-      ["a decider that is not an identifier", approvePath(id), { decidedBy: "carol", identityConfirmedAtMs: T0 }],
-      ["a confirmation time that is not an integer", approvePath(id), { decidedBy: CAROL, identityConfirmedAtMs: "now" }],
-      ["a fractional confirmation time", approvePath(id), { decidedBy: CAROL, identityConfirmedAtMs: T0 + 0.5 }],
-      ["a validity chosen by the caller", approvePath(id), { decidedBy: CAROL, identityConfirmedAtMs: T0, ttlSeconds: 86_400 }],
-      ["the operator's approver label", approvePath(id), { decidedBy: CAROL, identityConfirmedAtMs: T0, approver: "ops" }],
-      ["a reason code on an approval", approvePath(id), { decidedBy: CAROL, identityConfirmedAtMs: T0, reasonCode: "other" }],
-      ["no reason", rejectPath(id), { decidedBy: CAROL }],
-      ["a reason outside the list", rejectPath(id), { decidedBy: CAROL, reasonCode: "because" }],
-      ["free text", rejectPath(id), { decidedBy: CAROL, reasonCode: "other", reason: "typed by a person" }],
-      ["the operator's label", rejectPath(id), { decidedBy: CAROL, reasonCode: "other", operator: "ops" }],
-      ["a confirmation time on a rejection", rejectPath(id), { decidedBy: CAROL, reasonCode: "other", identityConfirmedAtMs: T0 }],
+      ["a malformed ID", approvePath("auth_nope"), {}],
+      ["an ID of another shape", rejectPath("esc_00000000-0000-4000-8000-000000000000"), { reasonCode: "other" }],
+      ["a decider (1.19: it comes from the token)", approvePath(id), { decidedBy: CAROL }],
+      ["a confirmation time (1.19: it comes from the token)", approvePath(id), { identityConfirmedAtMs: T0 }],
+      ["a decider that is not an identifier", approvePath(id), { decidedBy: "carol" }],
+      ["a validity chosen by the caller", approvePath(id), { ttlSeconds: 86_400 }],
+      ["the operator's approver label", approvePath(id), { approver: "ops" }],
+      ["a reason code on an approval", approvePath(id), { reasonCode: "other" }],
+      ["no reason", rejectPath(id), {}],
+      ["a reason outside the list", rejectPath(id), { reasonCode: "because" }],
+      ["free text", rejectPath(id), { reasonCode: "other", reason: "typed by a person" }],
+      ["the operator's label", rejectPath(id), { reasonCode: "other", operator: "ops" }],
+      ["a decider on a rejection", rejectPath(id), { reasonCode: "other", decidedBy: CAROL }],
+      ["a confirmation time on a rejection", rejectPath(id), { reasonCode: "other", identityConfirmedAtMs: T0 }],
     ];
-    for (const [what, path, body] of bad) expect((await l2.admin("POST", path, body)).status, what).toBe(400);
-    expect((await l2.admin("POST", approvePath(id), [])).status).toBe(400);
+    for (const [what, path, body] of bad) expect((await post(path, body)).status, what).toBe(400);
+    expect((await post(approvePath(id), [])).status).toBe(400);
     expect(l2.ledger.entries()).toHaveLength(before);
   });
 
@@ -421,15 +424,17 @@ describe("T-ADM-04 a rejection from the portal (US2, FR-012, FR-016, SEC-12)", (
 });
 
 describe("T-ADM-05 an approval needs a fresh identity confirmation, judged by L2 (US2, FR-014, SEC-21)", () => {
-  it("T-ADM-05 the 15 minute window and its 60 s tolerance, to the millisecond", async () => {
+  it("T-ADM-05 the 15 minute window and its 60 s tolerance, to the second of the token's sign-in time (1.19)", async () => {
     const l2 = await start({ admin: true });
     const t = l2.clock.now();
+    // 1.19: the time is the administrator's token's, in whole seconds. One in the future beyond the tolerance is not
+    // a usable token at all (401 at the person check); every other refusal is the step-up's 403.
     const cases: Array<[number, number]> = [
       [t, 200],
       [t - 900_000, 200],
-      [t - 900_001, 403],
+      [t - 901_000, 403],
       [t + 60_000, 200],
-      [t + 60_001, 403],
+      [t + 61_000, 401],
       [t - 86_400_000, 403],
     ];
     for (const [confirmed, status] of cases) {
@@ -437,8 +442,8 @@ describe("T-ADM-05 an approval needs a fresh identity confirmation, judged by L2
       const before = l2.ledger.entries().length;
       const r = await approve(l2, id, { identityConfirmedAtMs: confirmed });
       expect(r.status, String(confirmed - t)).toBe(status);
-      if (status === 403) {
-        expect(r.body).toEqual({ error: "step_up_required", maxAgeSec: 900 });
+      if (status !== 200) {
+        expect(r.body).toEqual(status === 403 ? { error: "step_up_required", maxAgeSec: 900 } : { error: "person_token_invalid" });
         expect(l2.ledger.entries()).toHaveLength(before);
       }
     }
@@ -458,12 +463,43 @@ describe("T-ADM-05 an approval needs a fresh identity confirmation, judged by L2
     expect((await approve(l2, id)).body).toMatchObject({ state: "approved", already: false });
   });
 
-  it("T-ADM-05 must-fail: with skipDecisionStepUp, a sign-in from a day ago approves", async () => {
+  it("T-ADM-05 must-fail: with skipDecisionStepUp, a sign-in from a day ago approves (its second factor is fresh)", async () => {
     const l2 = await start({ admin: { skipDecisionStepUp: true } });
     const id = await escalate(l2, {});
-    const r = await approve(l2, id, { identityConfirmedAtMs: l2.clock.now() - 86_400_000 });
+    const person = await l2.portalToken(CAROL, { admin: true, authMs: l2.clock.now() - 86_400_000, mfaMs: l2.clock.now() });
+    const r = await l2.call("POST", approvePath(id), { token: TOKENS.portalAdmin, person, body: {} });
     expect(r.body).toMatchObject({ ok: true, state: "approved", already: false });
     expect(l2.entries("HUMAN_APPROVAL")).toHaveLength(1);
+  });
+});
+
+describe("T-ADM-14 an approval needs a fresh second factor too (1.19, SEC-35)", () => {
+  const approveAs = async (l2: UsersL2, id: string, o: { authMs?: number; mfaMs?: number | null }) =>
+    l2.call("POST", approvePath(id), { token: TOKENS.portalAdmin, person: await l2.portalToken(CAROL, { admin: true, ...o }), body: {} });
+
+  it("T-ADM-14 a fresh sign-in without a second factor, or with an old one, is 403 step_up_required; a fresh one approves", async () => {
+    const l2 = await start({ admin: true });
+    const now = l2.clock.now();
+    for (const [mfaMs, status] of [[null, 403], [now - 901_000, 403], [now, 200]] as const) {
+      const id = await escalate(l2, { sessionId: `sess_mfa_${String(mfaMs)}` });
+      const r = await approveAs(l2, id, { authMs: now, mfaMs });
+      expect(r.status, String(mfaMs)).toBe(status);
+      if (status === 403) expect(r.body).toEqual({ error: "step_up_required", maxAgeSec: 900 });
+    }
+    expect(l2.entries("HUMAN_APPROVAL")).toHaveLength(1);
+  });
+
+  it("T-ADM-14 a rejection needs no second factor", async () => {
+    const l2 = await start({ admin: true });
+    const id = await escalate(l2, {});
+    const person = await l2.portalToken(CAROL, { admin: true, mfaMs: null });
+    expect((await l2.call("POST", rejectPath(id), { token: TOKENS.portalAdmin, person, body: { reasonCode: "other" } })).status).toBe(200);
+  });
+
+  it("T-ADM-14 must-fail: with skipDecisionMfa, a fresh password alone approves", async () => {
+    const l2 = await start({ admin: { skipDecisionMfa: true } });
+    const id = await escalate(l2, {});
+    expect((await approveAs(l2, id, { mfaMs: null })).body).toMatchObject({ ok: true, state: "approved" });
   });
 });
 
@@ -946,7 +982,8 @@ describe("T-ADM-01 the ledger check (US5, FR-025, FR-026, INV-9)", () => {
     for (let i = 0; i < 5; i++) expect((await l2.call("GET", VERIFY, { token: TOKENS.portal })).status).toBe(401);
     for (let i = 0; i < 3; i++) expect((await l2.admin("GET", VERIFY)).status, String(i)).toBe(200);
     const before = l2.ledger.entries().length;
-    const res = await fetch(`${l2.url}${VERIFY}`, { headers: { authorization: `Bearer ${TOKENS.portalAdmin}` } });
+    const person = await l2.portalToken(CAROL, { admin: true });
+    const res = await fetch(`${l2.url}${VERIFY}`, { headers: { authorization: `Bearer ${TOKENS.portalAdmin}`, "x-person-authorization": `Bearer ${person}` } });
     expect(res.status).toBe(429);
     expect(await res.json()).toEqual({ error: "too many requests" });
     expect(Number(res.headers.get("retry-after"))).toBeGreaterThanOrEqual(1);

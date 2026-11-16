@@ -215,8 +215,8 @@ export function mountPortalAdminRoutes(r: Express, d: AdminRoutesDeps): void {
       if (id === undefined) return;
       const body = (req.body ?? {}) as unknown;
       if (!isObject(body) || Object.keys(body).length > 0) return void malformed(res);
-      const { userId, identityConfirmedAtMs } = person(res);
-      const outcome = await d.admin.approve(id, userId, identityConfirmedAtMs);
+      // 1.19: L2 takes the decider and the times from the administrator's own token, forwarded with the call.
+      const outcome = await d.admin.approve(id);
       note(res, outcome.already ? "admin_already_decided" : "admin_approved");
       res.json(outcome);
     }),
@@ -233,7 +233,7 @@ export function mountPortalAdminRoutes(r: Express, d: AdminRoutesDeps): void {
       if (!isObject(body) || Object.keys(body).some((k) => k !== "reasonCode") || !(REJECTION_REASON_CODES as readonly unknown[]).includes(body.reasonCode)) {
         return void malformed(res);
       }
-      const outcome = await d.admin.reject(id, person(res).userId, body.reasonCode as RejectionReasonCode);
+      const outcome = await d.admin.reject(id, body.reasonCode as RejectionReasonCode);
       note(res, outcome.already ? "admin_already_decided" : "admin_rejected");
       res.json(outcome);
     }),

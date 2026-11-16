@@ -130,6 +130,19 @@ describe("US4 auth and validation (005 T031)", () => {
     expect((await post(base, claim(), TOKENS.verifier)).status).toBe(200);
   });
 
+  it("T-LIM-02 claims are bounded per address: 429 with Retry-After beyond it, nothing verified; a bad token never counts", async () => {
+    const v = scriptedVerifier(["CONFIRMED", "CONFIRMED", "CONFIRMED"]);
+    const { base, reconciler } = await start({ verifier: v, maxClaimsPerMinute: 2 });
+    for (let i = 0; i < 3; i++) expect((await post(base, claim(), "nope")).status).toBe(401);
+    for (let i = 0; i < 2; i++) expect((await post(base, claim())).status).toBe(200);
+    const refused = await post(base, claim());
+    expect(refused.status).toBe(429);
+    expect(Number(refused.headers.get("retry-after"))).toBeGreaterThan(0);
+    expect(await refused.json()).toEqual({ error: "too many requests" });
+    expect(v.calls).toHaveLength(2);
+    expect(reconciler.reports).toHaveLength(2);
+  });
+
   it("valid token: non-string authorizationId or non-object requirement → 400 {error}", async () => {
     const v = scriptedVerifier(["CONFIRMED"]);
     const { base } = await start({ verifier: v });
@@ -265,5 +278,31 @@ describe("US4 PENDING re-checks (005 T034, T035)", () => {
     expect(v.calls).toHaveLength(1);
     expect(svc.scheduled()).toEqual(["auth_fast"]);
     // Timers are unref'd: stop() is not needed for the process to exit; afterEach still cancels them.
+  });
+});
+
+describe("T-L3-NONCE-02 a PENDING that waits for validBefore is re-checked then, not every interval (1.19, L3-2)", () => {
+  it("T-L3-NONCE-02 the re-check runs after settlesBy and spends one attempt", async () => {
+    const calls: number[] = [];
+    let settlesBy = "";
+    const verifier = {
+      async verify(c: SettlementClaim) {
+        calls.push(Date.now());
+        if (calls.length === 1) {
+          settlesBy = new Date(Date.now() + 200).toISOString();
+          return { ...reportFor(c, "PENDING"), settlesBy };
+        }
+        return reportFor(c, "NOT_SETTLED");
+      },
+    };
+    const { base, reconciler } = await start({ verifier, recheckIntervalMs: 10, recheckAttempts: 2 });
+    expect((await post(base, claim("auth_wait"))).status).toBe(200);
+    await new Promise((r) => setTimeout(r, 300));
+    expect(calls).toHaveLength(1); // an interval of 10 ms would have re-checked many times by now
+    await waitFor(() => calls.length >= 2, 3_000);
+    expect(calls).toHaveLength(2);
+    expect(calls[1]! - calls[0]!).toBeGreaterThanOrEqual(Date.parse(settlesBy) - calls[0]!);
+    await waitFor(() => reconciler.reports.length >= 2);
+    expect(reconciler.reports.map((r) => r.status)).toEqual(["PENDING", "NOT_SETTLED"]);
   });
 });

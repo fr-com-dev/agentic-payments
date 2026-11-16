@@ -27,24 +27,29 @@ export interface ApprovalRoutesDeps {
 }
 
 export const DEFAULT_APPROVAL_TTL_SECONDS = 600;
+/** 1.19: an operator's approval lasts at most an hour. It is single-use, but an open one should not outlive the run. */
+export const MAX_APPROVAL_TTL_SECONDS = 3600;
 export const DEFAULT_APPROVER = "operator";
 
 type ParsedBody = { ok: true; approver: string; ttlSeconds: number } | { ok: false; error: string };
 
-/** Validates `{ approver?, ttlSeconds? }`. `ttlSeconds` must be a positive integer when present. */
+/**
+ * Validates `{ approver?, ttlSeconds? }`. `ttlSeconds` must be a positive integer when present; 1.19: at most
+ * MAX_APPROVAL_TTL_SECONDS, and `approver` 1–64 characters, the rejection's label limit.
+ */
 export function parseApprovalBody(body: unknown): ParsedBody {
   const b = body !== null && typeof body === "object" ? (body as Record<string, unknown>) : {};
   let ttlSeconds = DEFAULT_APPROVAL_TTL_SECONDS;
   if (b.ttlSeconds !== undefined) {
-    if (typeof b.ttlSeconds !== "number" || !Number.isInteger(b.ttlSeconds) || b.ttlSeconds <= 0) {
-      return { ok: false, error: "ttlSeconds must be a positive integer" };
+    if (typeof b.ttlSeconds !== "number" || !Number.isInteger(b.ttlSeconds) || b.ttlSeconds <= 0 || b.ttlSeconds > MAX_APPROVAL_TTL_SECONDS) {
+      return { ok: false, error: `ttlSeconds must be a whole number from 1 to ${MAX_APPROVAL_TTL_SECONDS}` };
     }
     ttlSeconds = b.ttlSeconds;
   }
   let approver = DEFAULT_APPROVER;
   if (b.approver !== undefined) {
-    if (typeof b.approver !== "string" || b.approver.length === 0) {
-      return { ok: false, error: "approver must be a non-empty string" };
+    if (typeof b.approver !== "string" || b.approver.length === 0 || b.approver.length > OPERATOR_LABEL_MAX) {
+      return { ok: false, error: `approver must be a string of 1-${OPERATOR_LABEL_MAX} characters` };
     }
     approver = b.approver;
   }

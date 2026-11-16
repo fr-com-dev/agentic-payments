@@ -10,9 +10,12 @@
 #   to Azure as the deploy app with OIDC, for that container only, and asks GitHub for a fresh token itself on each
 #   command. No Azure credential exists, and the state holds no secret.
 # - The Azure sign-in and names come from the Bicep parameter files, as in deploy.yml. The tenant's values (its
-#   domain, the API identifier, the approver, the public half of L2's key, the deployed portal's and agent's origins,
-#   the public half of each machine caller's key) are variables of the same GitHub environment, AUTH0_*: the plan
-#   step turns them into Terraform's TF_VAR_* variables. No tfvars file exists, in the repository or on the runner.
+#   domain, the API identifier, the public half of L2's key, the deployed portal's and agent's origins, the public
+#   half of each machine caller's key, whether the local origins are allowed and whether anyone may sign up) are
+#   variables of the same GitHub environment, AUTH0_*: the plan step turns them into Terraform's TF_VAR_* variables.
+#   No tfvars file exists, in the repository or on the runner.
+# - Only main runs it: the GitHub environment auth0-<environment> lets jobs from the branch main only
+#   (infra/github-setup.sh), so a workflow on another branch gets neither the secrets nor a token for the state.
 name: provision-auth0
 
 on:
@@ -117,7 +120,7 @@ jobs:
           terraform -chdir=auth0 validate -no-color
 
       # Terraform's variables are built here, from the GitHub environment's variables: each one that is set becomes
-      # TF_VAR_<name>, and one left unset keeps the default of auth0/variables.tf. The first four have no usable
+      # TF_VAR_<name>, and one left unset keeps the default of auth0/variables.tf. The first three have no usable
       # default. The saved plan carries them to the apply step. L2 authenticates with its key only
       # (credential = "key"): GitHub holds the public half, and never a credential of L2's (Constitution V). The
       # machine callers' keys are public halves too, as one JSON object ({"checks":"<PEM>"}), which Terraform reads
@@ -129,19 +132,20 @@ jobs:
           AUTH0_CLIENT_SECRET: ${{ secrets.AUTH0_CLIENT_SECRET }}
           VAR_tenant_domain: ${{ vars.AUTH0_TENANT_DOMAIN }}
           VAR_api_identifier: ${{ vars.AUTH0_API_IDENTIFIER }}
-          VAR_approver_user_id: ${{ vars.AUTH0_APPROVER_USER_ID }}
           VAR_client_public_key_pem: ${{ vars.AUTH0_CLIENT_PUBLIC_KEY }}
           VAR_manage_guardian: ${{ vars.AUTH0_MANAGE_GUARDIAN }}
           VAR_guardian_policy: ${{ vars.AUTH0_GUARDIAN_POLICY }}
           VAR_portal_origin: ${{ vars.AUTH0_PORTAL_ORIGIN }}
           VAR_agent_origin: ${{ vars.AUTH0_AGENT_ORIGIN }}
           VAR_machine_caller_keys: ${{ vars.AUTH0_MACHINE_CALLER_KEYS }}
+          VAR_local_origins: ${{ vars.AUTH0_LOCAL_ORIGINS }}
+          VAR_allow_sign_ups: ${{ vars.AUTH0_ALLOW_SIGN_UPS }}
         run: |
           if [[ -z "$AUTH0_CLIENT_ID" || -z "$AUTH0_CLIENT_SECRET" ]]; then
             echo "::error::the GitHub environment auth0-$ENVIRONMENT has no secret AUTH0_CLIENT_ID or AUTH0_CLIENT_SECRET (auth0/README.md). Nothing was planned."
             exit 1
           fi
-          for required in tenant_domain:AUTH0_TENANT_DOMAIN api_identifier:AUTH0_API_IDENTIFIER approver_user_id:AUTH0_APPROVER_USER_ID client_public_key_pem:AUTH0_CLIENT_PUBLIC_KEY; do
+          for required in tenant_domain:AUTH0_TENANT_DOMAIN api_identifier:AUTH0_API_IDENTIFIER client_public_key_pem:AUTH0_CLIENT_PUBLIC_KEY; do
             source="VAR_${required%%:*}"
             if [[ -z "${!source}" ]]; then
               echo "::error::the GitHub environment auth0-$ENVIRONMENT has no variable ${required#*:} (auth0/README.md). Nothing was planned."
@@ -156,7 +160,7 @@ jobs:
             fi
           done
           export TF_VAR_environment="$ENVIRONMENT" TF_VAR_credential=key
-          for name in tenant_domain api_identifier approver_user_id client_public_key_pem manage_guardian guardian_policy portal_origin agent_origin machine_caller_keys; do
+          for name in tenant_domain api_identifier client_public_key_pem manage_guardian guardian_policy portal_origin agent_origin machine_caller_keys local_origins allow_sign_ups; do
             source="VAR_$name"
             if [[ -n "${!source}" ]]; then export "TF_VAR_$name=${!source}"; fi
           done

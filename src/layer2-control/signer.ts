@@ -13,6 +13,11 @@ export interface SignedAuthorization {
   headers: Record<string, string>;
   payer: string;
   validBefore: number;
+  /**
+   * 1.19 (L2-4.1, L3-1): the EIP-3009 authorization's nonce (0x + 64 hex). L2 records it on AUTHORIZED, so a later
+   * NOT_SETTLED releases the amount only when L3 checked this exact nonce on-chain after validBefore.
+   */
+  nonce?: string;
 }
 
 /** The surface L2 uses. A remote signer (EXT-2) would implement the same shape. */
@@ -40,12 +45,14 @@ export class PaymentSigner implements PaymentSignerLike {
   /** Signs exactly the approved requirement: the SDK sees a challenge whose `accepts` holds only it (INV-6). */
   async sign(challenge: PaymentRequired, approved: PaymentRequirements): Promise<SignedAuthorization> {
     const payload = await this.#http.createPaymentPayload({ ...challenge, accepts: [approved] });
-    const auth = (payload.payload as { authorization?: { from: string; validBefore: string | number } }).authorization;
+    const auth = (payload.payload as { authorization?: { from: string; validBefore: string | number; nonce?: unknown } }).authorization;
     if (!auth) throw new Error("signer: payload has no EIP-3009 authorization");
+    if (typeof auth.nonce !== "string" || !/^0x[0-9a-fA-F]{64}$/.test(auth.nonce)) throw new Error("signer: the authorization has no 32-byte nonce");
     return {
       headers: this.#http.encodePaymentSignatureHeader(payload),
       payer: auth.from,
       validBefore: Number(auth.validBefore),
+      nonce: auth.nonce.toLowerCase(),
     };
   }
 }

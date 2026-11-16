@@ -10,7 +10,8 @@ import type { PaymentRequired, PaymentRequirements } from "@x402/core/types";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AuthorizationDecision, PaymentIntent } from "../src/shared/contracts.js";
 import { AuditLedger } from "../src/layer2-control/ledger.js";
-import { buildMandate, loadMandate, MandateError, type SpendingMandate } from "../src/layer2-control/mandate.js";
+import { buildMandate, checkPayeeBinding, loadMandate, MandateError, type SpendingMandate } from "../src/layer2-control/mandate.js";
+import { parseApprovalBody } from "../src/layer2-control/approval-routes.js";
 import { decide, evaluateRequirement, type PolicyContext } from "../src/layer2-control/policy.js";
 import { createControlService, createSerializer } from "../src/layer2-control/service.js";
 import { PaymentSigner, type PaymentSignerLike } from "../src/layer2-control/signer.js";
@@ -328,7 +329,7 @@ const fakeSigner = (impl?: PaymentSignerLike["sign"]): PaymentSignerLike => ({
     (async () => ({ headers: { "PAYMENT-SIGNATURE": "opaque" }, payer: "0x00000000000000000000000000000000000000f1", validBefore: Math.floor(NOW / 1000) + 120 })),
 });
 
-async function startService(opts: { signer?: PaymentSignerLike; signerLatencyMs?: number; m?: SpendingMandate; now?: () => number } = {}) {
+async function startService(opts: { signer?: PaymentSignerLike; signerLatencyMs?: number; m?: SpendingMandate; now?: () => number; skipIntentShape?: boolean } = {}) {
   const ledger = new AuditLedger(join(dir, ".local", "ledger-local.jsonl"));
   const svc = createControlService({
     mandate: opts.m ?? mandate(),
@@ -337,6 +338,7 @@ async function startService(opts: { signer?: PaymentSignerLike; signerLatencyMs?
     asset: { address: ASSET, decimals: 6 },
     tokens: TOKENS,
     ...(opts.signerLatencyMs !== undefined && { signerLatencyMs: opts.signerLatencyMs }),
+    ...(opts.skipIntentShape && { skipIntentShape: true }),
     now: opts.now ?? (() => NOW),
   });
   const server = await new Promise<Server>((r) => {
@@ -1267,5 +1269,129 @@ describe("013 user rules (T-POL-16..19)", () => {
     const b = decide([baseRequirement(), baseRequirement({ amount: "500" })], m, ctx);
     expect(a).toEqual(b);
     expect(a.chosen?.amount).toBe("500");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 1.19 (Phase 3): what L2 accepts as a payment request, and what it refuses to start with (SPEC L2-1, L2-5, CFG-3)
+// ---------------------------------------------------------------------------
+describe("T-INT-01 every payment option has the shape of a requirement (1.19, L2-5)", () => {
+  it("T-INT-01 a number for an amount, an object for a network, a null option, 21 options or a long purpose is 400, and nothing is appended", async () => {
+    const { base, ledger } = await startService();
+    const good = intent();
+    const option = baseRequirement() as unknown as Record<string, unknown>;
+    const withOption = (o: unknown) => ({ ...good, paymentRequired: { ...good.paymentRequired, accepts: [o] } });
+    const cases: unknown[] = [
+      withOption({ ...option, amount: 1000 }),
+      withOption({ ...option, network: { id: CAIP2 } }),
+      withOption({ ...option, payTo: [PAY_TO] }),
+      withOption({ ...option, maxTimeoutSeconds: "120" }),
+      withOption(null),
+      withOption([option]),
+      { ...good, paymentRequired: { ...good.paymentRequired, accepts: Array.from({ length: 21 }, () => option) } },
+      { ...good, purpose: "p".repeat(501) },
+      { ...good, purpose: 42 },
+    ];
+    for (const body of cases) {
+      const res = await post(base, body);
+      expect([res.status, ((await res.json()) as { error: string }).error], JSON.stringify(body).slice(0, 120)).toEqual([400, "malformed PaymentIntent"]);
+    }
+    expect(ledger.entries()).toHaveLength(0);
+    // 20 options and a 500-character purpose are still a payment request.
+    const twenty = { ...good, purpose: "p".repeat(500), paymentRequired: { ...good.paymentRequired, accepts: Array.from({ length: 20 }, () => option) } };
+    expect((await post(base, twenty)).status).toBe(200);
+  });
+
+  it("T-INT-01 must fail: without the shape check a number for an amount is signed and kept in the ledger as a number (hard rule 8)", async () => {
+    const { base, ledger } = await startService({ skipIntentShape: true });
+    const good = intent();
+    const body = { ...good, paymentRequired: { ...good.paymentRequired, accepts: [{ ...baseRequirement(), amount: 1000 }] } };
+    const d = (await (await post(base, body)).json()) as AuthorizationDecision;
+    expect(d.status).toBe("AUTHORIZED");
+    expect(typeof ledger.entries().at(-1)!.data.amount).toBe("number");
+  });
+});
+
+describe("T-INT-02 a network named like an Object member finds no asset list (1.19, R4)", () => {
+  it("T-INT-02 __proto__ and constructor are denied by R3 and R4 like any unknown network, with INTENT then DENIED", async () => {
+    const { base, ledger } = await startService();
+    for (const network of ["__proto__", "constructor", "toString"]) {
+      const d = (await (await post(base, intent({ accepts: [baseRequirement({ network: network as PaymentRequirements["network"] })] }))).json()) as AuthorizationDecision;
+      if (d.status === "AUTHORIZED") throw new Error("unreachable");
+      expect([d.status, d.violations.map((v) => v.rule)], network).toEqual(["DENIED", ["network_not_allowed", "asset_not_allowed"]]);
+    }
+    expect(ledger.entries().map((e) => e.type)).toEqual(["INTENT", "DENIED", "INTENT", "DENIED", "INTENT", "DENIED"]);
+  });
+
+  it("T-INT-02 must fail: the plain lookup R4 had throws on __proto__", () => {
+    const m = mandate();
+    const plain = (network: string) => (m.allowedAssets[network] ?? []).includes(ASSET.toLowerCase());
+    expect(() => plain("__proto__")).toThrow(TypeError);
+  });
+});
+
+describe("T-INT-03 an intent is always followed by one outcome entry (1.19, L2-4)", () => {
+  it("T-INT-03 a decision that throws is DENIED decision_failed with a fixed detail, not a 500", async () => {
+    const broken = { ...mandate(), hardCapPerPaymentAtomic: "not-a-number" };
+    const { base, ledger } = await startService({ m: broken });
+    const res = await post(base, intent());
+    expect(res.status).toBe(200);
+    const d = (await res.json()) as AuthorizationDecision;
+    if (d.status === "AUTHORIZED") throw new Error("unreachable");
+    expect(d.violations).toEqual([{ rule: "decision_failed", detail: "the payment request could not be evaluated" }]);
+    expect(ledger.entries().map((e) => e.type)).toEqual(["INTENT", "DENIED"]);
+  });
+});
+
+describe("T-MAN-01 the mandate loader checks every field (1.19, CFG-3)", () => {
+  it("T-MAN-01 a missing or fractional rate, a missing timeout, a scheme string or an empty scheme list is refused", () => {
+    const without = (k: keyof typeof DEFAULT_JSON) => {
+      const j: Record<string, unknown> = { ...DEFAULT_JSON };
+      delete j[k];
+      return j;
+    };
+    expect(() => buildMandate(without("maxAuthorizationsPerMinute"), NET, {})).toThrow(/maxAuthorizationsPerMinute/);
+    expect(() => buildMandate(without("maxTimeoutSeconds"), NET, {})).toThrow(/maxTimeoutSeconds/);
+    expect(() => buildMandate(without("mandateId"), NET, {})).toThrow(/mandateId/);
+    expect(() => buildMandate({ ...DEFAULT_JSON, maxAuthorizationsPerMinute: 2.5 }, NET, {})).toThrow(MandateError);
+    expect(() => buildMandate({ ...DEFAULT_JSON, allowedSchemes: "exact" as unknown as string[] }, NET, {})).toThrow(/allowedSchemes/);
+    expect(() => buildMandate({ ...DEFAULT_JSON, allowedSchemes: [] }, NET, {})).toThrow(/allowedSchemes/);
+    expect(() => buildMandate({ ...DEFAULT_JSON, allowedHosts: "127.0.0.1:4021" as unknown as string[] }, NET, {})).toThrow(/allowedHosts/);
+  });
+
+  it("T-MAN-01 must fail: the NaN a missing rate read as before never trips R13", () => {
+    const m = { ...mandate(), maxAuthorizationsPerMinute: Number(undefined) };
+    expect(rules(evaluateRequirement(baseRequirement(), m, baseCtx({ authorizationsLastMinute: 1_000 })))).toEqual([]);
+  });
+
+  it("T-MAN-01 hosts are compared in lower case, as R6 reads them", () => {
+    const m = mandate({}, { ALLOWED_HOSTS: "Seller.Example:4021" });
+    expect(m.allowedHosts).toEqual(["seller.example:4021"]);
+    expect(rules(evaluateRequirement(baseRequirement(), m, baseCtx({ requestedUrl: "http://SELLER.example:4021/x", challengeResourceUrl: "http://seller.example:4021/x" })))).toEqual([]);
+  });
+});
+
+describe("T-MAN-02 outside local, every payment is bound to known payees (1.19, R5)", () => {
+  const bound = { host: "seller.example", payees: [PAY_TO] };
+  it("T-MAN-02 an empty platform payee list, or a listed seller without payees, stops L2 outside NETWORK=local", () => {
+    expect(() => checkPayeeBinding("base-sepolia", { allowedPayees: [] })).toThrow(/ALLOWED_PAYEES/);
+    expect(() => checkPayeeBinding("base-sepolia", { allowedPayees: [PAY_TO] }, [bound, { host: "other.example", payees: [] }])).toThrow(/entry 1 has no payees/);
+    expect(() => checkPayeeBinding("base-sepolia", { allowedPayees: [PAY_TO] }, [bound])).not.toThrow();
+    // The local demo keeps its unbound seller list.
+    expect(() => checkPayeeBinding("local", { allowedPayees: [] }, [{ host: "127.0.0.1:4021", payees: [] }])).not.toThrow();
+  });
+
+  it("T-MAN-02 must fail: with an empty list, R5 lets any payee through, which is what the startup check prevents", () => {
+    const anyone = "0x00000000000000000000000000000000000000ee";
+    expect(rules(evaluateRequirement(baseRequirement({ payTo: anyone }), mandate({ allowedPayees: [] }), baseCtx()))).toEqual([]);
+    expect(rules(evaluateRequirement(baseRequirement({ payTo: anyone }), mandate({ allowedPayees: [PAY_TO] as never[] }), baseCtx()))).toEqual(["payee_not_allowed"]);
+  });
+});
+
+describe("T-APR-01 an operator's approval is bounded (1.19, L2-5)", () => {
+  it("T-APR-01 ttlSeconds above an hour and an approver label above 64 characters are refused", () => {
+    expect(parseApprovalBody({ ttlSeconds: 3600, approver: "a".repeat(64) })).toEqual({ ok: true, approver: "a".repeat(64), ttlSeconds: 3600 });
+    expect(parseApprovalBody({ ttlSeconds: 3601 })).toMatchObject({ ok: false });
+    expect(parseApprovalBody({ approver: "a".repeat(65) })).toMatchObject({ ok: false });
   });
 });
