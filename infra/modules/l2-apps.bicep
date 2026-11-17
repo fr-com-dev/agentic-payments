@@ -26,6 +26,11 @@
 //   vault's ledger-mac-key. It is always referenced like the CIBA credential, so every environment seeds it: the
 //   placeholder off (no key: the plain hash chain) until an operator seeds a real key of at least 32 bytes. No other
 //   app or job holds it; the operator job verifies the chain through L2.
+// - 1.23 (rule 25): the ledger's head. The l2 container gets LEDGER_HEAD_URL (the ledger-head container of
+//   names.ledgerHead) and LEDGER_HEAD_CLIENT_ID (the head identity's client ID), and the app gets the head identity
+//   at lifecycle Main, so L2 can fetch its token. L2's own identity stays at None (rule 6): Container Apps hands an
+//   app's identities to every main container, the proxy sidecar included, and L2's can read the l2 vault. The head
+//   identity can write the head and nothing else. No other app gets either identity or variable.
 param location string
 @description('Every resource name (main.<environment>.bicepparam).')
 param names object
@@ -47,6 +52,7 @@ param identity object
 param agent object
 
 resource idL2 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' existing = { name: names.identities.l2 }
+resource idHead 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' existing = { name: names.identities.l2head }
 resource mainEnv 'Microsoft.App/managedEnvironments@2025-01-01' existing = { name: names.environments.x402 }
 resource sellerEnv 'Microsoft.App/managedEnvironments@2025-01-01' existing = { name: names.environments.seller }
 
@@ -61,7 +67,7 @@ var sellerHost = '${names.apps.seller}.${sellerDomain}'
 resource control 'Microsoft.App/containerApps@2025-01-01' = {
   name: names.apps.l2
   location: location
-  identity: { type: 'UserAssigned', userAssignedIdentities: { '${idL2.id}': {} } }
+  identity: { type: 'UserAssigned', userAssignedIdentities: { '${idL2.id}': {}, '${idHead.id}': {} } }
   properties: {
     environmentId: mainEnv.id
     workloadProfileName: 'Consumption'
@@ -83,7 +89,10 @@ resource control 'Microsoft.App/containerApps@2025-01-01' = {
         #disable-next-line use-secure-value-for-secure-inputs
         { name: 'nginx-conf', value: loadTextContent('../proxy/nginx-l2.conf') }
       ]
-      identitySettings: [{ identity: idL2.id, lifecycle: 'None' }]
+      identitySettings: [
+        { identity: idL2.id, lifecycle: 'None' }
+        { identity: idHead.id, lifecycle: 'Main' }
+      ]
     }
     template: {
       containers: [
@@ -114,6 +123,9 @@ resource control 'Microsoft.App/containerApps@2025-01-01' = {
             { name: 'PORTAL_ADMIN_TOKEN', secretRef: 'portal-admin-token' }
             // Phase 3: the key of the ledger's keyed hash chain, or the placeholder off.
             { name: 'LEDGER_MAC_KEY', secretRef: 'ledger-mac-key' }
+            // 1.23: the ledger's head, outside the share, written as the head identity.
+            { name: 'LEDGER_HEAD_URL', value: 'https://${names.ledgerHead}.blob.${az.environment().suffixes.storage}/ledger-head' }
+            { name: 'LEDGER_HEAD_CLIENT_ID', value: idHead.properties.clientId }
             // 016: the caller's token. A person's must come from the agent's client, never from the portal's.
             { name: 'AUTH_ISSUER', value: identity.issuer }
             { name: 'AUTH_AUDIENCE', value: identity.audience }

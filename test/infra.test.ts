@@ -19,6 +19,9 @@
 // as agent.apiDocs; the machine caller's key reaches L1's two jobs only. Rules 12 and 15 know the smoke job.
 // Phase 3 (SPEC 1.19): rule 16's condition also refuses a role assignment to the deploy app itself (finding #2), and
 // rule 24 is new: the ledger's MAC key reaches L2's control container only, from the l2 vault (finding #7).
+// SPEC 1.23 (finding #7, the rest): rule 25 is new: the ledger's head lives in a storage account of its own, which only
+// the head identity may write, and only L2's control app has that identity (at lifecycle Main, the one exception to
+// rule 6 besides the agent). Rule 1 knows its role, and rules 15 and 18 its names and module.
 import { cpSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -169,7 +172,7 @@ const COGNITIVE_SERVICES_USER = "a97b65f3-24c7-4388-baec-2e87135dc908";
 const JOBS_OPERATOR = "b9a307c4-5aa3-4b52-ba60-2b17c136cd7b";
 const CONTRIBUTOR = "b24988ac-6180-42a0-ab88-20f7382dd24c";
 const RBAC_ADMINISTRATOR = "f58310d9-a9f6-439a-9e8d-f62e7b41a168";
-/** Storage Blob Data Contributor: the deploy app's role on the Terraform state's container (rule 20). */
+/** Storage Blob Data Contributor: the deploy app's role on the Terraform state's container (rule 20), and (1.23) the head identity's on the ledger head's (rule 25). */
 const BLOB_CONTRIBUTOR = "ba92f5b4-2d11-453d-a403-e96b0029c9fe";
 const GUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g;
 /** The two templates: everything in the resource group, and what precedes it. */
@@ -181,14 +184,15 @@ export type Templates = Record<(typeof TEMPLATES)[number], Json>;
  */
 const UNITS: Record<ImageName, { unit: string; apps: string; identities: string[]; vaults: string[] }> = {
   "l1-agent": { unit: "l1", apps: "l1-apps", identities: ["l1"], vaults: ["l1"] },
-  "l2-control": { unit: "l2", apps: "l2-apps", identities: ["l2"], vaults: ["l2"] },
+  // 1.23: L2's control app also uses the ledger head's identity (rule 25).
+  "l2-control": { unit: "l2", apps: "l2-apps", identities: ["l2", "l2head"], vaults: ["l2"] },
   "l3-verifier": { unit: "l3", apps: "l3-apps", identities: ["l3"], vaults: ["l3"] },
   operator: { unit: "operator", apps: "operator-apps", identities: ["op"], vaults: ["op"] },
   portal: { unit: "portal", apps: "portal-apps", identities: ["portal"], vaults: ["portal"] },
   seller: { unit: "seller", apps: "sellers", identities: ["seller"], vaults: ["seller"] },
 };
 /** main.bicep's platform modules: deployed only by the platform's runs (deploy-infra.yml; rule 18). */
-const PLATFORM_MODULES = ["network", "logs", "identities", "registry", "vault", "storage", "foundry", "environments"];
+const PLATFORM_MODULES = ["network", "logs", "identities", "registry", "vault", "storage", "ledger-head", "foundry", "environments"];
 /** What one deployment of main.bicep deploys (`unit`): the platform, or one unit's apps. */
 const DEPLOY_UNITS = ["platform", ...Object.values(UNITS).map((u) => u.unit)];
 /**
@@ -203,6 +207,8 @@ const STANDARD: Record<string, { type: string; app?: string; compact?: boolean; 
   logs: { type: "log", app: "x402", limits: [4, 63, /^[a-z][a-z0-9-]*[a-z0-9]$/] },
   registry: { type: "cr", app: "x402", compact: true, limits: [5, 50, /^[a-z0-9]+$/] },
   storage: { type: "st", app: "x402", compact: true, limits: [3, 24, /^[a-z0-9]+$/] },
+  // 1.23: the ledger's head, L2's alone (rule 25).
+  ledgerHead: { type: "st", app: "l2head", compact: true, limits: [3, 24, /^[a-z0-9]+$/] },
   foundry: { type: "ais", app: "x402", limits: [2, 64, /^[a-z][a-z0-9-]*[a-z0-9]$/] },
   environments: { type: "cae", limits: [2, 60, /^[a-z][a-z0-9-]*[a-z0-9]$/] },
   identities: { type: "id", limits: [3, 128, /^[a-z][a-z0-9-]*[a-z0-9]$/] },
@@ -213,8 +219,8 @@ const STANDARD: Record<string, { type: string; app?: string; compact?: boolean; 
   operators: { type: "grp", app: "op", limits: [1, 64, /^[a-z][a-z0-9-]*[a-z0-9]$/] },
   stateStorage: { type: "st", app: "tfstate", compact: true, limits: [3, 24, /^[a-z0-9]+$/] },
 };
-/** The {app} segments: the layers, the operator, the portal, the sellers, the smoke run (016), what the layers share, the deploy app, and the Terraform state. */
-const APPS = ["l1", "l2", "l3", "op", "portal", "seller", "seller-alias", "smoke", "x402", "deploy", "tfstate"];
+/** The {app} segments: the layers, the operator, the portal, the sellers, the smoke run (016), what the layers share, the deploy app, the Terraform state, and (1.23) the ledger's head. */
+const APPS = ["l1", "l2", "l3", "op", "portal", "seller", "seller-alias", "smoke", "x402", "deploy", "tfstate", "l2head"];
 /** An ARM format() expression's text, each {N} replaced by «its argument» ({{, }} and '' unescaped): rule 16's condition. */
 function formatText(expr: unknown): string {
   const m = /^\[format\('((?:[^']|'')*)', ([\s\S]*)\)\]$/.exec(String(expr));
@@ -243,6 +249,10 @@ const AGENT_KEYS = ["clientId", "apiDocs", "machineClientId", "machineKeyId"];
 const MACHINE_SECRET = "machine-client-key";
 const SMOKE_ENV = ["NETWORK", "AUTH_ISSUER", "AUTH_AUDIENCE", "MACHINE_CLIENT_ID", "MACHINE_CLIENT_KEY_ID", "MACHINE_CLIENT_KEY", "AGENT_URL", "AGENT_CANDIDATE_URL"];
 const AGENT_CHECK = "rule 23: main must refuse (fail()) the l1 and l2 units without an identity.issuer of the form https://…/, an identity.audience and an agent.clientId, agent.apiDocs without an agent.clientId, and the l1 unit without an agent.machineClientId and an agent.machineKeyId";
+/** Rule 25 (1.23): the head identity, the scope of its one role, and the address L2 writes the head to, as compiled. */
+const HEAD_IDENTITY = "parameters('names').identities.l2head)";
+const HEAD_CONTAINER_SCOPE = "[resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', parameters('names').ledgerHead, ";
+const HEAD_URL = "[format('https://{0}.blob.{1}/ledger-head', parameters('names').ledgerHead, environment().suffixes.storage)]";
 /** The x402 environment's NFS storages, and the one app key (names.apps.<key>) that may mount each (rule 4). */
 const STORAGE_OWNER: Record<string, "l2" | "portal"> = { ledger: "l2", profiles: "portal" };
 /** The resource types whose names come from `names` (rule 15). */
@@ -365,7 +375,8 @@ export function violations(arms: Templates, params: Params, infraFiles: Record<s
       (ra.module === "foundry" && role.includes(COGNITIVE_SERVICES_USER) && principal.includes("parameters('names').identities.l1)")) ||
       (ra.module === "operator-apps" && role.includes(JOBS_OPERATOR) && principal === "[parameters('operatorsGroupId')]" && scope.some((s) => s === MN.jobs.l2 || s.endsWith(`/${MN.jobs.l2}`))) ||
       (ra.module === "deploy-access" && (role.includes(CONTRIBUTOR) || role.includes(RBAC_ADMINISTRATOR)) && principal === "[parameters('principalId')]") ||
-      (ra.module === "state-storage" && role.includes(BLOB_CONTRIBUTOR) && principal === "[parameters('principalId')]");
+      (ra.module === "state-storage" && role.includes(BLOB_CONTRIBUTOR) && principal === "[parameters('principalId')]") ||
+      (ra.module === "ledger-head" && role.includes(BLOB_CONTRIBUTOR) && principal.includes("parameters('names').identities.l2head)") && String(ra.raw.scope).startsWith(HEAD_CONTAINER_SCOPE));
     if (!ok) v.push(`rule 1: role assignment ${ra.name} in ${ra.module} is not in the matrix`);
   }
   for (const module of ["vault", "foundry", "registry"]) {
@@ -468,11 +479,14 @@ export function violations(arms: Templates, params: Params, infraFiles: Record<s
     }
   }
 
-  // Rule 6: identity lifecycle Main only for the agent.
+  // Rule 6: identity lifecycle Main only for the agent, and (1.23) for the ledger head's identity on L2's control app,
+  // which writes the head with it. L2's own identity stays None: Container Apps gives an app's identities to every
+  // main container, the proxy sidecar included, and L2's identity reads the l2 vault.
   for (const a of apps(main)) {
-    const settings = (configOf(a).identitySettings ?? []) as { lifecycle: string }[];
-    const want = namesOf(a).includes(MN.apps.l1) ? "Main" : "None";
-    if (settings.length === 0 || settings.some((s) => s.lifecycle !== want)) v.push(`rule 6: ${label(a)} identity lifecycle must be ${want}`);
+    const settings = (configOf(a).identitySettings ?? []) as { identity: string; lifecycle: string }[];
+    const isL2 = namesOf(a).includes(MN.apps.l2);
+    const want = (s: { identity: string }) => (namesOf(a).includes(MN.apps.l1) || (isL2 && String(s.identity).includes(HEAD_IDENTITY)) ? "Main" : "None");
+    if (settings.length === 0 || settings.some((s) => s.lifecycle !== want(s))) v.push(`rule 6: ${label(a)} identity lifecycle must be Main for the agent and for L2's head identity only, None otherwise`);
   }
 
   // Rule 7: the sellers live in their own environment and read only the seller vault.
@@ -1128,6 +1142,49 @@ export function violations(arms: Templates, params: Params, infraFiles: Record<s
     }
   }
 
+  // Rule 25 (1.23, SPEC L2-4, SEC-39; finding #7): the ledger's head. One StorageV2 account, names.ledgerHead, that
+  // takes Entra sign-in only (no account key, no anonymous access, HTTPS with TLS 1.2) and only the x402 subnet, with
+  // one private container, ledger-head. One role there: Storage Blob Data Contributor on the container, for the head
+  // identity (names.identities.l2head), which the module makes. Only L2's control app has that identity (at lifecycle
+  // Main, rule 6), and only its l2 container gets LEDGER_HEAD_URL, the container's address built from names, and
+  // LEDGER_HEAD_CLIENT_ID, that identity's client ID. Without it L2 would keep no head, and a cut ledger would open.
+  const head = main.filter((r) => r.module === "ledger-head");
+  const headAccounts = main.filter((r) => r.type === "Microsoft.Storage/storageAccounts" && String(nameExpr(r)) === "[parameters('names').ledgerHead]");
+  const ha = headAccounts[0]?.properties ?? {};
+  const headAcls = (ha.networkAcls ?? {}) as Json;
+  const headSubnets = (headAcls.virtualNetworkRules ?? []) as { id: string; action?: string }[];
+  if (headAccounts.length !== 1 || headAccounts[0]!.module !== "ledger-head" || headAccounts[0]!.raw.kind !== "StorageV2" || ha.allowSharedKeyAccess !== false || ha.allowBlobPublicAccess !== false || ha.supportsHttpsTrafficOnly !== true || ha.minimumTlsVersion !== "TLS1_2") {
+    v.push("rule 25: the ledger head's storage account (names.ledgerHead, StorageV2) must take Entra sign-in only: no account key, no anonymous access, HTTPS with TLS 1.2");
+  }
+  if (headAcls.defaultAction !== "Deny" || headAcls.bypass !== "None" || headSubnets.length !== 1 || !String(headSubnets[0]!.id).includes("parameters('names').subnets.x402)") || "ipRules" in headAcls) {
+    v.push("rule 25: the ledger head's storage account must deny by default and allow only the x402 subnet");
+  }
+  const headContainers = head.filter((r) => r.type === "Microsoft.Storage/storageAccounts/blobServices/containers");
+  if (headContainers.length !== 1 || !/'ledger-head'\)\]$/.test(headContainers[0]!.name) || headContainers[0]!.properties.publicAccess !== "None") v.push("rule 25: the ledger head must have one private container, ledger-head");
+  const headRoles = main.filter((r) => r.type === "Microsoft.Authorization/roleAssignments" && (r.module === "ledger-head" || JSON.stringify(r.raw).includes("parameters('names').ledgerHead")));
+  if (headRoles.length !== 1 || headRoles[0]!.module !== "ledger-head" || !roleOf(headRoles[0]!).includes(BLOB_CONTRIBUTOR) || !String(headRoles[0]!.raw.scope).startsWith(HEAD_CONTAINER_SCOPE) || !String(headRoles[0]!.properties.principalId).includes(HEAD_IDENTITY)) {
+    v.push("rule 25: only the head identity may write the ledger's head: Storage Blob Data Contributor on the ledger-head container only");
+  }
+  if (head.filter((r) => r.type === "Microsoft.ManagedIdentity/userAssignedIdentities" && nameExpr(r) === "[parameters('names').identities.l2head]").length !== 1) v.push("rule 25: the ledger-head module must make the head identity, names.identities.l2head");
+  for (const a of apps(main)) {
+    const isL2 = namesOf(a).includes(MN.apps.l2);
+    if (JSON.stringify(a.raw.identity ?? {}).includes(HEAD_IDENTITY) && !isL2) v.push(`rule 25: ${label(a)} has the ledger head's identity`);
+    for (const c of containersOf(a)) {
+      const mine = isL2 && c.name === "l2";
+      for (const e of (c.env ?? []).filter((x) => x.name.startsWith("LEDGER_HEAD_"))) if (!mine) v.push(`rule 25: ${e.name} in ${label(a)}/${c.name}: only L2's control container writes the ledger's head`);
+    }
+  }
+  if (l2) {
+    const env = containersOf(l2).find((c) => c.name === "l2")?.env ?? [];
+    const url = env.find((e) => e.name === "LEDGER_HEAD_URL");
+    const client = env.find((e) => e.name === "LEDGER_HEAD_CLIENT_ID");
+    if (url?.value !== HEAD_URL || url.secretRef !== undefined) v.push(`rule 25: ${MN.apps.l2}/l2 must get LEDGER_HEAD_URL, the ledger-head container of names.ledgerHead (${HEAD_URL})`);
+    if (!String(client?.value ?? "").includes(HEAD_IDENTITY) || !String(client?.value).endsWith(".clientId]") || !JSON.stringify(l2.raw.identity ?? {}).includes(HEAD_IDENTITY)) {
+      v.push(`rule 25: ${MN.apps.l2} must have the head identity, and its l2 container that identity's client ID as LEDGER_HEAD_CLIENT_ID`);
+    }
+    if (!JSON.stringify(deployment(main, "l2-apps")?.raw.dependsOn ?? []).includes("'ledger-head'")) v.push("rule 25: L2's apps must be deployed after the ledger's head");
+  }
+
   // Rule 18: each module is deployed by exactly one unit's runs: the platform's modules by the platform's
   // (deploy-infra.yml), each unit's apps by that unit's (deploy-<unit>.yml), so a pipeline changes nothing of another
   // unit's. `unit` is required and names one of them.
@@ -1212,7 +1269,7 @@ describe.skipIf(!BICEP_PATH)("T-IAC-01 Azure identity, secret, exposure and nami
     return violations(arms, params, infraSources(dir));
   }
 
-  it("T-IAC-01 the real templates and parameter files pass rules 1–24", async () => {
+  it("T-IAC-01 the real templates and parameter files pass rules 1–25", async () => {
     const { arms, params } = await compile("infra");
     expect(violations(arms, params, infraSources("infra"))).toEqual([]);
   }, 60_000);
@@ -1447,7 +1504,7 @@ resource extraRead 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
     const condition = /\n {4}conditionVersion: '2\.0'\n {4}condition: .*\n/.exec(readFileSync("infra/modules/deploy-access.bicep", "utf8"))![0];
     const v = await mutant("modules/deploy-access.bicep", condition, "\n");
     expect(v.some((m) => m.startsWith("rule 16: the deploy app's Role Based Access Control Administrator must be limited"))).toBe(true);
-    const owner = await mutant("modules/deploy-access.bicep", "  'b9a307c4-5aa3-4b52-ba60-2b17c136cd7b'\n]", "  'b9a307c4-5aa3-4b52-ba60-2b17c136cd7b'\n  '8e3af657-a8ff-443c-a75c-2fe8c4bcb635'\n]");
+    const owner = await mutant("modules/deploy-access.bicep", "  'ba92f5b4-2d11-453d-a403-e96b0029c9fe'\n]", "  'ba92f5b4-2d11-453d-a403-e96b0029c9fe'\n  '8e3af657-a8ff-443c-a75c-2fe8c4bcb635'\n]");
     expect(owner.some((m) => m.startsWith("rule 16: the deploy app's Role Based Access Control Administrator must be limited"))).toBe(true);
   }, 60_000);
 
@@ -1574,6 +1631,37 @@ resource extraRead 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
     expect(onOperator).toContain(`rule 24: LEDGER_MAC_KEY in ${N.main.jobs.l2}/operator: only L2's control container holds the ledger's MAC key`);
     const onL3 = await mutant("modules/l3-apps.bicep", "      secrets: [\n", "      secrets: [\n        { name: 'ledger-mac-key', keyVaultUrl: '${vaultL3}secrets/ledger-mac-key', identity: idL3.id }\n");
     expect(onL3).toContain(`rule 24: ${N.main.apps.l3} has the ledger's MAC key`);
+  }, 180_000);
+
+  it("T-IAC-01 must-fail rule 25 (1.23): a ledger head readable with an account key, open to the network, or writable by more than the head identity, is reported", async () => {
+    const key = await mutant("modules/ledger-head.bicep", "allowSharedKeyAccess: false", "allowSharedKeyAccess: true");
+    expect(key).toEqual(["rule 25: the ledger head's storage account (names.ledgerHead, StorageV2) must take Entra sign-in only: no account key, no anonymous access, HTTPS with TLS 1.2"]);
+    const open = await mutant("modules/ledger-head.bicep", "defaultAction: 'Deny'", "defaultAction: 'Allow'");
+    expect(open).toEqual(["rule 25: the ledger head's storage account must deny by default and allow only the x402 subnet"]);
+    const ROLE = "rule 25: only the head identity may write the ledger's head: Storage Blob Data Contributor on the ledger-head container only";
+    const wide = await mutant("modules/ledger-head.bicep", "  scope: container\n", "  scope: st\n");
+    expect(wide).toEqual(expect.arrayContaining([ROLE, expect.stringMatching(/^rule 1: role assignment .* in ledger-head is not in the matrix$/)]));
+    const owner = await mutant("modules/ledger-head.bicep", "var blobContributorRoleId = 'ba92f5b4-2d11-453d-a403-e96b0029c9fe'", "var blobContributorRoleId = '8e3af657-a8ff-443c-a75c-2fe8c4bcb635'");
+    expect(owner).toEqual(expect.arrayContaining([ROLE, expect.stringMatching(/^rule 16: the deploy app's Role Based Access Control Administrator must be limited to main.bicep's roles/)]));
+    const agent = await mutant("modules/ledger-head.bicep", "    principalId: writer.properties.principalId\n", "    principalId: reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', names.identities.l1), '2023-01-31').principalId\n");
+    expect(agent).toEqual(expect.arrayContaining([ROLE, expect.stringMatching(/^rule 1: role assignment .* in ledger-head is not in the matrix$/)]));
+  }, 180_000);
+
+  it("T-IAC-01 must-fail rules 25 and 6 (1.23): L2 without its head, L2's own identity handed to its containers, or the head identity on another app, is reported", async () => {
+    const url = "            { name: 'LEDGER_HEAD_URL', value: 'https://${names.ledgerHead}.blob.${az.environment().suffixes.storage}/ledger-head' }\n";
+    const noHead = await mutant("modules/l2-apps.bicep", url, "");
+    expect(noHead).toEqual([`rule 25: ${N.main.apps.l2}/l2 must get LEDGER_HEAD_URL, the ledger-head container of names.ledgerHead (${"[format('https://{0}.blob.{1}/ledger-head', parameters('names').ledgerHead, environment().suffixes.storage)]"})`]);
+    const RULE_6 = `rule 6: ${N.main.apps.l2} identity lifecycle must be Main for the agent and for L2's head identity only, None otherwise`;
+    expect(await mutant("modules/l2-apps.bicep", "{ identity: idL2.id, lifecycle: 'None' }", "{ identity: idL2.id, lifecycle: 'Main' }")).toEqual([RULE_6]);
+    expect(await mutant("modules/l2-apps.bicep", "{ identity: idHead.id, lifecycle: 'Main' }", "{ identity: idHead.id, lifecycle: 'None' }")).toEqual([RULE_6]);
+    const onAgent = await mutant(
+      "modules/l1-apps.bicep",
+      "  identity: { type: 'UserAssigned', userAssignedIdentities: { '${idL1.id}': {} } }\n",
+      "  identity: { type: 'UserAssigned', userAssignedIdentities: { '${idL1.id}': {}, '${resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', names.identities.l2head)}': {} } }\n",
+    );
+    expect(onAgent).toEqual(expect.arrayContaining([`rule 25: ${N.main.apps.l1} has the ledger head's identity`, expect.stringMatching(/^rule 13: l1-apps looks up identities l1,l2head/)]));
+    const early = await mutant("main.bicep", "  dependsOn: [ids, registry, vaults, envs, ledgerHead]\n", "  dependsOn: [ids, registry, vaults, envs]\n");
+    expect(early).toEqual(["rule 25: L2's apps must be deployed after the ledger's head"]);
   }, 180_000);
 
   it("T-IAC-01 must-fail rule 21: L2 without one of its always-referenced secrets, with one behind the flag's value, or with a literal USER_ACCOUNTS, is reported", async () => {
