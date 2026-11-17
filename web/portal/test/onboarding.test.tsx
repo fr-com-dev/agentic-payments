@@ -57,7 +57,7 @@ describe("T-WEB-01: routing by onboarding status", () => {
     const steps = within(screen.getByRole("list", { name: "Setup steps" })).getAllByRole("listitem");
     expect(steps.map((s) => s.textContent)).toEqual(["Next Create your profile", "Later Create your wallet", "Later Write your first expense policy"]);
     expect(steps[0]!.getAttribute("aria-current")).toBe("step");
-    expect(window.location.pathname).toBe("/onboarding/profile");
+    await waitFor(() => expect(window.location.pathname).toBe("/onboarding/profile"));
   });
 
   it("a person with a profile lands on the wallet step", async () => {
