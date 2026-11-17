@@ -13,11 +13,9 @@ import { copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { closure, IMAGES } from "./image-closure.js";
+import { closure, IMAGES, imageManifest, type Manifest } from "./image-closure.js";
 
 const LEVELS = ["low", "moderate", "high", "critical"] as const;
-
-type Manifest = Record<string, unknown> & { dependencies: Record<string, string> };
 
 /** Every package any image installs: each image's import graph and its run-time packages. Sorted. */
 export async function shippedPackages(): Promise<string[]> {
@@ -29,10 +27,9 @@ export async function shippedPackages(): Promise<string[]> {
   return [...all].sort();
 }
 
-/** The manifest the audit runs on: package.json as an image sees it (no dev dependencies, no scripts), `wanted` only. */
+/** The manifest the audit runs on: package.json as an image installs it (`imageManifest`), `wanted` only. */
 export function auditManifest(pkg: Manifest, wanted: readonly string[]): Manifest {
-  const { devDependencies: _dev, scripts: _scripts, ...rest } = pkg;
-  return { ...rest, dependencies: Object.fromEntries(Object.entries(pkg.dependencies).filter(([k]) => wanted.includes(k))) };
+  return imageManifest(pkg, wanted);
 }
 
 function npm(args: string[], cwd: string, inherit: boolean): number {

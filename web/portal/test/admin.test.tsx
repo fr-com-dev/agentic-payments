@@ -2,7 +2,7 @@
 // 014 the administration area in the web app (specs/014 contracts/portal-ui.md "Tests"): T-WEB-09..12. Who sees it,
 // the waiting list and its countdown, deciding, the trail and the ledger check. The portal API is a fake; every
 // method is a spy.
-import { act, cleanup, render, screen, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import axe from "axe-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -186,8 +186,10 @@ describe("T-WEB-09 who sees the administration area (FR-002..FR-006)", () => {
     // An administrator is a user like any other: their own screens follow 013's onboarding rules.
     for (const path of ["/", "/wallet", "/policies", "/account"]) {
       renderAdmin(path, ADMIN_ONLY);
-      await screen.findByRole("heading", { level: 1 });
-      expect(window.location.pathname, path).toBe("/onboarding/profile");
+      expect(await screen.findByRole("heading", { level: 1, name: "Create your profile" }), path).toBeTruthy();
+      // The address bar follows in an effect after the screen renders (app.tsx), so a check made the moment the
+      // heading appears can still see the old path: wait for it, as onboarding.test.tsx does.
+      await waitFor(() => expect(window.location.pathname, path).toBe("/onboarding/profile"));
       cleanup();
     }
   });
