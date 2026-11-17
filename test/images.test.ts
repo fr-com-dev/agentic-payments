@@ -9,7 +9,7 @@
 import { readFileSync } from "node:fs";
 import { beforeAll, describe, expect, it } from "vitest";
 import { auditManifest, shippedPackages } from "../scripts/audit-shipped.js";
-import { IMAGES, closure, problems, type Closure, type ImageName } from "../scripts/image-closure.js";
+import { IMAGES, closure, imageManifest, overrideProblems, problems, resolveOverrides, type Closure, type ImageName, type Manifest } from "../scripts/image-closure.js";
 
 const DEPS = (JSON.parse(readFileSync("package.json", "utf8")) as { dependencies: Record<string, string> }).dependencies;
 const NAMES = Object.keys(IMAGES) as ImageName[];
@@ -117,9 +117,9 @@ describe("T-IMG-02 the dependency audit covers what the images install", { timeo
     expect(Object.keys(m.dependencies)).toEqual(["express", "zod"]);
     expect(m).not.toHaveProperty("devDependencies");
     expect(m).not.toHaveProperty("scripts");
-    // The images install with the same overrides (image-closure keeps them), so the audit must too.
-    expect(m.overrides).toEqual(PKG.overrides);
-    expect(PKG.overrides).toHaveProperty(["@coinbase/cdp-sdk"]);
+    // The images install with the same overrides (image-closure writes them, T-IMG-04), so the audit must too.
+    expect(m).toEqual(imageManifest(PKG, ["express", "zod"]));
+    expect(m.overrides).toEqual({ "@coinbase/cdp-sdk": { zod: PKG.dependencies.zod } });
   });
 
   it("T-IMG-02 the deploy pipeline runs the audit before the typecheck, the builds and the suites", () => {
@@ -178,5 +178,49 @@ describe("T-IMG-03 the deploy pipeline's step 1 runs the images' builds", () => 
     // A script the runtime stage runs is not a build.
     const runtime = { [portal]: `${dockerfiles[portal]!}RUN npm run build:docs\n` };
     expect(stepOneBuildProblems(runtime, stepOne())).toEqual([]);
+  });
+});
+
+// T-IMG-04 (v1.22): each image's package.json installs. An image's package.json lists only the image's packages, so
+// npm's `$name` in `overrides` ("my own dependency's range") can't resolve in an image without that package: from
+// 1.18 to 1.21 the L2 and seller images stopped at `npm error Unable to resolve reference $zod`. image-closure writes
+// every `$name` out as the root's range. Nothing here runs npm: the builds themselves run in deploy step 2.
+describe("T-IMG-04 each image's package.json resolves its own overrides", { timeout: 30_000 }, () => {
+  const PKG = JSON.parse(readFileSync("package.json", "utf8")) as Manifest;
+  const wanted = new Map<ImageName, string[]>();
+  beforeAll(async () => {
+    for (const n of NAMES) {
+      const c = await closure(IMAGES[n].entries);
+      wanted.set(n, [...c.packages, ...(IMAGES[n].extraPackages ?? [])]);
+    }
+  });
+
+  it("T-IMG-04 every image's manifest has no reference npm can't resolve, and cdp-sdk still gets the root's zod", () => {
+    // Not vacuous: package.json has a `$` reference, and most images don't list the package it names.
+    expect(JSON.stringify(PKG.overrides)).toContain('"$zod"');
+    expect(NAMES.filter((n) => !wanted.get(n)!.includes("zod")).length).toBeGreaterThan(0);
+    for (const n of NAMES) {
+      const m = imageManifest(PKG, wanted.get(n)!);
+      expect(overrideProblems(m), n).toEqual([]);
+      expect(m.overrides, n).toEqual({ "@coinbase/cdp-sdk": { zod: PKG.dependencies.zod } });
+      expect(Object.keys(m.dependencies).sort(), n).toEqual([...new Set(wanted.get(n)!)].sort());
+    }
+  });
+
+  it("T-IMG-04 resolveOverrides writes out nested references, keeps plain ranges and refuses a reference to nothing", () => {
+    const pkg: Manifest = { dependencies: { zod: "^4.6.7" }, devDependencies: { vitest: "^4.0.0" } };
+    const o = { a: { zod: "$zod", ".": "1.2.3", b: { vitest: "$vitest" } }, c: "^2.0.0" };
+    expect(resolveOverrides(o, pkg)).toEqual({ a: { zod: "^4.6.7", ".": "1.2.3", b: { vitest: "^4.0.0" } }, c: "^2.0.0" });
+    expect(() => resolveOverrides({ a: "$nope" }, pkg)).toThrow("overrides: $nope names no direct dependency of package.json");
+  });
+
+  it("T-IMG-04 must-fail: overrides copied as they are (1.18 to 1.21) are reported for every image without zod, L2 and the seller included", () => {
+    const copied = (n: ImageName): Manifest => ({ ...imageManifest(PKG, wanted.get(n)!), overrides: PKG.overrides });
+    const failing = NAMES.filter((n) => overrideProblems(copied(n)).length > 0);
+    expect(failing).toEqual(NAMES.filter((n) => !wanted.get(n)!.includes("zod")));
+    expect(failing).toEqual(expect.arrayContaining(["l2-control", "seller"]));
+    expect(overrideProblems(copied("seller"))).toEqual(["overrides @coinbase/cdp-sdk > zod: $zod is not a dependency of this package.json"]);
+    // The root package.json lists zod itself, so a root install never showed it.
+    expect(overrideProblems(PKG)).toEqual([]);
   });
 });

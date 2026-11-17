@@ -9,7 +9,8 @@
 // literal dynamic imports, without the imports tsc drops because they're used only as types. A package the
 // code resolves at run time instead (createRequire) must be in the image's `extraPackages`. The files must
 // stay inside the image's folders, and the packages must be in package.json `dependencies`. The script then
-// copies the compiled files to <outDir>/dist, writes <outDir>/package.json with only those packages, and
+// copies the compiled files to <outDir>/dist, writes <outDir>/package.json with only those packages (and
+// `overrides` with every `$name` written out as its range, which an image without that package can't resolve), and
 // writes <outDir>/dist/image-modules.json, the module list the Dockerfile imports once to prove nothing is
 // missing.
 //
@@ -121,6 +122,53 @@ export async function closure(entries: string[], root = process.cwd()): Promise<
 
 const inside = (allowed: string[], file: string) => allowed.some((a) => (a.endsWith("/") ? file.startsWith(a) : file === a));
 
+export type Manifest = Record<string, unknown> & { dependencies: Record<string, string> };
+
+const DIRECT = ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"] as const;
+
+/**
+ * package.json's `overrides` with every `$name` (npm: "the range of my own direct dependency `name`") replaced by
+ * that range. An image's package.json lists only the image's packages, so npm can't resolve `$zod` in an image
+ * without zod: since 1.18 the L2 and seller images stopped at `npm error Unable to resolve reference $zod` (T-IMG-04).
+ */
+export function resolveOverrides(overrides: unknown, pkg: Manifest): unknown {
+  if (typeof overrides === "string") {
+    if (!overrides.startsWith("$")) return overrides;
+    const name = overrides.slice(1);
+    for (const field of DIRECT) {
+      const range = (pkg[field] as Record<string, string> | undefined)?.[name];
+      if (range !== undefined) return range;
+    }
+    throw new Error(`overrides: ${overrides} names no direct dependency of package.json`);
+  }
+  if (overrides !== null && typeof overrides === "object") {
+    return Object.fromEntries(Object.entries(overrides).map(([k, v]) => [k, resolveOverrides(v, pkg)]));
+  }
+  return overrides;
+}
+
+/** package.json as an image installs it: `wanted` only, no dev dependencies or scripts, `overrides` resolved. */
+export function imageManifest(pkg: Manifest, wanted: Iterable<string>): Manifest {
+  const keep = new Set(wanted);
+  const { devDependencies: _dev, scripts: _scripts, overrides, ...rest } = pkg;
+  const dependencies = Object.fromEntries(Object.entries(pkg.dependencies).filter(([k]) => keep.has(k)));
+  return { ...rest, dependencies, ...(overrides === undefined ? {} : { overrides: resolveOverrides(overrides, pkg) }) };
+}
+
+/** One message per `$name` in a manifest's `overrides` that npm can't resolve from that manifest's own dependencies. */
+export function overrideProblems(m: Manifest): string[] {
+  const out: string[] = [];
+  const walk = (v: unknown, at: string) => {
+    if (typeof v === "string" && v.startsWith("$") && !DIRECT.some((f) => (m[f] as Record<string, string> | undefined)?.[v.slice(1)] !== undefined)) {
+      out.push(`overrides ${at}: ${v} is not a dependency of this package.json`);
+    } else if (v !== null && typeof v === "object") {
+      for (const [k, x] of Object.entries(v)) walk(x, at === "" ? k : `${at} > ${k}`);
+    }
+  };
+  walk(m.overrides, "");
+  return out;
+}
+
 /** One message per file outside the image's folders, unlisted run-time package and package missing from `dependencies`. */
 export function problems(spec: ImageSpec, c: Closure, dependencies: Record<string, string>): string[] {
   const out: string[] = [];
@@ -138,7 +186,7 @@ async function main(name: string | undefined, outDir: string | undefined): Promi
     console.error(`usage: tsx scripts/image-closure.ts <${Object.keys(IMAGES).join("|")}> <outDir>`);
     return 2;
   }
-  const pkg = JSON.parse(readFileSync("package.json", "utf8")) as Record<string, unknown> & { dependencies: Record<string, string> };
+  const pkg = JSON.parse(readFileSync("package.json", "utf8")) as Manifest;
   const c = await closure(spec.entries);
   const found = problems(spec, c, pkg.dependencies);
   if (found.length > 0) {
@@ -150,12 +198,10 @@ async function main(name: string | undefined, outDir: string | undefined): Promi
     mkdirSync(dirname(join(outDir, m)), { recursive: true });
     copyFileSync(m, join(outDir, m));
   }
-  const wanted = new Set([...c.packages, ...(spec.extraPackages ?? [])]);
-  const { devDependencies: _dev, scripts: _scripts, ...rest } = pkg;
-  const dependencies = Object.fromEntries(Object.entries(pkg.dependencies).filter(([k]) => wanted.has(k)));
-  writeFileSync(join(outDir, "package.json"), `${JSON.stringify({ ...rest, dependencies }, null, 2)}\n`);
+  const manifest = imageManifest(pkg, [...c.packages, ...(spec.extraPackages ?? [])]);
+  writeFileSync(join(outDir, "package.json"), `${JSON.stringify(manifest, null, 2)}\n`);
   writeFileSync(join(outDir, "dist/image-modules.json"), `${JSON.stringify(modules)}\n`);
-  console.log(`image-closure: ${name}: ${modules.length} modules; packages ${Object.keys(dependencies).join(", ")}`);
+  console.log(`image-closure: ${name}: ${modules.length} modules; packages ${Object.keys(manifest.dependencies).join(", ")}`);
   return 0;
 }
 
