@@ -96,6 +96,24 @@ env:
       echo "$job: execution $execution $status"
       [[ "$status" == Succeeded ]]
     }
+  # v1.24 (SEC-40): the agent runs in multiple-revision mode, where a revision stays active, and answers at its own
+  # address with the app's current secrets, until it is deactivated. After the agent's promotion and after its
+  # rollback, every agent revision that serves no traffic is deactivated, except the latest (the rollback's candidate
+  # label is on it), so no replaced revision, with older code, can still be called. Deactivating moves no traffic
+  # and creates nothing, and Bicep can't do it. Returns non-zero if a revision couldn't be deactivated; the callers
+  # report that as a warning rather than undo a promotion or a rollback over it.
+  RETIRE_REVISIONS: |
+    retire_revisions() {
+      local latest idle r failed=0
+      latest=$(az containerapp show -n "$CA_L1" -g "$RG" --query properties.latestRevisionName -o tsv) || return 1
+      [[ -n "$latest" ]] || return 1
+      idle=$(az containerapp revision list -n "$CA_L1" -g "$RG" --query "[?!(properties.trafficWeight > \`0\`)].name" -o tsv) || return 1
+      for r in $idle; do
+        [[ "$r" == "$latest" ]] && continue
+        if az containerapp revision deactivate -n "$CA_L1" -g "$RG" --revision "$r" -o none; then echo "$CA_L1: deactivated $r"; else failed=1; fi
+      done
+      return "$failed"
+    }
 
 jobs:
   deploy:
@@ -327,16 +345,21 @@ jobs:
             --analytics-query "ContainerAppConsoleLogs_CL | where TimeGenerated >= datetime(${{ steps.deploy.outputs.started }}) | project Log_s" \
             --query "[].Log_s" -o tsv | npm run -s scan-logs
 
-      # Bicep moves the traffic: on L1, main.bicep again without a stable revision gives the latest one 100%.
-      - name: "10 promote: the unit's image as last-good (on L1, the agent's traffic first)"
+      # Bicep moves the traffic: on L1, main.bicep again without a stable revision gives the latest one 100%. Then
+      # (v1.24) the agent's replaced revisions are deactivated, last, once the image is last-good.
+      - name: "10 promote: the unit's image as last-good (on L1, the agent's traffic first, then its old revisions off)"
         id: promote
         if: ${{ inputs.unit != 'platform' && !inputs.first-deployment }}
         run: |
           eval "$SIGN_IN"
+          eval "$RETIRE_REVISIONS"
           if [[ "$UNIT" == l1 ]]; then
             AGENT_STABLE_REVISION="" az deployment group create -g "$RG" -n "x402-l1-promote-$IMAGE_TAG" -p "$PARAMS" -o none
           fi
           az acr import -n "$CR_X402" --source "${{ steps.build.outputs.acr }}/x402-$IMAGE:$IMAGE_TAG" --image "x402-$IMAGE:last-good" --force
+          if [[ "$UNIT" == l1 ]]; then
+            retire_revisions || echo "::warning::$CA_L1: a replaced revision is still active and answers at its own address; deactivate it by hand (quickstart §5)"
+          fi
 
       # Once step 3 has run, even if it failed partway, the unit's apps may be on the new image: back to its last-good.
       # The other units keep theirs. A failed platform deployment is fixed forward: there is no previous platform to
@@ -347,9 +370,14 @@ jobs:
         run: |
           eval "$SIGN_IN"
           eval "$RUN_JOB"
+          eval "$RETIRE_REVISIONS"
           if ! az acr repository show-tags -n "$CR_X402" --repository "x402-$IMAGE" -o tsv | grep -x last-good > /dev/null; then
             echo "x402-$IMAGE has no last-good yet: nothing to roll back to"; exit 1
           fi
           IMAGE_TAG=last-good AGENT_STABLE_REVISION="${{ steps.deploy.outputs.stable }}" \
             az deployment group create -g "$RG" -n "x402-$UNIT-rollback-${{ github.sha }}" -p "$PARAMS" -o none
+          # v1.24: the failed candidate keeps no address of its own (the candidate label moved to the last-good one)
+          if [[ "$UNIT" == l1 ]]; then
+            retire_revisions || echo "::warning::$CA_L1: a replaced revision is still active and answers at its own address; deactivate it by hand (quickstart §5)"
+          fi
           run_job "$CAJ_L2"

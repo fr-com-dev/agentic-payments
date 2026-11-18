@@ -51,6 +51,9 @@ resource seller 'Microsoft.App/containerApps@2025-01-01' = [for a in sellerApps:
             { name: 'SELLER_PAY_TO', value: sellerPayTo }
             { name: 'FACILITATOR', value: 'cdp' }
             { name: 'SELLER_PORT', value: '4021' }
+            // One proxy, the environment's ingress, is in front: the per-address limit on priced requests reads the
+            // client's address from X-Forwarded-For (T-IAC-01 rule 3). Without it every buyer would share one count.
+            { name: 'TRUSTED_PROXY_HOPS', value: '1' }
             { name: 'CDP_API_KEY_ID', secretRef: 'cdp-api-key-id' }
             { name: 'CDP_API_KEY_SECRET', secretRef: 'cdp-api-key-secret' }
           ]

@@ -23,6 +23,7 @@ import {
   SELLER_BIND_HOST,
   type NetworkProfile,
 } from "../shared/config.js";
+import { addressLimit, trustedProxyHops, trustProxies } from "../shared/address-limit.js";
 import { mountSellerApiDocs } from "./api-docs.js";
 import { mountEndpoints } from "./endpoints.js";
 import { USDC_DECIMALS } from "./monetization.js";
@@ -44,6 +45,15 @@ import {
   validateCdpSecret,
   type CdpCredential,
 } from "./cdp-facilitator.js";
+
+/**
+ * Requests to anything but the free routes that one client address may make in a minute (CP-1, v1.24): 429 beyond
+ * it. Every such request can reach the facilitator (a payment's /verify and /settle, or the /supported sync, which a
+ * priced request retries while it fails), with the seller's CDP credential, so without a bound anyone could spend the
+ * seller's facilitator quota. A purchase is two priced requests: 600 is 30 payers at the platform's top rate (10
+ * payments a minute) behind one address, which is how every agent of a deployed environment reaches the seller.
+ */
+export const MAX_PRICED_REQUESTS_PER_MINUTE = 600;
 
 /** One payment option per route; the query string never affects the price. */
 export function sellerRoutes(net: NetworkProfile, payTo: string): Record<string, RouteConfig> {
@@ -155,21 +165,39 @@ export interface SellerOptions extends PaymentMiddlewareOptions {
   payTo: string;
   /** v1.6: `API_DOCS=1` mounts the free Swagger UI routes (SEC-13). Default false. */
   apiDocs?: boolean;
+  /** v1.24: `TRUSTED_PROXY_HOPS` (1 behind the Azure ingress), so the per-address limit counts the client's address. */
+  trustedProxyHops?: number;
+  /** Test hook: another bound than MAX_PRICED_REQUESTS_PER_MINUTE. Never set by main(). */
+  maxPricedRequestsPerAddress?: number;
+  /** Test hook (T-LIM-03 must-fail): no per-address bound. Never set by main(). */
+  skipAddressLimit?: boolean;
 }
 
 /**
- * The seller app: the free endpoints (and, with apiDocs, the docs routes) first, then the x402 middleware, then the
- * priced endpoints. Prices are written in USDC (`usdc()`), so a network whose asset has other decimals is refused.
+ * The seller app: the free endpoints (and, with apiDocs, the docs routes) first, then (v1.24) the per-address limit,
+ * then the x402 middleware, then the priced endpoints. The limit sits after the free routes, so the catalog and the
+ * docs never count, and before the middleware, so it counts every request that can reach the facilitator. Prices
+ * are written in USDC (`usdc()`), so a network whose asset has other decimals is refused.
  */
-export function createSellerApp({ net, payTo, apiDocs = false, ...middleware }: SellerOptions): express.Express {
+export function createSellerApp({
+  net,
+  payTo,
+  apiDocs = false,
+  trustedProxyHops: hops,
+  maxPricedRequestsPerAddress,
+  skipAddressLimit,
+  ...middleware
+}: SellerOptions): express.Express {
   if (net.decimals !== USDC_DECIMALS) {
     throw new ConfigError(`the seller prices in USDC (${USDC_DECIMALS} decimals); ${net.name}'s asset has ${net.decimals}`);
   }
   const api = new SellerApi(net);
   const app = express();
   app.disable("x-powered-by");
+  trustProxies(app, hops);
   mountFreeEndpoints(app, api);
   if (apiDocs) mountSellerApiDocs(app);
+  if (!skipAddressLimit) app.use(addressLimit({ max: maxPricedRequestsPerAddress ?? MAX_PRICED_REQUESTS_PER_MINUTE }));
   app.use(sellerPaymentMiddleware(net, sellerRoutes(net, payTo), middleware));
   mountPaidEndpoints(app, api);
   return app;
@@ -212,6 +240,12 @@ async function main(): Promise<void> {
   } catch (err) {
     fail(err instanceof ConfigError ? err.message : "invalid API_DOCS");
   }
+  let hops = 0;
+  try {
+    hops = trustedProxyHops(process.env);
+  } catch (err) {
+    fail(err instanceof ConfigError ? err.message : "invalid TRUSTED_PROXY_HOPS");
+  }
 
   const facilitator = cred
     ? facilitatorClientFor(choice, { cdp: cdpFacilitatorClient(cred) })
@@ -220,6 +254,7 @@ async function main(): Promise<void> {
     net,
     payTo,
     apiDocs,
+    trustedProxyHops: hops,
     facilitator,
     ...(cred && { redact: makeRedactor(cred), authHint: CDP_AUTH_HINT }),
   });
