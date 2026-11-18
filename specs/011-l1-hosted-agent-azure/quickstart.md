@@ -216,6 +216,17 @@ without `--command` runs the job's own command, `ledger-verify`. Only members of
 runs the operator's own image, `x402-operator`, which `deploy-operator` builds: only the operator
 scripts, no L2 code.
 
+The agent's replaced revisions (SPEC v1.24, SEC-40). The agent is in multiple-revision mode, so a
+revision stays active, and answers at its own address with the agent's current secrets, until it is
+deactivated. `deploy-l1` deactivates every agent revision that serves no traffic, except the latest,
+after its promotion and after its rollback. When a run warns that it couldn't, list what is still active
+and deactivate it by hand:
+
+```bash
+az containerapp revision list -n ca-l1-eastus2-dev -g rg-x402-eastus2-dev --query "[].{name:name, traffic:properties.trafficWeight}" -o table
+az containerapp revision deactivate -n ca-l1-eastus2-dev -g rg-x402-eastus2-dev --revision <name>
+```
+
 ## 6. Cleanup
 
 `infra/cleanup.sh` deletes everything `pre-deploy.bicep`, `main.bicep` and `infra/github-setup.sh`
