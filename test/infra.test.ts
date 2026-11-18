@@ -192,7 +192,8 @@ const UNITS: Record<ImageName, { unit: string; apps: string; identities: string[
   seller: { unit: "seller", apps: "sellers", identities: ["seller"], vaults: ["seller"] },
 };
 /** main.bicep's platform modules: deployed only by the platform's runs (deploy-infra.yml; rule 18). */
-const PLATFORM_MODULES = ["network", "logs", "identities", "registry", "vault", "storage", "ledger-head", "foundry", "environments"];
+/** v1.25: no identities module: pre-deploy.bicep makes the identities, so the deploy app's condition can name them (rule 16). */
+const PLATFORM_MODULES = ["network", "logs", "registry", "vault", "storage", "ledger-head", "foundry", "environments"];
 /** What one deployment of main.bicep deploys (`unit`): the platform, or one unit's apps. */
 const DEPLOY_UNITS = ["platform", ...Object.values(UNITS).map((u) => u.unit)];
 /**
@@ -218,6 +219,8 @@ const STANDARD: Record<string, { type: string; app?: string; compact?: boolean; 
   deployApp: { type: "app", app: "deploy", limits: [1, 120, /^[a-z][a-z0-9-]*[a-z0-9]$/] },
   operators: { type: "grp", app: "op", limits: [1, 64, /^[a-z][a-z0-9-]*[a-z0-9]$/] },
   stateStorage: { type: "st", app: "tfstate", compact: true, limits: [3, 24, /^[a-z0-9]+$/] },
+  // v1.25: the policy assignment that refuses federated credentials on the resource group's identities (rule 16)
+  policy: { type: "pol", app: "x402", limits: [1, 64, /^[a-z][a-z0-9-]*[a-z0-9]$/] },
 };
 /** The {app} segments: the layers, the operator, the portal, the sellers, the smoke run (016), what the layers share, the deploy app, the Terraform state, and (1.23) the ledger's head. */
 const APPS = ["l1", "l2", "l3", "op", "portal", "seller", "seller-alias", "smoke", "x402", "deploy", "tfstate", "l2head"];
@@ -270,6 +273,7 @@ const NAMED_TYPES = [
   "Microsoft.App/jobs",
   "Microsoft.Graph/applications@v1.0",
   "Microsoft.Graph/groups@v1.0",
+  "Microsoft.Authorization/policyAssignments",
 ];
 /** The only parameters a parameter file may read from the environment: deploy.yml sets them on each run. */
 const PER_RUN = ["unit", "imageTag", "seedIp", "recoverVaults", "agentStableRevision"];
@@ -278,10 +282,20 @@ const TARGET = ["tenantId", "subscriptionId", "location", "names.resourceGroup"]
 /** GitHub's immutable OIDC subject for a deploy job: the owner and repository by name and ID (rule 16). */
 const IMMUTABLE_SUBJECT = "repo:<owner>@<githubOwnerId>/<name>@<githubRepositoryId>:environment:<githubEnvironment>";
 const FIC_PROBLEM = `rule 16: the deploy app's two federated credentials must trust only ${IMMUTABLE_SUBJECT}, for the deploy environment and the Auth0 environment`;
-/** Rule 16 (Phase 3): the condition, as text, for one action: main.bicep's roles only, and never to the deploy app itself. */
+/**
+ * Rule 16 (Phase 3; v1.25): the condition, as text, for one action: main.bicep's roles only, and only to the principals
+ * main.bicep assigns them to (assigneeIds: the identities pre-deploy makes, and the operators' group). Before v1.25 the
+ * principal clause only refused the deploy app itself, so a run could give Key Vault Secrets User to any other one.
+ */
 const ASSIGNMENT_CLAUSE = (action: "write" | "delete", source: "Request" | "Resource") =>
-  `((!(ActionMatches{'Microsoft.Authorization/roleAssignments/${action}'})) OR (@${source}[Microsoft.Authorization/roleAssignments:RoleDefinitionId] ForAnyOfAnyValues:GuidEquals {«variables('assignable')»} AND @${source}[Microsoft.Authorization/roleAssignments:PrincipalId] ForAnyOfAllValues:GuidNotEquals {«parameters('principalId')»}))`;
-const SELF_GRANT = "rule 16: the deploy app's Role Based Access Control Administrator condition must be exactly: a role assignment written or deleted holds one of main.bicep's roles and is not the deploy app's own (its principalId)";
+  `((!(ActionMatches{'Microsoft.Authorization/roleAssignments/${action}'})) OR (@${source}[Microsoft.Authorization/roleAssignments:RoleDefinitionId] ForAnyOfAnyValues:GuidEquals {«variables('assignable')»} AND @${source}[Microsoft.Authorization/roleAssignments:PrincipalId] ForAnyOfAnyValues:GuidEquals {«variables('assignees')»}))`;
+const ASSIGNEES_ONLY = "rule 16: the deploy app's Role Based Access Control Administrator condition must be exactly: a role assignment written or deleted holds one of main.bicep's roles and goes to one of main.bicep's principals (assigneeIds)";
+/** v1.25: the principals main.bicep assigns roles to, as pre-deploy passes them: every identity it makes, and the operators' group. */
+const ASSIGNEE_IDS = "[concat(map(reference('ids').outputs.ids.value, lambda('i', lambdaVariables('i').principalId)), createArray(reference('operatorsGroup').id))]";
+const ASSIGNEES_PROBLEM = "rule 16: the deploy app's principals (assigneeIds) must be exactly the identities pre-deploy makes and the operators' group";
+/** v1.25: the built-in policy "[Preview]: Managed Identity Federated Credentials should be from allowed issuer types". */
+const FIC_POLICY = "tenantResourceId('Microsoft.Authorization/policyDefinitions', '2571b7c3-3056-4a61-b00a-9bc5232234f5')";
+const NO_FIC = "rule 16: pre-deploy must assign, on the resource group, the built-in policy that denies every federated credential on its identities (allowFederatedCredentials false, effect Deny), and no template may make one";
 /** Rule 24 (Phase 3): the ledger's MAC key, in L2's control container only. */
 const MAC_SECRET: Record<string, string> = { LEDGER_MAC_KEY: "ledger-mac-key" };
 /** The compiled subject of a federated credential for the GitHub environment a parameter names. */
@@ -363,7 +377,10 @@ export function violations(arms: Templates, params: Params, infraFiles: Record<s
   const roleOf = (ra: Res) => withVars(ra.properties.roleDefinitionId, ra.vars);
 
   // Rule 1: role assignments only where the matrix puts them.
-  if (!deploymentParam(main, "identities", "keys").includes("map(variables('units')")) v.push("rule 1: the identities are not one per unit");
+  // v1.25: pre-deploy makes one identity per name of names.identities (rule 16 names their principals); main makes none.
+  if (deploymentParam(pre, "identities", "keys") !== JSON.stringify({ value: "[objectKeys(parameters('names').identities)]" })) v.push("rule 1: pre-deploy must make one identity per name of names.identities");
+  for (const r of main.filter((x) => x.type === "Microsoft.ManagedIdentity/userAssignedIdentities")) v.push(`rule 1: main makes the identity ${label(r)}; pre-deploy makes them`);
+  for (const key of units.map((u) => u.key)) if (!(key in (PN.identities ?? {}))) v.push(`rule 1: pre-deploy makes no identity for unit ${key}`);
   if (!deploymentParam(main, "registry", "identityKeys").includes("map(variables('units')")) v.push("rule 1: not every unit's identity pulls from the registry");
   for (const ra of all.filter((r) => r.type === "Microsoft.Authorization/roleAssignments")) {
     const role = roleOf(ra);
@@ -586,7 +603,7 @@ export function violations(arms: Templates, params: Params, infraFiles: Record<s
     if (JSON.stringify(ids) !== JSON.stringify([...u.identities].sort())) v.push(`rule 13: ${u.apps} looks up identities ${ids.join(",")}, not its own (${u.identities.join(",")})`);
     if (JSON.stringify(vaults) !== JSON.stringify([...u.vaults].sort())) v.push(`rule 13: ${u.apps} looks up vaults ${vaults.join(",")}, not its own (${u.vaults.join(",")})`);
     const after = JSON.stringify(deployment(main, u.apps)?.raw.dependsOn ?? []);
-    for (const platform of ["identities", "registry", "vaults", "environments"]) {
+    for (const platform of ["registry", "vaults", "environments"]) {
       if (!after.includes(`'${platform}'`) && !after.includes(`"${platform}"`)) v.push(`rule 13: ${u.apps} doesn't wait for the platform's ${platform}`);
     }
   }
@@ -735,7 +752,24 @@ export function violations(arms: Templates, params: Params, infraFiles: Record<s
     v.push(`rule 16: the deploy app's Role Based Access Control Administrator must be limited to main.bicep's roles (${mainRoles.join(", ")})`);
   }
   if (deploymentParam(pre, "deploy-access", "principalId") !== JSON.stringify({ value: "[reference('deploySp').id]" })) v.push("rule 16: the deploy app's roles must go to its service principal");
-  if (formatText(administrator?.properties.condition) !== `${ASSIGNMENT_CLAUSE("write", "Request")} AND ${ASSIGNMENT_CLAUSE("delete", "Resource")}`) v.push(SELF_GRANT);
+  if (formatText(administrator?.properties.condition) !== `${ASSIGNMENT_CLAUSE("write", "Request")} AND ${ASSIGNMENT_CLAUSE("delete", "Resource")}`) v.push(ASSIGNEES_ONLY);
+  if (deploymentParam(pre, "deploy-access", "assigneeIds") !== JSON.stringify({ value: ASSIGNEE_IDS })) v.push(ASSIGNEES_PROBLEM);
+  // v1.25: no federated credential on an identity of the resource group: the built-in policy, denying all of them,
+  // assigned on the resource group by pre-deploy (where the deploy app can't change it), and none in any template.
+  const policies = all.filter((r) => r.type === "Microsoft.Authorization/policyAssignments");
+  const policy = policies[0];
+  const policyParams = JSON.stringify(policy?.properties.parameters ?? {});
+  if (
+    policies.length !== 1 ||
+    policy!.root !== "pre-deploy" ||
+    deployment(pre, policy!.module)?.raw.resourceGroup !== "[parameters('names').resourceGroup]" ||
+    !withVars(policy!.properties.policyDefinitionId, policy!.vars).includes(FIC_POLICY) ||
+    (policy!.properties.enforcementMode ?? "Default") !== "Default" ||
+    policyParams !== JSON.stringify({ allowFederatedCredentials: { value: false }, effect: { value: "Deny" } }) ||
+    all.some((r) => r.type.toLowerCase().startsWith("microsoft.managedidentity/userassignedidentities/federatedidentitycredentials"))
+  ) {
+    v.push(NO_FIC);
+  }
 
   // Rule 17: every value a deployment uses is in its parameter file, the target and the names included. Each
   // template parameter is set there; only deploy.yml's five per-run values come from the environment. Both files of
@@ -765,6 +799,9 @@ export function violations(arms: Templates, params: Params, infraFiles: Record<s
     for (const p of TARGET) if (at(pre, p) === undefined || at(pre, p) !== at(mainParams, p)) v.push(`rule 17: pre-deploy.${env}.bicepparam and main.${env}.bicepparam name different ${p}s (${at(pre, p)}, ${at(mainParams, p)})`);
     if (pre.githubAuth0Environment !== `auth0-${env}`) v.push(`rule 17: pre-deploy.${env}.bicepparam's githubAuth0Environment ${pre.githubAuth0Environment} is not auth0-${env}, the environment provision-auth0.yml's job runs in`);
     if (pre.githubEnvironment !== env) v.push(`rule 17: pre-deploy.${env}.bicepparam's githubEnvironment ${pre.githubEnvironment} is not ${env}, the environment deploy.yml's job runs in`);
+    // v1.25: pre-deploy makes the identities main's apps look up, so both files name the same ones.
+    const ids = (p: Json) => JSON.stringify(Object.entries(((p.names as Json | undefined)?.identities ?? {}) as Json).sort());
+    if (ids(pre) !== ids(mainParams)) v.push(`rule 17: pre-deploy.${env}.bicepparam and main.${env}.bicepparam name different identities: pre-deploy makes the ones main's apps look up`);
     for (const p of ["githubOwnerId", "githubRepositoryId"]) if (!/^[1-9][0-9]*$/.test(String(pre[p]))) v.push(`rule 17: pre-deploy.${env}.bicepparam's ${p} ${pre[p]} is not a numeric GitHub ID`);
   }
 
@@ -1146,7 +1183,7 @@ export function violations(arms: Templates, params: Params, infraFiles: Record<s
   // Rule 25 (1.23, SPEC L2-4, SEC-39; finding #7): the ledger's head. One StorageV2 account, names.ledgerHead, that
   // takes Entra sign-in only (no account key, no anonymous access, HTTPS with TLS 1.2) and only the x402 subnet, with
   // one private container, ledger-head. One role there: Storage Blob Data Contributor on the container, for the head
-  // identity (names.identities.l2head), which the module makes. Only L2's control app has that identity (at lifecycle
+  // identity (names.identities.l2head), which pre-deploy makes (v1.25; the module looks it up). Only L2's control app has that identity (at lifecycle
   // Main, rule 6), and only its l2 container gets LEDGER_HEAD_URL, the container's address built from names, and
   // LEDGER_HEAD_CLIENT_ID, that identity's client ID. Without it L2 would keep no head, and a cut ledger would open.
   const head = main.filter((r) => r.module === "ledger-head");
@@ -1166,7 +1203,8 @@ export function violations(arms: Templates, params: Params, infraFiles: Record<s
   if (headRoles.length !== 1 || headRoles[0]!.module !== "ledger-head" || !roleOf(headRoles[0]!).includes(BLOB_CONTRIBUTOR) || !String(headRoles[0]!.raw.scope).startsWith(HEAD_CONTAINER_SCOPE) || !String(headRoles[0]!.properties.principalId).includes(HEAD_IDENTITY)) {
     v.push("rule 25: only the head identity may write the ledger's head: Storage Blob Data Contributor on the ledger-head container only");
   }
-  if (head.filter((r) => r.type === "Microsoft.ManagedIdentity/userAssignedIdentities" && nameExpr(r) === "[parameters('names').identities.l2head]").length !== 1) v.push("rule 25: the ledger-head module must make the head identity, names.identities.l2head");
+  // v1.25: pre-deploy makes the head identity with the others (so the deploy app's condition admits its role); main only looks it up.
+  if (!("l2head" in (PN.identities ?? {}))) v.push("rule 25: pre-deploy must make the head identity, names.identities.l2head");
   for (const a of apps(main)) {
     const isL2 = namesOf(a).includes(MN.apps.l2);
     if (JSON.stringify(a.raw.identity ?? {}).includes(HEAD_IDENTITY) && !isL2) v.push(`rule 25: ${label(a)} has the ledger head's identity`);
@@ -1399,7 +1437,7 @@ resource extraRead 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   }, 60_000);
 
   it("T-IAC-01 must-fail rule 13: L1's apps deployed without waiting for the vaults are reported", async () => {
-    const v = await mutant("main.bicep", "dependsOn: [ids, registry, vaults, envs, foundry]", "dependsOn: [ids, registry, envs, foundry]");
+    const v = await mutant("main.bicep", "dependsOn: [registry, vaults, envs, foundry]", "dependsOn: [registry, envs, foundry]");
     expect(v).toContain("rule 13: l1-apps doesn't wait for the platform's vaults");
   }, 60_000);
 
@@ -1514,18 +1552,58 @@ resource extraRead 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
     expect(owner.some((m) => m.startsWith("rule 16: the deploy app's Role Based Access Control Administrator must be limited"))).toBe(true);
   }, 60_000);
 
-  it("T-IAC-01 must-fail rule 16 (Phase 3): a condition that lets the deploy app assign a role to itself, or delete one of its own, is reported", async () => {
-    const write = " AND @Request[Microsoft.Authorization/roleAssignments:PrincipalId] ForAnyOfAllValues:GuidNotEquals {${principalId}}";
-    const remove = " AND @Resource[Microsoft.Authorization/roleAssignments:PrincipalId] ForAnyOfAllValues:GuidNotEquals {${principalId}}";
-    const selfWrite = await mutant("modules/deploy-access.bicep", write, "");
-    expect(selfWrite).toEqual([SELF_GRANT]);
-    const selfDelete = await mutant("modules/deploy-access.bicep", remove, "");
-    expect(selfDelete).toEqual([SELF_GRANT]);
+  it("T-IAC-01 must-fail rule 16 (Phase 3, v1.25): a condition that lets the deploy app give a role to a principal of its own choosing, itself included, or take one away from one, is reported", async () => {
+    const write = " AND @Request[Microsoft.Authorization/roleAssignments:PrincipalId] ForAnyOfAnyValues:GuidEquals {${assignees}}";
+    const remove = " AND @Resource[Microsoft.Authorization/roleAssignments:PrincipalId] ForAnyOfAnyValues:GuidEquals {${assignees}}";
+    expect(await mutant("modules/deploy-access.bicep", write, "")).toEqual([ASSIGNEES_ONLY]);
+    expect(await mutant("modules/deploy-access.bicep", remove, "")).toEqual([ASSIGNEES_ONLY]);
     const either = await mutant("modules/deploy-access.bicep", `{\${assignable}}${write}`, `{\${assignable}}${write.replace(" AND ", " OR ")}`);
-    expect(either).toEqual([SELF_GRANT]);
-    const onlyItself = await mutant("modules/deploy-access.bicep", "ForAnyOfAllValues:GuidNotEquals {${principalId}}))'", "ForAnyOfAllValues:GuidEquals {${principalId}}))'");
-    expect(onlyItself).toEqual([SELF_GRANT]);
+    expect(either).toEqual([ASSIGNEES_ONLY]);
+    // everyone but the list
+    const inverted = await mutant("modules/deploy-access.bicep", "ForAnyOfAnyValues:GuidEquals {${assignees}}))'", "ForAnyOfAnyValues:GuidNotEquals {${assignees}}))'");
+    expect(inverted).toEqual([ASSIGNEES_ONLY]);
+    // the 1.19 condition: any principal but the deploy app itself (a run could give Key Vault Secrets User to anyone else)
+    const selfOnly = await mutant("modules/deploy-access.bicep", write, " AND @Request[Microsoft.Authorization/roleAssignments:PrincipalId] ForAnyOfAllValues:GuidNotEquals {${principalId}}");
+    expect(selfOnly).toEqual([ASSIGNEES_ONLY]);
+  }, 180_000);
+
+  it("T-IAC-01 must-fail rule 16 (v1.25): the deploy app among the principals it may give roles to, a principal list without the identities, or another principal added, is reported", async () => {
+    const list = "assigneeIds: concat(map(ids.outputs.ids, i => i.principalId), [operatorsGroup.id])";
+    expect(await mutant("pre-deploy.bicep", list, "assigneeIds: concat(map(ids.outputs.ids, i => i.principalId), [operatorsGroup.id, deploySp.id])")).toEqual([ASSIGNEES_PROBLEM]);
+    expect(await mutant("pre-deploy.bicep", list, "assigneeIds: [operatorsGroup.id]")).toEqual([ASSIGNEES_PROBLEM]);
+    expect(await mutant("pre-deploy.bicep", list, "assigneeIds: concat(map(ids.outputs.ids, i => i.principalId), [operatorsGroup.id, '00000000-0000-0000-0000-000000000001'])")).toEqual([ASSIGNEES_PROBLEM]);
   }, 120_000);
+
+  it("T-IAC-01 must-fail rule 16 (v1.25): no policy against federated credentials, one that only audits or allows them, one at the subscription, or a federated credential in a template, is reported", async () => {
+    expect(await mutant("modules/no-federated-credentials.bicep", "      effect: { value: 'Deny' }", "      effect: { value: 'Audit' }")).toEqual([NO_FIC]);
+    expect(await mutant("modules/no-federated-credentials.bicep", "      allowFederatedCredentials: { value: false }", "      allowFederatedCredentials: { value: true }")).toEqual([NO_FIC]);
+    expect(await mutant("modules/no-federated-credentials.bicep", "    enforcementMode: 'Default'", "    enforcementMode: 'DoNotEnforce'")).toEqual([NO_FIC]);
+    const module = /\nmodule noFederatedCredentials [\s\S]*?\n\}\n/.exec(readFileSync("infra/pre-deploy.bicep", "utf8"))![0];
+    const gone = await mutant("pre-deploy.bicep", module, "\n");
+    expect(gone).toContain(NO_FIC);
+    const fic = await mutant(
+      "modules/l2-apps.bicep",
+      "resource idL2 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' existing = { name: names.identities.l2 }\n",
+      "resource idL2 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' existing = { name: names.identities.l2 }\nresource backdoor 'Microsoft.ManagedIdentity/userAssignedIdentities/federatedIdentityCredentials@2023-01-31' = {\n  parent: idL2\n  name: 'gh'\n  properties: { issuer: 'https://token.actions.githubusercontent.com', subject: 'repo:someone/else:ref:refs/heads/main', audiences: ['api://AzureADTokenExchange'] }\n}\n",
+    );
+    expect(fic).toContain(NO_FIC);
+  }, 180_000);
+
+  it("T-IAC-01 must-fail rules 1 and 17 (v1.25): an identity made by main again, a unit without one in pre-deploy, or the two files naming different identities, is reported", async () => {
+    const again = await mutant(
+      "main.bicep",
+      "module logs 'modules/logs.bicep' = if (platform) {",
+      "module ids 'modules/identities.bicep' = if (platform) {\n  name: 'identities'\n  params: { location: location, names: names, keys: map(units, u => u.key) }\n}\n\nmodule logs 'modules/logs.bicep' = if (platform) {",
+    );
+    expect(again.some((m) => m.startsWith("rule 1: main makes the identity ") && m.includes(N.main.identities.l1))).toBe(true);
+    expect(again).toContain("rule 18: the identities module belongs to no unit");
+    const missing = await mutant("pre-deploy.dev.bicepparam", "    seller: 'id-seller-${location}-${environment}'\n", "");
+    expect(missing).toContain("rule 1: pre-deploy makes no identity for unit seller");
+    expect(missing).toContain("rule 17: pre-deploy.dev.bicepparam and main.dev.bicepparam name different identities: pre-deploy makes the ones main's apps look up");
+    // 1.23's head identity too: its one role is refused unless pre-deploy makes it
+    const noHead = await mutant("pre-deploy.dev.bicepparam", "    l2head: 'id-l2head-${location}-${environment}'\n", "");
+    expect(noHead).toContain("rule 25: pre-deploy must make the head identity, names.identities.l2head");
+  }, 180_000);
 
   it("T-IAC-01 must-fail rule 12: the portal on L2's image, or running an entry point its image doesn't contain, is reported", async () => {
     const image = await mutant("main.bicep", "image: '${acrServer}/x402-portal:${imageTag}'", "image: '${acrServer}/x402-l2-control:${imageTag}'");
@@ -1666,7 +1744,7 @@ resource extraRead 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
       "  identity: { type: 'UserAssigned', userAssignedIdentities: { '${idL1.id}': {}, '${resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', names.identities.l2head)}': {} } }\n",
     );
     expect(onAgent).toEqual(expect.arrayContaining([`rule 25: ${N.main.apps.l1} has the ledger head's identity`, expect.stringMatching(/^rule 13: l1-apps looks up identities l1,l2head/)]));
-    const early = await mutant("main.bicep", "  dependsOn: [ids, registry, vaults, envs, ledgerHead]\n", "  dependsOn: [ids, registry, vaults, envs]\n");
+    const early = await mutant("main.bicep", "  dependsOn: [registry, vaults, envs, ledgerHead]\n", "  dependsOn: [registry, vaults, envs]\n");
     expect(early).toEqual(["rule 25: L2's apps must be deployed after the ledger's head"]);
   }, 180_000);
 
@@ -1757,7 +1835,7 @@ resource extraRead 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   }, 360_000);
 
   it("T-IAC-01 must-fail rule 21: identity passed in part, the portal given an audience of the directory, or main without its identity check, is reported", async () => {
-    const part = await mutant("main.bicep", "    userAccounts: userAccounts\n    identity: identity\n  }\n  dependsOn: [ids, registry, vaults, envs]", "    userAccounts: userAccounts\n    identity: { issuer: identity.issuer, audience: identity.audience }\n  }\n  dependsOn: [ids, registry, vaults, envs]");
+    const part = await mutant("main.bicep", "    userAccounts: userAccounts\n    identity: identity\n  }\n  dependsOn: [registry, vaults, envs]", "    userAccounts: userAccounts\n    identity: { issuer: identity.issuer, audience: identity.audience }\n  }\n  dependsOn: [registry, vaults, envs]");
     expect(part).toContain("rule 21: main must pass the identity parameter to portal-apps whole");
     const entra = await mutant("modules/portal-apps.bicep", "param identity object\n", "param identity object\n#disable-next-line no-unused-params\nparam authAudience string = ''\n");
     expect(entra).toContain("rule 21: portal-apps must take no authAudience parameter: the portal gets nothing of the directory or of the agent's");

@@ -14,6 +14,20 @@ param names = {
   deployApp: 'app-deploy-${location}-${environment}'
   operators: 'grp-op-${location}-${environment}'
   stateStorage: 'sttfstate${location}${environment}'
+  // SPEC 1.25: the units' identities, made here so the deploy app's condition can name them: the same names as
+  // main.dev.bicepparam's identities (T-IAC-01 rule 16), which main.bicep's apps look up.
+  identities: {
+    l1: 'id-l1-${location}-${environment}'
+    l2: 'id-l2-${location}-${environment}'
+    l3: 'id-l3-${location}-${environment}'
+    op: 'id-op-${location}-${environment}'
+    portal: 'id-portal-${location}-${environment}'
+    seller: 'id-seller-${location}-${environment}'
+    // 1.23: the one identity that may write the ledger's head (main's ledger-head module gives it its only role).
+    l2head: 'id-l2head-${location}-${environment}'
+  }
+  // SPEC 1.25: the policy assignment that refuses a federated credential on any identity of the resource group.
+  policy: 'pol-x402-${location}-${environment}'
 }
 
 // GitHub: the repository and environment whose deploy job signs in as the deploy app (OIDC), and the IDs in GitHub's

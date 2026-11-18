@@ -146,7 +146,7 @@ place, because L2 refuses to start when recorded wallet addresses no longer matc
 | `id-seller-eastus2-dev` | Key Vault Secrets User | `kv-seller-eastus2-dev` |
 | each identity | AcrPull | `crx402eastus2dev` |
 | `grp-op-eastus2-dev` (operators' group) | Container Apps Jobs Operator | `caj-l2-eastus2-dev` only |
-| `app-deploy-eastus2-dev` (GitHub OIDC) | Contributor + Role Based Access Control Administrator, limited by condition to the four roles above (Key Vault Secrets User, AcrPull, Cognitive Services User, Container Apps Jobs Operator) | `rg-x402-<location>-<env>` only |
+| `app-deploy-eastus2-dev` (GitHub OIDC) | Contributor + Role Based Access Control Administrator, limited by condition to the four roles above (Key Vault Secrets User, AcrPull, Cognitive Services User, Container Apps Jobs Operator) and (SPEC 1.25) to the principals above: the identities `pre-deploy.bicep` makes and the operators' group. A policy on the resource group denies every federated credential on its identities | `rg-x402-<location>-<env>` only |
 | `app-deploy-eastus2-dev` and `agentUsers` | app role `Agent.Run` | `app-l1-eastus2-dev` |
 
 ## Proxy sidecar (`infra/proxy/nginx.conf`)
@@ -221,7 +221,9 @@ place, because L2 refuses to start when recorded wallet addresses no longer matc
     one for the deploy environment and one for the Auth0 environment, `auth0-<env>` (SPEC v1.9). `Agent.Run` goes to the deploy app and
     `agentUsers` only. The operators' group is a security group of `operators`. The deploy app has
     Contributor and Role Based Access Control Administrator on the resource group only, the latter's
-    condition listing exactly the roles `main.bicep` assigns.
+    condition listing exactly the roles `main.bicep` assigns and (SPEC 1.25) exactly the principals it assigns
+    them to: the units' identities, which `pre-deploy.bicep` makes, and the operators' group. `pre-deploy.bicep`
+    also assigns the built-in policy that denies federated credentials on the resource group's identities.
 17. Every value is in the parameter files. Each template parameter is set in its file; only the five
     per-run parameters come from the environment. Both files of an environment name the same tenant,
     subscription, location and resource group, and `githubEnvironment` is the environment. Each template
