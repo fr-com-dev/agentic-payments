@@ -33,6 +33,8 @@ import { AuditLedger, resourceKey, type LedgerEntry } from "./ledger.js";
 import { callerAuth, callerChecksPerMinute, callerDepsFor, callerSettingsFromEnv, forwardedIdentityOf, type CallerDeps } from "./caller.js";
 import { acquireLedgerLock } from "./ledger-lock.js";
 import { LEDGER_MAC_ENV, ledgerMacKeyFromEnv } from "./ledger-key.js";
+import { LedgerHeadError, openLedgerHead, type LedgerHeadAnchor } from "./ledger-head.js";
+import { HEAD_URL_ENV, ledgerHeadStoreFromEnv } from "./ledger-head-store.js";
 import { mountLedgerRoutes, type Serialize } from "./ledger-routes.js";
 import { AUTHORIZE_BODY_LIMIT, jsonBody, refuseUnreadBody } from "./json-body.js";
 import { checkPayeeBinding, loadMandate, type SpendingMandate } from "./mandate.js";
@@ -101,6 +103,13 @@ export interface ControlServiceDeps {
   skipIntentShape?: boolean;
   /** Test hook: a lower bound on the operator's ledger checks a minute (MAX_LEDGER_VERIFIES_PER_MINUTE). Never set by main(). */
   maxLedgerVerifiesPerMinute?: number;
+  /**
+   * 1.23 (L2-4, SEC-39): the ledger's head outside the share. Present: every serialized section ends by writing the
+   * head of the ledger as it then is, before its result is returned, so no answer that depends on an entry leaves
+   * L2 before the head covers that entry; a section whose head can't be written fails (500 `internal error`), and
+   * nothing it decided is returned. Absent: no head, as before 1.23.
+   */
+  ledgerHead?: Pick<LedgerHeadAnchor, "flush">;
 }
 
 export interface ControlService {
@@ -117,11 +126,24 @@ const DAY_MS = 86_400_000;
 const SWEEP_INTERVAL_MS = 1_000;
 const SIGNER_DETAIL_MAX = 300;
 
-/** Promise-chain mutex. Every caller runs after the previous one settles, success or failure. */
-export function createSerializer(): Serialize {
+/**
+ * Promise-chain mutex. Every caller runs after the previous one settles, success or failure. 1.23: `after` (the
+ * ledger head's flush) runs at the end of each section, still inside it, also when the section threw; its failure
+ * fails the section.
+ */
+export function createSerializer(after?: () => Promise<void>): Serialize {
   let tail: Promise<unknown> = Promise.resolve();
   return <T>(fn: () => T | Promise<T>): Promise<T> => {
-    const run = tail.then(fn, fn);
+    const section = after === undefined
+      ? fn
+      : async (): Promise<T> => {
+          try {
+            return await fn();
+          } finally {
+            await after();
+          }
+        };
+    const run = tail.then(section, section);
     tail = run.then(
       () => undefined,
       () => undefined,
@@ -232,7 +254,7 @@ export function createControlService(deps: ControlServiceDeps): ControlService {
   const { mandate, signer, ledger } = deps;
   const now = deps.now ?? Date.now;
   const dedupePending = deps.dedupePendingEscalations ?? true;
-  const serialize = createSerializer();
+  const serialize = createSerializer(deps.ledgerHead ? () => deps.ledgerHead!.flush() : undefined);
   const app = express();
   const tok = (t?: string) => (t === undefined ? {} : { token: t });
 
@@ -580,8 +602,10 @@ export function createControlService(deps: ControlServiceDeps): ControlService {
         return;
       }
       res.json(first.decision);
-    } catch {
+    } catch (err) {
       // 1.19: a fixed answer. An error's own text (a file path, a library's message) never reaches L1 or the model.
+      // 1.23: a head that couldn't be written is one such error; the signature it would have covered never leaves.
+      if (err instanceof LedgerHeadError) console.error(`l2-control: ${err.message}`);
       if (!res.headersSent) res.status(500).json({ error: "internal error" });
     }
   });
@@ -687,6 +711,16 @@ export function createControlService(deps: ControlServiceDeps): ControlService {
   if (deps.apiDocs) mountApiDocs(app);
   // Every other route's unreadable body: a fixed JSON answer, never Express's default handler (T-BODY-02).
   app.use(refuseUnreadBody());
+  // 1.23: a section whose ledger head couldn't be written answers a fixed 500, as authorize does; nothing it decided
+  // is returned. The cause stays in L2's log.
+  app.use((err: unknown, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if (!(err instanceof LedgerHeadError)) {
+      next(err);
+      return;
+    }
+    console.error(`l2-control: ${err.message}`);
+    if (!res.headersSent) res.status(500).json({ error: "internal error" });
+  });
 
   return { app, serialize, sweep: () => serialize(() => sweep(ledger, now())), ...(backchannel && { backchannel }) };
 }
@@ -796,11 +830,16 @@ export async function main(): Promise<void> {
   const personSettings = accounts.enabled ? personSettingsFromEnv(process.env) : undefined;
   // 1.19 (L2-4): the ledger key, checked with the rest before the lock. Off (or unset): hashes only, as before.
   const ledgerMac = ledgerMacKeyFromEnv(process.env);
+  // 1.23 (L2-4): where the ledger's head lives, checked with the rest before the lock. Unset: no head, as before.
+  const headStore = ledgerHeadStoreFromEnv(process.env, ledgerPathFor());
   // L2-6: one writer. Wait in standby while another L2 holds the ledger, then read it only once ours.
   const lock = await acquireLedgerLock(ledgerPathFor());
   // The ledger loads and verifies first, so an integrity failure is reported before anything else.
   // 1.19: fenced by the lock, so a replaced holder never appends again (L2-6).
   const ledger = new AuditLedger(ledgerPathFor(), { ...(ledgerMac !== undefined && { mac: ledgerMac }), fence: () => lock.assertHeld() });
+  // 1.23 (SEC-39): then the head. A ledger shorter than its head, or another ledger in its place, stops L2 here; the
+  // head of the ledger as loaded is written before anything is served (adopted when the store has none).
+  const head = headStore ? await openLedgerHead(ledger, headStore, { ...(ledgerMac !== undefined && { mac: ledgerMac }), fence: () => lock.assertHeld() }) : undefined;
   const net = networkProfile();
   const mandate = loadMandate(net, process.env);
   // 1.19 (R5): outside local, the platform account's payees and every listed seller's are known, never "any".
@@ -833,6 +872,13 @@ export async function main(): Promise<void> {
   }
   if (signIn !== undefined) console.log(`l2-control: callers' tokens verified (issuer ${signIn.issuer}); every payment request needs one`);
   console.log(ledgerMac !== undefined ? `l2-control: ledger keyed (from entry ${ledgerMac.keyedFrom})` : `l2-control: ledger hashed only (${LEDGER_MAC_ENV} off)`);
+  // 1.23: the startup entries above (PLATFORM_CONFIG) are covered by the head before anything is served.
+  await head?.anchor.flush();
+  console.log(
+    head !== undefined
+      ? `l2-control: ledger head at ${head.anchor.where} (${ledger.entries().length} entries${head.adopted ? ", adopted: the store had no head" : ""})`
+      : `l2-control: no ledger head (${HEAD_URL_ENV} unset)`,
+  );
   if (administration.enabled) console.log("l2-control: portal administration on");
   else if (administration.ignored.length > 0) console.log(`l2-control: portal administration is off; ignoring ${administration.ignored.join(", ")}`);
   // One set of the tenant's keys for both checks: the caller's token and the person's.
@@ -841,6 +887,7 @@ export async function main(): Promise<void> {
     mandate,
     signer,
     ledger,
+    ...(head !== undefined && { ledgerHead: head.anchor }),
     asset: { address: net.asset, decimals: net.decimals },
     apiDocs,
     ...(backchannelDeps && { backchannel: backchannelDeps }),
@@ -859,8 +906,11 @@ export async function main(): Promise<void> {
   backchannel?.resume();
   // 010 (L2-4.3): expire escalations and lapse approvals on time even when nobody calls L2. The timer
   // never keeps the process alive; tests never call main(), so they stay deterministic.
-  void sweepNow();
-  setInterval(() => void sweepNow(), SWEEP_INTERVAL_MS).unref();
+  // 1.23: a sweep whose ledger head can't be written is logged (by its section) and retried a second later; never an
+  // unhandled rejection, which would stop L2 without releasing the lock.
+  const sweepQuietly = () => void sweepNow().catch((err: unknown) => console.error(`l2-control: sweep: ${err instanceof Error ? err.message : String(err)}`));
+  sweepQuietly();
+  setInterval(sweepQuietly, SWEEP_INTERVAL_MS).unref();
   const port = controlPort();
   const server = listenControl(app, port, () => {
     console.log(`l2-control listening on http://${CONTROL_BIND_HOST}:${port} (network ${net.name}, payer ${signer.address})`);

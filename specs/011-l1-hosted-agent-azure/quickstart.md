@@ -144,7 +144,7 @@ for Entra ID.
    `main.dev.bicepparam`.
 2. **Create the platform.** Run `deploy-infra` with `environment=dev`, `first-deployment: true` and
    `seed-ip` set to your public IP. It creates the network, identities, registry, the six vaults (open
-   to your IP), storage (the `ledger` and `profiles` shares), Foundry with the `claude-sonnet-5-5` deployment, and both environments. A
+   to your IP), storage (the `ledger` and `profiles` shares), (SPEC 1.23) the ledger head's account, container and identity, Foundry with the `claude-sonnet-5-5` deployment, and both environments. A
    unit's pipeline refuses `seed-ip` at its first step and deploys nothing.
 3. **Seed the vaults.** Put the secrets in, following [cloud-topology](contracts/cloud-topology.md),
    with `az keyvault secret set` from a trusted shell. This is data, not provisioning: the secrets
@@ -185,7 +185,8 @@ Then check the platform facts the research could not confirm:
 | Check | How | Expected |
 |---|---|---|
 | Foundry accepts the provider's `anthropic-beta` header | the hosted smoke check (deploy.yml step 8) succeeds; otherwise the 400 names the header | 200. If it fails, enable header stripping in the Foundry `fetch` (research R2) |
-| Lifecycle `None` blocks tokens inside L2 | `az containerapp exec -n ca-l2-eastus2-dev --container proxy -- sh -c 'wget -qO- "$IDENTITY_ENDPOINT?resource=https://vault.azure.net&api-version=2019-08-01" -H "X-IDENTITY-HEADER: $IDENTITY_HEADER"'` | fails: no endpoint or an error. Key Vault references still resolve, because L2 started |
+| Lifecycle `None` blocks tokens inside L2 | `az containerapp exec -n ca-l2-eastus2-dev --container proxy -- sh -c 'wget -qO- "$IDENTITY_ENDPOINT?resource=https://vault.azure.net&api-version=2019-08-01&client_id=<id-l2-eastus2-dev client ID>" -H "X-IDENTITY-HEADER: $IDENTITY_HEADER"'` | fails: an error. Key Vault references still resolve, because L2 started. Since SPEC 1.23 the endpoint exists in L2's containers, for the head identity `id-l2head-eastus2-dev` only (lifecycle `Main`), whose one role is writing the ledger's head |
+| The ledger's head (SPEC 1.23) | L2's startup log after `deploy-l2` | `ledger head at https://stl2headeastus2dev.blob.core.windows.net/ledger-head/ledger-base-sepolia.head.json (N entries…)`; the first start says `adopted`. Upgrading an environment: SPEC "Changes in 1.23", migration steps 1–5 |
 | Internal http calls aren't redirected | regression step 6 passes over `http://ca-l2-eastus2-dev.internal…` | no 301 to https |
 | Key Vault references resolve through the VNet rule (firewall default Deny) | all apps start and `ledger-verify` passes | no `secret reference` errors in the revision status |
 | Exclusive create on the NFS share | during a `deploy-l2` run (step 4, the wait), the L2 log shows `ledger locked … waiting` in the revision overlap, then a clean start | one writer; the chain verifies |

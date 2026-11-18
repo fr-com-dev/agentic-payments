@@ -1,6 +1,6 @@
 // x402 three-layer agent payments in Azure (SPEC.md §3.1; specs/011 contracts/cloud-topology.md): everything in
 // the resource group that pre-deploy.bicep creates. The platform (network, logs, identities, registry, vaults,
-// storage, Foundry and its model, the two Container Apps environments), and each unit's apps, each from its own
+// storage, the ledger's head (1.23), Foundry and its model, the two Container Apps environments), and each unit's apps, each from its own
 // image: L1 (the agent, the regression job and the smoke job), L2 (the control service), L3 (the verifier), the
 // operator (the operator job), the portal (013: the web portal) and the sellers. One deployment deploys one of them, chosen by
 // `unit`: the platform by .github/workflows/deploy-infra.yml, each unit by its own pipeline (deploy-l1.yml,
@@ -19,7 +19,7 @@ targetScope = 'resourceGroup'
 param tenantId string
 param subscriptionId string
 param location string
-@description('Every resource name, {type}-{app}-{location}-{environment}: resourceGroup (made by pre-deploy.bicep), network, subnets, logs, registry, storage, foundry, environments, and per unit identities, vaults, apps and jobs.')
+@description('Every resource name, {type}-{app}-{location}-{environment}: resourceGroup (made by pre-deploy.bicep), network, subnets, logs, registry, storage, ledgerHead (1.23), foundry, environments, and per unit identities (plus l2head, the ledger head\'s writer), vaults, apps and jobs.')
 param names object
 @description('The deploy app\'s client ID (pre-deploy.bicep): the pipelines sign in as it with OIDC. Read by deploy.yml, not by any resource.')
 #disable-next-line no-unused-params
@@ -174,6 +174,14 @@ module storage 'modules/storage.bicep' = if (platform) {
   dependsOn: [network]
 }
 
+// 1.23 (SPEC L2-4, SEC-39): the ledger's head, outside the share, with the one identity that may write it. Before L2:
+// its first start with 1.23 writes the head (T-IAC-01 rule 25).
+module ledgerHead 'modules/ledger-head.bicep' = if (platform) {
+  name: 'ledger-head'
+  params: { location: location, names: names }
+  dependsOn: [network]
+}
+
 module foundry 'modules/foundry.bicep' = if (platform) {
   name: 'foundry'
   params: {
@@ -225,7 +233,7 @@ module l2 'modules/l2-apps.bicep' = if (unit == 'l2') {
     identity: identity
     agent: agent
   }
-  dependsOn: [ids, registry, vaults, envs]
+  dependsOn: [ids, registry, vaults, envs, ledgerHead]
 }
 
 module operator 'modules/operator-apps.bicep' = if (unit == 'operator') {

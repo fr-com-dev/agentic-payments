@@ -9,12 +9,14 @@ param principalId string
 
 var contributorRoleId = 'b24988ac-6180-42a0-ab88-20f7382dd24c'
 var rbacAdministratorRoleId = 'f58310d9-a9f6-439a-9e8d-f62e7b41a168'
-// Key Vault Secrets User, AcrPull, Cognitive Services User, Container Apps Jobs Operator.
+// Key Vault Secrets User, AcrPull, Cognitive Services User, Container Apps Jobs Operator, and (1.23) Storage Blob
+// Data Contributor, which main.bicep gives the ledger head's identity on the head's container.
 var assignableRoleIds = [
   '4633458b-17de-408a-b874-0445c86b69e6'
   '7f951dda-4ed3-4680-a7ca-43fe172d538d'
   'a97b65f3-24c7-4388-baec-2e87135dc908'
   'b9a307c4-5aa3-4b52-ba60-2b17c136cd7b'
+  'ba92f5b4-2d11-453d-a403-e96b0029c9fe'
 ]
 var assignable = join(assignableRoleIds, ', ')
 

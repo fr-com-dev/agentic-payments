@@ -21,9 +21,12 @@ export interface MainNames {
   logs: string;
   registry: string;
   storage: string;
+  /** 1.23: the ledger head's storage account. */
+  ledgerHead: string;
   foundry: string;
   environments: Record<"x402" | "seller", string>;
-  identities: Record<"l1" | "l2" | "l3" | "op" | "portal" | "seller", string>;
+  /** One per unit, and (1.23) l2head: the one identity that may write the ledger's head. */
+  identities: Record<"l1" | "l2" | "l3" | "op" | "portal" | "seller" | "l2head", string>;
   vaults: Record<"l1" | "l2" | "l3" | "op" | "portal" | "seller", string>;
   apps: Record<"l1" | "l2" | "l3" | "portal" | "seller" | "sellerAlias", string>;
   /** l1: the regression job; l2: the operator job; smoke (016): the hosted smoke run, a job of the L1 unit. */
