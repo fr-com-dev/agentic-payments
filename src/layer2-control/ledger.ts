@@ -8,6 +8,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { SettlementReport } from "../shared/contracts.js";
 import { entryMac, LEDGER_MAC_ENV, macMatches, type LedgerMacKey } from "./ledger-key.js";
+import type { LedgerHead } from "./ledger-head.js";
 
 export type EntryType =
   | "INTENT"
@@ -127,8 +128,11 @@ export function hashEntry(entry: Omit<LedgerEntry, "hash">): string {
  * one, and after the first keyed entry every later one must too, so MACs can't be stripped to make a rewritten
  * ledger look unkeyed. A ledger shorter than `keyedFrom` was cut back past the point the key was adopted: it is
  * broken at its end. Without a key only the hashes are checked.
+ * 1.23: with a head (the ledger's length and last hash, as L2 last wrote them outside the share), the ledger must have
+ * at least that many entries, and its entry at that position must have that hash. `brokenAt` is then the ledger's
+ * length (a cut) or that entry's index (another ledger in its place).
  */
-export function verifyLines(lines: readonly string[], mac?: LedgerMacKey): ChainCheck {
+export function verifyLines(lines: readonly string[], mac?: LedgerMacKey, head?: Pick<LedgerHead, "entries" | "hash">): ChainCheck {
   let prevHash = GENESIS_PREV_HASH;
   let keyedSeen = false;
   for (let i = 0; i < lines.length; i++) {
@@ -154,9 +158,13 @@ export function verifyLines(lines: readonly string[], mac?: LedgerMacKey): Chain
       if ((keyed && !macMatches(mac.key, e.hash, e.mac)) || (!keyed && required)) return { entries: lines.length, ok: false, brokenAt: i };
       keyedSeen ||= keyed;
     }
+    if (head !== undefined && i === head.entries - 1 && e.hash !== head.hash) return { entries: lines.length, ok: false, brokenAt: i };
     prevHash = e.hash;
   }
   if (mac !== undefined && lines.length < mac.keyedFrom) return { entries: lines.length, ok: false, brokenAt: lines.length };
+  // 1.23 (SEC-39): never shorter than the head L2 wrote outside the share. A cut prefix verifies on its own; the head
+  // is what remembers that more entries were there.
+  if (head !== undefined && lines.length < head.entries) return { entries: lines.length, ok: false, brokenAt: lines.length };
   return { entries: lines.length, ok: true };
 }
 
@@ -202,6 +210,12 @@ export class AuditLedger {
 
   /** 1.19: checked before every append (the ledger lock's `assertHeld`); it throws when this process no longer holds it. */
   private readonly fence: (() => void) | undefined;
+
+  /**
+   * 1.23 (SEC-39): the head last written outside the share (`raiseHead`). `verifyChain` refuses a file shorter than it,
+   * so a cut made while L2 runs shows in the operator's check too, not only at the next start.
+   */
+  private head: Pick<LedgerHead, "entries" | "hash"> | undefined;
 
   constructor(
     readonly filePath: string,
@@ -263,9 +277,22 @@ export class AuditLedger {
     return this.items;
   }
 
-  /** Re-reads the file so tampering after startup is also detected (1.19: the keyed chain too, with the key). */
+  /**
+   * Re-reads the file so tampering after startup is also detected (1.19: the keyed chain too, with the key; 1.23: and
+   * a file shorter than the head L2 last wrote).
+   */
   verifyChain(): ChainCheck {
-    return verifyLines(readLines(this.filePath), this.mac);
+    return verifyLines(readLines(this.filePath), this.mac, this.head);
+  }
+
+  /**
+   * 1.23: the head L2 has just written outside the share. It only ever moves forward, and must describe this ledger:
+   * its length at most this ledger's, and the hash of the entry at that position.
+   */
+  raiseHead(head: Pick<LedgerHead, "entries" | "hash">): void {
+    const at = head.entries === 0 ? GENESIS_PREV_HASH : this.items[head.entries - 1]?.hash;
+    if (at !== head.hash) throw new Error("integrity: the ledger head does not describe this ledger");
+    if (this.head === undefined || head.entries > this.head.entries) this.head = { entries: head.entries, hash: head.hash };
   }
 
   findAuthorized(authorizationId: string): LedgerEntry | undefined {

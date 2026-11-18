@@ -628,6 +628,9 @@ const TEMPLATES: Record<string, TemplateSpec> = {
       // 1.19: the ledger's MAC key (A16), and the person's token's sign-in time claim (SEC-35)
       "LEDGER_MAC_KEY",
       "AUTH_TIME_CLAIM",
+      // 1.23: where the ledger's head lives, and the identity that writes it (SEC-39). Neither is a secret.
+      "LEDGER_HEAD_URL",
+      "LEDGER_HEAD_CLIENT_ID",
       // 013 user accounts (CFG-2)
       "USER_ACCOUNTS",
       "PORTAL_TOKEN",

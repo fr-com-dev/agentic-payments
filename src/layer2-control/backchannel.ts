@@ -212,22 +212,25 @@ export class Backchannel {
   /** After a restart (FR-012): poll open requests again from their sealed handles; never send a new one. */
   resume(): void {
     const set = requestsToResume(this.d.ledger.entries(), this.d.now());
+    // 1.23: each record runs in a serialized section, which fails when the ledger head can't be written; the entry
+    // is then appended and the head catches up with the next section. Never an unhandled rejection.
+    const quietly = (p: Promise<unknown>, id: unknown) => void p.catch(() => this.log(`recording the resume of ${String(id)} stopped on an internal error`));
     for (const req of set.open) {
       const id = req.data.escalationId as string;
       const handle = this.d.port.open(String(req.data.handleSealed), `${id}|${String(req.data.requestId)}`);
       if (handle === null) {
-        void this.recordFailure(req, { phase: "resume", failure: "unrecoverable" });
+        quietly(this.recordFailure(req, { phase: "resume", failure: "unrecoverable" }), id);
       } else {
         this.log(`resuming approval request for ${id} (ref ${String(req.data.referenceCode)})`);
         this.poll(req, handle);
       }
     }
-    for (const req of set.stale) void this.recordLapse(req, "expired");
-    for (const esc of set.interrupted) void this.recordFailure(esc, { phase: "resume", failure: "interrupted" });
+    for (const req of set.stale) quietly(this.recordLapse(req, "expired"), req.data.escalationId);
+    for (const esc of set.interrupted) quietly(this.recordFailure(esc, { phase: "resume", failure: "interrupted" }), esc.authorizationId);
     // 015 (research R10): a request of an escalation with no owner (addressed, before v1.16, to the configured
     // approver) is not resumed for anybody. No answer to it could pass the owner check. It is closed; the escalation
     // stays pending for the operator.
-    for (const req of set.ownerless) void this.recordFailure(req, { phase: "resume", failure: "no_owner" });
+    for (const req of set.ownerless) quietly(this.recordFailure(req, { phase: "resume", failure: "no_owner" }), req.data.escalationId);
   }
 
   stop(): void {

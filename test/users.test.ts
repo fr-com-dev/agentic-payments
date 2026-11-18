@@ -1554,9 +1554,10 @@ describe("013 NFR-005 a user's payment decision depends on neither the portal no
   });
 
   it("013 NFR-005 no L2 module but the approval service's two can open a connection", () => {
-    // The approval service (L2-7) is L2's only outbound dependency, in two files. User accounts add none: the
-    // portal calls L2, never the reverse, and L2 knows nothing of the card vault.
-    const MAY_CALL_OUT = ["ciba-client.ts", "approval-evidence.ts"];
+    // The approval service (L2-7) is L2's only outbound dependency of a decision, in two files. User accounts add
+    // none: the portal calls L2, never the reverse, and L2 knows nothing of the card vault. 1.23: the ledger head's
+    // store (the identity endpoint and one blob, L2-4) is written after each serialized section; no decision reads it.
+    const MAY_CALL_OUT = ["ciba-client.ts", "approval-evidence.ts", "ledger-head-store.ts"];
     const NETWORK = /\bfetch\b|createRemoteJWKSet|node:https|node:net|node:dgram|node:tls|https?\.request|createPublicClient|createWalletClient|WebSocket/;
     const stripComments = (code: string) => code.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "").replace(/\s\/\/ .*$/gm, "");
     const dir = "src/layer2-control";

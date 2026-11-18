@@ -572,7 +572,9 @@ paths:
         - $ref: "#/components/parameters/PersonAuthorization"
       responses:
         "200":
-          description: Chain check result. `ok` is false and `brokenAt` set when an entry was altered.
+          description: >-
+            Chain check result. `ok` is false and `brokenAt` set when an entry was altered, and (v1.23) when the file
+            is shorter than the ledger head L2 last wrote outside the share (`brokenAt` is then the file's length).
           content:
             application/json:
               schema:
@@ -605,7 +607,9 @@ paths:
         - operatorToken: []
       responses:
         "200":
-          description: Chain check result. `ok` is false and `brokenAt` set when an entry was altered.
+          description: >-
+            Chain check result. `ok` is false and `brokenAt` set when an entry was altered, and (v1.23) when the file
+            is shorter than the ledger head L2 last wrote outside the share (`brokenAt` is then the file's length).
           content:
             application/json:
               schema:

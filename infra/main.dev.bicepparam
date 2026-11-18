@@ -20,6 +20,8 @@ param names = {
   logs: 'log-x402-${location}-${environment}'
   registry: 'crx402${location}${environment}'
   storage: 'stx402${location}${environment}'
+  // 1.23: the ledger's head (SPEC L2-4), outside the ledger's share; written only by identities.l2head.
+  ledgerHead: 'stl2head${location}${environment}'
   foundry: 'ais-x402-${location}-${environment}'
   environments: {
     x402: 'cae-x402-${location}-${environment}'
@@ -32,6 +34,8 @@ param names = {
     op: 'id-op-${location}-${environment}'
     portal: 'id-portal-${location}-${environment}'
     seller: 'id-seller-${location}-${environment}'
+    // 1.23: the one identity that may write the ledger's head; L2's control app uses it for that alone.
+    l2head: 'id-l2head-${location}-${environment}'
   }
   vaults: {
     l1: 'kv-l1-${location}-${environment}'

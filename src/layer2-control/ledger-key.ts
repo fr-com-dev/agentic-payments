@@ -54,3 +54,18 @@ export function macMatches(key: Buffer, hash: string, mac: unknown): boolean {
   if (typeof mac !== "string" || !MAC_RE.test(mac)) return false;
   return timingSafeEqual(Buffer.from(entryMac(key, hash), "hex"), Buffer.from(mac, "hex"));
 }
+
+/**
+ * 1.23 (L2-4, SEC-39): the MAC of the ledger's head, the record L2 keeps outside the share of how many entries the
+ * ledger has and the hash of its last one. Its own prefix, so an entry's MAC (which the ledger file shows anyone who
+ * can read it) is never a valid head MAC: a head for a shorter ledger can't be made from the file without the key.
+ */
+export function headMac(key: Buffer, entries: number, hash: string): string {
+  return createHmac("sha256", key).update(`x402-ledger-head-v1\n${entries}\n${hash}`, "utf8").digest("hex");
+}
+
+/** Constant-time check of a head's MAC. */
+export function headMacMatches(key: Buffer, entries: number, hash: string, mac: unknown): boolean {
+  if (typeof mac !== "string" || !MAC_RE.test(mac)) return false;
+  return timingSafeEqual(Buffer.from(headMac(key, entries, hash), "hex"), Buffer.from(mac, "hex"));
+}
