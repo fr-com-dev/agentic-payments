@@ -156,6 +156,29 @@ const TARGET_NAMES = ["RG=", "LOG_X402=", "CR_X402=", "CA_L1=", "CA_L3=", "CA_PO
  * 016: the whole hosted smoke step. It signs in, defines run_job and starts the smoke job with the job's own command
  * (src/smoke-main.ts, T-IAC-01 rule 23): the job gets its own token and checks the agent's answer itself.
  */
+/**
+ * v1.24 (SEC-40): the agent's replaced revisions go off after its promotion and after its rollback. The agent is in
+ * multiple-revision mode, where a revision stays active, at its own address and with the app's current secrets, until
+ * it is deactivated. The function deactivates only revisions that serve no traffic and are not the latest, and only
+ * the agent's: it is the one `az` command deploy.yml may run that is neither a deployment nor a read (Bicep can't
+ * deactivate a revision), and only here.
+ */
+const RETIRE_REVISIONS = [
+  "retire_revisions() {",
+  "  local latest idle r failed=0",
+  '  latest=$(az containerapp show -n "$CA_L1" -g "$RG" --query properties.latestRevisionName -o tsv) || return 1',
+  '  [[ -n "$latest" ]] || return 1',
+  '  idle=$(az containerapp revision list -n "$CA_L1" -g "$RG" --query "[?!(properties.trafficWeight > \\`0\\`)].name" -o tsv) || return 1',
+  "  for r in $idle; do",
+  '    [[ "$r" == "$latest" ]] && continue',
+  '    if az containerapp revision deactivate -n "$CA_L1" -g "$RG" --revision "$r" -o none; then echo "$CA_L1: deactivated $r"; else failed=1; fi',
+  "  done",
+  '  return "$failed"',
+  "}",
+  "",
+].join("\n");
+const RETIRE_CALL = /if \[\[ "\$UNIT" == l1 \]\]; then\n\s+retire_revisions \|\| echo "::warning::[^"\n]+"\n\s*fi/;
+const AZ_RETIRE = /^az containerapp revision deactivate\b/;
 const SMOKE_RUN = 'eval "$SIGN_IN"\neval "$RUN_JOB"\nrun_job "$CAJ_SMOKE"\n';
 const SMOKE_PROBLEM = 'the smoke step must be the sign-in, RUN_JOB and run_job "$CAJ_SMOKE", and nothing else: the smoke job gets its own token and checks the agent\'s answer itself (src/smoke-main.ts)';
 /** Step 2b's pattern: an assignment of a key, a secret, a token, or (013) a mnemonic or the card vault key, in the image. */
@@ -198,10 +221,14 @@ function azCommands(text: string): string[] {
 /** An az command that asks for an access token (016: tokenProblems reports it, not provisioningOutsideBicep). */
 const AZ_TOKEN = /^az account get-access-token\b/;
 
-/** Provisioning outside Bicep: an az command that isn't a deployment, a read, a job run, an image copy or an allowed deletion. */
+/**
+ * Provisioning outside Bicep: an az command that isn't a deployment, a read, a job run, an image copy, an allowed
+ * deletion or (v1.24, deploy.yml only) the deactivation of the agent's replaced revisions, which workflowProblems
+ * pins to RETIRE_REVISIONS.
+ */
 export function provisioningOutsideBicep(file: string, text: string, deletions = false): string[] {
   return azCommands(text)
-    .filter((c) => !AZ_READS.test(c) && !AZ_TOKEN.test(c) && !(deletions && AZ_DELETIONS.test(c)))
+    .filter((c) => !AZ_READS.test(c) && !AZ_TOKEN.test(c) && !(deletions && AZ_DELETIONS.test(c)) && !(file === SHARED && AZ_RETIRE.test(c)))
     .map((c) => `${file} runs "${c.split(" ").slice(0, 4).join(" ")}": Azure is provisioned by Bicep only`);
 }
 
@@ -415,6 +442,24 @@ export function workflowProblems(w: Workflow): string[] {
   const rollback = step("rollback");
   if (!rollback?.run?.includes('--repository "x402-$IMAGE"') || !rollback.run.includes("IMAGE_TAG=last-good") || !rollback.run.includes('AGENT_STABLE_REVISION="${{ steps.deploy.outputs.stable }}"')) {
     out.push("rollback must redeploy the unit's last-good, with the agent's traffic left on its previous revision");
+  }
+  // v1.24 (SEC-40): the agent's replaced revisions go off, last in promote (once the image is last-good) and after the
+  // rollback's redeployment, each on L1 only. The deactivation is the function's alone.
+  if (w.env?.RETIRE_REVISIONS !== RETIRE_REVISIONS) out.push("RETIRE_REVISIONS must deactivate only the agent's revisions that serve no traffic and are not the latest");
+  const deactivations = steps.flatMap((s) => azCommands(s.run ?? "")).filter((c) => AZ_RETIRE.test(c));
+  if (deactivations.length > 0) out.push("a step deactivates a revision itself: only RETIRE_REVISIONS may");
+  const promoteCall = promote.search(RETIRE_CALL);
+  if (promoteCall < 0 || promoteCall < promote.indexOf('--image "x402-$IMAGE:last-good"')) {
+    out.push("promote must deactivate the agent's replaced revisions (retire_revisions) on L1, after its image is last-good");
+  }
+  const rollbackRun = rollback?.run ?? "";
+  const rollbackCall = rollbackRun.search(RETIRE_CALL);
+  if (rollbackCall < 0 || rollbackCall < rollbackRun.indexOf("IMAGE_TAG=last-good")) {
+    out.push("rollback must deactivate the agent's replaced revisions (retire_revisions) on L1, after its redeployment");
+  }
+  for (const s of steps) {
+    const defined = s.run?.indexOf('eval "$RETIRE_REVISIONS"\n') ?? -1;
+    if (s.run?.includes("retire_revisions ") && (defined < 0 || defined > s.run.indexOf("retire_revisions "))) out.push(`${s.id} must define retire_revisions before calling it (eval "$RETIRE_REVISIONS")`);
   }
   if (at("rollback") !== steps.length - 1) out.push("rollback must be the last step");
   return out;
@@ -777,6 +822,80 @@ describe("T-E2E-AZ deployment workflow gates", () => {
     expect(provisioningOutsideBicep(SHARED, group)).toEqual([`${SHARED} runs "az group create -n": Azure is provisioned by Bicep only`]);
     const traffic = text.replace('AGENT_STABLE_REVISION="" az deployment group create -g "$RG" -n "x402-l1-promote-$IMAGE_TAG" -p "$PARAMS" -o none', 'az containerapp ingress traffic set -n "$CA_L1" -g "$RG" --revision-weight latest=100');
     expect(provisioningOutsideBicep(SHARED, traffic)).toEqual([`${SHARED} runs "az containerapp ingress traffic": Azure is provisioned by Bicep only`]);
+  });
+
+  it("T-E2E-AZ v1.24 must-fail: the agent's replaced revisions left on after promote or rollback, a deactivation that could reach a serving revision, or one outside the function or outside deploy.yml, is reported (SEC-40)", () => {
+    const drop = (id: string) => stepsOf(w).map((s) => (s.id === id ? { ...s, run: s.run!.replace(RETIRE_CALL, "") } : s));
+    expect(workflowProblems(withSteps(w, drop("promote")))).toEqual(["promote must deactivate the agent's replaced revisions (retire_revisions) on L1, after its image is last-good"]);
+    expect(workflowProblems(withSteps(w, drop("rollback")))).toEqual(["rollback must deactivate the agent's replaced revisions (retire_revisions) on L1, after its redeployment"]);
+    // before the image is last-good: a promotion that then fails would roll back onto a deactivated revision
+    const early = stepsOf(w).map((s) => {
+      if (s.id !== "promote") return s;
+      const call = s.run!.match(RETIRE_CALL)![0];
+      return { ...s, run: s.run!.replace(RETIRE_CALL, "").replace('eval "$RETIRE_REVISIONS"\n', `eval "$RETIRE_REVISIONS"\n${call}\n`) };
+    });
+    expect(workflowProblems(withSteps(w, early))).toEqual(["promote must deactivate the agent's replaced revisions (retire_revisions) on L1, after its image is last-good"]);
+    // every revision without traffic, the latest included, or another app's
+    const serving = { ...w, env: { ...w.env, RETIRE_REVISIONS: RETIRE_REVISIONS.replace('    [[ "$r" == "$latest" ]] && continue\n', "") } };
+    expect(workflowProblems(serving)).toEqual(["RETIRE_REVISIONS must deactivate only the agent's revisions that serve no traffic and are not the latest"]);
+    const portal = { ...w, env: { ...w.env, RETIRE_REVISIONS: RETIRE_REVISIONS.replaceAll('"$CA_L1"', '"$CA_PORTAL"') } };
+    expect(workflowProblems(portal)).toEqual(["RETIRE_REVISIONS must deactivate only the agent's revisions that serve no traffic and are not the latest"]);
+    // a step of its own, or a step that calls the function without defining it
+    const direct = stepsOf(w).map((s) => (s.id === "smoke" ? { ...s, run: `${s.run!}az containerapp revision deactivate -n "$CA_L1" -g "$RG" --revision "$STABLE" -o none\n` } : s));
+    expect(workflowProblems(withSteps(w, direct))).toEqual([SMOKE_PROBLEM, "a step deactivates a revision itself: only RETIRE_REVISIONS may"]);
+    const undefinedCall = stepsOf(w).map((s) => (s.id === "rollback" ? { ...s, run: s.run!.replace('eval "$RETIRE_REVISIONS"\n', "") } : s));
+    expect(workflowProblems(withSteps(w, undefinedCall))).toEqual(['rollback must define retire_revisions before calling it (eval "$RETIRE_REVISIONS")']);
+    // anywhere but deploy.yml it is provisioning outside Bicep
+    expect(provisioningOutsideBicep("deploy-l1.yml", 'az containerapp revision deactivate -n "$CA_L1" -g "$RG" --revision r1')).toEqual([
+      'deploy-l1.yml runs "az containerapp revision deactivate": Azure is provisioned by Bicep only',
+    ]);
+    expect(provisioningOutsideBicep(SHARED, text)).toEqual([]);
+  });
+
+  it("T-E2E-AZ v1.24 retire_revisions deactivates only the agent's idle revisions other than the latest, and reports a failure", () => {
+    const dir = mkdtempSync(join(tmpdir(), "retire-"));
+    try {
+      // A stand-in az: the app's latest revision, its active revisions with their traffic, and a log of what it was asked.
+      const az = join(dir, "az");
+      writeFileSync(
+        az,
+        [
+          "#!/usr/bin/env bash",
+          'echo "$*" >> "$AZ_LOG"',
+          'case "$1 $2" in',
+          '  "containerapp show") echo "$LATEST" ;;',
+          '  "containerapp revision")',
+          '    if [[ "$3" == list ]]; then printf "%s\\n" $IDLE; elif [[ " $* " == *" --revision $FAIL "* ]]; then exit 1; fi ;;',
+          "esac",
+          "",
+        ].join("\n"),
+        { mode: 0o755 },
+      );
+      const run = (env: Record<string, string>) => {
+        const log = join(dir, `log-${Math.random()}`);
+        const r = spawnSync("bash", ["--noprofile", "--norc", "-eo", "pipefail", "-c", `${RETIRE_REVISIONS}retire_revisions`], {
+          env: { PATH: `${dir}:${process.env.PATH}`, AZ_LOG: log, CA_L1: "ca-l1", RG: "rg", FAIL: "none", ...env },
+          encoding: "utf8",
+        });
+        const asked = existsSync(log) ? readFileSync(log, "utf8").trim().split("\n") : [];
+        return { code: r.status, deactivated: asked.filter((l) => l.startsWith("containerapp revision deactivate")).map((l) => l.split("--revision ")[1]!.split(" ")[0]), asked };
+      };
+      // after promote: the latest serves; the old stable and an older candidate are idle
+      const promoted = run({ LATEST: "ca-l1--c3", IDLE: "ca-l1--a1 ca-l1--b2" });
+      expect([promoted.code, promoted.deactivated]).toEqual([0, ["ca-l1--a1", "ca-l1--b2"]]);
+      expect(promoted.asked[1]).toContain("--query [?!(properties.trafficWeight > `0`)].name");
+      // after a rollback: the stable serves, the latest (the last-good candidate) is idle and stays, the failed one goes
+      const rolledBack = run({ LATEST: "ca-l1--d4", IDLE: "ca-l1--c3 ca-l1--d4" });
+      expect([rolledBack.code, rolledBack.deactivated]).toEqual([0, ["ca-l1--c3"]]);
+      // a refused deactivation: the others still go, and the function says so
+      const refused = run({ LATEST: "ca-l1--c3", IDLE: "ca-l1--a1 ca-l1--b2", FAIL: "ca-l1--a1" });
+      expect([refused.code, refused.deactivated]).toEqual([1, ["ca-l1--a1", "ca-l1--b2"]]);
+      // no latest revision read: nothing is deactivated
+      const blind = run({ LATEST: "", IDLE: "ca-l1--a1" });
+      expect([blind.code, blind.deactivated]).toEqual([1, []]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("T-E2E-AZ must-fail: a deployment without what-if, an image built under another name, or a promotion of another image, is reported", () => {

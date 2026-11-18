@@ -95,7 +95,7 @@ The rows are in first-deployment order (quickstart §4).
 | 8 | Hosted smoke: a token for the deploy app (`Agent.Run`, from `pre-deploy.bicep`) for the API app's client ID (`authAudience`, the audience the agent accepts), `POST /v1/runs` with the default goal to the agent; on L1, to the new revision's `candidate` label URL (or the agent, on its first deployment), timed | unless first deployment | 200, `status: completed`, steps include `/api/weather` and `/api/market-brief` with `outcome: PAID`, settlement `CONFIRMED`; duration ≤ 120 s, written to the job summary (SC-009) |
 | 8b | Portal smoke (013), with no token, because the pipeline's identity is an application and the portal refuses those by design: `GET /healthz` on `ca-portal-eastus2-dev` (retried while it scales from zero), `GET /api/config`, `GET /api/me` | unless first deployment of a unit that precedes the portal; the portal's own first deployment runs it | `/healthz` 200 within 3 min; `/api/config` 200 with `auth.mode` `entra` (a deployed portal never trusts the dev issuer); `/api/me` 401 |
 | 9 | Secret scan: `az monitor log-analytics query` over the container logs since step 3, piped to `npm run scan-logs` (credential-shape patterns from `scripts/secret-scan-lib.ts`: JWTs, `Bearer` values, PEM blocks, `PAYMENT-SIGNATURE`/`x-api-key` values, `*_PRIVATE_KEY=`/`*_SECRET=`/`*_TOKEN=` assignments) | unless first deployment | no match. Exact-value completeness is proven offline by T-AGT-05 (research R13) |
-| 10 | Promote. On L1, `main.bicep` again without a stable revision, so the agent's latest revision gets 100% of the traffic; then `az acr import` tags the unit's image `last-good` | units, unless first deployment | done |
+| 10 | Promote. On L1, `main.bicep` again without a stable revision, so the agent's latest revision gets 100% of the traffic; then `az acr import` tags the unit's image `last-good`; then (SPEC v1.24) on L1 every agent revision that serves no traffic is deactivated (`RETIRE_REVISIONS`), so no replaced revision answers at its own address. A revision that can't be deactivated is a warning | units, unless first deployment | done |
 
 **First deployment** (`first-deployment: true`, a new environment; quickstart §4). The units are
 deployed in the table's order, so when a unit's first run comes, the units after it don't exist yet:
@@ -130,7 +130,8 @@ included, instead of creating them. A unit's run refuses both at step 0 and depl
   rolled back too, because the single-revision apps may already run the new image). The agent's
   traffic stays on its previous revision. The workflow redeploys `main.bicep` with the same `UNIT`, the
   unit's image at `last-good` and the same stable revision, so only that unit changes and the agent's
-  traffic stays put, then runs `ledger-verify`. Without a `last-good` for the unit's image (a unit that
+  traffic stays put; on L1 (SPEC v1.24) it then deactivates every agent revision that serves no traffic
+  except the latest, so the failed candidate keeps no address of its own; then it runs `ledger-verify`. Without a `last-good` for the unit's image (a unit that
   hasn't passed the checks yet), the run stays red for a human.
 - **The platform** is not rolled back automatically, because there is no previous platform to return
   to; it is fixed forward.

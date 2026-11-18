@@ -648,7 +648,7 @@ const TEMPLATES: Record<string, TemplateSpec> = {
   },
   seller: {
     required: ["NETWORK", "SELLER_PAY_TO"],
-    optional: ["FACILITATOR", "FACILITATOR_URL", "SELLER_PORT", "CDP_API_KEY_ID", "CDP_API_KEY_SECRET", "API_DOCS"],
+    optional: ["FACILITATOR", "FACILITATOR_URL", "SELLER_PORT", "CDP_API_KEY_ID", "CDP_API_KEY_SECRET", "API_DOCS", "TRUSTED_PROXY_HOPS"],
   },
   facilitator: { required: ["NETWORK", "FACILITATOR_PRIVATE_KEY"], optional: ["FACILITATOR_PORT"] },
   operator: { required: ["CONTROL_URL", "OPERATOR_TOKEN"], optional: [] },

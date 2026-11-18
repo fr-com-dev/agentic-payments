@@ -425,9 +425,10 @@ export function violations(arms: Templates, params: Params, infraFiles: Record<s
     const a = byName(name);
     if (!a || (configOf(a).ingress as Json)?.external !== false) v.push(`rule 3: ${name} must have external: false`);
   }
-  // The two public services that verify tokens limit requests per client address before they do (SEC-14, SEC-19).
-  // The ingress is the one proxy in front of them, so each is told to trust exactly one.
-  for (const [name, container] of [[MN.apps.l1, "agent"], [MN.apps.portal, "portal"]] as const) {
+  // The two public services that verify tokens limit requests per client address before they do (SEC-14, SEC-19),
+  // and (v1.24, SEC-41) both sellers limit the priced requests that can reach the facilitator. The ingress is the one
+  // proxy in front of each, so each is told to trust exactly one: with none, every caller would share one count.
+  for (const [name, container] of [[MN.apps.l1, "agent"], [MN.apps.portal, "portal"], [MN.apps.seller, "seller"], [MN.apps.sellerAlias, "seller"]] as const) {
     const a = byName(name);
     if (!a) continue; // another unit's deployment
     const env = containersOf(a).find((c) => c.name === container)?.env ?? [];
@@ -1354,7 +1355,12 @@ resource extraRead 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
     expect(v).toContain(`rule 3: ${N.main.apps.portal}/portal is behind the ingress and must set TRUSTED_PROXY_HOPS to 1, for its per-address request limit`);
     const two = await mutant("modules/l1-apps.bicep", "{ name: 'TRUSTED_PROXY_HOPS', value: '1' }", "{ name: 'TRUSTED_PROXY_HOPS', value: '2' }");
     expect(two).toContain(`rule 3: ${N.main.apps.l1}/agent is behind the ingress and must set TRUSTED_PROXY_HOPS to 1, for its per-address request limit`);
-  }, 120_000);
+    // v1.24: the sellers too (one template line deploys both)
+    const seller = await mutant("modules/sellers.bicep", "            { name: 'TRUSTED_PROXY_HOPS', value: '1' }\n", "");
+    for (const app of [N.main.apps.seller, N.main.apps.sellerAlias]) {
+      expect(seller).toContain(`rule 3: ${app}/seller is behind the ingress and must set TRUSTED_PROXY_HOPS to 1, for its per-address request limit`);
+    }
+  }, 180_000);
 
   it("T-IAC-01 must-fail rule 3: external ingress on L2's control app is reported", async () => {
     const v = await mutant("modules/l2-apps.bicep", "ingress: { external: false, targetPort: 8080", "ingress: { external: true, targetPort: 8080");

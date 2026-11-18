@@ -68,9 +68,15 @@ afterEach(async () => {
   servers = [];
 });
 
-async function start(o: { apiDocs?: boolean; mode?: Partial<Mode> } = { apiDocs: true }) {
+async function start(o: { apiDocs?: boolean; mode?: Partial<Mode>; maxPricedRequestsPerAddress?: number } = { apiDocs: true }) {
   const mode: Mode = { supported: "ok", verify: "ok", settle: "ok", ...o.mode };
-  const app = createSellerApp({ net: NET, payTo: PAY_TO, facilitator: facilitator(mode), ...(o.apiDocs !== undefined && { apiDocs: o.apiDocs }) });
+  const app = createSellerApp({
+    net: NET,
+    payTo: PAY_TO,
+    facilitator: facilitator(mode),
+    ...(o.apiDocs !== undefined && { apiDocs: o.apiDocs }),
+    ...(o.maxPricedRequestsPerAddress !== undefined && { maxPricedRequestsPerAddress: o.maxPricedRequestsPerAddress }),
+  });
   const server = await new Promise<Server>((r) => {
     const s = app.listen(0, "127.0.0.1", () => r(s));
   });
@@ -166,9 +172,9 @@ describe("T-API-10 live responses match the documented status, headers and schem
     const { base, mode } = await start({ apiDocs: true, mode: { supported: "throw" } });
     const seen = new Set<string>();
     const errors: string[] = [];
-    const call = async (path: string, o: { route?: string; query?: string; headers?: Record<string, string> } = {}) => {
+    const call = async (path: string, o: { route?: string; query?: string; headers?: Record<string, string>; base?: string } = {}) => {
       const route = o.route ?? path;
-      const res = await fetch(base + path + (o.query ?? ""), { headers: o.headers ?? {} });
+      const res = await fetch((o.base ?? base) + path + (o.query ?? ""), { headers: o.headers ?? {} });
       const text = await res.text();
       const type = (res.headers.get("content-type") ?? "").split(";")[0]!.trim();
       const body = type === "application/json" ? (JSON.parse(text) as Record<string, unknown>) : {};
@@ -180,14 +186,15 @@ describe("T-API-10 live responses match the documented status, headers and schem
       else {
         errors.push(...conformance(doc, schema, type === "application/json" ? body : text).map((e) => `GET ${route} ${res.status} ${e}`));
         for (const [name, h] of Object.entries(documented.headers ?? {})) {
-          const header = deref<{ required?: boolean; schema: { contentSchema?: Schema } }>(doc, h);
+          const header = deref<{ required?: boolean; schema: Schema & { contentSchema?: Schema } }>(doc, h);
           const value = res.headers.get(name);
           if (value === null) {
             if (header.required) errors.push(`GET ${route} ${res.status}: no ${name} header`);
             continue;
           }
-          const decoded = HEADER_DECODERS[name]!(value);
-          errors.push(...conformance(doc, header.schema.contentSchema!, decoded).map((e) => `GET ${route} ${res.status} ${name} ${e}`));
+          // An x402 header is base64 JSON, checked decoded; any other (Retry-After, v1.24) as the string it is.
+          const checked = header.schema.contentSchema !== undefined ? conformance(doc, header.schema.contentSchema, HEADER_DECODERS[name]!(value)) : conformance(doc, header.schema, value);
+          errors.push(...checked.map((e) => `GET ${route} ${res.status} ${name} ${e}`));
         }
       }
       return { status: res.status, body, headers: res.headers };
@@ -234,6 +241,15 @@ describe("T-API-10 live responses match the documented status, headers and schem
       expect([r.status, r.body]).toEqual([502, { error: "facilitator unavailable" }]);
     }
     mode.verify = "ok";
+
+    // v1.24: beyond the per-address bound every priced route answers 429 with Retry-After; free routes never count
+    const limited = await start({ apiDocs: true, maxPricedRequestsPerAddress: 1 });
+    expect((await call(CATALOG[0]!.route, { base: limited.base })).status).toBe(402);
+    for (const item of CATALOG) {
+      const r = await call(item.route, { base: limited.base });
+      expect([r.status, r.body, Number(r.headers.get("retry-after")) > 0]).toEqual([429, { error: "too many requests" }, true]);
+    }
+    expect((await call("/api/catalog", { base: limited.base })).status).toBe(200);
 
     // docs (API_DOCS=1): the page, every documented asset, an unknown asset and the document itself
     await call("/docs");

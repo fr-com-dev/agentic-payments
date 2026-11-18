@@ -5,7 +5,7 @@
 openapi: 3.1.0
 info:
   title: Seller API
-  version: "1.7"
+  version: "1.24"
   summary: The demo seller of the x402 three-layer agent payments PoC, selling JSON resources for USDC.
   description: |
     A simulated external party: a free catalog and four priced routes, paid with x402 v2 (`exact` scheme, an
@@ -35,6 +35,10 @@ info:
     A rejected payment, or one for another route, gets the 402 challenge again (its `error` says why). A failed
     settlement gets 402 with a `PAYMENT-RESPONSE` whose `success` is false, and the resource is not served. While
     the facilitator is unreachable, priced routes answer 503 before a challenge and 502 during a paid retry.
+
+    **Limits** (v1.24): at most 600 requests a minute per client address to the priced routes (anything but the
+    catalog and the docs), counted before the payment middleware, so before any facilitator call: 429 with
+    `Retry-After` beyond it. Behind a proxy (`TRUSTED_PROXY_HOPS=1`, as in Azure) the address is the client's.
 
     - **Amounts** are decimal strings of atomic units (USDC has 6 decimals: `"1000"` is 0.001 USDC).
     - **Networks.** Locally `eip155:31337` with a mock USDC and the local facilitator; on Base Sepolia
@@ -106,6 +110,8 @@ paths:
           $ref: "#/components/responses/FacilitatorFailed"
         "503":
           $ref: "#/components/responses/FacilitatorUnavailable"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
 
   /api/market-brief:
     get:
@@ -132,6 +138,8 @@ paths:
           $ref: "#/components/responses/FacilitatorFailed"
         "503":
           $ref: "#/components/responses/FacilitatorUnavailable"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
 
   /api/premium-report:
     get:
@@ -159,6 +167,8 @@ paths:
           $ref: "#/components/responses/FacilitatorFailed"
         "503":
           $ref: "#/components/responses/FacilitatorUnavailable"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
 
   /api/dataset-export:
     get:
@@ -186,6 +196,8 @@ paths:
           $ref: "#/components/responses/FacilitatorFailed"
         "503":
           $ref: "#/components/responses/FacilitatorUnavailable"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
 
   /docs:
     get:
@@ -339,6 +351,29 @@ components:
               category:
                 type: string
                 enum: [unavailable, authentication, rate-limited, unsupported]
+
+    TooManyRequests:
+      description: |
+        More than 600 requests in a minute from this client address to anything but the free routes (v1.24). Every
+        such request can reach the facilitator, so the seller bounds them before the payment middleware; the catalog
+        and the docs never count. Nothing was verified or settled.
+      headers:
+        Retry-After:
+          description: Seconds until the address may send again.
+          required: true
+          schema:
+            type: string
+            pattern: "^[1-9][0-9]*$"
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: false
+            required: [error]
+            properties:
+              error:
+                type: string
+                enum: [too many requests]
 
   schemas:
     Error:
