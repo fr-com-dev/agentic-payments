@@ -1,6 +1,7 @@
 // x402 three-layer agent payments in Azure (SPEC.md §3.1; specs/011 contracts/cloud-topology.md): everything in
-// the resource group that pre-deploy.bicep creates. The platform (network, logs, identities, registry, vaults,
-// storage, the ledger's head (1.23), Foundry and its model, the two Container Apps environments), and each unit's apps, each from its own
+// the resource group that pre-deploy.bicep creates. The platform (network, logs, registry, vaults, storage, the
+// ledger's head (1.23), Foundry and its model, the two Container Apps environments; SPEC 1.25: pre-deploy.bicep makes
+// the identities), and each unit's apps, each from its own
 // image: L1 (the agent, the regression job and the smoke job), L2 (the control service), L3 (the verifier), the
 // operator (the operator job), the portal (013: the web portal) and the sellers. One deployment deploys one of them, chosen by
 // `unit`: the platform by .github/workflows/deploy-infra.yml, each unit by its own pipeline (deploy-l1.yml,
@@ -19,7 +20,7 @@ targetScope = 'resourceGroup'
 param tenantId string
 param subscriptionId string
 param location string
-@description('Every resource name, {type}-{app}-{location}-{environment}: resourceGroup (made by pre-deploy.bicep), network, subnets, logs, registry, storage, ledgerHead (1.23), foundry, environments, and per unit identities (plus l2head, the ledger head\'s writer), vaults, apps and jobs.')
+@description('Every resource name, {type}-{app}-{location}-{environment}: resourceGroup (made by pre-deploy.bicep), network, subnets, logs, registry, storage, ledgerHead (1.23), foundry, environments, and per unit identities (plus l2head, the ledger head\'s writer; all made by pre-deploy.bicep, looked up here), vaults, apps and jobs.')
 param names object
 @description('The deploy app\'s client ID (pre-deploy.bicep): the pipelines sign in as it with OIDC. Read by deploy.yml, not by any resource.')
 #disable-next-line no-unused-params
@@ -117,7 +118,9 @@ var agentChecked = (!contains(['l1', 'l2'], unit) || (startsWith(identity.issuer
   : fail('main: the l1 and l2 units need an identity.issuer of the form https://<domain>/, an identity.audience and an agent.clientId; agent.apiDocs needs an agent.clientId; the l1 unit needs an agent.machineClientId and an agent.machineKeyId (specs/016 contracts/tenant-and-config.md)')
 
 // The identity and vault matrix (contracts/cloud-topology.md "Role assignments"): one identity and one
-// vault per runtime unit, and each identity reads only its own vault. The key names the unit's identity
+// vault per runtime unit, and each identity reads only its own vault. SPEC 1.25: pre-deploy.bicep makes the
+// identities (names.identities), so the deploy app's condition can name their principals; this template only looks
+// them up, by name. The key names the unit's identity
 // (names.identities.<key>) and vault (names.vaults.<key>); the subnet names the vault's only subnet
 // (names.subnets.<subnet>). T-IAC-01 asserts on this variable.
 var units = [
@@ -151,21 +154,15 @@ module logs 'modules/logs.bicep' = if (platform) {
   params: { location: location, names: names }
 }
 
-module ids 'modules/identities.bicep' = if (platform) {
-  name: 'identities'
-  params: { location: location, names: names, keys: map(units, u => u.key) }
-}
-
 module registry 'modules/registry.bicep' = if (platform) {
   name: 'registry'
   params: { location: location, names: names, identityKeys: map(units, u => u.key) }
-  dependsOn: [ids]
 }
 
 module vaults 'modules/vault.bicep' = [for u in units: if (platform) {
   name: 'vault-${u.key}'
   params: { location: location, names: names, key: u.key, subnet: u.subnet, seedIp: seedIp, recover: recoverVaults }
-  dependsOn: [ids, network]
+  dependsOn: [network]
 }]
 
 module storage 'modules/storage.bicep' = if (platform) {
@@ -192,7 +189,6 @@ module foundry 'modules/foundry.bicep' = if (platform) {
     claudeCountryCode: claudeCountryCode
     claudeIndustry: claudeIndustry
   }
-  dependsOn: [ids]
 }
 
 module envs 'modules/environments.bicep' = if (platform) {
@@ -215,7 +211,7 @@ module l1 'modules/l1-apps.bicep' = if (unit == 'l1') {
     modelDeployment: modelDeployment
     agentStableRevision: agentStableRevision
   }
-  dependsOn: [ids, registry, vaults, envs, foundry]
+  dependsOn: [registry, vaults, envs, foundry]
 }
 
 module l2 'modules/l2-apps.bicep' = if (unit == 'l2') {
@@ -233,7 +229,7 @@ module l2 'modules/l2-apps.bicep' = if (unit == 'l2') {
     identity: identity
     agent: agent
   }
-  dependsOn: [ids, registry, vaults, envs, ledgerHead]
+  dependsOn: [registry, vaults, envs, ledgerHead]
 }
 
 module operator 'modules/operator-apps.bicep' = if (unit == 'operator') {
@@ -245,7 +241,7 @@ module operator 'modules/operator-apps.bicep' = if (unit == 'operator') {
     acrServer: acrServer
     operatorsGroupId: operatorsGroupId
   }
-  dependsOn: [ids, registry, vaults, envs]
+  dependsOn: [registry, vaults, envs]
 }
 
 module l3 'modules/l3-apps.bicep' = if (unit == 'l3') {
@@ -257,7 +253,7 @@ module l3 'modules/l3-apps.bicep' = if (unit == 'l3') {
     proxyImage: proxyImage
     acrServer: acrServer
   }
-  dependsOn: [ids, registry, vaults, envs]
+  dependsOn: [registry, vaults, envs]
 }
 
 // 013: the portal, the second public app. It calls L2 only, with its own token, and mounts its own share. People
@@ -273,7 +269,7 @@ module portal 'modules/portal-apps.bicep' = if (unit == 'portal') {
     userAccounts: userAccounts
     identity: identity
   }
-  dependsOn: [ids, registry, vaults, envs]
+  dependsOn: [registry, vaults, envs]
 }
 
 module sellers 'modules/sellers.bicep' = if (unit == 'seller') {
@@ -285,7 +281,7 @@ module sellers 'modules/sellers.bicep' = if (unit == 'seller') {
     acrServer: acrServer
     sellerPayTo: sellerPayTo
   }
-  dependsOn: [ids, registry, vaults, envs]
+  dependsOn: [registry, vaults, envs]
 }
 
 // Each deployment outputs what it deployed: the platform's registry, logs and vaults, or a unit's addresses.

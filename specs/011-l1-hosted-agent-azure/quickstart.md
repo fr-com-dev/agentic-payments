@@ -137,6 +137,24 @@ for Entra ID.
    Since 013 it also creates the portal web app `app-portal-eastus2-dev` (a public client, no secret) and
    the API app's `Portal.Access` scope, and prints a fourth line: put its `portalClientId` inside
    `userAccounts` in `main.dev.bicepparam`, also while `userAccounts.enabled` is false.
+
+   SPEC 1.25: it also makes the identities (`id-<unit>-eastus2-dev` and 1.23's `id-l2head-eastus2-dev`, one per key of
+   `names.identities`, which must equal `main.dev.bicepparam`'s). It limits the deploy app's condition to
+   those identities' principals and the operators' group, and assigns on the resource group the built-in
+   policy that denies every federated credential on its identities (`pol-x402-eastus2-dev`). In an
+   environment deployed before 1.25, run this step again before the next `deploy-infra`: it adopts the
+   identities `main.bicep` made (same names, same principals). The policy refuses new federated
+   credentials only, so check by hand once that nothing was planted before. The first command must print
+   nothing; the second lists every role assignment in the group, for you to check that each principal is
+   one of the identities, the operators' group or the deploy app:
+
+   ```bash
+   for id in l1 l2 l3 op portal seller l2head; do az identity federated-credential list -g rg-x402-eastus2-dev --identity-name id-$id-eastus2-dev --query "[].name" -o tsv; done
+   az role assignment list --all --query "[?contains(scope, '/resourceGroups/rg-x402-eastus2-dev')].{principal:principalName, type:principalType, role:roleDefinitionName, scope:scope}" -o table
+   ```
+
+   A new identity goes in both parameter files' `names.identities`, and this step runs before the
+   platform deployment that uses it: otherwise its role assignments are refused.
 1. **GitHub environment.** Run `infra/github-setup.sh` (`--dry-run` first). It first checks that GitHub
    signs this repository's jobs with the subject the federated credential trusts (the owner's and
    repository's IDs, `githubOwnerId` and `githubRepositoryId`), then creates the `dev`

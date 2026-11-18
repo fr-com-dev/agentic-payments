@@ -12,15 +12,16 @@
 // Its inputs are names, never another module's outputs, so what-if previews it on a first deployment (main.bicep).
 // T-IAC-01 rule 25 asserts all of this; rule 1 knows the role, rule 16 the deploy app's condition for it.
 param location string
-@description('Every resource name (main.<environment>.bicepparam): ledgerHead and identities.l2head are made here.')
+@description('Every resource name (main.<environment>.bicepparam): ledgerHead is made here; identities.l2head (made by pre-deploy.bicep) is looked up.')
 param names object
 
 // Storage Blob Data Contributor.
 var blobContributorRoleId = 'ba92f5b4-2d11-453d-a403-e96b0029c9fe'
 
-resource writer 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
+// SPEC 1.25: pre-deploy.bicep makes the head identity with the others, so the deploy app's condition admits it as the
+// principal of the role below; this module only looks it up.
+resource writer 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' existing = {
   name: names.identities.l2head
-  location: location
 }
 
 resource st 'Microsoft.Storage/storageAccounts@2023-05-01' = {
