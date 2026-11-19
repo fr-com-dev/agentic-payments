@@ -249,29 +249,32 @@ az containerapp revision deactivate -n ca-l1-eastus2-dev -g rg-x402-eastus2-dev 
 
 `infra/cleanup.sh` deletes everything `pre-deploy.bicep`, `main.bicep` and `infra/github-setup.sh`
 created for an environment, with the target from `infra/pre-deploy.<env>.bicepparam`, in this order:
-1. the GitHub environment;
+1. the two GitHub environments: the deploy job's (`dev`) and the Auth0 job's (`auth0-dev`), with
+   the Auth0 Management API credential set there by hand and its variables;
 2. the deploy app's role assignments, anywhere in the subscription. Azure keeps a deleted principal's
    role assignments, so they go before the app does;
 3. the resource group `rg-x402-eastus2-dev`, with everything in it;
-4. the app registrations (the API app, and the deploy app with its federated credential) and the
-   operators' group.
+4. the deploy app registration, with its federated credentials, and the operators' group.
 
 ```bash
 infra/cleanup.sh --dry-run   # reads only: prints what it would delete, and deletes nothing
 infra/cleanup.sh             # asks you to type rg-x402-eastus2-dev, then deletes
-infra/cleanup.sh --purge     # also purges the soft-deleted Foundry account and app registrations
+infra/cleanup.sh --purge     # also purges the soft-deleted Foundry account, app registration and group
 ```
 
-It refuses, and deletes nothing, when `az` is signed in to another tenant than the file names, or when
-the file's resource group isn't the one `main.<env>.bicepparam` deploys to. It leaves any GitHub secret,
-and lists it.
+It refuses, and deletes nothing, when `az` is signed in to another tenant than the file names, when
+the file's resource group isn't the one `main.<env>.bicepparam` deploys to, or when its
+`githubAuth0Environment` isn't `auth0-<env>`. It leaves any repository secret, and lists it. It
+touches nothing in the Auth0 tenant, whose Terraform state goes with the resource group
+([auth0/README.md](../../auth0/README.md)). It knows no other app registration: the API app
+(`app-l1-…`) and the portal web app (`app-portal-…`) that earlier versions registered are deleted by
+hand where they still exist.
 
-After a run without `--purge`, soft delete keeps two things, and their names stay taken:
+After a run without `--purge`, soft delete keeps three things, and their names stay taken:
 - the Foundry account, for 48 hours;
-- the app registrations, restorable for 30 days. The API app's identifier URI stays taken, so
-  `pre-deploy.bicep` can't create the app again until it is purged.
-
-The operators' group is a security group: it is deleted for good.
+- the app registration and the operators' group, restorable for 30 days. The Microsoft Graph Bicep
+  extension refuses to create an object whose `uniqueName` a deleted one still holds, so
+  `pre-deploy.bicep` can't create either again until it is purged.
 
 The vaults stay soft-deleted for 90 days, with their secrets, even with `--purge`. Purge protection
 forbids purging them, which is intended, since the payer key lives there. To deploy the same

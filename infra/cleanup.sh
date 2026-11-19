@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Deletes everything pre-deploy.bicep, main.bicep and infra/github-setup.sh created for one environment (specs/011
 # quickstart §6), in this order:
-# 1. the GitHub environment the deploy job runs in;
+# 1. the two GitHub environments the jobs run in: the deploy job's, and the Auth0 job's (auth0-<environment>), with
+#    the secrets an administrator set there (the Auth0 Management API credential, auth0/README.md) and its variables;
 # 2. the deploy app's role assignments anywhere in the subscription. Azure keeps a deleted principal's role
 #    assignments, so they go before the app does;
 # 3. the resource group: the apps, jobs, environments, vaults, registry, storage, Foundry, identities, network and
@@ -13,15 +14,19 @@
 # The tenant, subscription, names and GitHub repository come from infra/pre-deploy.<environment>.bicepparam, which
 # Bicep compiles; the resource group must also be the one infra/main.<environment>.bicepparam deploys to.
 #
-# Deleted vaults, Foundry accounts and app registrations stay soft-deleted, and their names stay taken. With --purge
-# the Foundry account and the app registration are purged afterwards. The vaults can't be: purge protection keeps
-# them, with their secrets, for 90 days. Deploying the environment again before then needs them recovered first.
-# The operators' group is a security group: deleting it is final. It leaves the subscription's resource providers,
-# NetworkWatcherRG (which Azure shares across deployments) and the subscription's deployment history.
+# Deleted vaults, Foundry accounts, app registrations and groups stay soft-deleted, and their names stay taken: Entra
+# keeps a deleted app registration and a deleted cloud security group for 30 days, and the Microsoft Graph Bicep
+# extension refuses to create an object whose uniqueName a deleted one still holds, so pre-deploy.bicep can't create
+# the deploy app or the operators' group again until they are purged. With --purge the Foundry account, the app
+# registration and the group are purged afterwards. The vaults can't be: purge protection keeps them, with their
+# secrets, for 90 days. Deploying the environment again before then needs them recovered first.
+# It leaves the subscription's resource providers, NetworkWatcherRG (which Azure shares across deployments), the
+# subscription's deployment history and everything in the Auth0 tenant, whose Terraform state goes with the resource
+# group.
 #
 # usage: infra/cleanup.sh [--environment dev] [--dry-run] [--purge] [--yes]
 #   --dry-run  only reads: prints what would be deleted, and deletes nothing (even with --yes)
-#   --purge    also purge what soft-delete keeps, so the names can be reused at once
+#   --purge    also purge what soft-delete keeps (but the vaults), so the names can be reused at once
 #   --yes      skip the confirmation (typing the resource group's name)
 # needs: az with Bicep (az bicep install), signed in to the parameter file's tenant with rights to delete the resource
 # group, role assignments, the app registration and the group; gh signed in with admin rights on the repository; jq.
@@ -68,7 +73,10 @@ APP_DEPLOY=$(value names.deployApp)
 GRP_OP=$(value names.operators)
 REPO=$(value githubRepository)
 GH_ENV=$(value githubEnvironment)
+GH_AUTH0_ENV=$(value githubAuth0Environment)
 [[ "$RG" == "$MAIN_RG" ]] || refuse "pre-deploy.$ENVIRONMENT.bicepparam's resource group $RG is not $MAIN_RG, the one main.$ENVIRONMENT.bicepparam deploys to"
+# As infra/github-setup.sh requires: anything else could be another environment's Auth0 credential.
+[[ "$GH_AUTH0_ENV" == "auth0-$ENVIRONMENT" ]] || refuse "pre-deploy.$ENVIRONMENT.bicepparam's githubAuth0Environment $GH_AUTH0_ENV is not auth0-$ENVIRONMENT, the GitHub environment provision-auth0.yml's job runs in"
 
 SIGNED_IN=$(az account show --query tenantId -o tsv)
 [[ "$SIGNED_IN" == "$TENANT" ]] || refuse "az is signed in to the tenant $SIGNED_IN, not $TENANT (az login --tenant $TENANT)"
@@ -76,6 +84,12 @@ SIGNED_IN=$(az account show --query tenantId -o tsv)
 # ---- What exists (reads only) ---------------------------------------------------------------------------------
 GH_ENV_EXISTS=false
 if gh api "repos/$REPO/environments/$GH_ENV" --silent 2>/dev/null; then GH_ENV_EXISTS=true; fi
+GH_AUTH0_ENV_EXISTS=false
+GH_AUTH0_SECRETS=""
+if gh api "repos/$REPO/environments/$GH_AUTH0_ENV" --silent 2>/dev/null; then
+  GH_AUTH0_ENV_EXISTS=true
+  GH_AUTH0_SECRETS=$(gh secret list --repo "$REPO" --env "$GH_AUTH0_ENV" --json name --jq '.[].name' | paste -sd' ' -)
+fi
 GH_SECRETS=$(gh secret list --repo "$REPO" --json name --jq '.[].name' | paste -sd' ' -)
 
 # The app registration (the deploy app's), as appId<TAB>object id<TAB>name, and the group, as id<TAB>name. Found by
@@ -111,7 +125,8 @@ if [[ "$(az group exists --name "$RG" --subscription "$SUB")" == "true" ]]; then
   while IFS= read -r a; do [[ -n "$a" ]] && ACCOUNTS+=("$a"); done <<< "$FOUND"
 fi
 
-# What an earlier run left soft-deleted: this group's Foundry accounts, and the deploy app's registration.
+# What an earlier run left soft-deleted: this group's Foundry accounts, the deploy app's registration and the
+# operators' group.
 in_our_group() {
   local lower
   lower=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
@@ -129,11 +144,21 @@ FOUND=$(az rest --method GET --uri "$GRAPH/directory/deletedItems/microsoft.grap
 while IFS="$TAB" read -r id _ name; do
   if [[ -n "$id" && "$name" == "$APP_DEPLOY" ]]; then SOFT_APPS+=("$id$TAB$name"); fi
 done <<< "$FOUND"
+SOFT_GROUPS=()
+FOUND=$(az rest --method GET --uri "$GRAPH/directory/deletedItems/microsoft.graph.group?\$select=id,displayName&\$top=999" \
+  --query "value[].[id,displayName]" -o tsv)
+while IFS="$TAB" read -r id name; do
+  if [[ -n "$id" && "$name" == "$GRP_OP" ]]; then SOFT_GROUPS+=("$id$TAB$name"); fi
+done <<< "$FOUND"
 
 # ---- The plan --------------------------------------------------------------------------------------------------
 echo "clean-up of $ENVIRONMENT ($LOCATION) in subscription $SUB, tenant $TENANT:"
 TODO=0
 if $GH_ENV_EXISTS; then echo "  GitHub $REPO: delete the environment $GH_ENV"; TODO=1; fi
+if $GH_AUTH0_ENV_EXISTS; then
+  echo "  GitHub $REPO: delete the environment $GH_AUTH0_ENV${GH_AUTH0_SECRETS:+, with its secrets $GH_AUTH0_SECRETS,} and its variables (the Auth0 tenant itself is not touched)"
+  TODO=1
+fi
 for r in ${ROLES[@]+"${ROLES[@]}"}; do
   IFS="$TAB" read -r _ role scope <<< "$r"
   echo "  role assignment of $APP_DEPLOY: $role on $scope"
@@ -145,13 +170,15 @@ for a in ${APPS[@]+"${APPS[@]}"}; do
   echo "  app registration $name ($appid)"
   TODO=1
 done
-if [[ -n "$GROUP" ]]; then echo "  group ${GROUP#*"$TAB"} (${GROUP%%"$TAB"*}), for good: a security group isn't soft-deleted"; TODO=1; fi
+if [[ -n "$GROUP" ]]; then echo "  group ${GROUP#*"$TAB"} (${GROUP%%"$TAB"*})"; TODO=1; fi
 if $PURGE; then
   for a in ${ACCOUNTS[@]+"${ACCOUNTS[@]}"} ${SOFT_ACCOUNTS[@]+"${SOFT_ACCOUNTS[@]}"}; do
     echo "  purge the Foundry account ${a%%"$TAB"*}"; TODO=1
   done
   for a in ${APPS[@]+"${APPS[@]}"}; do echo "  purge the app registration ${a##*"$TAB"}"; done
   for a in ${SOFT_APPS[@]+"${SOFT_APPS[@]}"}; do echo "  purge the deleted app registration ${a##*"$TAB"}"; TODO=1; done
+  if [[ -n "$GROUP" ]]; then echo "  purge the group ${GROUP#*"$TAB"}"; fi
+  for g in ${SOFT_GROUPS[@]+"${SOFT_GROUPS[@]}"}; do echo "  purge the deleted group ${g#*"$TAB"}"; TODO=1; done
 fi
 if [[ -n "$GH_SECRETS" ]]; then echo "  kept: the GitHub secrets $GH_SECRETS, which no workflow reads (delete them by hand if they are yours)"; fi
 
@@ -174,6 +201,10 @@ fi
 if $GH_ENV_EXISTS; then
   gh api --method DELETE "repos/$REPO/environments/$GH_ENV" --silent
   echo "deleted the GitHub environment $GH_ENV"
+fi
+if $GH_AUTH0_ENV_EXISTS; then
+  gh api --method DELETE "repos/$REPO/environments/$GH_AUTH0_ENV" --silent
+  echo "deleted the GitHub environment $GH_AUTH0_ENV"
 fi
 if [[ ${#ROLES[@]} -gt 0 ]]; then
   IDS=()
@@ -213,6 +244,14 @@ if $PURGE; then
       echo "warning: the app registration $name was not purged (deletion can take a minute to show); run this again with --purge" >&2
     fi
   done
+  for g in ${GROUP:+"$GROUP"} ${SOFT_GROUPS[@]+"${SOFT_GROUPS[@]}"}; do
+    IFS="$TAB" read -r id name <<< "$g"
+    if az rest --method DELETE --uri "$GRAPH/directory/deletedItems/$id" > /dev/null; then
+      echo "purged the group $name"
+    else
+      echo "warning: the group $name was not purged (deletion can take a minute to show); run this again with --purge" >&2
+    fi
+  done
 else
   for a in ${ACCOUNTS[@]+"${ACCOUNTS[@]}"}; do
     echo "soft-deleted: the Foundry account ${a%%"$TAB"*}, for 48 hours. Run this again with --purge to free its name."
@@ -220,6 +259,9 @@ else
   for a in ${APPS[@]+"${APPS[@]}"}; do
     echo "soft-deleted: the app registration ${a##*"$TAB"}, restorable for 30 days, and its name stays taken. Run this again with --purge to free it."
   done
+  if [[ -n "$GROUP" ]]; then
+    echo "soft-deleted: the group ${GROUP#*"$TAB"}, restorable for 30 days, and its name stays taken. Run this again with --purge to free it."
+  fi
 fi
 
 # Vaults have purge protection: nobody can purge them, so they are only reported.
