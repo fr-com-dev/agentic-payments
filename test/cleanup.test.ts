@@ -1,12 +1,14 @@
 // T-E2E-AZ clean-up (specs/011 quickstart §6): infra/cleanup.sh against a fake tenant (test/fixtures/fake-azure.mjs)
 // and a fake `gh` (test/fixtures/fake-gh.mjs), with the target and names from infra/pre-deploy.<environment>.bicepparam,
 // compiled by the real Bicep CLI (needs BICEP_PATH). A
-// confirmed run must delete the GitHub environment, the deploy app's role assignments (none left orphaned), the
-// resource group, the deploy app's registration and the operators' group, and nothing else: another resource group,
-// app (also one named like 011's API app for the agent's callers or 013's portal web app, both retired, which the
-// script no longer knows: specs/016 research R12), group, role assignment or a GitHub secret stays. With --purge it
-// purges the Foundry account and the app registration; the vaults stay soft-deleted (purge protection) and are reported. --dry-run, a refusal or an
-// unconfirmed run changes nothing, and so does a pre-deploy file whose resource group main's file doesn't deploy to.
+// confirmed run must delete both GitHub environments (the deploy job's and the Auth0 job's), the deploy app's role
+// assignments (none left orphaned), the resource group, the deploy app's registration and the operators' group, and
+// nothing else: another resource group, app (also one named like 011's API app for the agent's callers or 013's
+// portal web app, both retired, which the script no longer knows: specs/016 research R12), group, role assignment or
+// a repository secret stays. The app registration and the group stay soft-deleted, as Entra keeps them; with --purge
+// it purges them and the Foundry account; the vaults stay soft-deleted (purge protection) and are reported. --dry-run,
+// a refusal or an unconfirmed run changes nothing, and so does a pre-deploy file whose resource group main's file
+// doesn't deploy to, or whose Auth0 environment isn't auth0-<environment>.
 import { spawnSync } from "node:child_process";
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -46,6 +48,7 @@ interface State {
   entraGroups: { id: string; displayName: string }[];
   roleAssignments: { id: string; principalId: string; role: string; scope: string }[];
   deletedApps: App[];
+  deletedGroups: { id: string; displayName: string }[];
   deletedVaults: { name: string; scheduledPurgeDate: string; vaultId: string }[];
   deletedAccounts: { name: string; location: string; id: string }[];
 }
@@ -81,6 +84,7 @@ function deployed(): State {
       { id: `/subscriptions/${SUB}/providers/Microsoft.Authorization/roleAssignments/ra-other`, principalId: "sp-other", role: "Reader", scope: `/subscriptions/${SUB}` },
     ],
     deletedApps: [],
+    deletedGroups: [],
     deletedVaults: [],
     deletedAccounts: [],
   };
@@ -130,7 +134,8 @@ function tenant(state: State, opts: { mutate?: [string, string]; params?: string
         FAKE_AZ_LOG: logs.az,
         FAKE_GH_LOG: logs.gh,
         FAKE_GH_EXISTING: "LEFTOVER_SECRET",
-        FAKE_GH_ENVIRONMENTS: "dev",
+        FAKE_GH_ENVIRONMENTS: "dev auth0-dev",
+        FAKE_GH_ENV_SECRETS: "AUTH0_CLIENT_ID AUTH0_CLIENT_SECRET",
       },
       encoding: "utf8",
       input,
@@ -151,7 +156,9 @@ const changes = (r: Run) => [
 function problems(r: Run, purge: boolean): string[] {
   if (r.status !== 0) return [`exit ${r.status}: ${r.out.trim()}`];
   const p: string[] = [];
-  if (!r.gh.some((a) => a.includes("DELETE") && a.includes("repos/acme/agentic-payments/environments/dev"))) p.push("the GitHub environment was not deleted");
+  for (const env of ["dev", "auth0-dev"]) {
+    if (!r.gh.some((a) => a.includes("DELETE") && a.includes(`repos/acme/agentic-payments/environments/${env}`))) p.push(`the GitHub environment ${env} was not deleted`);
+  }
   if (r.gh.some((a) => a[0] === "secret" && a[1] === "delete")) p.push("a GitHub secret was deleted");
   if (P.resourceGroup in r.state.groups) p.push(`${P.resourceGroup} still exists`);
   if (!("rg-someone-else" in r.state.groups)) p.push("a resource group that isn't ours was deleted");
@@ -163,8 +170,11 @@ function problems(r: Run, purge: boolean): string[] {
   for (const ra of r.state.roleAssignments) if (!principals.has(ra.principalId)) p.push(`the role assignment ${ra.id.split("/").pop()} is left orphaned (its principal was deleted)`);
   if (!r.state.roleAssignments.some((ra) => ra.principalId === "sp-other")) p.push("a role assignment that isn't ours was deleted");
   const softApps = r.state.deletedApps.filter((a) => OURS.has(a.appId)).length;
+  const softGroups = r.state.deletedGroups.filter((g) => g.displayName === P.operators).length;
   if (purge && (softApps > 0 || r.state.deletedAccounts.length > 0)) p.push("--purge left soft-deleted app registrations or Foundry accounts");
-  if (!purge && (softApps !== OURS.size || r.state.deletedAccounts.length !== 1)) p.push("without --purge, the app registration and the Foundry account must stay soft-deleted");
+  if (purge && softGroups > 0) p.push(`--purge left ${P.operators} soft-deleted`);
+  if (!purge && (softApps !== OURS.size || r.state.deletedAccounts.length !== 1 || softGroups !== 1)) p.push("without --purge, the app registration, the Foundry account and the group must stay soft-deleted");
+  if (r.state.deletedGroups.some((g) => g.id === "grp-other")) p.push("a group that isn't ours was soft-deleted");
   for (const v of Object.values(M.vaults)) if (!r.out.includes(`soft-deleted: the vault ${v}`)) p.push(`the soft-deleted vault ${v} was not reported`);
   if (r.az.some((a) => a[0] === "keyvault" && a[1] === "purge")) p.push("tried to purge a vault with purge protection");
   return p;
@@ -172,10 +182,12 @@ function problems(r: Run, purge: boolean): string[] {
 
 // Each run spawns node once per `az` and `gh` call, and the Bicep CLI twice, so a test takes seconds.
 describe.skipIf(!BICEP_PATH)("T-E2E-AZ clean-up (infra/cleanup.sh against a fake tenant and gh)", { timeout: 60_000 }, () => {
-  it("T-E2E-AZ cleanup.sh deletes the GitHub environment, the deploy app's role assignments, the resource group, the deploy app's registration and the operators' group, and nothing else", () => {
+  it("T-E2E-AZ cleanup.sh deletes both GitHub environments, the deploy app's role assignments, the resource group, the deploy app's registration and the operators' group, and nothing else", () => {
     const r = tenant(deployed())(["--yes"]);
     expect(problems(r, false)).toEqual([]);
     expect(r.out).toContain("kept: the GitHub secrets LEFTOVER_SECRET");
+    expect(r.out).toContain(`soft-deleted: the app registration ${P.deployApp}, restorable for 30 days`);
+    expect(r.out).toContain(`soft-deleted: the group ${P.operators}, restorable for 30 days`);
     expect(r.out).toContain("Run this again with --purge");
     expect(r.out).toContain("run deploy-infra.yml with first-deployment and recover-vaults");
   });
@@ -187,23 +199,27 @@ describe.skipIf(!BICEP_PATH)("T-E2E-AZ clean-up (infra/cleanup.sh against a fake
     expect(r.state).toEqual(deployed());
     for (const line of [
       `clean-up of dev (${MAIN.location}) in subscription ${SUB}, tenant ${TENANT}:`,
-      "GitHub acme/agentic-payments: delete the environment dev",
+      "GitHub acme/agentic-payments: delete the environment dev\n",
+      "GitHub acme/agentic-payments: delete the environment auth0-dev, with its secrets AUTH0_CLIENT_ID AUTH0_CLIENT_SECRET, and its variables",
       `role assignment of ${P.deployApp}: Contributor on /subscriptions/${SUB}/resourceGroups/${P.resourceGroup}`,
       `resource group ${P.resourceGroup}: 40 resources, with the vaults ${M.vaults.l1}`,
       `app registration ${P.deployApp} (${DEPLOY})`,
-      `group ${P.operators} (grp-ours), for good`,
+      `group ${P.operators} (grp-ours)\n`,
       "dry run: nothing was deleted",
     ]) {
       expect(r.out).toContain(line);
     }
+    // Entra soft-deletes a security group too: the plan no longer says it is deleted for good.
+    expect(r.out).not.toContain("for good");
     // 016: the retired API app is not ours any more, so it is not in the plan.
     expect(r.out).not.toContain(appNamed("l1"));
     expect(r.az.some((a) => a.join(" ").includes(appNamed("l1")))).toBe(false);
   });
 
-  it("T-E2E-AZ cleanup.sh --purge also purges the Foundry account and the app registration; the vaults stay (purge protection)", () => {
+  it("T-E2E-AZ cleanup.sh --purge also purges the Foundry account, the app registration and the group; the vaults stay (purge protection)", () => {
     const r = tenant(deployed())(["--yes", "--purge"]);
     expect(problems(r, true)).toEqual([]);
+    expect(r.out).toContain(`purged the group ${P.operators}`);
     expect(r.state.deletedVaults.map((v) => v.name).sort()).toEqual(Object.values(M.vaults).sort());
   });
 
@@ -214,6 +230,8 @@ describe.skipIf(!BICEP_PATH)("T-E2E-AZ clean-up (infra/cleanup.sh against a fake
     expect(again.status).toBe(0);
     expect(again.state.deletedAccounts).toEqual([]);
     expect(again.state.deletedApps.filter((a) => OURS.has(a.appId))).toEqual([]);
+    expect(again.out).toContain(`purge the deleted group ${P.operators}`);
+    expect(again.state.deletedGroups).toEqual([]);
     const third = run(["--yes", "--purge"]);
     expect(third.out).toContain("nothing to clean up");
     expect(changes(third)).toEqual([]);
@@ -234,6 +252,7 @@ describe.skipIf(!BICEP_PATH)("T-E2E-AZ clean-up (infra/cleanup.sh against a fake
     ["az signed in to another tenant", (s: State) => ({ ...s, signedInTenant: "99999999-9999-4999-8999-999999999999" }), PARAMS, ["--yes"], "az is signed in to the tenant 99999999"],
     ["a resource group main's parameter file doesn't deploy to", (s: State) => s, PARAMS.replace(/^ {2}resourceGroup: '.*'$/m, "  resourceGroup: 'rg-production'"), ["--yes"], `resource group rg-production is not ${M.resourceGroup}, the one main.dev.bicepparam deploys to`],
     ["an environment without a pre-deploy parameter file", (s: State) => s, PARAMS, ["--yes", "--environment", "prod"], "no infra/pre-deploy.prod.bicepparam"],
+    ["an Auth0 environment that isn't auth0-<environment>", (s: State) => s, PARAMS.replace(/^param githubAuth0Environment = .*$/m, "param githubAuth0Environment = 'production'"), ["--yes"], "githubAuth0Environment production is not auth0-dev"],
   ])("T-E2E-AZ cleanup.sh refuses %s, and deletes nothing", (_, state, params, args, message) => {
     const r = tenant(state(deployed()), { params })(args);
     expect(r.status).toBe(2);
@@ -255,6 +274,16 @@ describe.skipIf(!BICEP_PATH)("T-E2E-AZ clean-up (infra/cleanup.sh against a fake
     expect(problems(api, false)).toContain("an app registration that isn't ours was deleted");
     const greedy = tenant(deployed(), { mutate: [LOOP, `for name in "$APP_DEPLOY" "${appNamed("portal")}"; do`] })(["--yes"]);
     expect(problems(greedy, false)).toContain("an app registration that isn't ours was deleted");
+  });
+
+  it("T-E2E-AZ must-fail: a clean-up that skips the Auth0 GitHub environment leaves it, with its credential, and it is reported", () => {
+    const r = tenant(deployed(), { mutate: ['gh api --method DELETE "repos/$REPO/environments/$GH_AUTH0_ENV" --silent', ":"] })(["--yes"]);
+    expect(problems(r, false)).toContain("the GitHub environment auth0-dev was not deleted");
+  });
+
+  it("T-E2E-AZ must-fail: a --purge that skips the soft-deleted group leaves its name taken, and it is reported", () => {
+    const r = tenant(deployed(), { mutate: ['for g in ${GROUP:+"$GROUP"} ${SOFT_GROUPS[@]+"${SOFT_GROUPS[@]}"}; do', "for g in; do"] })(["--yes", "--purge"]);
+    expect(problems(r, true)).toContain(`--purge left ${P.operators} soft-deleted`);
   });
 
   it("T-E2E-AZ must-fail: without the dry-run guard, --dry-run deletes, and it is reported", () => {

@@ -308,4 +308,6 @@ GitHub. `private_key_jwt` needs Auth0's Enterprise plan; on a lower plan the pip
   and commit the file. T-IAC-02 fails on a lock file with one platform's checksum.
 - **The state and `infra/cleanup.sh`.** The clean-up deletes the resource group, and the state with it, but nothing
   in Auth0. Before the next apply for that tenant, delete the Auth0 objects by hand or import them
-  (`terraform import`), or the apply fails on objects that already exist.
+  (`terraform import`), or the apply fails on objects that already exist. It also deletes the GitHub environment
+  `auth0-<env>`, with `AUTH0_CLIENT_ID`, `AUTH0_CLIENT_SECRET` and the variables: after `infra/github-setup.sh`
+  makes it again, set them again as for the first run.

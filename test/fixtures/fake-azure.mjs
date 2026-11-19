@@ -6,7 +6,8 @@
 //   orphaned;
 // - deleting a resource group deletes the role assignments inside it, and soft-deletes its vaults (purge
 //   protection: a purge fails) and its Foundry accounts (a purge succeeds);
-// - a deleted app registration waits in deletedItems until purged; a deleted security group is gone;
+// - a deleted app registration and a deleted security group wait in deletedItems until purged (Entra keeps a cloud
+//   security group for 30 days too);
 // - an ARM call without the state's --subscription fails.
 // Unknown commands exit 99.
 import { spawnSync } from "node:child_process";
@@ -38,6 +39,7 @@ if (cmd === "bicep build-params") {
 function tenantCall() {
   const statePath = process.env.FAKE_AZ_STATE;
   const s = JSON.parse(readFileSync(statePath, "utf8"));
+  s.deletedGroups ??= [];
   const fail = (msg) => {
     process.stderr.write(`fake az: ${msg}\n`);
     process.exit(1);
@@ -64,8 +66,9 @@ function tenantCall() {
     if (opt("--query") !== "[].[id,displayName]") fail(`ad group list --query ${opt("--query")}`);
     tsv(s.entraGroups.filter(appFilter()).map((g) => [g.id, g.displayName]));
   } else if (cmd === "ad group delete") {
-    if (!s.entraGroups.some((g) => g.id === opt("--group"))) fail(`no group ${opt("--group")}`);
-    s.entraGroups = s.entraGroups.filter((g) => g.id !== opt("--group"));
+    const g = s.entraGroups.find((x) => x.id === opt("--group")) ?? fail(`no group ${opt("--group")}`);
+    s.entraGroups = s.entraGroups.filter((x) => x !== g);
+    s.deletedGroups.push(g);
   } else if (cmd === "ad sp list") {
     const sp = s.sps.find(appFilter());
     process.stdout.write(sp ? `${sp.id}\n` : "");
@@ -121,10 +124,14 @@ function tenantCall() {
     if (opt("--method") === "GET" && uri.startsWith("https://graph.microsoft.com/v1.0/directory/deletedItems/microsoft.graph.application?")) {
       if (opt("--query") !== "value[].[id,appId,displayName]") fail(`rest GET --query ${opt("--query")}`);
       tsv(s.deletedApps.map((a) => [a.id, a.appId, a.displayName]));
+    } else if (opt("--method") === "GET" && uri.startsWith("https://graph.microsoft.com/v1.0/directory/deletedItems/microsoft.graph.group?")) {
+      if (opt("--query") !== "value[].[id,displayName]") fail(`rest GET --query ${opt("--query")}`);
+      tsv(s.deletedGroups.map((g) => [g.id, g.displayName]));
     } else if (opt("--method") === "DELETE" && uri.startsWith("https://graph.microsoft.com/v1.0/directory/deletedItems/")) {
       const id = uri.slice(uri.lastIndexOf("/") + 1);
-      if (!s.deletedApps.some((a) => a.id === id)) fail(`Request_ResourceNotFound ${id}`);
+      if (!s.deletedApps.some((a) => a.id === id) && !s.deletedGroups.some((g) => g.id === id)) fail(`Request_ResourceNotFound ${id}`);
       s.deletedApps = s.deletedApps.filter((a) => a.id !== id);
+      s.deletedGroups = s.deletedGroups.filter((g) => g.id !== id);
     } else fail(`rest ${opt("--method")} ${uri}`);
   } else {
     process.stderr.write(`fake az: unknown command: ${args.join(" ")}\n`);
