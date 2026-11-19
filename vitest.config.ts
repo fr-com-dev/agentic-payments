@@ -1,6 +1,6 @@
 import { transform } from "esbuild";
 import type { Plugin } from "vite";
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
 
 /**
  * TC39 decorators (the seller's endpoint and monetization decorators, src/counterparty/) in tests. tsc emits them
@@ -22,6 +22,9 @@ const tc39Decorators: Plugin = {
 export default defineConfig({
   plugins: [tc39Decorators],
   test: {
+    // Claude Code's worktrees (.claude/worktrees/<name>) are full checkouts inside this one: without this, a run here
+    // also runs their copies of every suite, from other commits, on the same fixed ports.
+    exclude: [...configDefaults.exclude, ".claude/**"],
     fileParallelism: false,
     testTimeout: 120_000,
     hookTimeout: 120_000,
