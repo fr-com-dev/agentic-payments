@@ -94,14 +94,16 @@ read_credential() {
 }
 
 # The variables file: L2's credential is held by L2 only (Constitution V), so this script provisions
-# credential = "key" and never takes a client secret; no private key either.
+# credential = "key" and never takes a client secret; no private key either. No secret of any kind goes in this file
+# (specs/018 research R9): the Google application's is entered in the tenant's Dashboard only.
 check_tfvars() {
   private "$STATE_DIR" 700
   private "$TFVARS" 600
-  if grep -Eq '^[[:space:]]*(environment|credential|client_secret|client_secret_version)[[:space:]]*=' "$TFVARS"; then
-    fail "$TFVARS must not set environment, credential, client_secret or client_secret_version: this script sets the first two, always credential = \"key\""
+  if grep -Eq '^[[:space:]]*(environment|credential|[[:alnum:]_]*secret[[:alnum:]_]*)[[:space:]]*=' "$TFVARS"; then
+    fail "$TFVARS must not set environment, credential or any variable whose name holds secret: this script sets the first two, always credential = \"key\", and no secret goes in this file"
   fi
   if grep -q 'PRIVATE KEY' "$TFVARS"; then fail "$TFVARS holds a private key: only public halves go there"; fi
+  if grep -q 'GOCSPX-' "$TFVARS"; then fail "$TFVARS holds a Google client secret: it goes into the tenant's Dashboard only"; fi
   [[ ! -e "$STATE" ]] || private "$STATE" 600
 }
 

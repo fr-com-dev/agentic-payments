@@ -1,5 +1,22 @@
 <!--
 Sync Impact Report
+- Version change: 3.0.0 → 3.0.1 (PATCH, 2026-11-24, SPEC 1.28, feature 018-tenant-signup-hardening). PATCH
+  because nothing is redefined (Governance: "PATCH for clarifications"): it states which ways people sign in to
+  the tenant and records the owner's decision that Google sign-up is public by design, in answer to pentest
+  finding P1. Using the portal still needs no role, and starting runs still needs x402-agent.
+- Modified principles: none. No principle or invariant is removed or loosened.
+- Modified sections: Technology & Scope Constraints (the tenant's two people's connections, email and password
+  and Google, are declared in its Terraform; Google runs on the project's own Google application, whose secret the
+  tenant alone holds; one residual risk added for 3.0.1).
+- Added sections: none. Removed sections: none.
+- Templates reviewed: plan-template.md, spec-template.md, tasks-template.md (no change)
+- Source: SPEC.md v1.28 (Changes in 1.28, §9 CFG-2, §11 SEC-26 and the residual risks, §12 T-PRT-19, T-AGT-15,
+  T-CTK-01, T-IAC-02)
+- Documents changed with it: SPEC.md, CLAUDE.md, auth0/README.md, specs/README.md,
+  specs/007-process-isolation-security/contracts/threat-matrix.md
+- Deferred TODOs: none
+
+Previous report (3.0.0)
 - Version change: 2.0.0 → 3.0.0 (MAJOR, 2026-11-24, SPEC 1.26). MAJOR because a rule of Principle V is
   redefined (Governance: "MAJOR when a principle or invariant is removed or redefined"): the Auth0 Management API
   credential is no longer held by a GitHub environment; it is held only on the operator's host, where the
@@ -334,7 +351,12 @@ Rationale: authorization must be reproducible, auditable and race-free.
   the agent's public client) plus one confidential client per declared machine caller, and two permissions
   and two roles (`portal:admin` in `x402-admin`, `agent:run` in `x402-agent`), each role holding one
   permission and assigned by hand. The hosted agent can answer a run as server-sent events. The API docs page
-  may be turned on for a deployed agent by its environment's parameter file, never for another unit.
+  may be turned on for a deployed agent by its environment's parameter file, never for another unit. Added in
+  3.0.1, with no new package: people sign in to the tenant through exactly two connections, both declared in its
+  Terraform and enabled for the portal's and the agent's clients only. Email-and-password sign-up is closed or
+  open by one switch, through the connection's own setting. Google sign-up is public by design and runs on the
+  project's own Google application, whose secret the tenant alone holds: Terraform reads that connection and
+  never writes it.
 - Networks in scope: `local` (dev chain with a mock EIP-3009 USDC) and `base-sepolia`
   (testnet USDC). Mainnet is out of scope. The Azure profile (Container Apps, Key Vault, Microsoft
   Foundry) is in scope on testnet only.
@@ -387,6 +409,9 @@ Rationale: authorization must be reproducible, auditable and race-free.
     until the token expires, and no longer for a person who has not called it;
   - the agent's identity can read the machine caller's key, so a compromised agent can still request payments
     from the platform account, within the platform mandate.
+  Added in 3.0.1:
+  - anyone with a Google account can create a portal user, with no cap on how many; each reaches only their own
+    account and runs nothing, and stopping new Google accounts also stops every existing Google person.
 
 ## Development Workflow & Quality Gates
 
@@ -415,4 +440,4 @@ New policy rules get a snake_case rule ID, a row in the SPEC rule table and a po
   design and again before implementation. Every review verifies the quality gates above.
 - Runtime guidance for agents lives in `CLAUDE.md`.
 
-**Version**: 3.0.0 | **Ratified**: 2026-10-16 | **Last Amended**: 2026-11-24
+**Version**: 3.0.1 | **Ratified**: 2026-10-16 | **Last Amended**: 2026-11-24
