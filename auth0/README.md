@@ -314,7 +314,9 @@ duplicates. Import them first, in the same plan:
    `auth0_connection_clients.database`, and Google's connection ID for `auth0_connection_clients.google`
    (`data.auth0_connection.google` is read, not imported). The first plan after these imports must change the
    database connection's `disable_signup` only, and nothing in its password policy: if it shows another option
-   changing, make `auth0_connection.database` match the tenant before you apply.
+   changing, make `auth0_connection.database` match the tenant before you apply. Its password policy is Auth0's
+   flexible one, `password_options`: a plan that adds `password_policy` or another legacy password field must not
+   be applied.
 
    ```hcl
    import {

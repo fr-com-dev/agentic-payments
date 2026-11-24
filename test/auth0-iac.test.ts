@@ -143,6 +143,9 @@ const GOOGLE_READ_ONLY = 'Google\'s connection must be read, never managed: exac
 const NO_CONNECTION_SECRET = "no connection or connection data source may set a client ID or a secret (client_id, client_secret, options_client_secret_wo): the Google application's are entered in the tenant only";
 const DATABASE = 'the email-and-password connection must be auth0_connection.database, the one connection managed here: name = "Username-Password-Authentication", strategy = "auth0", never destroyed (prevent_destroy), with no configuration, custom_scripts or enabled_clients';
 const DISABLE_SIGNUP = 'the email-and-password connection\'s own "Disable Sign Ups" must follow the one switch, disable_signup = !var.allow_sign_ups: it refuses self-service sign-up and hides the page\'s "Sign up" link (specs/018 FR-001, FR-002)';
+/** Rule 4: the tenant's password policy is Auth0's flexible one, which the provider refuses beside the legacy fields. */
+const LEGACY_PASSWORD_FIELDS = ["password_policy", "password_complexity_options", "password_history", "password_dictionary", "password_no_personal_info"];
+const PASSWORD_OPTIONS = `the email-and-password connection must write out its password policy as password_options, with complexity, dictionary, history and profile_data, and none of the legacy fields (${LEGACY_PASSWORD_FIELDS.join(", ")}): the tenant uses the flexible policy, Auth0 replaces the whole options object on an update, and the provider refuses both kinds together (specs/018 research R2)`;
 /** Rule 1: every connection object of the tenant's declaration, as `[data.]<type>.<name>`, sorted. */
 const CONNECTION_OBJECTS = ["auth0_connection.database", "auth0_connection_clients.database", "auth0_connection_clients.google", "data.auth0_connection.google"];
 const CONNECTIONS = `the people's connections must be exactly ${CONNECTION_OBJECTS.join(", ")}: no third connection, no auth0_connection_client, and no managed Google connection (it would put the secret in the state)`;
@@ -563,6 +566,14 @@ export function auth0Problems(s: Sources): string[] {
     p.push(DATABASE);
   }
   if (!has(block(database ?? "", /\boptions\s*\{/), /^\s*disable_signup\s*=\s*!var\.allow_sign_ups\s*$/m)) p.push(DISABLE_SIGNUP);
+  const passwordOptions = block(block(database ?? "", /\boptions\s*\{/) ?? "", /\bpassword_options\s*\{/);
+  if (
+    !passwordOptions ||
+    ["complexity", "dictionary", "history", "profile_data"].some((b) => !block(passwordOptions, new RegExp(`\\b${b}\\s*\\{`))) ||
+    has(database, new RegExp(`^\\s*(${LEGACY_PASSWORD_FIELDS.join("|")})\\s*(=|\\{)`, "m"))
+  ) {
+    p.push(PASSWORD_OPTIONS);
+  }
   // Rules 1 and 2: exactly two people's connections, each enabled (authoritatively) for the portal and the agent only.
   const connectionObjects = [...tf.matchAll(/\b(resource|data)\s+"(auth0_connection\w*)"\s+"(\w+)"/g)].map((m) => `${m[1] === "data" ? "data." : ""}${m[2]}.${m[3]}`).sort();
   if (JSON.stringify(connectionObjects) !== JSON.stringify(CONNECTION_OBJECTS)) p.push(CONNECTIONS);
@@ -1223,6 +1234,14 @@ describe("T-IAC-02 Auth0 tenant as code (auth0/)", () => {
     ["a database connection with settings for its scripts", "main.tf", /(resource "auth0_connection" "database" \{[\s\S]*?\n {2}options \{\n)/, '$1    configuration = { DB_URL = "x" }\n', DATABASE],
     ["a passwordless connection in its place", "main.tf", /(resource "auth0_connection" "database" \{[\s\S]*?strategy\s*= )"auth0"/, '$1"email"', DATABASE],
     ["another database connection", "main.tf", /(resource "auth0_connection" "database" \{\n\s*name\s*= )"Username-Password-Authentication"/, '$1"x402-people"', DATABASE],
+    ["the legacy password strength beside the flexible policy", "main.tf", /(\n\s*)password_options \{/, '$1password_policy = "good"$1password_options {', PASSWORD_OPTIONS],
+    ["a legacy minimum length beside the flexible policy", "main.tf", /(\n\s*)password_options \{/, "$1password_complexity_options {$1  min_length = 8$1}$1password_options {", PASSWORD_OPTIONS],
+    ["a legacy password history beside the flexible policy", "main.tf", /(\n\s*)password_options \{/, "$1password_history {$1  enable = false$1  size   = 5$1}$1password_options {", PASSWORD_OPTIONS],
+    ["a legacy dictionary beside the flexible policy", "main.tf", /(\n\s*)password_options \{/, "$1password_dictionary {$1  enable = false$1}$1password_options {", PASSWORD_OPTIONS],
+    ["a legacy personal-data check beside the flexible policy", "main.tf", /(\n\s*)password_options \{/, "$1password_no_personal_info {$1  enable = false$1}$1password_options {", PASSWORD_OPTIONS],
+    ["no word on the password policy, so an update could reset it", "main.tf", /\bpassword_options \{/, "unused_password_options {", PASSWORD_OPTIONS],
+    ["a password policy without its complexity rules", "main.tf", /(password_options \{\s*)complexity \{/, "$1unused_complexity {", PASSWORD_OPTIONS],
+    ["a password policy without its history rules", "main.tf", /(password_options \{[\s\S]*?)\bhistory \{/, "$1unused_history {", PASSWORD_OPTIONS],
     // Rules 1 and 2: which connections, and which clients may use them.
     ["a passwordless connection beside the two", "main.tf", 'data "auth0_connection" "google" {', 'resource "auth0_connection" "email" {\n  name     = "email"\n  strategy = "email"\n}\n\ndata "auth0_connection" "google" {', CONNECTIONS],
     ["one client enabled on its own, beside the authoritative list", "main.tf", 'data "auth0_connection" "google" {', 'resource "auth0_connection_client" "l2" {\n  connection_id = auth0_connection.database.id\n  client_id     = auth0_client.l2.client_id\n}\n\ndata "auth0_connection" "google" {', CONNECTIONS],

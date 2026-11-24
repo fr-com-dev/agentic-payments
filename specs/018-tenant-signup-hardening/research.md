@@ -51,6 +51,16 @@ Nothing here signed in anywhere or called the tenant.
     is overridden". An options block that leaves things out could reset the password policy or brute-force
     protection.
   - Destroying the connection would delete every email-and-password person, the owner's test accounts included.
+  - Amended 2026-11-24, after the first plan against the dev tenant. The declaration had stated a default
+    connection's legacy password fields (`password_policy = "good"`, `password_complexity_options` with a minimum
+    of 8, `password_history`, `password_dictionary`, `password_no_personal_info`). The plan showed the tenant on
+    Auth0's flexible password policy instead (`password_options`: a minimum of 15 characters, all character types,
+    the `en_100k` dictionary off, a history of 3 off, the profile-data check off), with `authentication_methods`
+    and `passkey_options` set. The provider "cannot" set `password_options` "together with legacy password policy
+    fields", so the plan was not applied (T030). The declaration now writes `password_options`,
+    `authentication_methods` and `passkey_options` exactly as the tenant has them, and T-IAC-02 fails on any legacy
+    password field. `authentication_methods.password.signup_behavior` stays `"allow"`, as the tenant has it:
+    `disable_signup` is the one switch (R1), and quickstart §3.5 checks the refusal live.
 - **Alternatives considered**:
   - Leave the connection out of Terraform and set the option by hand. Rejected: it breaks FR-002 and FR-018, and
     the drift that produced finding P1 would stay invisible.
