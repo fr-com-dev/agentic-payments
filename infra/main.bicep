@@ -64,10 +64,12 @@ param userAccounts object
 @description('The sign-in tenant (Auth0), for the portal, the agent, L2 and the machine caller: its issuer (https://<domain>/) and the API\'s identifier.')
 param identity object
 // 016 the agent's callers (specs/016 contracts/tenant-and-config.md "Azure"): non-secret values only,
-// { clientId, apiDocs, machineClientId, machineKeyId }. clientId, machineClientId and machineKeyId are Terraform's
-// output bicepparam_agent (auth0/); apiDocs is the environment's own choice. A plain object, not a user-defined
-// type, as for ciba.
-@description('016: the agent\'s client at the sign-in tenant (the only one whose people\'s tokens the agent and L2 accept), whether the agent serves its docs page, and the client and key ID of the pipeline\'s machine caller. Its private key is the l1 vault\'s machine-client-key, seeded by hand (the placeholder off until the tenant has the client).')
+// { clientId, desktopClientId, apiDocs, machineClientId, machineKeyId }. clientId, desktopClientId (019),
+// machineClientId and machineKeyId are Terraform's output bicepparam_agent (auth0/); apiDocs is the environment's own
+// choice. desktopClientId may be empty: the desktop client is optional per environment, so agentChecked doesn't ask
+// for it; set, the agent and L2 accept its tokens too (AGENT_CLIENT_IDS) and the agent serves its sign-in settings.
+// A plain object, not a user-defined type, as for ciba.
+@description('016: the agent\'s client at the sign-in tenant, and (019) the desktop client, the only ones whose people\'s tokens the agent and L2 accept; whether the agent serves its docs page; and the client and key ID of the pipeline\'s machine caller. Its private key is the l1 vault\'s machine-client-key, seeded by hand (the placeholder off until the tenant has the client).')
 param agent object
 @description('Who uses Claude, declared to Anthropic with the model deployment, which accepts Anthropic\'s Azure Marketplace terms: the legal entity\'s name.')
 param claudeOrganizationName string

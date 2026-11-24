@@ -1,5 +1,23 @@
 <!--
 Sync Impact Report
+- Version change: 3.0.1 → 3.1.0 (MINOR, 2026-11-24, SPEC 1.29, feature 019-loopback-pkce-sign-in). MINOR because
+  guidance is materially expanded and nothing is removed or redefined (Governance: "MINOR when a principle or
+  section is added or materially expanded"): the tenant gains a fourth fixed application, the desktop client, and
+  Principle V says where a refresh token may exist. No MUST is loosened: the desktop client holds no secret, its
+  tokens pass the same check as the docs page client's, and a refresh token never reaches a service.
+- Modified principles: V. Least-Privilege Credentials (a new bullet: a refresh token exists only in the portal's
+  web app and in the person's own desktop client, and is never sent to a service of this system; the desktop
+  client is public, with PKCE S256 enforced by the tenant's first post-login rule).
+- Modified sections: Technology & Scope Constraints (the tenant holds four fixed applications: the desktop client
+  is native and public, with rotating refresh tokens, returns only to two loopback addresses on the person's own
+  computer, and is allowed on people's two connections; still two permissions and two roles).
+- Added sections: none. Removed sections: none.
+- Templates reviewed: plan-template.md, spec-template.md, tasks-template.md (no change)
+- Source: SPEC.md v1.29 (Changes in 1.29, §3.3, L1-6, L2-5, §7, CFG-2, §11 SEC-49..52, §12)
+- Documents changed with it: SPEC.md, CLAUDE.md, README.md, auth0/README.md, specs/README.md
+- Deferred TODOs: none
+
+Previous report (3.0.1)
 - Version change: 3.0.0 → 3.0.1 (PATCH, 2026-11-24, SPEC 1.28, feature 018-tenant-signup-hardening). PATCH
   because nothing is redefined (Governance: "PATCH for clarifications"): it states which ways people sign in to
   the tenant and records the owner's decision that Google sign-up is public by design, in answer to pentest
@@ -298,6 +316,11 @@ Rationale: authorization must be reproducible, auditable and race-free.
   like any other: it MUST NEVER override a DENY rule. (INV-12)
 - The wallet mnemonic, from which every user's account is derived, is payment key material: it is held by
   L2 only and read by the signer component only. (INV-2)
+- A refresh token (since 3.1.0) exists only in the portal's web app and in a person's own desktop client, held
+  for that person by their own client. It MUST NEVER be sent to a service of this system: the desktop client
+  sends the hosted agent its access token only, which L1 forwards as any requester credential. The desktop client
+  is public (no secret, no key); the tenant's first post-login rule refuses its sign-in without PKCE S256, and its
+  sign-in or renewal without the agent role. It holds no secret and recognizes the client by a public marker.
 - The card vault credential is held by the portal only and confined to one module by an architecture rule
   (A10). It can save, list and remove cards; it MUST NOT be able to charge one. Card numbers and security
   codes never reach any process of this system.
@@ -347,13 +370,16 @@ Rationale: authorization must be reproducible, auditable and race-free.
   version and no SDK. Added in 2.0.0, with no new package: the callers of the hosted agent, people and machine
   callers, come from the Auth0 tenant, and the organization's directory (Microsoft Entra ID) is no issuer for
   any caller; it stays for the pipeline's sign-in to Azure, the agent's own access to the model and the
-  operators' group. The tenant holds three fixed applications (L2's approval client, the portal's client and
-  the agent's public client) plus one confidential client per declared machine caller, and two permissions
+  operators' group. The tenant holds four fixed applications (L2's approval client, the portal's client, the
+  agent's public client and, since 3.1.0, the desktop client: native and public, with rotating refresh tokens,
+  returning only to two loopback addresses on the person's own computer) plus one confidential client per
+  declared machine caller, and two permissions
   and two roles (`portal:admin` in `x402-admin`, `agent:run` in `x402-agent`), each role holding one
   permission and assigned by hand. The hosted agent can answer a run as server-sent events. The API docs page
   may be turned on for a deployed agent by its environment's parameter file, never for another unit. Added in
   3.0.1, with no new package: people sign in to the tenant through exactly two connections, both declared in its
-  Terraform and enabled for the portal's and the agent's clients only. Email-and-password sign-up is closed or
+  Terraform and enabled for the portal's and the agent's clients only (since 3.1.0, and the desktop client).
+  Email-and-password sign-up is closed or
   open by one switch, through the connection's own setting. Google sign-up is public by design and runs on the
   project's own Google application, whose secret the tenant alone holds: Terraform reads that connection and
   never writes it.
@@ -440,4 +466,4 @@ New policy rules get a snake_case rule ID, a row in the SPEC rule table and a po
   design and again before implementation. Every review verifies the quality gates above.
 - Runtime guidance for agents lives in `CLAUDE.md`.
 
-**Version**: 3.0.1 | **Ratified**: 2026-10-16 | **Last Amended**: 2026-11-24
+**Version**: 3.1.0 | **Ratified**: 2026-10-16 | **Last Amended**: 2026-11-24

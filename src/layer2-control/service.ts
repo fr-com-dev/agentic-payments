@@ -626,7 +626,8 @@ export function createControlService(deps: ControlServiceDeps): ControlService {
     const queried = trustIntentUser && typeof asked === "string" ? asked : who.kind === "person" ? who.userId : undefined;
     if (users && queried !== undefined) {
       const state = userState(ledger.entries(), queried);
-      const usable = userGate(state) === undefined;
+      const gate = userGate(state);
+      const usable = gate === undefined;
       const ceiling = usable ? BigInt(users.platform.limits.userDailyCeilingAtomic) : 0n;
       const spent = usable ? ledger.committedAtomic({ userId: queried, sinceMs: t - DAY_MS }, t) : 0n;
       const userStatus: BudgetStatus = {
@@ -638,6 +639,9 @@ export function createControlService(deps: ControlServiceDeps): ControlService {
         remainingAtomic: maxZero(ceiling - spent).toString(),
         perPaymentCapAtomic: usable ? highestAutoApprove(state, users.platform, t) : "0",
         scope: "user_daily",
+        // 019: whether this person can pay now, from the same read: the hosted agent asks before a person's run.
+        // Paused or removed policies leave it "ready" (each purchase is then denied by policy). Nothing is appended.
+        account: gate ?? "ready",
       };
       res.json(userStatus);
       return;

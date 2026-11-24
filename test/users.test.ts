@@ -898,9 +898,10 @@ describe("T-USR-11 decisions for a user (US3, FR-029..FR-033)", () => {
     await l2.authorize(l2.intentFor("/api/weather", "1000", { userId: ALICE }));
     // 016: the view is for the person the caller's token proves; the query that named one is refused.
     const mine = await l2.budget("sess_u", { userId: ALICE });
-    expect(mine.body).toEqual({ sessionId: "sess_u", asset: ASSET, decimals: 6, sessionCapAtomic: "500000", spentOrReservedAtomic: "1000", remainingAtomic: "499000", perPaymentCapAtomic: "20000", scope: "user_daily" });
+    // 019: the user view also says whether the person can pay now (T-CTK-10).
+    expect(mine.body).toEqual({ sessionId: "sess_u", asset: ASSET, decimals: 6, sessionCapAtomic: "500000", spentOrReservedAtomic: "1000", remainingAtomic: "499000", perPaymentCapAtomic: "20000", scope: "user_daily", account: "ready" });
     const nobody = await l2.budget("sess_u", { userId: BOB });
-    expect(nobody.body).toMatchObject({ sessionCapAtomic: "0", spentOrReservedAtomic: "0", remainingAtomic: "0", perPaymentCapAtomic: "0", scope: "user_daily" });
+    expect(nobody.body).toMatchObject({ sessionCapAtomic: "0", spentOrReservedAtomic: "0", remainingAtomic: "0", perPaymentCapAtomic: "0", scope: "user_daily", account: "not_onboarded" });
     for (const query of ["alice", ALICE, BOB]) {
       const refused = await l2.call("GET", `/v1/budget/sess_u?userId=${query}`, { token: TOKENS.control, caller: await l2.callers.forUser(ALICE) });
       expect([refused.status, refused.body.error], query).toEqual([400, "userId is not accepted: the user comes from the caller's token"]);

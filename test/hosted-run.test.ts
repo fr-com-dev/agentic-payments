@@ -6,6 +6,7 @@ import type { AddressInfo } from "node:net";
 import express from "express";
 import { afterEach, describe, expect, it } from "vitest";
 import { DEV_USER_WALLET_MNEMONIC } from "../scripts/demo-lib.js";
+import { DEV_AGENT_CLIENT } from "../scripts/dev-issuer-lib.js";
 import { LOCAL_MNEMONIC } from "../scripts/local-chain-lib.js";
 import { findSecretShapes } from "../scripts/secret-scan-lib.js";
 import { TEST_MNEMONIC } from "./helpers/users.js";
@@ -176,8 +177,9 @@ describe("T-AGT-05 secret shapes", () => {
 // ---------------------------------------------------------------------------
 
 describe("T-AGT-05 logs", () => {
-  const STEP_KEYS = ["event", "runId", "requester", "sessionId", "index", "tool", "outcome", "intentId", "authorizationId", "ms"];
-  const RUN_KEYS = ["event", "runId", "requester", "sessionId", "status", "stopReason", "steps", "ms"];
+  // 019: `client`, the client of the caller's token, on both kinds of line (T-AGT-20).
+  const STEP_KEYS = ["event", "runId", "requester", "client", "sessionId", "index", "tool", "outcome", "intentId", "authorizationId", "ms"];
+  const RUN_KEYS = ["event", "runId", "requester", "client", "sessionId", "status", "stopReason", "steps", "ms"];
 
   it("every line is JSON with only whitelisted keys, and no planted value appears in any line", async () => {
     const s = await seller();
@@ -190,8 +192,13 @@ describe("T-AGT-05 logs", () => {
       purpose: "planted-purpose-0004",
       toolError: "planted-tool-error-token-0005",
     };
+    // 019: the first budget call of a person's run is the agent's account question, so it answers ready; the
+    // check_budget tool's call after it throws, with a planted value in its error, as before.
+    let budgetCalls = 0;
     const ports = fakePorts({
-      budget: async () => {
+      budget: async (sessionId) => {
+        budgetCalls += 1;
+        if (budgetCalls === 1) return { sessionId, asset: "0xasset", decimals: 6, sessionCapAtomic: "100000", spentOrReservedAtomic: "0", remainingAtomic: "100000", perPaymentCapAtomic: "20000", account: "ready" };
         throw new Error(`budget failed: Bearer ${planted.toolError}`);
       },
     });
@@ -215,6 +222,7 @@ describe("T-AGT-05 logs", () => {
       const allowed = p.event === "run" ? RUN_KEYS : STEP_KEYS;
       for (const k of Object.keys(p)) expect(allowed, `unexpected log key ${k}`).toContain(k);
       expect(p.requester).toBe("urn:x402:dev-issuer:dev|alice");
+      expect(p.client).toBe(DEV_AGENT_CLIENT);
       expect(p.runId).toBe(body.runId);
     }
     expect(parsed[0]).toMatchObject({ tool: "fetch_resource", outcome: "FREE", index: 1 });

@@ -35,9 +35,9 @@ async function get(base: string, path: string, token?: string) {
 }
 
 describe("T-AGT-03 tokens (foundational)", () => {
-  it("no Authorization header → 401 unauthorized", async () => {
+  it("no Authorization header → 401 unauthorized, missing_token (019)", async () => {
     const a = await start();
-    expect(await get(a.base, "/v1/runs")).toEqual({ status: 401, body: { error: "unauthorized" } });
+    expect(await get(a.base, "/v1/runs")).toEqual({ status: 401, body: { error: "unauthorized", error_code: "missing_token" } });
   });
 
   it("a garbage token → 401", async () => {
@@ -117,7 +117,8 @@ describe("T-AGT-10 the caller's token goes to L2, beside the control token, and 
       res.json({ status: "AUTHORIZED", authorizationId: "auth_ok", intentId: r.body.intentId, requirement: req, paymentHeaders: { "PAYMENT-SIGNATURE": "opaque" }, payer: "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC", validBefore: 1_900_000_000, remainingSessionBudgetAtomic: "99000" });
     });
     l2.get("/v1/budget/:id", (r, res) =>
-      res.json({ sessionId: r.params.id, asset: req.asset, decimals: 6, sessionCapAtomic: "100000", spentOrReservedAtomic: "1000", remainingAtomic: "99000", perPaymentCapAtomic: "20000" }),
+      // 019: L2's user view says the person can pay, so the agent's account question lets the run start.
+      res.json({ sessionId: r.params.id, asset: req.asset, decimals: 6, sessionCapAtomic: "100000", spentOrReservedAtomic: "1000", remainingAtomic: "99000", perPaymentCapAtomic: "20000", account: "ready" }),
     );
     const l2Url = await listen(l2);
 
@@ -143,9 +144,11 @@ describe("T-AGT-10 the caller's token goes to L2, beside the control token, and 
       const answer = await res.text();
       const body = JSON.parse(answer) as { steps: { result: { outcome: string } }[] };
       expect(body.steps.map((s) => s.result.outcome)).toEqual(["PAID", undefined]);
-      // L2: the role token and the caller's token, on the payment request and on the budget question.
-      expect(seen.l2.map((c) => c.path).sort()).toEqual(["/v1/authorize", expect.stringMatching(/^\/v1\/budget\//), expect.stringMatching(/^\/v1\/budget\//)].slice(0, seen.l2.length).sort());
-      expect(seen.l2.length).toBeGreaterThanOrEqual(2);
+      // L2: the role token and the caller's token, on the account question (019), the payment request and the
+      // budget questions after it.
+      expect(seen.l2[0]!.path).toMatch(/^\/v1\/budget\//);
+      expect(seen.l2.map((c) => c.path).sort()).toEqual(["/v1/authorize", ...Array.from({ length: seen.l2.length - 1 }, () => expect.stringMatching(/^\/v1\/budget\//))]);
+      expect(seen.l2.length).toBeGreaterThanOrEqual(3);
       for (const c of seen.l2) expect(c).toMatchObject({ role: "Bearer t-control", caller: `Bearer ${jwt}` });
       // The payment request names nobody: who it is for is L2's to read from the token.
       for (const b of bodies) {
@@ -236,7 +239,8 @@ describe("T-AGT-03 access matrix", () => {
       const t0 = Date.now();
       const r = await a.run("alice", { goal: "hi" }, o);
       expect(r.status, name).toBe(status);
-      expect(r.body, name).toEqual(status === 401 ? { error: "unauthorized" } : { error: "forbidden" });
+      // 019: a 401 says expired or invalid, nothing more; a 403 is unchanged.
+      expect(r.body, name).toEqual(status === 401 ? { error: "unauthorized", error_code: name === "expired" ? "token_expired" : "invalid_token" } : { error: "forbidden" });
       expect(Date.now() - t0, name).toBeLessThan(1_000);
     }
     expect(modelCalls(model)).toHaveLength(0);
@@ -500,11 +504,13 @@ describe("T-AGT-06, T-AGT-08 a run names no user: L2 reads who pays from the cal
       const jwt = await a.token("alice");
       const res = await fetch(`${a.base}/v1/runs`, { method: "POST", headers: { authorization: `Bearer ${jwt}`, "content-type": "application/json" }, body: JSON.stringify({ goal: "buy the report" }) });
       expect(res.status).toBe(200);
+      // 019: first the account question, then the payment request and the budget read the payment needs.
       expect(ports.gateCalls.map((c) => [c.op, c.callerToken])).toEqual([
+        ["budget", jwt],
         ["authorize", jwt],
         ["budget", jwt],
       ]);
-      const intent = ports.gateCalls[0]!.intent!;
+      const intent = ports.gateCalls[1]!.intent!;
       expect(Object.keys(intent).sort()).toEqual(["createdAt", "intentId", "paymentRequired", "purpose", "resourceUrl", "sessionId"]);
       expect(JSON.stringify(intent)).not.toContain("usr_");
     } finally {
@@ -569,7 +575,8 @@ describe("T-AGT-06, T-AGT-08 a run names no user: L2 reads who pays from the cal
       const ports = fakePorts();
       const a = await start({ model: script(seller.sellerUrl), ...ports, bypassAuth: true, env: { SELLER_URL: seller.sellerUrl } });
       expect((await a.run(null, { goal: "buy the report" })).status).toBe(200);
-      expect(ports.gateCalls.map((c) => c.callerToken)).toEqual(["", ""]);
+      // The bypassed requester is a person, so the account question comes first (019); every call carries no token.
+      expect(ports.gateCalls.map((c) => c.callerToken)).toEqual(["", "", ""]);
     } finally {
       await seller.close();
     }

@@ -48,6 +48,11 @@ export interface HostedConfig {
     jwksFile?: string;
     /** `API_DOCS_CLIENT_ID`: the client the docs page signs people in through. Absent: the page offers no sign-in. */
     docsClientId?: string;
+    /**
+     * 019: `AGENT_DESKTOP_CLIENT_ID`, the desktop client (a person signs in from their own computer: browser, loopback
+     * return, PKCE). One of `clientIds`. Set: `GET /.well-known/agent-auth` serves its sign-in settings. Absent: no route.
+     */
+    desktopClientId?: string;
   };
   sessionRefSecret: Buffer;
   port: number;
@@ -135,6 +140,14 @@ export function loadHostedConfig(env: Env = process.env): HostedConfig {
     if (!clientIds.includes(docsClientId)) throw new ConfigError("API_DOCS_CLIENT_ID must be one of AGENT_CLIENT_IDS");
     if (dev) throw new ConfigError("API_DOCS_CLIENT_ID needs the sign-in tenant: the local dev issuer has no sign-in page");
   }
+  // 019: the client the sign-in settings advertise must be one whose tokens this service accepts (so never the
+  // portal's: the list above can't hold it), at a real tenant: the dev issuer has no sign-in page. The errors name the
+  // variable, never its value.
+  const desktopClientId = present(env.AGENT_DESKTOP_CLIENT_ID) ? env.AGENT_DESKTOP_CLIENT_ID : undefined;
+  if (desktopClientId !== undefined) {
+    if (!clientIds.includes(desktopClientId)) throw new ConfigError("AGENT_DESKTOP_CLIENT_ID must be one of AGENT_CLIENT_IDS");
+    if (dev) throw new ConfigError("AGENT_DESKTOP_CLIENT_ID needs the sign-in tenant: the local dev issuer has no sign-in page");
+  }
 
   const bindHost = present(env.AGENT_BIND_HOST) ? env.AGENT_BIND_HOST : DEFAULT_AGENT_BIND_HOST;
   const hops = trustedProxyHops(env);
@@ -158,7 +171,7 @@ export function loadHostedConfig(env: Env = process.env): HostedConfig {
     ...(anthropicApiKey !== undefined && { anthropicApiKey }),
     ...(foundryBaseUrl !== undefined && { foundryBaseUrl }),
     ...(azureClientId !== undefined && { azureClientId }),
-    auth: { issuer, audience, clientIds, ...(jwksFile !== undefined && { jwksFile }), ...(docsClientId !== undefined && { docsClientId }) },
+    auth: { issuer, audience, clientIds, ...(jwksFile !== undefined && { jwksFile }), ...(docsClientId !== undefined && { docsClientId }), ...(desktopClientId !== undefined && { desktopClientId }) },
     sessionRefSecret,
     port: agentPort(env),
     bindHost,

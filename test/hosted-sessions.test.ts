@@ -22,7 +22,8 @@ async function start(extra: Parameters<typeof startHostedApp>[0] = {}) {
   // Object.assign, not a spread: the model's type is too large a union to spread (TS2590, @mastra/core 1.83).
   const a = await startHostedApp(Object.assign({ model, gate: ports.gate, settlement: ports.settlement }, extra));
   apps.push(a);
-  const sessionsSeen = () => ports.gateCalls.filter((c) => c.op === "budget").map((c) => c.sessionId);
+  // One per run: a person's run asks its budget twice (019: the account question, then the tool), a machine's once.
+  const sessionsSeen = () => [...new Map(ports.gateCalls.filter((c) => c.op === "budget").map((c) => [c.gate, c.sessionId])).values()];
   return { a, sessionsSeen };
 }
 

@@ -247,7 +247,9 @@ const IDENTITY_CHECK = "rule 21: main must refuse (fail()) user accounts turned 
 const ONE_REGISTRATION = "rule 16: the only app registration must be the deploy app: every caller of the agent, a person or a machine, gets its token from the sign-in tenant (auth0/), through no Entra app of ours";
 const MAIN_PARAMETERS = "rule 16: pre-deploy's mainParameters output must be the two lines main's parameter file takes: deployClientId and operatorsGroupId";
 /** Rule 23 (016): the keys of a parameter file's agent object, the machine caller's secret in the l1 vault, and what the smoke job gets. */
-const AGENT_KEYS = ["clientId", "apiDocs", "machineClientId", "machineKeyId"];
+const AGENT_KEYS = ["clientId", "desktopClientId", "apiDocs", "machineClientId", "machineKeyId"];
+/** 019 rule 23 (g). */
+const DESKTOP_ID = "rule 23: the agent's AGENT_DESKTOP_CLIENT_ID must be agent.desktopClientId and nothing else: the client its sign-in settings advertise";
 const MACHINE_SECRET = "machine-client-key";
 const SMOKE_ENV = ["NETWORK", "AUTH_ISSUER", "AUTH_AUDIENCE", "MACHINE_CLIENT_ID", "MACHINE_CLIENT_KEY_ID", "MACHINE_CLIENT_KEY", "AGENT_URL", "AGENT_CANDIDATE_URL"];
 const AGENT_CHECK = "rule 23: main must refuse (fail()) the l1 and l2 units without an identity.issuer of the form https://…/, an identity.audience and an agent.clientId, agent.apiDocs without an agent.clientId, and the l1 unit without an agent.machineClientId and an agent.machineKeyId";
@@ -1029,7 +1031,8 @@ export function violations(arms: Templates, params: Params, infraFiles: Record<s
   // Rule 23 (016, SPEC L1-6 and L2-5; specs/016 contracts/tenant-and-config.md "Azure"): the agent's callers are
   // the sign-in tenant's, people and machines alike.
   // (a) The agent's container and L2's each get AUTH_ISSUER and AUTH_AUDIENCE from the identity parameter and
-  //     AGENT_CLIENT_IDS from agent.clientId, and main passes both parameters whole to both modules: the two units
+  //     AGENT_CLIENT_IDS from agent.clientId, beside agent.desktopClientId when it is set (019), and main passes both
+  //     parameters whole to both modules: the two units
   //     verify a caller's token against the same tenant, API and client. Wherever else the tenant is named (the
   //     portal, L1's two jobs) it is that same identity, and no other container gets a list of the agent's clients.
   //     L2 also gets the portal's client, the one it never accepts as a caller's.
@@ -1041,8 +1044,10 @@ export function violations(arms: Templates, params: Params, infraFiles: Record<s
   //     smoke job and by nothing else, the agent's own container included (rule 8: never a literal). The two jobs
   //     get the tenant from identity and the client's ID and its key's ID from agent. The smoke job's own command is
   //     the smoke client, and it gets the agent's address and its candidate label's and nothing else: no role token.
-  // (e) agent in every main.<environment>.bicepparam has exactly the keys clientId, apiDocs, machineClientId and
-  //     machineKeyId.
+  // (e) agent in every main.<environment>.bicepparam has exactly the keys clientId, desktopClientId (019), apiDocs,
+  //     machineClientId and machineKeyId.
+  // (g) 019: AGENT_DESKTOP_CLIENT_ID is on the agent's container only, as agent.desktopClientId: the client its
+  //     sign-in settings advertise, one of its AGENT_CLIENT_IDS.
   // (f) main refuses (fail()) the l1 and l2 units without a usable identity and an agent.clientId, the docs without
   //     that client, and the l1 unit without the machine client's ID and its key's ID.
   const AG = "parameters('agent')";
@@ -1053,7 +1058,8 @@ export function violations(arms: Templates, params: Params, infraFiles: Record<s
     return got?.value === want && got.secretRef === undefined;
   };
   const TENANT: Record<string, string> = { AUTH_ISSUER: `[${ID}.issuer]`, AUTH_AUDIENCE: `[${ID}.audience]` };
-  const SIGN_IN: Record<string, string> = { ...TENANT, AGENT_CLIENT_IDS: `[${AG}.clientId]` };
+  // 019: the agent's client, and the desktop client beside it when the environment's tenant has one.
+  const SIGN_IN: Record<string, string> = { ...TENANT, AGENT_CLIENT_IDS: `[if(empty(${AG}.desktopClientId), ${AG}.clientId, format('{0},{1}', ${AG}.clientId, ${AG}.desktopClientId))]` };
   const verifiers: [string, Res | undefined, string][] = [["the agent", agentApp, "agent"], ["L2", l2, "l2"]];
   for (const [what, app, container] of verifiers) {
     const env = app ? containersOf(app).find((c) => c.name === container)?.env : undefined;
@@ -1092,6 +1098,7 @@ export function violations(arms: Templates, params: Params, infraFiles: Record<s
         if (e.name === "AGENT_CLIENT_IDS" && !verifier) v.push(`rule 23: AGENT_CLIENT_IDS in ${where}: only the agent and L2 accept the agent's clients`);
         if (/^(AUTH_TENANT_ID|SERVICE_AUDIENCE)$/.test(e.name)) v.push(`rule 23: ${e.name} in ${where}: nothing verifies the directory's tokens`);
         if (/^API_DOCS/.test(e.name) && !(isAgent && c.name === "agent")) v.push(`rule 23: ${e.name} in ${where}: in Azure only the agent can serve the docs`);
+        if (e.name === "AGENT_DESKTOP_CLIENT_ID" && !(isAgent && c.name === "agent")) v.push(`rule 23: AGENT_DESKTOP_CLIENT_ID in ${where}: only the agent serves the desktop client's sign-in settings`);
         if ((/^MACHINE_CLIENT_/.test(e.name) || e.secretRef === MACHINE_SECRET) && !isMachineJob) v.push(`rule 23: ${e.name} in ${where}: only L1's regression job and smoke job call as the machine caller`);
         // One secret, one variable: the key never arrives under another name, nor another secret under its name.
         if (isMachineJob && (e.name === "MACHINE_CLIENT_KEY") !== (e.secretRef === MACHINE_SECRET)) v.push(`rule 23: ${e.name} in ${where} must be the ${MACHINE_SECRET} secret and nothing else`);
@@ -1102,6 +1109,7 @@ export function violations(arms: Templates, params: Params, infraFiles: Record<s
     const env = containersOf(agentApp).find((c) => c.name === "agent")?.env;
     if (!fromParam(env, "API_DOCS", `[if(${AG}.apiDocs, '1', '0')]`)) v.push("rule 23: the agent's API_DOCS must be agent.apiDocs and nothing else: each environment's parameter file says whether its agent serves the docs");
     if (!fromParam(env, "API_DOCS_CLIENT_ID", `[if(${AG}.apiDocs, ${AG}.clientId, '')]`)) v.push("rule 23: the agent's API_DOCS_CLIENT_ID must be agent.clientId while agent.apiDocs is on, and empty otherwise");
+    if (!fromParam(env, "AGENT_DESKTOP_CLIENT_ID", `[${AG}.desktopClientId]`)) v.push(DESKTOP_ID);
   }
   const callers: [string, Res | undefined][] = [["the regression job", regression], ["the smoke job", smoke]];
   for (const [what, job] of callers) {
@@ -1133,7 +1141,7 @@ export function violations(arms: Templates, params: Params, infraFiles: Record<s
     const ag = (p.agent ?? {}) as Json;
     const keys = Object.keys(ag);
     if (JSON.stringify([...keys].sort()) !== JSON.stringify([...AGENT_KEYS].sort())) v.push(`rule 23: ${file}'s agent must have exactly the keys ${AGENT_KEYS.join(", ")} (it has ${keys.join(", ")})`);
-    else if (typeof ag.apiDocs !== "boolean" || ["clientId", "machineClientId", "machineKeyId"].some((k) => typeof ag[k] !== "string")) v.push(`rule 23: ${file}'s agent.apiDocs must be true or false, and its three IDs strings`);
+    else if (typeof ag.apiDocs !== "boolean" || ["clientId", "desktopClientId", "machineClientId", "machineKeyId"].some((k) => typeof ag[k] !== "string")) v.push(`rule 23: ${file}'s agent.apiDocs must be true or false, and its four IDs strings`);
   }
   const unitsChecked = `or(not(contains(createArray('l1', 'l2'), parameters('unit'))), and(and(and(startsWith(${ID}.issuer, 'https://'), endsWith(${ID}.issuer, '/')), not(empty(${ID}.audience))), not(empty(${AG}.clientId))))`;
   const docsChecked = `or(or(not(equals(parameters('unit'), 'l1')), not(${AG}.apiDocs)), not(empty(${AG}.clientId)))`;
@@ -1862,7 +1870,7 @@ resource extraRead 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   const SAME = "the agent and L2 verify a caller's token against the same tenant, API and client";
 
   it("T-IAC-01 must-fail rule 23 (a): an agent or an L2 without a sign-in setting, with another client list than the other's, with a tenant written in the template, or given identity or agent in part, is reported", async () => {
-    const otherClient = await mutant("modules/l1-apps.bicep", "{ name: 'AGENT_CLIENT_IDS', value: agent.clientId }", "{ name: 'AGENT_CLIENT_IDS', value: agent.machineClientId }");
+    const otherClient = await mutant("modules/l1-apps.bicep", "{ name: 'AGENT_CLIENT_IDS', value: empty(agent.desktopClientId) ? agent.clientId : '${agent.clientId},${agent.desktopClientId}' }", "{ name: 'AGENT_CLIENT_IDS', value: agent.machineClientId }");
     expect(otherClient).toEqual([`rule 23: the agent's AGENT_CLIENT_IDS must come from the agent parameter: ${SAME}`]);
     const missing = await mutant("modules/l2-apps.bicep", "            { name: 'AUTH_AUDIENCE', value: identity.audience }\n", "");
     expect(missing).toEqual([`rule 23: L2's AUTH_AUDIENCE must come from the identity parameter: ${SAME}`]);
@@ -1883,7 +1891,7 @@ resource extraRead 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
 
   it("T-IAC-01 must-fail rule 23 (b): the directory's tenant or audience back on the agent, on L2 or on a job, or back as a parameter of main, is reported", async () => {
     const DIRECTORY = "nothing verifies the directory's tokens";
-    const CLIENTS = "            { name: 'AGENT_CLIENT_IDS', value: agent.clientId }\n";
+    const CLIENTS = "            { name: 'AGENT_CLIENT_IDS', value: empty(agent.desktopClientId) ? agent.clientId : '${agent.clientId},${agent.desktopClientId}' }\n";
     const tenant = await mutant("modules/l1-apps.bicep", CLIENTS, `${CLIENTS}            { name: 'AUTH_TENANT_ID', value: tenant().tenantId }\n`);
     expect(tenant).toEqual([`rule 23: AUTH_TENANT_ID in ${N.main.apps.l1}/agent: ${DIRECTORY}`]);
     const audience = await mutant("modules/l2-apps.bicep", CLIENTS, `${CLIENTS}            { name: 'SERVICE_AUDIENCE', value: identity.audience }\n`);
@@ -1906,10 +1914,22 @@ resource extraRead 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
     const ONLY = "in Azure only the agent can serve the docs";
     const onJob = await mutant("modules/l1-apps.bicep", "            { name: 'AGENT_URL', value: agentUrl }\n", "            { name: 'AGENT_URL', value: agentUrl }\n            { name: 'API_DOCS', value: agent.apiDocs ? '1' : '0' }\n");
     expect(onJob).toContain(`rule 23: API_DOCS in ${N.main.jobs.smoke}/smoke: ${ONLY}`);
-    const onL2 = await mutant("modules/l2-apps.bicep", "            { name: 'AGENT_CLIENT_IDS', value: agent.clientId }\n", "            { name: 'AGENT_CLIENT_IDS', value: agent.clientId }\n            { name: 'API_DOCS', value: agent.apiDocs ? '1' : '0' }\n");
+    const onL2 = await mutant("modules/l2-apps.bicep", "            { name: 'AGENT_CLIENT_IDS', value: empty(agent.desktopClientId) ? agent.clientId : '${agent.clientId},${agent.desktopClientId}' }\n", "            { name: 'AGENT_CLIENT_IDS', value: empty(agent.desktopClientId) ? agent.clientId : '${agent.clientId},${agent.desktopClientId}' }\n            { name: 'API_DOCS', value: agent.apiDocs ? '1' : '0' }\n");
     expect(onL2).toEqual([`rule 23: API_DOCS in ${N.main.apps.l2}/l2: ${ONLY}`]);
     const client = await mutant("modules/l1-apps.bicep", "{ name: 'API_DOCS_CLIENT_ID', value: agent.apiDocs ? agent.clientId : '' }", "{ name: 'API_DOCS_CLIENT_ID', value: agent.machineClientId }");
     expect(client).toEqual(["rule 23: the agent's API_DOCS_CLIENT_ID must be agent.clientId while agent.apiDocs is on, and empty otherwise"]);
+  }, 420_000);
+
+  it("T-IAC-01 must-fail rule 23 (019): L2's list without the desktop client, the agent's advertised client from elsewhere, or the desktop client's ID on another unit, is reported", async () => {
+    // The agent would accept a desktop token that L2 then refuses: every payment of such a run fails.
+    const l2Drops = await mutant("modules/l2-apps.bicep", "{ name: 'AGENT_CLIENT_IDS', value: empty(agent.desktopClientId) ? agent.clientId : '${agent.clientId},${agent.desktopClientId}' }", "{ name: 'AGENT_CLIENT_IDS', value: agent.clientId }");
+    expect(l2Drops).toEqual([`rule 23: L2's AGENT_CLIENT_IDS must come from the agent parameter: ${SAME}`]);
+    const agentDrops = await mutant("modules/l1-apps.bicep", "{ name: 'AGENT_CLIENT_IDS', value: empty(agent.desktopClientId) ? agent.clientId : '${agent.clientId},${agent.desktopClientId}' }", "{ name: 'AGENT_CLIENT_IDS', value: agent.clientId }");
+    expect(agentDrops).toEqual([`rule 23: the agent's AGENT_CLIENT_IDS must come from the agent parameter: ${SAME}`]);
+    const advertised = await mutant("modules/l1-apps.bicep", "{ name: 'AGENT_DESKTOP_CLIENT_ID', value: agent.desktopClientId }", "{ name: 'AGENT_DESKTOP_CLIENT_ID', value: agent.clientId }");
+    expect(advertised).toEqual([DESKTOP_ID]);
+    const onL2 = await mutant("modules/l2-apps.bicep", "            { name: 'AGENT_CLIENT_IDS', value: empty(agent.desktopClientId) ? agent.clientId : '${agent.clientId},${agent.desktopClientId}' }\n", "            { name: 'AGENT_CLIENT_IDS', value: empty(agent.desktopClientId) ? agent.clientId : '${agent.clientId},${agent.desktopClientId}' }\n            { name: 'AGENT_DESKTOP_CLIENT_ID', value: agent.desktopClientId }\n");
+    expect(onL2).toEqual([`rule 23: AGENT_DESKTOP_CLIENT_ID in ${N.main.apps.l2}/l2: only the agent serves the desktop client's sign-in settings`]);
   }, 420_000);
 
   it("T-IAC-01 must-fail rule 23 (d): the machine caller's key as a literal, missing from a job, read from another vault, on the agent's container, or a job with another client's ID, a role token on the smoke job or a wrong candidate address, is reported", async () => {
@@ -1943,7 +1963,7 @@ resource extraRead 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
       `rule 23: ${N.main.apps.l1} has the machine caller's key`,
       `rule 23: MACHINE_CLIENT_KEY in ${N.main.apps.l1}/agent: only L1's regression job and smoke job call as the machine caller`,
     ]);
-    const onL2 = await mutant("modules/l2-apps.bicep", "            { name: 'AGENT_CLIENT_IDS', value: agent.clientId }\n", "            { name: 'AGENT_CLIENT_IDS', value: agent.clientId }\n            { name: 'MACHINE_CLIENT_ID', value: agent.machineClientId }\n");
+    const onL2 = await mutant("modules/l2-apps.bicep", "            { name: 'AGENT_CLIENT_IDS', value: empty(agent.desktopClientId) ? agent.clientId : '${agent.clientId},${agent.desktopClientId}' }\n", "            { name: 'AGENT_CLIENT_IDS', value: empty(agent.desktopClientId) ? agent.clientId : '${agent.clientId},${agent.desktopClientId}' }\n            { name: 'MACHINE_CLIENT_ID', value: agent.machineClientId }\n");
     expect(onL2).toEqual([`rule 23: MACHINE_CLIENT_ID in ${N.main.apps.l2}/l2: only L1's regression job and smoke job call as the machine caller`]);
     // The agent's own client is a person's: a job calling with it would not be the machine caller.
     const otherClient = await mutant("modules/l1-apps.bicep", "{ name: 'MACHINE_CLIENT_ID', value: agent.machineClientId }", "{ name: 'MACHINE_CLIENT_ID', value: agent.clientId }");
@@ -1968,17 +1988,17 @@ resource extraRead 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   it("T-IAC-01 must-fail rule 23 (e): a parameter file whose agent has another key, lacks one, or holds a switch that isn't true or false, is reported", async () => {
     const keys = (has: string) => `rule 23: main.dev.bicepparam's agent must have exactly the keys ${AGENT_KEYS.join(", ")} (it has ${has})`;
     const agent = (lines: string[]) => `param agent = {\n${lines.map((l) => `  ${l}\n`).join("")}}`;
-    // Not vacuous: the real object has exactly the four, and a tenant's values pass.
+    // Not vacuous: the real object has exactly the five, and a tenant's values pass.
     const { params } = await compile("infra");
     expect(Object.keys(params["main.dev.bicepparam"]!.agent as Json)).toEqual(AGENT_KEYS);
-    expect(await mutant("main.dev.bicepparam", DEV_AGENT, agent(["clientId: 'AgentClient01'", "apiDocs: false", "machineClientId: 'ChecksClient01'", "machineKeyId: 'checks-key-1'"]))).toEqual([]);
+    expect(await mutant("main.dev.bicepparam", DEV_AGENT, agent(["clientId: 'AgentClient01'", "desktopClientId: 'DesktopClient01'", "apiDocs: false", "machineClientId: 'ChecksClient01'", "machineKeyId: 'checks-key-1'"]))).toEqual([]);
     // The private key is a secret of the l1 vault, never a value of the parameter file.
-    const extra = await mutant("main.dev.bicepparam", DEV_AGENT, agent(["clientId: ''", "apiDocs: true", "machineClientId: ''", "machineKeyId: ''", "machineKey: 'off'"]));
-    expect(extra).toEqual([keys("clientId, apiDocs, machineClientId, machineKeyId, machineKey")]);
-    const fewer = await mutant("main.dev.bicepparam", DEV_AGENT, agent(["clientId: ''", "machineClientId: ''", "machineKeyId: ''"]));
-    expect(fewer).toEqual([keys("clientId, machineClientId, machineKeyId")]);
-    const text = await mutant("main.dev.bicepparam", DEV_AGENT, agent(["clientId: ''", "apiDocs: '1'", "machineClientId: ''", "machineKeyId: ''"]));
-    expect(text).toEqual(["rule 23: main.dev.bicepparam's agent.apiDocs must be true or false, and its three IDs strings"]);
+    const extra = await mutant("main.dev.bicepparam", DEV_AGENT, agent(["clientId: ''", "desktopClientId: ''", "apiDocs: true", "machineClientId: ''", "machineKeyId: ''", "machineKey: 'off'"]));
+    expect(extra).toEqual([keys("clientId, desktopClientId, apiDocs, machineClientId, machineKeyId, machineKey")]);
+    const fewer = await mutant("main.dev.bicepparam", DEV_AGENT, agent(["clientId: ''", "machineClientId: ''", "machineKeyId: ''", "apiDocs: true"]));
+    expect(fewer).toEqual([keys("clientId, machineClientId, machineKeyId, apiDocs")]);
+    const text = await mutant("main.dev.bicepparam", DEV_AGENT, agent(["clientId: ''", "desktopClientId: ''", "apiDocs: '1'", "machineClientId: ''", "machineKeyId: ''"]));
+    expect(text).toEqual(["rule 23: main.dev.bicepparam's agent.apiDocs must be true or false, and its four IDs strings"]);
   }, 300_000);
 
   it("T-IAC-01 must-fail rule 23 (f): main without its check for the l2 unit, for the agent's client, for the docs' client or for the machine caller, or with a check that never fails, is reported", async () => {

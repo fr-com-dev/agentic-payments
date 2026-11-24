@@ -23,7 +23,7 @@ import { pathToFileURL } from "node:url";
 import { DEV_JWKS_FILE, LOCAL_STACK, ProcessGroup, ROOT, callerTokenNeeded, childEnv, envFileFor, localStack, portInUse, sleep, type DemoProcess, type EnvFile, type StackRole } from "./demo-lib.js";
 import { DEV_TOKENS } from "../src/shared/config.js";
 import { DEV_ISSUER } from "../src/shared/identity-token.js";
-import { DEV_AGENT_CLIENT, DEV_MACHINE_CLIENT, loadOrCreateDevIssuer, signDevToken } from "./dev-issuer-lib.js";
+import { DEV_AGENT_CLIENT, DEV_DESKTOP_CLIENT, DEV_MACHINE_CLIENT, loadOrCreateDevIssuer, signDevToken } from "./dev-issuer-lib.js";
 import { startLocalChain } from "./local-chain-lib.js";
 
 const operator = (entry: string): DemoProcess => ({ role: "operator", tag: "op", entry, args: [], envFile: "env/operator.env" });
@@ -80,7 +80,7 @@ export function runWarnings(role: RunRole, file: EnvFile | null, args: readonly 
     else if (!v("ANTHROPIC_API_KEY")) out.push(`${file?.path ?? "env/l1-hosted.env"} has no ANTHROPIC_API_KEY: the hosted agent will refuse to start`);
     if (!v("AUTH_JWKS_FILE")) out.push(`${file?.path ?? "env/l1-hosted.env"} has no AUTH_JWKS_FILE: locally the hosted agent uses the dev issuer (.local/dev-issuer/jwks.json)`);
     else out.push(...devIssuerWarnings(file, "env/l1-hosted.env", "the hosted agent"));
-    if (!v("AGENT_CLIENT_IDS")) out.push(`${file?.path ?? "env/l1-hosted.env"} has no AGENT_CLIENT_IDS: the hosted agent will refuse to start (the dev issuer's client is ${DEV_AGENT_CLIENT})`);
+    if (!v("AGENT_CLIENT_IDS")) out.push(`${file?.path ?? "env/l1-hosted.env"} has no AGENT_CLIENT_IDS: the hosted agent will refuse to start (the dev issuer's clients are ${DEV_AGENT_CLIENT},${DEV_DESKTOP_CLIENT})`);
   }
   if (role === "portal") {
     if (!v("AUTH_JWKS_FILE")) out.push(`${file?.path ?? "env/portal.env"} has no AUTH_JWKS_FILE: locally the portal uses the dev issuer (.local/dev-issuer/jwks.json)`);

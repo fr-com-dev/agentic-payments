@@ -118,6 +118,8 @@ param identity = {
 // the tenant has the client).
 param agent = {
   clientId: ''
+  // 019: the desktop client's ID (Terraform's output bicepparam_agent); empty while the tenant has none.
+  desktopClientId: ''
   apiDocs: true
   machineClientId: ''
   machineKeyId: ''

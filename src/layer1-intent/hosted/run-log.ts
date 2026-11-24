@@ -1,12 +1,16 @@
 // L1-6 run log (SPEC.md §11 SEC-16; specs/011 contracts/hosted-agent-api.md "Logs", research R13).
 // One JSON line per tool call and one per run, built field by field from a whitelist: never headers,
 // tokens, the session reference's MAC, the goal, `purpose`, tool error text or response bodies. The IDs
-// (runId, requester tid:oid, sessionId, authorizationId) correlate a run with the L2 ledger (FR-025).
+// (runId, requester `<issuer host>:<sub>`, sessionId, authorizationId) correlate a run with the L2 ledger (FR-025).
+// 019: `client` names the client the caller's token was issued to (the docs page's, the desktop client, a machine
+// caller's own), a public identifier, so a run can be traced to the way its person signed in (specs/019 FR-023).
 import type { RunStatus, StopReason } from "./agent.js";
 
 export interface StepLine {
   runId: string;
   requester: string;
+  /** 019: the client of the caller's token. */
+  client: string;
   sessionId: string;
   index: number;
   tool: string;
@@ -19,6 +23,8 @@ export interface StepLine {
 export interface RunLine {
   runId: string;
   requester: string;
+  /** 019: the client of the caller's token. */
+  client: string;
   sessionId: string;
   status: RunStatus;
   stopReason: StopReason | null;
@@ -47,6 +53,7 @@ export function createRunLog(write: (line: string) => void = (line) => process.s
           event: "step",
           runId: e.runId,
           requester: e.requester,
+          client: e.client,
           sessionId: e.sessionId,
           index: e.index,
           tool: e.tool,
@@ -62,6 +69,7 @@ export function createRunLog(write: (line: string) => void = (line) => process.s
           event: "run",
           runId: e.runId,
           requester: e.requester,
+          client: e.client,
           sessionId: e.sessionId,
           status: e.status,
           stopReason: e.stopReason,

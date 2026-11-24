@@ -11,7 +11,7 @@ import type { Express } from "express";
 import { simulateReadableStream } from "ai";
 import { MockLanguageModelV3 } from "ai/test";
 import { createLocalJWKSet } from "jose";
-import { DEV_AGENT_CLIENT, DEV_AUDIENCE, devSubject, loadOrCreateDevIssuer, signDevToken, type DevTokenOptions } from "../../scripts/dev-issuer-lib.js";
+import { DEV_AGENT_CLIENT, DEV_AUDIENCE, DEV_DESKTOP_CLIENT, devSubject, loadOrCreateDevIssuer, signDevToken, type DevTokenOptions } from "../../scripts/dev-issuer-lib.js";
 import { DEV_ISSUER, loadHostedConfig, type HostedConfig } from "../../src/layer1-intent/hosted/config.js";
 import { createHostedApp, type HostedDeps } from "../../src/layer1-intent/hosted/server.js";
 import { HttpAuthorizationGate, HttpSettlementVerifier } from "../../src/layer1-intent/ports-http.js";
@@ -112,27 +112,31 @@ export function fakePorts(o: FakePortsOptions = {}) {
    * 016: `callerToken` is the token the gate of that call was made for (`forCaller`): what L1 forwards to L2.
    * `intent` is the whole intent of an authorize call, to check that it names no user.
    */
-  const gateCalls: { op: "authorize" | "budget"; sessionId: string; callerToken: string; intent?: PaymentIntent }[] = [];
+  // 019: `gate` numbers the gate the call came through: 0 the plain gate, then 1, 2, … one per run (`forCaller`), so a
+  // test can tell a person's account question (the first budget call of a run) from the check_budget tool's.
+  const gateCalls: { op: "authorize" | "budget"; sessionId: string; callerToken: string; gate: number; intent?: PaymentIntent }[] = [];
   const settlementCalls: SettlementClaim[] = [];
-  const gateOf = (callerToken: string): AuthorizationGatePort => ({
+  const gateOf = (callerToken: string, gate: number): AuthorizationGatePort => ({
     authorize: async (intent) => {
-      gateCalls.push({ op: "authorize", sessionId: intent.sessionId, callerToken, intent });
+      gateCalls.push({ op: "authorize", sessionId: intent.sessionId, callerToken, gate, intent });
       return o.authorize
         ? o.authorize(intent)
         : { status: "DENIED", authorizationId: "auth_fake", intentId: intent.intentId, violations: [{ rule: "fake", detail: "fake gate" }] };
     },
     budget: async (sessionId) => {
-      gateCalls.push({ op: "budget", sessionId, callerToken });
+      gateCalls.push({ op: "budget", sessionId, callerToken, gate });
       return o.budget
         ? o.budget(sessionId)
-        : { sessionId, asset: "0xasset", decimals: 6, sessionCapAtomic: "100000", spentOrReservedAtomic: "0", remainingAtomic: "100000", perPaymentCapAtomic: "20000" };
+        : // 019: as L2's user view, the person can pay, so the agent's account question lets the run start.
+          { sessionId, asset: "0xasset", decimals: 6, sessionCapAtomic: "100000", spentOrReservedAtomic: "0", remainingAtomic: "100000", perPaymentCapAtomic: "20000", account: "ready" };
     },
   });
   /**
    * The hosted app takes one gate per run, for that run's caller (`forCaller`). The same object is also a plain
    * gate that carries no token, for the tests that call `runGoal` or the orchestrator directly.
    */
-  const gate: CallerGates & AuthorizationGatePort = { ...gateOf(""), forCaller: gateOf };
+  let gates = 0;
+  const gate: CallerGates & AuthorizationGatePort = { ...gateOf("", 0), forCaller: (callerToken) => gateOf(callerToken, ++gates) };
   const settlement: SettlementVerifierPort = {
     verify: async (claim) => {
       settlementCalls.push(claim);
@@ -193,7 +197,7 @@ export async function startHostedApp(opts: StartHostedOptions = {}): Promise<Hos
     ANTHROPIC_API_KEY: "test-key-not-used",
     AUTH_ISSUER: DEV_ISSUER,
     AUTH_AUDIENCE: DEV_AUDIENCE,
-    AGENT_CLIENT_IDS: DEV_AGENT_CLIENT,
+    AGENT_CLIENT_IDS: `${DEV_AGENT_CLIENT},${DEV_DESKTOP_CLIENT}`, // 019: the docs page client and the desktop client
     AUTH_JWKS_FILE: issuer.jwksPath,
     SESSION_REF_SECRET: randomBytes(32).toString("hex"),
     ...(tenant && { AUTH_ISSUER: TENANT_TEST_ISSUER, AUTH_JWKS_FILE: "" }),

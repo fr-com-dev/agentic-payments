@@ -14,6 +14,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { HOSTED_API_DOCS_FILE, servedHostedApiDocument } from "../src/layer1-intent/hosted/api-docs.js";
 import { loadHostedConfig } from "../src/layer1-intent/hosted/config.js";
+import { agentAuthSettings } from "../src/layer1-intent/hosted/server.js";
 import { ConfigError } from "../src/shared/config.js";
 import type { AuthorizationDecision, PaymentIntent } from "../src/shared/contracts.js";
 import { fakePorts, mockModel, startHostedApp, text, toolCall, type HostedTestApp } from "./helpers/hosted.js";
@@ -38,6 +39,17 @@ const DOCS = { API_DOCS: "1" };
 /** 016: an agent whose docs page signs in at a tenant (the tenant's name with the test's own keys). */
 const TENANT = "https://x402-test.eu.auth0.com/";
 const SIGN_IN = { API_DOCS: "1", AUTH_ISSUER: TENANT, AUTH_AUDIENCE: "https://x402-api/test", AUTH_JWKS_FILE: "", AGENT_CLIENT_IDS: "AgentDocsClient01", API_DOCS_CLIENT_ID: "AgentDocsClient01" };
+
+/** 019: the desktop client's sign-in settings route, mounted only with AGENT_DESKTOP_CLIENT_ID (a real tenant only). */
+const SETTINGS_PATH = "/.well-known/agent-auth";
+const isSignInSettings = (op: { tags?: string[] }) => op.tags?.includes("sign-in") === true;
+/** The document as an agent without a desktop client serves its routes: no settings route. */
+function withoutSettings(doc: OpenApiDoc): OpenApiDoc {
+  const { [SETTINGS_PATH]: _route, ...paths } = doc.paths;
+  return { ...doc, paths };
+}
+/** 019: an agent at a tenant that advertises the desktop client (T-API-18). */
+const DESKTOP = { ...SIGN_IN, AGENT_CLIENT_IDS: "AgentDocsClient01,AgentDesktopClient01", AGENT_DESKTOP_CLIENT_ID: "AgentDesktopClient01" };
 
 type Doc = { servers: { url: string }[]; paths: Record<string, Record<string, { security?: Record<string, unknown>[] }>>; components: { securitySchemes: Record<string, unknown> } };
 /** The committed document as an agent without a docs client serves it: no sign-in scheme, and no use of it. */
@@ -89,8 +101,13 @@ async function seller(): Promise<string> {
   return `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 }
 
-/** L2 as a fake: weather is authorized, premium escalates, export is denied. L3 confirms every settlement. */
-function ports(o: { budgetDown?: () => boolean } = {}) {
+/**
+ * L2 as a fake: weather is authorized, premium escalates, export is denied. L3 confirms every settlement. 019:
+ * `budgetDown` takes L2 down for the check_budget tool's call only ("tool": a person's account question, the first
+ * budget call of a run, still answers) or for every call ("all": the account question fails, 503); `account` is the
+ * account the user view answers (default ready).
+ */
+function ports(o: { budgetDown?: () => false | "tool" | "all"; account?: () => "ready" | "not_onboarded" | "disabled" } = {}) {
   const decide = (intent: PaymentIntent): AuthorizationDecision => {
     const path = new URL(intent.resourceUrl).pathname;
     if (path === "/api/weather") {
@@ -126,16 +143,19 @@ function ports(o: { budgetDown?: () => boolean } = {}) {
       verified: { asset: REQ.asset, payer: claim.payer, payTo: REQ.payTo, amount: REQ.amount },
     }),
   });
-  if (o.budgetDown) {
+  if (o.budgetDown || o.account) {
     // 016: the app takes a gate per run (`forCaller`); the outage is put on each of those.
     const forCaller = p.gate.forCaller.bind(p.gate);
     p.gate.forCaller = (callerToken) => {
       const gate = forCaller(callerToken);
+      let calls = 0;
       return {
         authorize: (intent) => gate.authorize(intent),
         budget: async (sessionId) => {
-          if (o.budgetDown!()) throw new Error("L2 unreachable");
-          return gate.budget(sessionId);
+          calls++;
+          const down = o.budgetDown?.() ?? false;
+          if (down === "all" || (down === "tool" && calls > 1)) throw new Error("L2 unreachable");
+          return { ...(await gate.budget(sessionId)), account: o.account?.() ?? "ready" };
         },
       };
     };
@@ -181,18 +201,19 @@ async function start(env: Record<string, string> = DOCS, extra: Parameters<typeo
 describe("T-API-05 every hosted agent route is documented, and every documented route is mounted", () => {
   it("T-API-05 the document's operations equal the routes mounted on the agent (API_DOCS=1)", async () => {
     const { app } = await start();
-    expect(routeDiff(documentedRoutes(loadDoc()), mountedRoutes(app))).toEqual({ undocumented: [], unmounted: [] });
+    // 019: the settings route needs AGENT_DESKTOP_CLIENT_ID, which the dev issuer can't have; T-API-18 mounts it.
+    expect(routeDiff(documentedRoutes(loadDoc(), (op) => !isSignInSettings(op)), mountedRoutes(app))).toEqual({ undocumented: [], unmounted: [] });
   });
 
   it("T-API-05 without API_DOCS, the mounted routes are exactly the documented non-docs operations", async () => {
     const { app } = await start({});
     const doc = loadDoc();
-    expect(routeDiff(documentedRoutes(doc, (op) => !isDocsRoute(op)), mountedRoutes(app))).toEqual({ undocumented: [], unmounted: [] });
+    expect(routeDiff(documentedRoutes(doc, (op) => !isDocsRoute(op) && !isSignInSettings(op)), mountedRoutes(app))).toEqual({ undocumented: [], unmounted: [] });
   });
 
   it("T-API-05 must-fail: a route missing from the document, or documented but not mounted, is reported", async () => {
     const { app } = await start();
-    const doc = loadDoc();
+    const doc = withoutSettings(loadDoc());
     delete doc.paths["/readyz"];
     doc.paths["/v1/runs/{runId}"] = { get: { responses: {} } };
     expect(routeDiff(documentedRoutes(doc), mountedRoutes(app))).toEqual({ undocumented: ["GET /readyz"], unmounted: ["GET /v1/runs/:runId"] });
@@ -229,12 +250,12 @@ async function authMismatches(doc: OpenApiDoc, a: HostedTestApp): Promise<string
 describe("T-API-06 each operation's security matches the agent's guard", () => {
   it("T-API-06 POST /v1/runs needs a caller's token with agent:run; the health and docs routes need none", async () => {
     const a = await start();
-    expect(await authMismatches(loadDoc(), a)).toEqual([]);
+    expect(await authMismatches(withoutSettings(loadDoc()), a)).toEqual([]);
   });
 
   it("T-API-06 must-fail: a document calling /v1/runs open, or /healthz secured, is reported", async () => {
     const a = await start();
-    const doc = loadDoc();
+    const doc = withoutSettings(loadDoc());
     doc.paths["/v1/runs"]!.post!.security = [];
     doc.paths["/healthz"]!.get!.security = [{ requesterBearer: [] }];
     expect(await authMismatches(doc, a)).toEqual(["POST /v1/runs no token: 401", "GET /healthz no token: 200", "GET /healthz without agent:run: 200"]);
@@ -249,8 +270,9 @@ describe("T-API-07 live responses match the documented status, headers and schem
   it("T-API-07 a scenario reaching every documented status conforms to the document", async () => {
     const doc = loadDoc();
     const sellerUrl = await seller();
-    let budgetDown = false;
-    const p = ports({ budgetDown: () => budgetDown });
+    let budgetDown: false | "tool" | "all" = false;
+    let account: "ready" | "not_onboarded" = "ready";
+    const p = ports({ budgetDown: () => budgetDown, account: () => account });
     const m = scriptedModel();
     const a = await start({ ...DOCS, SELLER_URL: sellerUrl }, { model: m.model, gate: p.gate, settlement: p.settlement, ready: false });
     const seen = new Set<string>();
@@ -288,7 +310,7 @@ describe("T-API-07 live responses match the documented status, headers and schem
 
     // the same session again; a tool that throws; a failed run; a run stopped at the step limit
     await runs({ goal: "And a market brief", sessionRef: first.sessionRef });
-    budgetDown = true;
+    budgetDown = "tool";
     m.push(toolCall("check_budget", {}), text("L2 is down"));
     const toolError = await runs({ goal: "How much is left?" });
     budgetDown = false;
@@ -299,6 +321,14 @@ describe("T-API-07 live responses match the documented status, headers and schem
     m.push(...Array.from({ length: 10 }, () => toolCall("check_budget", {})));
     const stopped = await runs({ goal: "Keep checking the budget" });
     expect([stopped.status, stopped.stopReason]).toEqual(["stopped", "step_limit"]);
+
+    // 019: refused before the run, a person who can't pay now (409) and an L2 that can't say (503)
+    account = "not_onboarded";
+    await runs({ goal: "no account yet" });
+    account = "ready";
+    budgetDown = "all";
+    await runs({ goal: "L2 is down for the question" });
+    budgetDown = false;
 
     // refusals: body, token, role, session, size
     await runs({ goal: "" });
@@ -332,7 +362,8 @@ describe("T-API-07 live responses match the documented status, headers and schem
     await call("GET", "/openapi.yaml");
 
     expect(errors).toEqual([]);
-    const documented = operations(doc).flatMap(([meth, path, op]) => Object.keys(op.responses).map((s) => `${meth} ${path} ${s}`));
+    // 019: the settings route isn't mounted on this agent (the dev issuer); T-API-18 reaches its one status.
+    const documented = operations(withoutSettings(doc)).flatMap(([meth, path, op]) => Object.keys(op.responses).map((s) => `${meth} ${path} ${s}`));
     expect(documented.filter((d) => !seen.has(d))).toEqual([]);
   });
 
@@ -395,7 +426,7 @@ describe("T-API-08 the docs routes are off by default, and in Azure only the age
 
   it("T-API-08 off by default: no docs route is mounted; docs URLs answer 401 without a token and 404 with one", async () => {
     const a = await start({});
-    expect(routeDiff(documentedRoutes(loadDoc()), mountedRoutes(a.app)).unmounted).toEqual(["GET /docs", "GET /docs/:asset", "GET /openapi.yaml"]);
+    expect(routeDiff(documentedRoutes(loadDoc(), (op) => !isSignInSettings(op)), mountedRoutes(a.app)).unmounted).toEqual(["GET /docs", "GET /docs/:asset", "GET /openapi.yaml"]);
     expect(await probe(a.base)).toEqual(DOCS_PROBES.map((p) => `${p} 401`));
     expect(await probe(a.base, await a.token("alice"))).toEqual(DOCS_PROBES.map((p) => `${p} 404`));
   });
@@ -487,7 +518,7 @@ describe("T-API-08 the docs routes are off by default, and in Azure only the age
     const served = parse((await send(a.base, "GET", "/openapi.yaml")).text) as Doc;
     expect(served.components.securitySchemes.signIn).toMatchObject({
       type: "oauth2",
-      flows: { authorizationCode: { authorizationUrl: `${TENANT}authorize`, tokenUrl: `${TENANT}oauth/token`, scopes: {} } },
+      flows: { authorizationCode: { authorizationUrl: `${TENANT}authorize`, tokenUrl: `${TENANT}oauth/token`, scopes: { openid: expect.any(String), offline_access: expect.any(String), "agent:run": expect.any(String) } } },
     });
     expect(served.paths["/v1/runs"]!.post!.security).toEqual([{ signIn: [] }, { requesterBearer: [] }]);
     // The sign-in comes first in the Authorize dialog, which lists the schemes in the document's order: after the
@@ -533,5 +564,56 @@ describe("T-API-08 the docs routes are off by default, and in Azure only the age
     await expect(start({ API_DOCS: "1", API_DOCS_CLIENT_ID: "x402-agent-cli-dev" })).rejects.toThrow(/API_DOCS_CLIENT_ID needs the sign-in tenant/);
     // must-fail: a document without the scheme can't be served with sign-in, rather than offering a broken button
     expect(() => servedHostedApiDocument("openapi: 3.1.0\nservers:\n  - url: http://x\npaths: {}\n", { issuer: TENANT, clientId: "c", audience: "a" })).toThrow("no sign-in scheme to fill");
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// T-API-18 (019): the 401's code, the account question's 409 and 503, the sign-in settings route, the scopes
+// ---------------------------------------------------------------------------------------------------------------
+
+describe("T-API-18 the document describes what 019 adds (specs/019 contracts/hosted-agent-api.md)", () => {
+  type Resp = { description?: string; content?: Record<string, { schema?: { $ref?: string } }> };
+  const doc = () => loadDoc() as OpenApiDoc & { components: { schemas: Record<string, { properties?: Record<string, { enum?: string[] }>; required?: string[]; additionalProperties?: boolean }>; responses: Record<string, Resp>; securitySchemes: Record<string, { flows?: { authorizationCode?: { scopes?: Record<string, string> } } }> } };
+  const CODES = ["missing_token", "token_expired", "invalid_token", "account_not_onboarded", "account_disabled", "accounts_off", "control_unavailable"];
+
+  it("T-API-18 Error's error_code is the seven codes; the 401 response names its three, and /v1/runs documents 409 and 503 with theirs", () => {
+    const d = doc();
+    expect(d.components.schemas.Error!.properties!.error_code!.enum).toEqual(CODES);
+    const unauthorized = d.components.responses.Unauthorized!.description ?? "";
+    for (const code of CODES.slice(0, 3)) expect(unauthorized, code).toContain(`\`${code}\``);
+    const runs = d.paths["/v1/runs"]!.post!.responses as Record<string, Resp>;
+    for (const code of CODES.slice(3, 6)) expect(runs["409"]!.description, code).toContain(`\`${code}\``);
+    expect(runs["503"]!.description).toContain("`control_unavailable`");
+    for (const status of ["409", "503"]) expect(runs[status]!.content!["application/json"]!.schema!.$ref).toBe("#/components/schemas/Error");
+  });
+
+  it("T-API-18 signIn lists openid, offline_access and agent:run, each described", () => {
+    const scopes = doc().components.securitySchemes.signIn!.flows!.authorizationCode!.scopes!;
+    expect(Object.keys(scopes)).toEqual(["openid", "offline_access", "agent:run"]);
+    for (const [scope, text] of Object.entries(scopes)) expect(text.length, scope).toBeGreaterThan(20);
+  });
+
+  it("T-API-18 with a desktop client the settings route is mounted, open, and its answer conforms to AgentAuthSettings; every documented route is mounted", async () => {
+    const d = loadDoc();
+    const a = await start(DESKTOP);
+    expect(routeDiff(documentedRoutes(d), mountedRoutes(a.app))).toEqual({ undocumented: [], unmounted: [] });
+    expect(d.paths[SETTINGS_PATH]!.get!.security).toEqual([]);
+    const res = await send(a.base, "GET", SETTINGS_PATH);
+    expect([res.status, res.type, res.headers.get("cache-control")]).toEqual([200, "application/json", "public, max-age=300"]);
+    expect(conformance(d, responseContent(d, "GET", SETTINGS_PATH, 200)!["application/json"]!.schema!, res.body)).toEqual([]);
+    expect(Object.keys(res.body as object).sort()).toEqual([...(doc().components.schemas.AgentAuthSettings!.required ?? [])].sort());
+    // Its security matches the guard: open without a token, as the document says.
+    const settingsOnly = { ...d, paths: { [SETTINGS_PATH]: d.paths[SETTINGS_PATH]! } } as OpenApiDoc;
+    expect(await authMismatches(settingsOnly, a)).toEqual([]);
+  });
+
+  it("T-API-18 must-fail: a 401 body checked against an Error without error_code, and a settings answer with a field more, are reported", async () => {
+    const d = loadDoc() as ReturnType<typeof doc>;
+    const a = await start();
+    const res = await send(a.base, "POST", "/v1/runs");
+    const without = { ...d.components.schemas.Error!, properties: { error: { type: "string" } } };
+    expect(conformance(d, without as never, res.body).length).toBeGreaterThan(0);
+    const settings = { ...agentAuthSettings({ issuer: TENANT, audience: "a" }, "c"), extra: 1 };
+    expect(conformance(d, { $ref: "#/components/schemas/AgentAuthSettings" } as never, settings).length).toBeGreaterThan(0);
   });
 });

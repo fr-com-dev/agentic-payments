@@ -7,7 +7,7 @@ import { resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { CHAIN_PORT, DEFAULT_DEPLOYMENT_FILE, DEFAULT_PORTS, DEV_TOKENS, formatAtomic } from "../src/shared/config.js";
 import { DEV_ISSUER } from "../src/shared/identity-token.js";
-import { DEV_AGENT_CLIENT, DEV_AUDIENCE, DEV_PORTAL_CLIENT } from "./dev-issuer-lib.js";
+import { DEV_AGENT_CLIENT, DEV_AUDIENCE, DEV_DESKTOP_CLIENT, DEV_PORTAL_CLIENT } from "./dev-issuer-lib.js";
 import { GANACHE_NOISE, localAddress, localDevKeys } from "./local-chain-lib.js";
 import { RegressionBaseline } from "../test/helpers/baseline.js";
 
@@ -78,7 +78,8 @@ export const DEV_JWKS_FILE = ".local/dev-issuer/jwks.json";
 export const DEV_SIGN_IN = {
   AUTH_ISSUER: DEV_ISSUER,
   AUTH_AUDIENCE: DEV_AUDIENCE,
-  AGENT_CLIENT_IDS: DEV_AGENT_CLIENT,
+  // 019: the agent CLI's client and the desktop client: a person's token may come from either.
+  AGENT_CLIENT_IDS: `${DEV_AGENT_CLIENT},${DEV_DESKTOP_CLIENT}`,
   AUTH_JWKS_FILE: DEV_JWKS_FILE,
 } as const;
 

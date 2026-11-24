@@ -266,6 +266,21 @@ describe("T-AGT-02 tool set", () => {
     }
   });
 
+  it("019 US4 check_budget's output has no account, even when L2's budget has one: the model and a step's result keep their fields", async () => {
+    const model = mockModel([toolCall("check_budget", {}), text("done")]);
+    // The default fake L2 answers the user view with `account: "ready"`, as L2 does for a person.
+    const a = await hosted({ model });
+    const r = await a.run("alice", { goal: "how much is left?" });
+    expect(r.status).toBe(200);
+    const [step] = r.body.steps as { tool: string; result: Record<string, unknown> }[];
+    expect(step!.tool).toBe("check_budget");
+    expect(Object.keys(step!.result).sort()).toEqual(["asset", "decimals", "perPaymentCapAtomic", "remainingAtomic", "sessionCapAtomic", "sessionId", "spentOrReservedAtomic"]);
+    // What the model read back: the tool's result, without the account answer.
+    const seen = JSON.stringify(model.doStreamCalls[1]!.prompt);
+    expect(seen).toContain("remainingAtomic");
+    expect(seen).not.toContain("account");
+  });
+
   it("a model that always calls a tool stops after exactly 10 model calls", async () => {
     const model = mockModel(async () => toolCall("check_budget", {}));
     const a = await hosted({ model });

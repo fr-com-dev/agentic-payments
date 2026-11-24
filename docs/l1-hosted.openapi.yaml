@@ -4,7 +4,7 @@
 openapi: 3.1.0
 info:
   title: L1 hosted agent API
-  version: "1.17"
+  version: "1.29"
   summary: The purchasing agent of the x402 three-layer agent payments PoC, as an HTTP service.
   description: |
     A Claude agent that buys HTTP resources with x402 within a spending mandate. It holds no key: every
@@ -16,7 +16,13 @@ info:
       credentials) carries `agent:run` from its grant. Without a valid token every path answers 401, except
       `/healthz`, `/readyz` and the docs routes. v1.17: the agent forwards the token to L2 with each payment
       request and budget question, and L2 verifies it again and takes the user from it. A person's run pays from
-      that person's own account; a machine caller's from the platform account.
+      that person's own account; a machine caller's from the platform account. v1.29: a 401 says why in
+      `error_code` (`missing_token`, `token_expired`: renew, `invalid_token`: sign in again), and a person can
+      sign in from a desktop client on their own computer (browser, loopback return, PKCE), whose settings are at
+      `/.well-known/agent-auth`.
+    - **Account.** v1.29: before a person's run the agent asks L2 whether that person can pay now, and answers
+      409 with a code when they can't (no account at the portal, turned off there, or no person accounts at this
+      L2), or 503 when L2 can't say. Nothing is spent and the run is not counted.
     - **One call, one run.** The response arrives when the run has ended (completed, stopped or failed), at
       most 200 s later. Allow up to 220 s on the client. v1.17: send `Accept: text/event-stream` to receive the
       run as it happens instead: its identifier at once, the text as it is written, each finished step, and the
@@ -36,6 +42,8 @@ servers:
 tags:
   - name: runs
     description: Run a goal (a person or a machine caller, each with the permission `agent:run`).
+  - name: sign-in
+    description: v1.29. What a desktop client signs in with; no token. Mounted only with `AGENT_DESKTOP_CLIENT_ID`.
   - name: health
     description: Liveness and readiness; no token.
   - name: docs
@@ -49,8 +57,9 @@ paths:
       summary: Run one goal to the end
       description: |
         Checks, in order: the token (401, 403), the requester's limits (429), the body (400, 413), the session
-        (400, 404), then runs the goal with exactly two tools, `fetch_resource` and `check_budget`, for at most
-        10 steps and 200 s. A refused call makes no model, L2 or L3 call. Every finished step is listed, also
+        (400, 404), v1.29 for a person whether they can pay now (409, 401, 503: one question to L2, within 1 s),
+        then runs the goal with exactly two tools, `fetch_resource` and `check_budget`, for at most 10 steps and
+        200 s. A refused call makes no model or L3 call, and no L2 call but that question. Every finished step is listed, also
         for a stopped or failed run. An ESCALATED purchase carries an `authorizationId`: give it to an operator,
         then call again with the same `sessionRef`.
       security:
@@ -99,7 +108,7 @@ paths:
 
                   A line `: keep-alive` is sent whenever 15 seconds pass with nothing else sent. Nothing follows
                   `result`. The stream carries nothing the JSON answer does not. A request refused before the run
-                  starts (401, 403, 429, 400, 413, 404) gets the JSON error, with or without this header.
+                  starts (401, 403, 429, 400, 413, 404, 409, 503) gets the JSON error, with or without this header.
               examples:
                 stream:
                   summary: A run that reads the catalog and answers
@@ -133,6 +142,17 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "409":
+          description: >-
+            v1.29. A person whose account can't pay now, answered before the run starts, as JSON with or without a
+            stream (`account not ready`): `account_not_onboarded` (no account set up at the portal),
+            `account_disabled` (turned off at the portal) or `accounts_off` (this agent's L2 has no person accounts).
+            A person whose policies are all paused is ready: the run starts and each purchase is denied by policy.
+            No model call, no payment request, and the refusal is not counted as a start.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "413":
           description: The body is over 16 KB.
           content:
@@ -154,6 +174,41 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "503":
+          description: >-
+            v1.29. L2 couldn't say whether the person can pay (`control unavailable`, `control_unavailable`): no
+            answer within 1 s, or an answer the agent doesn't expect. Answered before the run starts, as JSON; nothing
+            is spent.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /.well-known/agent-auth:
+    get:
+      tags: [sign-in]
+      operationId: agentAuthSettings
+      summary: The desktop client's sign-in settings
+      description: |
+        v1.29. The public values a desktop client signs a person in with: the tenant's issuer and its two
+        addresses, people's API, the desktop client, the scopes and the loopback return address. All of them
+        come from the agent's own settings; none is a secret. Mounted only with `AGENT_DESKTOP_CLIENT_ID`;
+        without it the path is like any unknown one (401 without a token, 404 with one). Counted by the
+        per-address limit. It reads no session and calls no model, L2 or L3.
+      security: []
+      responses:
+        "200":
+          description: The settings.
+          headers:
+            Cache-Control:
+              description: "`public, max-age=300`."
+              required: true
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentAuthSettings"
 
   /healthz:
     get:
@@ -285,7 +340,14 @@ components:
         authorizationCode:
           authorizationUrl: https://sign-in-tenant.invalid/authorize
           tokenUrl: https://sign-in-tenant.invalid/oauth/token
-          scopes: {}
+          scopes:
+            openid: v1.29. An ID token for the person who signed in. Not needed by the docs page.
+            offline_access: >-
+              v1.29. A refresh token, so the sign-in lasts for days: for the desktop client, whose refresh tokens
+              rotate. The docs page's own client has no refresh-token grant and gets none.
+            agent:run: >-
+              v1.29. Start a run for the person's own account. The tenant grants it from the role x402-agent; the
+              agent reads the permission granted, not the scope asked for, so the page signs in without ticking it.
     # sign-in:end
 
     requesterBearer:
@@ -312,7 +374,10 @@ components:
     Unauthorized:
       description: >-
         Missing, malformed, invalid, expired or wrong-audience token, a machine token whose subject is not its
-        client's, or a token of an issuer the service does not know.
+        client's, or a token of an issuer the service does not know. v1.29: `error_code` says which of three
+        cases it is, and nothing more: `missing_token` (no bearer token: send one), `token_expired` (its validity
+        period is its only fault: renew it; also when it expired between the agent's check and L2's) or
+        `invalid_token` (anything else, the same answer whichever check failed: sign in again).
       headers:
         WWW-Authenticate:
           description: >-
@@ -344,6 +409,42 @@ components:
       properties:
         error:
           type: string
+        error_code:
+          type: string
+          enum: [missing_token, token_expired, invalid_token, account_not_onboarded, account_disabled, accounts_off, control_unavailable]
+          description: >-
+            v1.29. Machine-readable: on a 401 (`missing_token`, `token_expired`, `invalid_token`), a 409
+            (`account_not_onboarded`, `account_disabled`, `accounts_off`) or a 503 (`control_unavailable`).
+
+    AgentAuthSettings:
+      type: object
+      additionalProperties: false
+      required: [issuer, authorization_endpoint, token_endpoint, audience, client_id, scopes, redirect_uri]
+      description: v1.29. What a desktop client signs in with (`GET /.well-known/agent-auth`).
+      properties:
+        issuer:
+          type: string
+          description: The sign-in tenant's issuer, `AUTH_ISSUER` (`https://<domain>/`).
+        authorization_endpoint:
+          type: string
+          description: "`<issuer>authorize`: where the browser signs the person in."
+        token_endpoint:
+          type: string
+          description: "`<issuer>oauth/token`: where the code is exchanged with its PKCE verifier, and renewed."
+        audience:
+          type: string
+          description: People's API, `AUTH_AUDIENCE`.
+        client_id:
+          type: string
+          description: "The desktop client, `AGENT_DESKTOP_CLIENT_ID`: public, it has no secret."
+        scopes:
+          type: array
+          items:
+            type: string
+          description: "`openid`, `offline_access` and `agent:run`."
+        redirect_uri:
+          type: string
+          description: "`http://127.0.0.1:53682/callback`, on the person's own computer (`http://localhost:53682/callback` works too)."
 
     SessionRef:
       type: string

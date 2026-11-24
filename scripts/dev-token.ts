@@ -1,5 +1,7 @@
-// npm run dev-token -- [--subject <name>] [--no-role] [--expired] [--service] [--portal [--admin]] [--auth-age <seconds>]
+// npm run dev-token -- [--subject <name>] [--no-role] [--expired] [--service | --desktop] [--portal [--admin]] [--auth-age <seconds>]
 // 1.19: --admin also writes the second-factor time (https://x402.dev/mfa_time) at the sign-in time.
+// 019: --desktop mints the same person's agent token from the desktop client (the dev issuer's
+// x402-agent-desktop-dev) instead of the agent CLI's; it can't be combined with --portal or --service.
 // Prints one access token from the local dev issuer (NETWORK=local only). By default a person's token for the hosted
 // agent service: `sub` dev|<name>, the `agent:run` permission, the agent CLI's client. With --portal the same person's
 // token from the portal's client, with a fresh sign-in time; --auth-age backdates that time, to try the "confirm
@@ -9,7 +11,7 @@
 // dev machine client or the client named by --subject. --no-role leaves the permission out of either kind.
 // Exit codes: 0 printed; 2 NETWORK is not local or a bad argument.
 import { pathToFileURL } from "node:url";
-import { DEV_ADMIN_PERMISSION, DEV_MACHINE_CLIENT, DEV_PERMISSION, DEV_PORTAL_CLIENT, loadOrCreateDevIssuer, signDevToken } from "./dev-issuer-lib.js";
+import { DEV_ADMIN_PERMISSION, DEV_DESKTOP_CLIENT, DEV_MACHINE_CLIENT, DEV_PERMISSION, DEV_PORTAL_CLIENT, loadOrCreateDevIssuer, signDevToken } from "./dev-issuer-lib.js";
 
 /** A person's `permissions` claim for the flags given, or an error. Pure, so the flag rules are tested without a key. */
 export function permissionsFor(argv: readonly string[]): { permissions?: string[] } | { error: string } {
@@ -38,6 +40,11 @@ async function main(argv: string[]): Promise<number> {
     console.error("dev-token: --portal and --service can't be combined (the portal refuses machine callers)");
     return 2;
   }
+  const desktop = argv.includes("--desktop");
+  if (desktop && (portal || argv.includes("--service"))) {
+    console.error("dev-token: --desktop can't be combined with --portal or --service (it is a person's agent token)");
+    return 2;
+  }
   const permissions = permissionsFor(argv);
   if ("error" in permissions) {
     console.error(`dev-token: ${permissions.error}`);
@@ -49,6 +56,7 @@ async function main(argv: string[]): Promise<number> {
   const token = await signDevToken(issuer, {
     subject: named ?? (service ? DEV_MACHINE_CLIENT : "dev-user"),
     ...(service && { service: true }),
+    ...(desktop && { azp: DEV_DESKTOP_CLIENT }),
     ...(portal && { azp: DEV_PORTAL_CLIENT, authTime: Math.floor(Date.now() / 1000) - Number(ageRaw ?? 0) }),
     // 1.19 (SEC-35): an administrator signs in with a second factor (the tenant asks for one), at the same time.
     ...(portal && argv.includes("--admin") && { mfaTime: Math.floor(Date.now() / 1000) - Number(ageRaw ?? 0) }),

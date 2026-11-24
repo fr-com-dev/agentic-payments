@@ -5,7 +5,8 @@
 # portal's client is public, so none of this is a secret either.
 # For the hosted agent's callers (specs/016 research R10), last: bicepparam_agent goes there as param agent, beside
 # apiDocs, which that file sets itself; l1_env goes into a local env/l1-hosted.env, and l2_env carries the same
-# sign-in lines for L2. Client IDs and a key's ID: none is a secret.
+# sign-in lines for L2. Client IDs and a key's ID: none is a secret. 019: both lists name the desktop client beside the
+# agent's, and l1_env and bicepparam_agent name it on its own as well (AGENT_DESKTOP_CLIENT_ID, desktopClientId).
 
 output "bicepparam_ciba" {
   description = "The ciba object for infra/main.<environment>.bicepparam. Set enabled to true there only once the l2 vault's ciba-client-credential holds the real credential (specs/012 quickstart §6)."
@@ -20,7 +21,7 @@ output "bicepparam_ciba" {
 }
 
 output "l2_env" {
-  description = "The non-secret lines for a local env/l2-control.env: the CIBA_* ones (no approver: each request goes to the person the payment is for, SPEC v1.16), then the callers' sign-in (the same three values as l1_env). Add CIBA_CLIENT_KEY (the private half) or CIBA_CLIENT_SECRET yourself."
+  description = "The non-secret lines for a local env/l2-control.env: the CIBA_* ones (no approver: each request goes to the person the payment is for, SPEC v1.16), then the callers' sign-in (the same three values as l1_env: AGENT_CLIENT_IDS names the agent's client and the desktop client). Add CIBA_CLIENT_KEY (the private half) or CIBA_CLIENT_SECRET yourself."
   value = join("\n", [
     "CIBA_APPROVAL=1",
     "CIBA_ISSUER=${local.issuer}",
@@ -28,7 +29,7 @@ output "l2_env" {
     "CIBA_AUDIENCE=${auth0_resource_server.payments.identifier}",
     "AUTH_ISSUER=${local.issuer}",
     "AUTH_AUDIENCE=${auth0_resource_server.identity.identifier}",
-    "AGENT_CLIENT_IDS=${auth0_client.agent.client_id}",
+    "AGENT_CLIENT_IDS=${auth0_client.agent.client_id},${auth0_client.desktop.client_id}",
   ])
 }
 
@@ -61,20 +62,22 @@ output "portal_env" {
 }
 
 output "bicepparam_agent" {
-  description = "The agent object for infra/main.<environment>.bicepparam, but its apiDocs, which that file sets itself: the agent's client, and the pipeline's machine caller (checks) with its key's ID, both empty until machine_caller_keys declares checks."
+  description = "The agent object for infra/main.<environment>.bicepparam, but its apiDocs, which that file sets itself: the agent's client, the desktop client (019), and the pipeline's machine caller (checks) with its key's ID, both empty until machine_caller_keys declares checks."
   value = {
     clientId        = auth0_client.agent.client_id
+    desktopClientId = auth0_client.desktop.client_id
     machineClientId = try(auth0_client.machine["checks"].client_id, "")
     machineKeyId    = try(one(auth0_client_credentials.machine["checks"].private_key_jwt[0].credentials).key_id, "")
   }
 }
 
 output "l1_env" {
-  description = "The callers' sign-in lines for a local env/l1-hosted.env pointed at the tenant (remove AUTH_JWKS_FILE there). A machine caller's client is never on AGENT_CLIENT_IDS, and neither is the portal's."
+  description = "The callers' sign-in lines for a local env/l1-hosted.env pointed at the tenant (remove AUTH_JWKS_FILE there). AGENT_CLIENT_IDS names the agent's client and the desktop client (019); a machine caller's client is never on it, and neither is the portal's. AGENT_DESKTOP_CLIENT_ID turns on the agent's sign-in settings route."
   value = join("\n", [
     "AUTH_ISSUER=${local.issuer}",
     "AUTH_AUDIENCE=${auth0_resource_server.identity.identifier}",
-    "AGENT_CLIENT_IDS=${auth0_client.agent.client_id}",
+    "AGENT_CLIENT_IDS=${auth0_client.agent.client_id},${auth0_client.desktop.client_id}",
     "API_DOCS_CLIENT_ID=${auth0_client.agent.client_id}",
+    "AGENT_DESKTOP_CLIENT_ID=${auth0_client.desktop.client_id}",
   ])
 }

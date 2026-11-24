@@ -59,13 +59,14 @@ describe("T-EDGE-06 every 401 carries the bearer challenge, and nothing else doe
       });
     const bare = await run();
     expect([bare.status, bare.headers["www-authenticate"]]).toEqual([401, 'Bearer realm="x402-agent"']);
-    for (const [name, authorization] of [
-      ["a forged token", "Bearer a.b.c"],
-      ["an expired token", `Bearer ${await a.token("alice", { exp: EXPIRED })}`],
-      ["another audience", `Bearer ${await a.token("alice", { audience: "api://another-api" })}`],
+    // 019: the body gains error_code (T-AGT-16); the challenge is unchanged.
+    for (const [name, authorization, code] of [
+      ["a forged token", "Bearer a.b.c", "invalid_token"],
+      ["an expired token", `Bearer ${await a.token("alice", { exp: EXPIRED })}`, "token_expired"],
+      ["another audience", `Bearer ${await a.token("alice", { audience: "api://another-api" })}`, "invalid_token"],
     ] as const) {
       const r = await run(authorization);
-      expect([r.status, r.json, r.headers["www-authenticate"]], name).toEqual([401, { error: "unauthorized" }, 'Bearer realm="x402-agent", error="invalid_token"']);
+      expect([r.status, r.json, r.headers["www-authenticate"]], name).toEqual([401, { error: "unauthorized", error_code: code }, 'Bearer realm="x402-agent", error="invalid_token"']);
     }
     const forbidden = await run(`Bearer ${await a.token("alice", { permissions: [] })}`);
     expect([forbidden.status, forbidden.headers["www-authenticate"]]).toEqual([403, undefined]);

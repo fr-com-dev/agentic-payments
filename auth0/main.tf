@@ -10,8 +10,8 @@
 #
 # And what the hosted agent's callers need (specs/016 research R9, R10), last: the agent's public client, through
 # which the agent's docs page signs a person in, and one confidential client per machine caller, with a key and no
-# secret. The tenant's applications are exactly L2's, the portal's, the agent's and the machine callers' (T-IAC-02
-# fails on any other). People's API has two permissions, portal:admin (014) and agent:run (016), each held by one
+# secret. The tenant's applications are exactly L2's, the portal's, the agent's, the desktop client (019) and the
+# machine callers' (T-IAC-02 fails on any other). People's API has two permissions, portal:admin (014) and agent:run (016), each held by one
 # role. A tenant administrator assigns a role per person, by hand: nobody is assigned here, and no user is created
 # here. To keep one person out, block that user in Auth0.
 #
@@ -20,6 +20,10 @@
 # with no role, through the project's own Google application. Email-and-password sign-up follows var.allow_sign_ups,
 # through the database connection's own Disable Sign Ups (and, until step B of specs/018, the pre-user-registration
 # Action at the end). var.google_sign_in false stops Google sign-in in an emergency, for existing Google people too.
+#
+# And the desktop client (SPEC v1.29, specs/019): a person signs in from their own computer, in their browser, and the
+# sign-in returns to a fixed loopback address there, with PKCE and rotating refresh tokens. The first post-login
+# Action refuses a desktop sign-in, and a renewal, to anyone without x402-agent, and any PKCE method but S256.
 
 locals {
   # Must equal DETAILS_TYPE in src/layer2-control/payment-details.ts (T-IAC-02): Auth0's Guardian schema, the only
@@ -45,6 +49,10 @@ locals {
   # address under each origin, and nowhere else.
   agent_origins   = concat(var.local_origins ? ["http://localhost:4024", "http://127.0.0.1:4024"] : [], var.agent_origin == "" ? [] : [var.agent_origin])
   agent_callbacks = [for origin in local.agent_origins : "${origin}/docs/oauth2-redirect.html"]
+  # 019: the desktop client returns to the person's own computer, at one fixed port, under both names a browser may
+  # use. Not under var.local_origins: these addresses are never a page an environment serves, so every environment's
+  # desktop client has exactly these two (RFC 8252 section 7.3).
+  desktop_callbacks = ["http://127.0.0.1:53682/callback", "http://localhost:53682/callback"]
 }
 
 # The approval API: its identifier is CIBA_AUDIENCE. L2 verifies its access tokens (RS256, RFC 9068 profile, so they
@@ -165,8 +173,9 @@ resource "auth0_tenant" "mfa_actions" {
 # People's API: its identifier is AUTH_AUDIENCE for the portal, the hosted agent and L2. The token profile is the one
 # the sign-in was verified with: it names the client as azp and carries a permissions list. RBAC is enforced, so
 # that list holds only the permissions of the person's roles (or of a machine caller's grant), and nobody can ask
-# for one. Each service verifies the token offline. Refresh tokens are allowed, for the portal web app's rotation.
-# Tokens live an hour.
+# for one. Each service verifies the token offline. Refresh tokens are allowed, for the portal web app's rotation and
+# the desktop client's (019). Tokens live an hour. Consent is skipped for first-party clients Auth0 can verify, which a
+# loopback return isn't: a desktop sign-in may show a consent screen once (specs/019 Edge Cases).
 resource "auth0_resource_server" "identity" {
   name                                            = "api-x402-${var.environment}"
   identifier                                      = local.identity_audience
@@ -283,8 +292,11 @@ resource "auth0_client_credentials" "portal" {
 # The first post-login Action: it writes the time of the person's most recent authentication on the access token,
 # as local.auth_time_claim (Auth0 puts auth_time in the ID token only). L2 judges from it whether a loosening policy
 # change follows a fresh sign-in. Phase 3: on an administrator's (auth0_role.admin) interactive sign-in in a browser
-# without a second factor as recent as the rest of it, it asks Auth0 for one (push or a one-time code). It sets
-# nothing else, holds no secret and uses no package. T-IAC-02 runs its code.
+# without a second factor as recent as the rest of it, it asks Auth0 for one (push or a one-time code). 019: for the
+# desktop client only (its client_metadata x402_client = "agent-desktop"), it first refuses a sign-in or a renewal
+# by a person without x402-agent, and a sign-in whose authorization did not use PKCE with S256, then asks for the
+# second factor as it does for an administrator. It sets nothing else, holds no secret and uses no package. T-IAC-02
+# runs its code.
 resource "auth0_action" "sign_in_time" {
   name    = "x402-sign-in-time-${var.environment}"
   runtime = "node22"
@@ -373,6 +385,49 @@ resource "auth0_client_credentials" "agent" {
   authentication_method = "none"
 }
 
+# 019: the desktop client, a public native client. A person signs in from their own computer: the browser at the
+# tenant, the return to a fixed loopback address (local.desktop_callbacks), the code exchanged with its PKCE verifier,
+# then rotating refresh tokens, so they sign in through the browser at most once every 30 days. Its client ID is on
+# AGENT_CLIENT_IDS at the agent and at L2, and is the agent's AGENT_DESKTOP_CLIENT_ID. A token from it gives a person
+# nothing by itself: the agent and L2 require agent:run, and sign-in-time.js refuses a sign-in or a renewal through it
+# without x402-agent, or without S256 (it recognizes the client by client_metadata, never by a secret). A spent
+# refresh token presented again revokes its whole family (leeway 0).
+resource "auth0_client" "desktop" {
+  name            = "app-agent-desktop-${var.environment}"
+  description     = "x402 hosted agent (${var.environment}): people sign in to it from a desktop client on their own computer (browser, loopback return, PKCE), to start runs for their own account."
+  app_type        = "native"
+  is_first_party  = true
+  oidc_conformant = true
+  grant_types     = ["authorization_code", "refresh_token"]
+
+  callbacks = local.desktop_callbacks
+
+  client_metadata = {
+    x402_client = "agent-desktop"
+  }
+
+  jwt_configuration {
+    alg = "RS256"
+  }
+
+  refresh_token {
+    rotation_type                = "rotating"
+    expiration_type              = "expiring"
+    token_lifetime               = 2592000
+    idle_token_lifetime          = 604800
+    infinite_token_lifetime      = false
+    infinite_idle_token_lifetime = false
+    leeway                       = 0
+  }
+}
+
+# No secret and no key: a program on a person's computer can't keep one. Declared, not left to the provider's
+# default, which isn't documented.
+resource "auth0_client_credentials" "desktop" {
+  client_id             = auth0_client.desktop.client_id
+  authentication_method = "none"
+}
+
 # One confidential client per machine caller (var.machine_caller_keys: its name and the public half of its key). Its
 # only grant type is client credentials, so it can't sign a person in, and it has no callback. The first one is
 # `checks`: the deployment pipeline's smoke run and scripted regression (research R9).
@@ -425,7 +480,7 @@ resource "auth0_client_grant" "machine" {
 # ---- People's connections (specs/018) ------------------------------------------------------------------------------
 
 # How a person signs in: email and password, or Google, and nothing else (T-IAC-02 fails on a third connection). Only
-# the portal's and the agent's clients may use them. L2's approval client asks a person for an approval by Guardian
+# the portal's and the agent's clients, and the desktop client (019), may use them. L2's approval client asks a person for an approval by Guardian
 # push and needs no connection, and a machine caller signs nobody in (research R3). Google sign-up is public by
 # design: a first Google sign-in creates the person, with no role. Email-and-password sign-up follows
 # var.allow_sign_ups.
@@ -490,13 +545,14 @@ resource "auth0_connection" "database" {
   }
 }
 
-# The clients that may sign a person in through each connection: the portal's and the agent's, nothing else. Each
+# The clients that may sign a person in through each connection: the portal's, the agent's and the desktop client
+# (019), nothing else. Each
 # list is authoritative: a client enabled by hand in the Dashboard shows in the next plan, and the apply takes it off
 # again (FR-018). An existing tenant imports both lists first: creating one fails on a connection that already has
 # clients.
 resource "auth0_connection_clients" "database" {
   connection_id   = auth0_connection.database.id
-  enabled_clients = [auth0_client.portal.client_id, auth0_client.agent.client_id]
+  enabled_clients = [auth0_client.portal.client_id, auth0_client.agent.client_id, auth0_client.desktop.client_id]
 }
 
 # var.google_sign_in false is the emergency stop: no client may use Google, which stops new Google people and every
@@ -507,7 +563,7 @@ resource "auth0_connection_clients" "database" {
 # next plan rather than being undone (FR-018).
 resource "auth0_connection_clients" "google" {
   connection_id   = data.auth0_connection.google.id
-  enabled_clients = var.google_sign_in ? [auth0_client.portal.client_id, auth0_client.agent.client_id] : []
+  enabled_clients = var.google_sign_in ? [auth0_client.portal.client_id, auth0_client.agent.client_id, auth0_client.desktop.client_id] : []
 
   lifecycle {
     precondition {
