@@ -1,14 +1,15 @@
 // T-E2E-AZ clean-up (specs/011 quickstart §6): infra/cleanup.sh against a fake tenant (test/fixtures/fake-azure.mjs)
 // and a fake `gh` (test/fixtures/fake-gh.mjs), with the target and names from infra/pre-deploy.<environment>.bicepparam,
 // compiled by the real Bicep CLI (needs BICEP_PATH). A
-// confirmed run must delete both GitHub environments (the deploy job's and the Auth0 job's), the deploy app's role
+// confirmed run must delete both GitHub environments (the deploy job's, and auth0-<environment>, which earlier versions
+// made for the Auth0 job; SPEC 1.26: by that name, since no parameter names it any more), the deploy app's role
 // assignments (none left orphaned), the resource group, the deploy app's registration and the operators' group, and
 // nothing else: another resource group, app (also one named like 011's API app for the agent's callers or 013's
 // portal web app, both retired, which the script no longer knows: specs/016 research R12), group, role assignment or
 // a repository secret stays. The app registration and the group stay soft-deleted, as Entra keeps them; with --purge
 // it purges them and the Foundry account; the vaults stay soft-deleted (purge protection) and are reported. --dry-run,
 // a refusal or an unconfirmed run changes nothing, and so does a pre-deploy file whose resource group main's file
-// doesn't deploy to, or whose Auth0 environment isn't auth0-<environment>.
+// doesn't deploy to.
 import { spawnSync } from "node:child_process";
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -252,7 +253,6 @@ describe.skipIf(!BICEP_PATH)("T-E2E-AZ clean-up (infra/cleanup.sh against a fake
     ["az signed in to another tenant", (s: State) => ({ ...s, signedInTenant: "99999999-9999-4999-8999-999999999999" }), PARAMS, ["--yes"], "az is signed in to the tenant 99999999"],
     ["a resource group main's parameter file doesn't deploy to", (s: State) => s, PARAMS.replace(/^ {2}resourceGroup: '.*'$/m, "  resourceGroup: 'rg-production'"), ["--yes"], `resource group rg-production is not ${M.resourceGroup}, the one main.dev.bicepparam deploys to`],
     ["an environment without a pre-deploy parameter file", (s: State) => s, PARAMS, ["--yes", "--environment", "prod"], "no infra/pre-deploy.prod.bicepparam"],
-    ["an Auth0 environment that isn't auth0-<environment>", (s: State) => s, PARAMS.replace(/^param githubAuth0Environment = .*$/m, "param githubAuth0Environment = 'production'"), ["--yes"], "githubAuth0Environment production is not auth0-dev"],
   ])("T-E2E-AZ cleanup.sh refuses %s, and deletes nothing", (_, state, params, args, message) => {
     const r = tenant(state(deployed()), { params })(args);
     expect(r.status).toBe(2);

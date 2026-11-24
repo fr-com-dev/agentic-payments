@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Deletes everything pre-deploy.bicep, main.bicep and infra/github-setup.sh created for one environment (specs/011
 # quickstart §6), in this order:
-# 1. the two GitHub environments the jobs run in: the deploy job's, and the Auth0 job's (auth0-<environment>), with
-#    the secrets an administrator set there (the Auth0 Management API credential, auth0/README.md) and its variables;
+# 1. the GitHub environment the deploy job runs in, and auth0-<environment> where an earlier version made it (SPEC
+#    1.26: no workflow uses it), with the secrets an administrator set there (the Auth0 Management API credential)
+#    and its variables;
 # 2. the deploy app's role assignments anywhere in the subscription. Azure keeps a deleted principal's role
 #    assignments, so they go before the app does;
 # 3. the resource group: the apps, jobs, environments, vaults, registry, storage, Foundry, identities, network and
@@ -21,8 +22,8 @@
 # registration and the group are purged afterwards. The vaults can't be: purge protection keeps them, with their
 # secrets, for 90 days. Deploying the environment again before then needs them recovered first.
 # It leaves the subscription's resource providers, NetworkWatcherRG (which Azure shares across deployments), the
-# subscription's deployment history and everything in the Auth0 tenant, whose Terraform state goes with the resource
-# group.
+# subscription's deployment history, everything in the Auth0 tenant, and (SPEC 1.26) the tenant's Terraform state,
+# which is a local file on the operator's host (scripts/auth0-tenant.sh), not in Azure.
 #
 # usage: infra/cleanup.sh [--environment dev] [--dry-run] [--purge] [--yes]
 #   --dry-run  only reads: prints what would be deleted, and deletes nothing (even with --yes)
@@ -73,10 +74,9 @@ APP_DEPLOY=$(value names.deployApp)
 GRP_OP=$(value names.operators)
 REPO=$(value githubRepository)
 GH_ENV=$(value githubEnvironment)
-GH_AUTH0_ENV=$(value githubAuth0Environment)
+# SPEC 1.26: the Auth0 job's environment that earlier versions made, by its only name.
+GH_AUTH0_ENV="auth0-$ENVIRONMENT"
 [[ "$RG" == "$MAIN_RG" ]] || refuse "pre-deploy.$ENVIRONMENT.bicepparam's resource group $RG is not $MAIN_RG, the one main.$ENVIRONMENT.bicepparam deploys to"
-# As infra/github-setup.sh requires: anything else could be another environment's Auth0 credential.
-[[ "$GH_AUTH0_ENV" == "auth0-$ENVIRONMENT" ]] || refuse "pre-deploy.$ENVIRONMENT.bicepparam's githubAuth0Environment $GH_AUTH0_ENV is not auth0-$ENVIRONMENT, the GitHub environment provision-auth0.yml's job runs in"
 
 SIGNED_IN=$(az account show --query tenantId -o tsv)
 [[ "$SIGNED_IN" == "$TENANT" ]] || refuse "az is signed in to the tenant $SIGNED_IN, not $TENANT (az login --tenant $TENANT)"

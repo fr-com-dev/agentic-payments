@@ -13,7 +13,6 @@ param names = {
   resourceGroup: 'rg-x402-${location}-${environment}'
   deployApp: 'app-deploy-${location}-${environment}'
   operators: 'grp-op-${location}-${environment}'
-  stateStorage: 'sttfstate${location}${environment}'
   // SPEC 1.25: the units' identities, made here so the deploy app's condition can name them: the same names as
   // main.dev.bicepparam's identities (T-IAC-01 rule 16), which main.bicep's apps look up.
   identities: {
@@ -37,8 +36,8 @@ param githubRepository = 'fr-com-dev/agentic-payments'
 param githubOwnerId = '274163174'
 param githubRepositoryId = '1422461966'
 param githubEnvironment = environment
-// provision-auth0.yml's job runs in its own GitHub environment, which holds the Auth0 Management API credential.
-param githubAuth0Environment = 'auth0-${environment}'
+// SPEC 1.26: no Auth0 job runs in GitHub. The tenant's Terraform runs on the operator's host (scripts/auth0-tenant.sh),
+// so the GitHub environment auth0-dev and the deploy app's credential for it are gone.
 
 // Nobody is given access to the agent here (016): its callers, people and machines, are the sign-in tenant's
 // (auth0/). The API app registration app-l1-eastus2-dev that 011 made for them is no longer in pre-deploy.bicep,
