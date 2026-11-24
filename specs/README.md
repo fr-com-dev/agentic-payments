@@ -1,9 +1,9 @@
 # Specs index: x402 three-layer agent payments
 
 These spec-kit feature specs decompose `SPEC.md` (v1.0 for 001–008, amended through v1.17 by 009, 010,
-011, 012, 013, 014, 015 (v1.16, in progress) and 016, and through v1.27 by 017 (v1.18–v1.25's security
-remediations have no feature spec); v1.4 added the L2 API docs without a feature spec), which
-remains normative. Project principles live in `.specify/memory/constitution.md` (v2.0.0).
+011, 012, 013, 014, 015 (v1.16, in progress) and 016, and through v1.27 by 017 (v1.18–v1.26 have no
+feature spec); v1.4 added the L2 API docs without a feature spec), which
+remains normative. Project principles live in `.specify/memory/constitution.md` (v3.0.0).
 It covers INV-1..13, the definition of done and the governance rules.
 
 | # | Feature | Layer | Functional scope | Main non-functional scope |

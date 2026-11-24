@@ -10,9 +10,9 @@ In Azure none of this applies: the portal runs in Container Apps behind its ingr
 ## What you need
 
 - Caddy 2 on the host, and a DNS name for the portal that points at it (Caddy gets the certificate).
-- The sign-in tenant's portal client with `https://<the portal's name>` among its origins: set the GitHub variable
-  `AUTH0_PORTAL_ORIGIN` of the `auth0-<env>` environment, then run `provision-auth0.yml` with `apply`. Without it
-  nobody can sign in there.
+- The sign-in tenant's portal client with `https://<the portal's name>` among its origins: set `portal_origin` in
+  the operator's tfvars file, then run `npm run auth0:tenant -- plan` and `npm run auth0:tenant -- apply` on the
+  operator's host (SPEC 1.26, `auth0/README.md`). Without it nobody can sign in there.
 - L2 running with user accounts on, as for any portal (`env/l2-control.env`).
 - The addresses that may reach the portal, as CIDR ranges: for example the range of a VPN or of a private network.
 

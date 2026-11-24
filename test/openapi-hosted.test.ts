@@ -489,7 +489,10 @@ describe("T-API-08 the docs routes are off by default, and in Azure only the age
       type: "oauth2",
       flows: { authorizationCode: { authorizationUrl: `${TENANT}authorize`, tokenUrl: `${TENANT}oauth/token`, scopes: {} } },
     });
-    expect(served.paths["/v1/runs"]!.post!.security).toEqual([{ requesterBearer: [] }, { signIn: [] }]);
+    expect(served.paths["/v1/runs"]!.post!.security).toEqual([{ signIn: [] }, { requesterBearer: [] }]);
+    // The sign-in comes first in the Authorize dialog, which lists the schemes in the document's order: after the
+    // bearer scheme's long text, it sat below the fold and looked missing (2026-11-24).
+    expect(Object.keys(served.components.securitySchemes)).toEqual(["signIn", "requesterBearer"]);
     const file = parse(readFileSync(HOSTED_API_DOCS_FILE, "utf8")) as Doc;
     expect(JSON.stringify(file)).toContain("https://sign-in-tenant.invalid/");
     expect(JSON.stringify(served)).not.toContain("sign-in-tenant.invalid");

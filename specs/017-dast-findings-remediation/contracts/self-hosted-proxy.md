@@ -31,8 +31,8 @@ every answer, the proxy's own included.
 | `TRUSTED_PROXY_HOPS` | `1` | each client is counted by its own address, and no proxy warning |
 | web build | `npm run build:web -- --mode deployment` | no pasted-token sign-in in the files served |
 
-The tenant must list `https://<PORTAL_HOST>` as an origin of the portal's client (`AUTH0_PORTAL_ORIGIN`, set by
-hand, then `provision-auth0.yml`), as for the Azure portal.
+The tenant must list `https://<PORTAL_HOST>` as an origin of the portal's client: `portal_origin` in the operator's
+tfvars file, then `npm run auth0:tenant -- plan` and `-- apply` on the operator's host (SPEC 1.26, `auth0/README.md`).
 
 ## The procedure must end with these checks, from a direct connection (not through an intercepting proxy)
 

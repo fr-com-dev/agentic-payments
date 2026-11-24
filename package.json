@@ -35,6 +35,7 @@
     "payer-balance": "tsx scripts/payer-balance.ts",
     "scan-logs": "tsx scripts/scan-logs.ts",
     "audit:shipped": "tsx scripts/audit-shipped.ts",
+    "auth0:tenant": "bash scripts/auth0-tenant.sh",
     "build": "tsc -p tsconfig.build.json"
   },
   "dependencies": {

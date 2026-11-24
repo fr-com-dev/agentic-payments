@@ -37,7 +37,6 @@ export interface PreDeployNames {
   resourceGroup: string;
   deployApp: string;
   operators: string;
-  stateStorage: string;
   /** v1.25: the units' identities, made by pre-deploy (the same names as main's). */
   identities: Record<string, string>;
   /** v1.25: the policy assignment that refuses federated credentials on them. */

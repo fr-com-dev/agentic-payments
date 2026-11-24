@@ -2,9 +2,9 @@
 // deploy-pipeline.md). Offline checks on the seven pipelines in .github/workflows (deploy-infra.yml for the platform,
 // deploy-l1/l2/l3/operator/portal/seller.yml for one unit each), on deploy.yml, the steps they all call with their
 // unit, and on the infra scripts. Checked:
-// - one pipeline per unit, and nothing else in the folder but the Auth0 tenant's pipeline (provision-auth0.yml, which
-//   T-IAC-02 checks; the only workflow that reads GitHub secrets and variables, and only its own) and the pull request
-//   check (checks.yml, T-CI-01 below): each runs by hand or on its own tag, holds the one
+// - one pipeline per unit, and nothing else in the folder but the Auth0 tenant's offline check (validate-auth0.yml,
+//   which T-IAC-02 checks; SPEC 1.26: it changes nothing, and no workflow reads a GitHub secret or variable) and the
+//   pull request check (checks.yml, T-CI-01 below): each pipeline runs by hand or on its own tag, holds the one
 //   concurrency group, and only calls deploy.yml with its unit; each image of scripts/image-closure.ts is built by
 //   exactly one pipeline;
 // - OIDC only, with the sign-in, target and resource names compiled from infra/main.<environment>.bicepparam by the
@@ -86,16 +86,12 @@ const PIPELINES: Record<string, { unit: Unit; inputs: string[] }> = {
   "deploy-portal.yml": { unit: "portal", inputs: ["environment", "first-deployment"] },
   "deploy-seller.yml": { unit: "seller", inputs: ["environment", "first-deployment"] },
 };
-/** The Auth0 tenant's pipeline (Terraform, auth0/): checked by T-IAC-02 (test/auth0-iac.test.ts), not here. */
-const AUTH0 = "provision-auth0.yml";
-/** The only GitHub secrets a workflow reads: the Auth0 pipeline's, from its own GitHub environment. */
-const AUTH0_SECRETS = ["AUTH0_CLIENT_ID", "AUTH0_CLIENT_SECRET"];
 /**
- * The only GitHub variables a workflow reads: the Auth0 pipeline's Terraform variables, from the same environment.
- * 016 adds the deployed agent's origin and the machine callers' public keys (never a private one: T-IAC-02). Phase 3
- * removes the approver (SPEC v1.16) and adds the switches for the local origins and for sign-ups.
+ * The Auth0 tenant's offline check (Terraform, auth0/): checked by T-IAC-02 (test/auth0-iac.test.ts), not here. SPEC
+ * 1.26: it only validates; the tenant is planned and applied on the operator's host (scripts/auth0-tenant.sh), so no
+ * workflow reads a GitHub secret or variable, the Auth0 Management API credential included.
  */
-const AUTH0_VARIABLES = /^AUTH0_(TENANT_DOMAIN|API_IDENTIFIER|CLIENT_PUBLIC_KEY|MANAGE_GUARDIAN|GUARDIAN_POLICY|PORTAL_ORIGIN|AGENT_ORIGIN|MACHINE_CALLER_KEYS|LOCAL_ORIGINS|ALLOW_SIGN_UPS)$/;
+const AUTH0 = "validate-auth0.yml";
 /** The pull request check (T-CI-01): not a pipeline, it deploys nothing. */
 const CHECKS_FILE = "checks.yml";
 const FILES = [SHARED, AUTH0, CHECKS_FILE, ...Object.keys(PIPELINES)].sort();
@@ -243,9 +239,9 @@ export function tokenProblems(file: string, text: string): string[] {
     .map((c) => `${file} asks for an access token (${c.split(" ").slice(0, 5).join(" ")}): the pipeline holds no caller's token; the smoke job and the regression job get their own`);
 }
 
-const FOLDER_PROBLEM = `${DIR} must hold exactly ${FILES.join(", ")}: one pipeline per unit, the steps they share, the Auth0 tenant's pipeline and the pull request check`;
+const FOLDER_PROBLEM = `${DIR} must hold exactly ${FILES.join(", ")}: one pipeline per unit, the steps they share, the Auth0 tenant's offline check and the pull request check`;
 
-/** The folder holds the seven pipelines, deploy.yml, the Auth0 pipeline and the pull request check, and the pipelines' units build every image exactly once. */
+/** The folder holds the seven pipelines, deploy.yml, the Auth0 tenant's offline check and the pull request check, and the pipelines' units build every image exactly once. */
 export function folderProblems(files: string[]): string[] {
   const out: string[] = [];
   if (JSON.stringify([...files].sort()) !== JSON.stringify(FILES)) out.push(FOLDER_PROBLEM);
@@ -508,14 +504,12 @@ export function unitGuardProblems(w: Workflow): string[] {
 }
 
 /**
- * No GitHub secret or variable: every value comes from the parameter files. The one exception is the Auth0 pipeline,
- * which reads the Auth0 Management API credential and Terraform's variables from its own GitHub environment (T-IAC-02
- * checks where they go).
+ * No GitHub secret or variable: every value comes from the parameter files. SPEC 1.26 removed the one exception, the
+ * Auth0 pipeline's Management API credential and Terraform variables: they are on the operator's host now.
  */
 export function secretProblems(file: string, text: string): string[] {
   const out: string[] = [];
   for (const m of text.matchAll(/\$\{\{\s*(secrets|vars)\.([A-Za-z0-9_]+)/g)) {
-    if (file === AUTH0 && (m[1] === "secrets" ? AUTH0_SECRETS.includes(m[2]!) : AUTH0_VARIABLES.test(m[2]!))) continue;
     out.push(`${file} reads ${m[1]}.${m[2]}: values come from infra/main.<environment>.bicepparam`);
   }
   return out;
@@ -776,15 +770,16 @@ describe("T-E2E-AZ deployment workflow gates", () => {
     expect(secretProblems(SHARED, secret)).toEqual([`${SHARED} reads secrets.AZURE_CLIENT_ID: values come from infra/main.<environment>.bicepparam`]);
     const password = text.replace('--federated-token "$oidc"', '-p "${{ secrets.AZURE_CLIENT_SECRET }}"');
     expect(secretProblems(SHARED, password)).toEqual([`${SHARED} reads secrets.AZURE_CLIENT_SECRET: values come from infra/main.<environment>.bicepparam`]);
-    // The Auth0 pipeline's secrets are its own: no deploy pipeline may read them, and it may read no other.
+    // SPEC 1.26: the Auth0 Management API credential and Terraform's variables are the operator's host's, so no
+    // workflow reads them, the Auth0 tenant's own check included.
     const auth0 = text.replace('-u "$DEPLOY_CLIENT_ID"', '-u "${{ secrets.AUTH0_CLIENT_SECRET }}"');
     expect(secretProblems(SHARED, auth0)).toEqual([`${SHARED} reads secrets.AUTH0_CLIENT_SECRET: values come from infra/main.<environment>.bicepparam`]);
     expect(secretProblems(SHARED, text.replace('-u "$DEPLOY_CLIENT_ID"', '-u "${{ vars.AUTH0_TENANT_DOMAIN }}"'))).toEqual([`${SHARED} reads vars.AUTH0_TENANT_DOMAIN: values come from infra/main.<environment>.bicepparam`]);
     // Constitution V: L2's client secret is held by L2 only, never by GitHub.
     expect(secretProblems(AUTH0, "${{ secrets.AUTH0_L2_CLIENT_SECRET }}")).toEqual([`${AUTH0} reads secrets.AUTH0_L2_CLIENT_SECRET: values come from infra/main.<environment>.bicepparam`]);
-    expect(secretProblems(AUTH0, "${{ secrets.AUTH0_CLIENT_ID }} ${{ vars.AUTH0_TENANT_DOMAIN }} ${{ secrets.AZURE_CLIENT_SECRET }} ${{ vars.AUTH0_CLIENT_ID }}")).toEqual([
-      `${AUTH0} reads secrets.AZURE_CLIENT_SECRET: values come from infra/main.<environment>.bicepparam`,
-      `${AUTH0} reads vars.AUTH0_CLIENT_ID: values come from infra/main.<environment>.bicepparam`,
+    expect(secretProblems(AUTH0, "${{ secrets.AUTH0_CLIENT_ID }} ${{ vars.AUTH0_TENANT_DOMAIN }}")).toEqual([
+      `${AUTH0} reads secrets.AUTH0_CLIENT_ID: values come from infra/main.<environment>.bicepparam`,
+      `${AUTH0} reads vars.AUTH0_TENANT_DOMAIN: values come from infra/main.<environment>.bicepparam`,
     ]);
     expect(workflowProblems(parse(password) as Workflow)).toContain(
       "SIGN_IN must sign in with OIDC only: a fresh GitHub token, then the deploy app, tenant and subscription from the parameter file",

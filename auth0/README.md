@@ -14,19 +14,31 @@ It makes exactly four kinds of application (T-IAC-02 fails on any other):
 - one confidential client per machine caller, for systems that start runs. The first is `checks`, the deployment
   pipeline's smoke run and scripted regression.
 
-The Management API application the pipeline signs in with (step 2 below) is made by hand and is not part of the
+The Management API application Terraform signs in with (step 2 below) is made by hand and is not part of the
 running system.
 
-- **Who runs it**: its pipeline, `.github/workflows/provision-auth0.yml`, started by hand. Every run shows the
-  plan; it applies that same plan only when `apply` is checked. Nothing else applies this folder.
+- **Who runs it**: an operator, on the operator's host (the sandbox's VPS), with the operator command
+  `scripts/auth0-tenant.sh` (`npm run auth0:tenant`; SPEC 1.26). `plan` validates and saves a plan; `apply`
+  applies exactly that plan. Nothing else applies this folder: no GitHub workflow holds an Auth0 credential, and
+  `.github/workflows/validate-auth0.yml` only runs the command's `validate` (no backend, no credential) when this
+  folder changes. The repository is public, so there is no self-hosted runner either.
 - **Scope**: Azure stays Bicep only (`infra/`). This folder holds only Auth0 objects, through the official
   `auth0/auth0` provider.
-- **Secrets**: the Management API application's credential is the only secret GitHub holds. It lives in the
-  pipeline's own GitHub environment, `auth0-<environment>`, and only the plan and apply steps see it.
-- **State**: a blob, `auth0.<environment>.tfstate`, in the storage account `infra/pre-deploy.bicep` makes. Terraform
-  signs in to Azure with OIDC as the deploy app; no Azure credential exists. The state holds no secret.
-- **Test**: T-IAC-02 (`test/auth0-iac.test.ts`) checks the configuration and the pipeline offline, with must-fail
-  mutants, and runs the Action's code. The pipeline runs it before `init`.
+- **Secrets**: the Management API application's credential, in the operator's own file
+  `~/x402-secrets/auth0-management.<environment>.env` (mode 0600, in a 0700 folder). The command reads its two
+  lines and passes them to Terraform's environment only: never exported, printed or written elsewhere. GitHub holds
+  no Auth0 secret.
+- **State**: a local file, `~/x402-tfstate/auth0.<environment>.tfstate` (mode 0600, in a 0700 folder), outside
+  every checkout, with Terraform's variables beside it (`auth0.<environment>.tfvars`) and the saved plan while one
+  waits (`auth0.<environment>.tfplan`). The state holds no credential of L2's and no private key, but it does hold
+  one secret per public application: Auth0 generates a client secret for every application, the portal's and the
+  agent's included, and the provider stores it (`client_secret` of `auth0_client_credentials`). Neither application
+  uses its secret, and Auth0 refuses a token request that sends one, but treat the state like the credential file.
+  It is also what Terraform plans against: back it up ("Back up the state").
+- **Terraform**: the command installs the pinned release (1.15.5, checked against its SHA-256) in `~/.local/bin`,
+  without sudo, and never uses another `terraform` on `PATH`.
+- **Test**: T-IAC-02 (`test/auth0-iac.test.ts`) checks the configuration, the command and the check offline, with
+  must-fail mutants, runs the Actions' code, and runs the command's refusals against a stand-in Terraform.
 
 ## What it makes
 
@@ -74,7 +86,7 @@ Who accepts what:
 ## What stays by hand
 
 - **The plan.** CIBA needs the Enterprise plan or an add-on, and `private_key_jwt` needs Enterprise.
-- **The Management API application** and its credential, as secrets of the GitHub environment.
+- **The Management API application** and its credential, in the operator's own file on the operator's host.
 - **Guardian enrollment**: each person who approves their own payments by phone scans the QR code with their own
   phone.
 - **An administrator's second factor** (Phase 3). Every interactive sign-in of a holder of `x402-admin` ends with
@@ -97,7 +109,7 @@ Who accepts what:
   enrolled in a second factor (above).
 - **People.** There is no role to assign for using the portal (SPEC v1.14, `specs/013` research R21): whoever signs in through the
   portal's application may use the portal, for their own account. Terraform creates no user. To keep strangers
-  out, set `AUTH0_ALLOW_SIGN_UPS` to `false` and apply: the pre-user-registration Action then refuses every new
+  out, set `allow_sign_ups = false` in the tfvars file and apply: the pre-user-registration Action then refuses every new
   account in the database and passwordless connections, also the ones you create in the Dashboard (set it back to
   `true` for the time you add someone), but not a first sign-in through a social or enterprise connection, so turn
   those off for the applications too. The connection's own **Disable Sign Ups** (**Authentication → Database → the
@@ -107,18 +119,16 @@ Who accepts what:
 
 ## Set it up, once per environment
 
-1. **Azure and GitHub.** Deploy `infra/pre-deploy.bicep` again: it adds the state's storage account and the deploy
-   app's second federated credential, for the GitHub environment `auth0-dev`. Then create that environment:
+Everything below runs on the operator's host, from a checkout of `main`.
+
+1. **Folders.** Two, outside every checkout, readable by you only. The command refuses anything looser:
 
    ```bash
-   infra/github-setup.sh
+   install -d -m 700 ~/x402-tfstate ~/x402-secrets
    ```
 
-   The script lets jobs run in `auth0-dev` from the branch `main` only, and in the deploy environment `dev` from
-   `main` and the pipelines' `deploy-<unit>-*` tags only (Phase 3). In the repository's settings, give both
-   environments required reviewers, so every run waits for an approval.
 2. **The Management API application.** In Auth0, make a machine-to-machine application authorized for the Auth0
-   Management API, with these scopes:
+   Management API, with these scopes and no others:
    - `read:resource_servers`, `create:resource_servers`, `update:resource_servers`, `delete:resource_servers`;
    - `read:clients`, `create:clients`, `update:clients`, `delete:clients`;
    - `read:client_credentials`, `create:client_credentials`, `update:client_credentials`,
@@ -130,15 +140,11 @@ Who accepts what:
      `update:triggers`;
    - for the two roles (014, 016): `read:roles`, `create:roles`, `update:roles`, `delete:roles`.
 
-   Store its credential as the environment's secrets. Each command asks for the value, so it stays out of your
-   shell history:
+   Put its credential in its own file. This asks for both values, so the secret stays out of your shell history
+   and your screen, and writes nothing when the secret is empty:
 
    ```bash
-   gh secret set AUTH0_CLIENT_ID --env auth0-dev
-   ```
-
-   ```bash
-   gh secret set AUTH0_CLIENT_SECRET --env auth0-dev
+   ( umask 077; read -rp 'Client ID: ' id; read -rsp 'Client secret: ' secret; echo; [ -n "$secret" ] || { echo 'empty secret, nothing written'; exit 1; }; printf 'AUTH0_CLIENT_ID=%s\nAUTH0_CLIENT_SECRET=%s\n' "$id" "$secret" > ~/x402-secrets/auth0-management.dev.env ) && echo saved
    ```
 
 3. **L2's key pair.** Make it outside the repository. Neither half is committed:
@@ -151,8 +157,7 @@ Who accepts what:
    openssl pkey -in ~/x402-secrets/ciba-client-key.pem -pubout -out ~/x402-secrets/ciba-client-key.pub.pem
    ```
 
-4. **The `checks` key pair** (016), for the deployment pipeline's machine caller. Make it outside the repository,
-   as in step 3. Neither half is committed:
+4. **The `checks` key pair** (016), only for the deployment pipeline's machine caller. Make it as in step 3:
 
    ```bash
    openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out ~/x402-secrets/machine-checks-key.pem
@@ -162,118 +167,156 @@ Who accepts what:
    openssl pkey -in ~/x402-secrets/machine-checks-key.pem -pubout -out ~/x402-secrets/machine-checks-key.pub.pem
    ```
 
-5. **Variables.** There is no tfvars file. Terraform's variables are variables of the GitHub environment, which the
-   plan step exports as `TF_VAR_*`. None is a secret. `infra/github-setup.sh` (step 1) already created eight of the
-   ten: the first three as the placeholder `REPLACE_ME`, the next five as their defaults (`AUTH0_LOCAL_ORIGINS` is
-   `true` in dev only). Replace the three placeholders; the pipeline plans nothing while one is left:
+5. **Variables.** One tfvars file, `~/x402-tfstate/auth0.dev.tfvars` (mode 0600), never in a checkout. None of its
+   values is a secret. The command sets `environment` (from `AUTH0_ENVIRONMENT`, default `dev`) and
+   `credential = "key"` itself, and refuses a file that sets either, `client_secret` or `client_secret_version`,
+   or holds a private key. dev's, as applied on 2026-11-24:
 
-   ```bash
-   gh variable set AUTH0_TENANT_DOMAIN --env auth0-dev --body "x402-dev.us.auth0.com"
+   ```hcl
+   tenant_domain  = "fabriciorojas.us.auth0.com"
+   api_identifier = "https://x402-payments/dev"
+   client_public_key_pem = <<-EOT
+   -----BEGIN PUBLIC KEY-----
+   …the contents of ~/x402-secrets/ciba-client-key.pub.pem…
+   -----END PUBLIC KEY-----
+   EOT
+   manage_guardian     = true
+   guardian_policy     = "never"
+   portal_origin       = "https://dev.fabriciorojas.com"
+   agent_origin        = "https://agent.fabriciorojas.com"
+   machine_caller_keys = {}
+   local_origins       = false
+   allow_sign_ups      = false
    ```
 
-   ```bash
-   gh variable set AUTH0_API_IDENTIFIER --env auth0-dev --body "https://x402-payments/dev"
+   | Terraform variable | Needed |
+   |---|---|
+   | `tenant_domain` | always |
+   | `api_identifier` | always |
+   | `client_public_key_pem` | always |
+   | `manage_guardian` | only to set `false` |
+   | `guardian_policy` | only to change `never` |
+   | `machine_caller_keys` | to declare a machine caller (`{}`: none) |
+   | `local_origins` | `true` lets the local portal and agent (`http://localhost:4025`, `:4024`) sign in against this tenant |
+   | `allow_sign_ups` | `false` closes sign-ups (default `true`) |
+   | `portal_origin` | once the portal is deployed: `https://<host>`, no port, path or trailing slash |
+   | `agent_origin` | once the agent is deployed, and only where its docs page is on: `https://<host>` |
+
+   `machine_caller_keys` maps each machine caller's name to the public half of its key, as PEM text. Declare
+   `checks` with the public half from step 4:
+
+   ```hcl
+   machine_caller_keys = {
+     checks = <<-EOT
+     -----BEGIN PUBLIC KEY-----
+     …
+     -----END PUBLIC KEY-----
+     EOT
+   }
    ```
 
-   ```bash
-   gh variable set AUTH0_CLIENT_PUBLIC_KEY --env auth0-dev < ~/x402-secrets/ciba-client-key.pub.pem
-   ```
-
-   | GitHub variable | Terraform variable | Needed |
-   |---|---|---|
-   | `AUTH0_TENANT_DOMAIN` | `tenant_domain` | always |
-   | `AUTH0_API_IDENTIFIER` | `api_identifier` | always |
-   | `AUTH0_CLIENT_PUBLIC_KEY` | `client_public_key_pem` | always |
-   | `AUTH0_MANAGE_GUARDIAN` | `manage_guardian` | only to set `false` |
-   | `AUTH0_GUARDIAN_POLICY` | `guardian_policy` | only to change `never` |
-   | `AUTH0_MACHINE_CALLER_KEYS` | `machine_caller_keys` | to declare a machine caller (created as `{}`: none) |
-   | `AUTH0_LOCAL_ORIGINS` | `local_origins` | `true` lets the local portal and agent sign in against this tenant (created as `true` in dev, `false` elsewhere) |
-   | `AUTH0_ALLOW_SIGN_UPS` | `allow_sign_ups` | `false` closes sign-ups (created as `true`) |
-   | `AUTH0_PORTAL_ORIGIN` | `portal_origin` | once the portal is deployed |
-   | `AUTH0_AGENT_ORIGIN` | `agent_origin` | once the agent is deployed, and only where its docs page is on |
-
-   Running `infra/github-setup.sh` again never changes a variable that exists. A variable you delete keeps the
-   default in `variables.tf` (for `AUTH0_LOCAL_ORIGINS`, `false`: an environment set up before Phase 3 needs the
-   script run again, or the variable set by hand, before its next apply, or its local origins go). `environment` is
-   the run's `environment` input. `AUTH0_APPROVER_USER_ID`, which earlier versions created, is no longer read:
-   delete it (`gh variable delete AUTH0_APPROVER_USER_ID --env auth0-dev`).
-
-   `AUTH0_MACHINE_CALLER_KEYS` is one JSON object: each machine caller's name, and the public half of its key as
-   PEM text. Terraform reads it as the map `machine_caller_keys`. Declare `checks` with the public half from step 4:
-
-   ```bash
-   gh variable set AUTH0_MACHINE_CALLER_KEYS --env auth0-dev --body "$(jq -cn --rawfile checks ~/x402-secrets/machine-checks-key.pub.pem '{checks: $checks}')"
-   ```
-
-   A name is 2 to 20 lowercase letters, digits or hyphens. To add a caller, add its name and key to the object; to
-   remove one, take it out. The next apply makes or deletes its client.
-
-   `AUTH0_PORTAL_ORIGIN` and `AUTH0_AGENT_ORIGIN` are the two variables the script doesn't create, because a GitHub
-   variable can't be empty. Set each one after its first deployment, to `https://` and the address (`main.bicep`'s
-   `portalFqdn` or `agentFqdn` output), with no trailing slash. Then run the pipeline again, so the deployed portal
-   is an allowed origin, and the deployed agent's docs page an allowed return address:
-
-   ```bash
-   gh variable set AUTH0_PORTAL_ORIGIN --env auth0-dev --body "https://<the portal's address>"
-   ```
-
-   ```bash
-   gh variable set AUTH0_AGENT_ORIGIN --env auth0-dev --body "https://<the agent's address>"
-   ```
-
-   The agent's origin is needed only where its docs page is on (`agent.apiDocs` in the parameter file). Without it
-   the agent still accepts tokens; only the sign-in from the deployed docs page is refused by Auth0.
+   A name is 2 to 20 lowercase letters, digits or hyphens. To add a caller, add its name and key; to remove one,
+   take it out. The next apply makes or deletes its client.
 
 ## Run it
 
-1. **Plan.** The run's summary shows what would change:
+1. **Plan.** The command installs the pinned Terraform when needed, checks the files' modes, runs `fmt -check` and
+   `validate`, inits the state at its path, and saves the plan as `~/x402-tfstate/auth0.dev.tfplan`:
 
    ```bash
-   gh workflow run provision-auth0.yml -f environment=dev
+   npm run auth0:tenant -- plan
    ```
 
-2. **Apply**, once the plan is what you expect. The run plans again and applies exactly that plan:
+2. **Apply**, once the plan is what you expect. It applies exactly the saved plan (Terraform refuses a plan the
+   state has moved past), deletes it, and prints every output:
 
    ```bash
-   gh workflow run provision-auth0.yml -f environment=dev -f apply=true
+   npm run auth0:tenant -- apply
    ```
 
-3. **Hand the values to L2.** The apply run's summary shows the `ciba` object.
-   - **Azure**: paste it as `param ciba` in `infra/main.dev.bicepparam`, with `enabled` still `false`. Seed the
-     private key as `ciba-client-credential` in the l2 vault, then set `enabled: true` and run `deploy-l2.yml`
-     (`specs/012` quickstart §6).
-   - **Locally**: put its `issuer`, `clientId` and `audience` in `env/l2-control.env` as `CIBA_ISSUER`,
-     `CIBA_CLIENT_ID` and `CIBA_AUDIENCE`, with `CIBA_APPROVAL=1`. Add `CIBA_CLIENT_KEY` yourself. There is no
-     approver: each request goes to the person the payment is for.
-     An administrator with a role on the state's container reads the same lines, and the callers' sign-in ones
-     (step 7), with `terraform -chdir=auth0 output -raw l2_env`.
+   The outputs again, at any time, without the credential:
+
+   ```bash
+   npm run auth0:tenant -- output
+   ```
+
+3. **Hand the values to L2.** `l2_env` holds the `CIBA_*` lines and the callers' sign-in.
+   - **Locally or on the VPS**: put them in `env/l2-control.env`. Add `CIBA_CLIENT_KEY` yourself (the private half
+     from step 3). There is no approver: each request goes to the person the payment is for.
+   - **Azure**: paste `bicepparam_ciba` as `param ciba` in `infra/main.dev.bicepparam`, with `enabled` still
+     `false`. Seed the private key as `ciba-client-credential` in the l2 vault, then set `enabled: true` and run
+     `deploy-l2.yml` (`specs/012` quickstart §6).
 4. **The person a payment is for enrolls in Guardian push**, then you run the live check (`specs/012` quickstart
    §5).
-5. **Hand the values of people's sign-in to the portal.** The apply run's summary also shows
-   the `identity` object and the portal web app's client ID.
-   - **Azure**: paste the object as `param identity` in `infra/main.dev.bicepparam`, and the client ID as
-     `portalClientId` in its `userAccounts` object. Then run `deploy-portal.yml`.
-   - **Locally**: an administrator with a role on the state's container reads the lines for `env/portal.env` with
-     `terraform -chdir=auth0 output -raw portal_env`. They hold the same values as the summary.
-6. **Decide who can sign up.** Nobody needs a role to use the portal. With sign-ups on, anyone who creates an
-   account in the tenant can onboard; turn them off on the connection to choose the people yourself ("What stays
-   by hand", People).
-7. **Hand the callers' values to the agent and L2** (016; `specs/016` quickstart §5). The apply run's summary also
-   shows the `agent` object: the agent's client ID, and the `checks` client's ID and key ID (both empty until
-   `AUTH0_MACHINE_CALLER_KEYS` declares `checks`).
-   - **Azure**: paste its three values into `param agent` in `infra/main.dev.bicepparam`, and keep that file's own
-     `apiDocs`. Seed the private half of the `checks` key as `machine-client-key` in the l1 vault. Then run
-     `deploy-l2.yml`, and `deploy-l1.yml` after it.
-   - **Locally**: an administrator with a role on the state's container reads the lines for `env/l1-hosted.env`
-     with `terraform -chdir=auth0 output -raw l1_env` (remove `AUTH_JWKS_FILE` there), and L2's with `l2_env`.
+5. **Hand the values of people's sign-in to the portal.** `portal_env` holds the lines for `env/portal.env`. For
+   Azure, `bicepparam_identity` is `param identity` and `bicepparam_portal_client_id` is
+   `userAccounts.portalClientId` in `infra/main.dev.bicepparam`; then run `deploy-portal.yml`.
+6. **Decide who can sign up.** Nobody needs a role to use the portal ("What stays by hand", People).
+7. **Hand the callers' values to the agent and L2** (016; `specs/016` quickstart §5). `l1_env` holds the lines for
+   `env/l1-hosted.env` (remove `AUTH_JWKS_FILE` there), and `l2_env` L2's. For Azure, paste `bicepparam_agent`
+   into `param agent` in `infra/main.dev.bicepparam` (keep its own `apiDocs`), seed the private half of the
+   `checks` key as `machine-client-key` in the l1 vault, and run `deploy-l2.yml`, then `deploy-l1.yml`.
 8. **Choose who may start runs.** Assign the role `x402-agent` to each of them in Auth0 ("What stays by hand",
    People who may start runs). Without it a signed-in person gets 403 from the agent.
-9. **The deployed docs page.** Where `agent.apiDocs` is on, set `AUTH0_AGENT_ORIGIN` after the agent's first
-   deployment and run the pipeline with `apply` again (step 5 of "Set it up").
 
-**Key only.** The pipeline provisions `credential = "key"` and nothing else, so GitHub holds only the public half
-of L2's key. L2's credential is held by L2 only (Constitution V), which rules out sending a client secret through
-GitHub. `private_key_jwt` needs Auth0's Enterprise plan; on a lower plan the pipeline can't provision L2's client.
+Other Terraform commands run on the same state through the command's passthrough, which never runs `apply` or
+`destroy` (those go through `plan`):
+
+```bash
+npm run auth0:tenant -- terraform state list
+```
+
+## Move to a new state
+
+A new, empty state (a new host, a lost state, or the move off Azure on 2026-11-24) knows none of the tenant's
+objects, and a plan would try to create every one again: the apply then fails on names that exist, or makes
+duplicates. Import them first, in the same plan:
+
+1. Read each object's ID from the Management API (or the Dashboard): the two APIs' IDs, the L2 and portal clients'
+   client IDs, the CIBA grant's ID (`cgr_…`), each Action's ID and each role's ID.
+2. Write them as `import {}` blocks in a file of this folder that is never committed, for example
+   `auth0/imports.tf`. The import IDs: an API's ID for `auth0_resource_server`; its identifier
+   (`https://x402-api/dev`) for `auth0_resource_server_scopes`; the client ID for `auth0_client` and
+   `auth0_client_credentials`; `cgr_…` for `auth0_client_grant`; the Action's ID for `auth0_action` and
+   `post-login::<Action ID>` for its `auth0_trigger_action`; the role's ID for `auth0_role` and
+   `auth0_role_permissions`; any word for the singletons `auth0_guardian.this[0]` and `auth0_tenant.mfa_actions[0]`.
+
+   ```hcl
+   import {
+     to = auth0_client.portal
+     id = "iMNhIDWoJNpQf4dLINxOAzKFbRvy3Wjq"
+   }
+   ```
+
+3. Plan. Check that the plan imports every object that exists, creates only what is missing, and destroys or
+   replaces nothing. Then apply, delete the file, and plan again: there should be nothing left but the no-op below
+   (Notes, "The portal's addons").
+
+One change always follows an import: Auth0 never returns a credential's PEM, so the first plan re-registers L2's
+credential with the key in `client_public_key_pem`. That is the same key when its RFC 7638 thumbprint equals the
+credential's `key_id`, which Auth0 keeps: then `CIBA_CLIENT_KEY_ID` stays valid. Check it before applying:
+
+```bash
+node -e 'const c = require("crypto"); const j = c.createPublicKey(require("fs").readFileSync(process.argv[1])).export({ format: "jwk" }); console.log(c.createHash("sha256").update(JSON.stringify({ e: j.e, kty: j.kty, n: j.n })).digest("base64url"))' ~/x402-secrets/ciba-client-key.pub.pem
+```
+
+## Back up the state
+
+The state exists only on the operator's host. Copy it after every apply, over SSH, to somewhere only you can read:
+it names the tenant's objects and holds the unused client secrets Auth0 generated for the portal's and the agent's
+applications ("State", above). Never through a chat, a ticket or a shared drive. For example, to your own machine:
+
+```bash
+scp <you>@<the VPS>:x402-tfstate/auth0.dev.tfstate ./auth0.dev.tfstate.$(date +%F)
+```
+
+Copy the tfvars file the same way the first time, and whenever it changes. Without a backup, a lost state is not a
+lost tenant: import its objects into a new one ("Move to a new state"). The credential file needs no backup: make
+a new secret for the Management API application in Auth0 instead.
+
+**Key only.** The command provisions `credential = "key"` and nothing else, so the tfvars file holds only the
+public half of L2's key. L2's credential is held by L2 only (Constitution V), which rules out a client secret here.
+`private_key_jwt` needs Auth0's Enterprise plan; on a lower plan the command can't provision L2's client.
 
 ## Notes
 
@@ -282,15 +325,15 @@ GitHub. `private_key_jwt` needs Auth0's Enterprise plan; on a lower plan the pip
 - **Grants and the access policy.** The grant uses `subject_type = "user"`, because a CIBA token is
   user-delegated. If Auth0 refuses the approval request with `access_denied` before anyone was notified, check
   the API's access policy first: that is the live check's job.
-- **A machine caller's key.** To rotate it, replace its public half in `AUTH0_MACHINE_CALLER_KEYS` and apply. Auth0
-  gives the new credential a new key ID: copy `machineKeyId` from the summary to the parameter file, seed the new
+- **A machine caller's key.** To rotate it, replace its public half in `machine_caller_keys` and apply. Auth0
+  gives the new credential a new key ID: copy `machineKeyId` from the outputs to the parameter file, seed the new
   private half in the vault, and deploy L1. Between the apply and that deployment the caller gets no token.
 - **Machine tokens and the approval API.** A machine caller has no grant for the approval API, whose policy
   refuses every machine token anyway (`client { policy = "deny_all" }`).
 - **Guardian.** If another configuration owns the tenant's MFA settings, set `manage_guardian = false`, and turn
   on push there. `manage_guardian` can't go from true to false while the resource exists (`prevent_destroy`):
-  remove `auth0_guardian.this[0]` from the state first (`terraform state rm`, by an administrator with a role on
-  the state's container).
+  remove `auth0_guardian.this[0]` from the state first
+  (`npm run auth0:tenant -- terraform state rm 'auth0_guardian.this[0]'`).
 - **The Actions.** Their code is in `sign-in-time.js`, `mfa-time.js` and `deny-sign-up.js`, so that T-IAC-02 can
   run it. The first two write a claim only when the sign-in has the time it needs. They never write the current
   time, which would make a renewed token look like a new sign-in. They run after every sign-in of the tenant, so
@@ -299,15 +342,17 @@ GitHub. `private_key_jwt` needs Auth0's Enterprise plan; on a lower plan the pip
   `mfa_time` and their decisions are refused.
 - **Blocking a person.** A blocked user can't sign in or renew, but the access token they already hold stays
   valid until it expires, one hour at most.
-- **Offline checks on your machine.** `terraform -chdir=auth0 fmt -check` needs nothing. `validate` needs the
-  provider: run `terraform -chdir=auth0 init -backend=false` first. Neither reads the state.
-- **The lock file.** `.terraform.lock.hcl` must hold the provider's `h1` checksum for the pipeline's Linux runner
-  as well as your machine's: the pipeline's `init -lockfile=readonly` adds none, and `validate` then refuses the
+- **Offline checks.** `npm run auth0:tenant -- validate` runs both, with no backend and no credential: it is what
+  `validate-auth0.yml` runs. With Terraform on `PATH`, T-IAC-02 runs `fmt -check` too, and `validate` once
+  `auth0/.terraform/` exists.
+- **The lock file.** `.terraform.lock.hcl` must hold the provider's `h1` checksum for Linux (the VPS, the check's
+  runner) as well as a Mac's: the command's `init -lockfile=readonly` adds none, and `validate` then refuses the
   provider ("does not match any of the checksums recorded in the dependency lock file"). After changing the
   provider's version, run `terraform -chdir=auth0 providers lock -platform=linux_amd64 -platform=darwin_arm64`
   and commit the file. T-IAC-02 fails on a lock file with one platform's checksum.
-- **The state and `infra/cleanup.sh`.** The clean-up deletes the resource group, and the state with it, but nothing
-  in Auth0. Before the next apply for that tenant, delete the Auth0 objects by hand or import them
-  (`terraform import`), or the apply fails on objects that already exist. It also deletes the GitHub environment
-  `auth0-<env>`, with `AUTH0_CLIENT_ID`, `AUTH0_CLIENT_SECRET` and the variables: after `infra/github-setup.sh`
-  makes it again, set them again as for the first run.
+- **The portal's addons.** The provider reads an empty `addons {}` block back for the portal's single-page client
+  and plans to remove it on every run. Applying that changes nothing in the tenant.
+- **The old pipeline.** Until SPEC 1.26, `provision-auth0.yml` applied this folder from the GitHub environment
+  `auth0-<environment>`, with its state in Azure. That environment still holds the Management API credential where
+  it exists: delete it (`gh api --method DELETE repos/<owner>/<name>/environments/auth0-dev`; `infra/github-setup.sh`
+  warns while it exists, and `infra/cleanup.sh` deletes it).
