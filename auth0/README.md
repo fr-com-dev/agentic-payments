@@ -30,8 +30,11 @@ running system.
   no Auth0 secret.
 - **State**: a local file, `~/x402-tfstate/auth0.<environment>.tfstate` (mode 0600, in a 0700 folder), outside
   every checkout, with Terraform's variables beside it (`auth0.<environment>.tfvars`) and the saved plan while one
-  waits (`auth0.<environment>.tfplan`). The state holds no secret, but it is what Terraform plans against: back it
-  up ("Back up the state").
+  waits (`auth0.<environment>.tfplan`). The state holds no credential of L2's and no private key, but it does hold
+  one secret per public application: Auth0 generates a client secret for every application, the portal's and the
+  agent's included, and the provider stores it (`client_secret` of `auth0_client_credentials`). Neither application
+  uses its secret, and Auth0 refuses a token request that sends one, but treat the state like the credential file.
+  It is also what Terraform plans against: back it up ("Back up the state").
 - **Terraform**: the command installs the pinned release (1.15.5, checked against its SHA-256) in `~/.local/bin`,
   without sudo, and never uses another `terraform` on `PATH`.
 - **Test**: T-IAC-02 (`test/auth0-iac.test.ts`) checks the configuration, the command and the check offline, with
@@ -299,8 +302,9 @@ node -e 'const c = require("crypto"); const j = c.createPublicKey(require("fs").
 
 ## Back up the state
 
-The state exists only on the operator's host. Copy it after every apply, to somewhere only you can read: it names
-the tenant's objects and holds no secret. For example, to your own machine:
+The state exists only on the operator's host. Copy it after every apply, over SSH, to somewhere only you can read:
+it names the tenant's objects and holds the unused client secrets Auth0 generated for the portal's and the agent's
+applications ("State", above). Never through a chat, a ticket or a shared drive. For example, to your own machine:
 
 ```bash
 scp <you>@<the VPS>:x402-tfstate/auth0.dev.tfstate ./auth0.dev.tfstate.$(date +%F)
