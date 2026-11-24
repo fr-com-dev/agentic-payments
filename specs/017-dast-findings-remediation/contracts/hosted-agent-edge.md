@@ -39,7 +39,7 @@ hosted entry point prints for every `ConfigError`), exit 1.
 
 `TRUSTED_PROXY_HOPS` 0 and a request with a forwarding header: one run-log line per service instance
 (each app `createHostedApp` builds; one per process in a deployment),
-`{ "event": "proxy_undeclared" }`. In Azure the hops are 1, so it never appears there.
+`{ "event": "proxy_undeclared" }`. Behind a declared proxy (`TRUSTED_PROXY_HOPS=1`, as the Azure profile sets) it never appears.
 
 ## Tests
 

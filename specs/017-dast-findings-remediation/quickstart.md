@@ -76,28 +76,33 @@ grep -rl -e 'Development sign-in' -e 'dev-token' dist/portal-web || echo "no dev
 
 Expect `no dev sign-in in the build`. Rebuild with `npm run build:web` afterwards for local work.
 
-## 4. On the deployed Azure portal (after `deploy-portal.yml`)
+## 4. On the dev host (the owner, by hand)
 
-Nothing to configure. In a browser, with the developer tools open on the network tab:
+The portal is deployed on the dev host only: sign-in is the Auth0 tenant, and Caddy is in front of it. SPEC 1.26
+deleted the Azure environment, so no deployment there is checked; the Azure profile in `infra/` stays as code only.
+
+**Set it up.** Follow `docs/self-hosted/README.md`: build with `npm run build:web -- --mode deployment`; set the
+portal's env as [self-hosted-proxy.md](contracts/self-hosted-proxy.md) says (`TRUSTED_PROXY_HOPS=1`, Auth0
+sign-in, loopback bind); set `portal_origin` in the operator's tfvars file and run `npm run auth0:tenant -- plan`
+and `npm run auth0:tenant -- apply`; put the Caddyfile in place with `PORTAL_HOST` and `PORTAL_ALLOW_FROM` set in
+Caddy's environment, and reload Caddy.
+
+**From a direct connection** (not through a TLS-intercepting network), run every check in the last table of
+[self-hosted-proxy.md](contracts/self-hosted-proxy.md): headers, the HTTP redirect, the hidden health and docs routes
+(and `/healthz` still answering on `127.0.0.1:4025` from the host itself), the challenge, the `403` from an address
+off the list, TLS and the open ports.
+
+**In a browser, from an address on the list**, with the developer tools open on the network tab:
 
 1. Load the portal: `strict-transport-security`, `permissions-policy`, `cross-origin-resource-policy` and
    `cross-origin-opener-policy` on the page and on `/api/config`; `/api/config` has only `auth` and `cards`.
-2. Sign in through the pop-up; the pop-up's address carries `code_challenge_method=S256`. The sign-in completes
+2. Sign in through the Auth0 pop-up; the pop-up's address carries `code_challenge_method=S256`. The sign-in completes
    (a console warning about `window.closed` from the tenant's page may appear and is harmless).
 3. Confirm your identity (the "Confirm it's you" button), register a test card, and, as an administrator, open
    the administration area; sign out. Each works in one attempt (spec SC-008).
 4. Look at the tenant's application and advanced settings for a PKCE method setting. If one exists, record it
    and switch the residual in SPEC §11 to a fix through `auth0/` (research R14).
 
-## 5. On the dev host (the owner, by hand)
-
-Follow `docs/self-hosted/README.md`: build with `--mode deployment`, set the portal's env as
-[self-hosted-proxy.md](contracts/self-hosted-proxy.md) says (`TRUSTED_PROXY_HOPS=1`, Auth0 sign-in, loopback bind),
-put the Caddyfile in place with `PORTAL_HOST` and `PORTAL_ALLOW_FROM` set in Caddy's environment, and reload Caddy.
-Then, from a direct connection (not through a TLS-intercepting network), run every check in the last table of
-[self-hosted-proxy.md](contracts/self-hosted-proxy.md): headers, the HTTP redirect, the hidden health and docs
-routes (and `/healthz` still answering on `127.0.0.1:4025` from the host itself), the challenge, the `403` from an address off the list, TLS and the open ports.
-
-Finally, repeat the report's unauthenticated checks from an address on the list (spec SC-001) and record each
+**Finally**, repeat the report's unauthenticated checks from an address on the list (spec SC-001) and record each
 finding's outcome in `dispositions.md` (FR-027). From an address off the list, every request must get `403` from
 the proxy (SC-002).

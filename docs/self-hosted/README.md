@@ -5,7 +5,8 @@ addresses let in (SPEC.md L2-8 "Self-hosted behind a front proxy", v1.27; `specs
 contracts/self-hosted-proxy.md). The reference configuration is [Caddyfile](Caddyfile). Nothing in this repository
 runs it: copy both files to the host and adapt them there.
 
-In Azure none of this applies: the portal runs in Container Apps behind its ingress (`infra/`).
+Since SPEC 1.26 this is the portal's only deployment: the Azure environment was deleted, and the Azure profile in
+`infra/` (Container Apps behind its ingress, where none of this would apply) is kept as code only.
 
 ## What you need
 

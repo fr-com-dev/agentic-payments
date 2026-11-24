@@ -73,7 +73,7 @@ SEC-31 is reserved by `specs/015`'s unfinished tasks and has no row yet. SEC-35.
 | The dev sign-in's request check is defeated by a proxy on the same machine that rewrites `Host` to a loopback name and strips every forwarding header (017) | The start-up check (loopback bind, no declared proxy) still holds, and a direct caller can't reach a loopback bind | none planned |
 | People behind one address share its failed-authentication count, and limits are per replica (017) | 20 failures a minute only from that address refuse the rest of its minute | none planned |
 | A self-hosted portal's exposure depends on its owner's proxy and allow-list, which no test sees (017) | The reference and its checks (`docs/self-hosted/`), applied by hand | none planned |
-| In Azure `/healthz` and `/readyz` stay reachable from the internet: the ingress can't filter paths (017) | No token needed and they say only `ok`, `ready` or `starting`; the probes and the smoke client need them | none planned |
+| Where the Azure profile is deployed (none since SPEC 1.26), `/healthz` and `/readyz` stay reachable from the internet: the ingress can't filter paths (017) | No token needed and they say only `ok`, `ready` or `starting`; the probes and the smoke client need them | none planned |
 | The administration routes' names are in the client (017) | Each is authorized by the portal and by L2; hiding names is not a control | none planned |
 | The agent image no longer runs locally in a port-publishing container with the dev issuer (017) | The start-up check can't tell a container's network from a host's; that run uses the sign-in tenant | none planned |
 | No refund path | Micro-amounts; testnet only | EXT-9 |

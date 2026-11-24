@@ -23,6 +23,13 @@ purpose.
   keeping it public and closing the tenant's sign-ups (it would also change the Azure dev portal, which shares
   the tenant), and keeping it public with the risk recorded.
 
+### Update 2026-11-24
+
+- The Azure environment was deleted (SPEC 1.26, on `main` while this feature was in review). The dev host is the
+  only deployment, and sign-in there is the Auth0 tenant. "The deployed portal" below means the portal on the dev
+  host; what this spec says about the Azure portal describes the Azure profile in `infra/`, which is kept as code
+  but has no environment.
+
 ## What the scan saw, and why
 
 The dev host is the portal (SPEC L2-8) run with the local network profile and the Auth0 dev tenant, behind a
@@ -209,7 +216,7 @@ through the pop-up and register a test card in a real browser.
    for the portal itself and the card provider's script origin.
 2. **Given** any portal answer, **When** it is sent, **Then** it carries `Cross-Origin-Resource-Policy: same-origin`
    and `Cross-Origin-Opener-Policy: same-origin-allow-popups`.
-3. **Given** the deployed portal with these headers, **When** a person signs in through the pop-up, signs out,
+3. **Given** the deployed portal (on the dev host) with these headers, **When** a person signs in through the pop-up, signs out,
    confirms their identity, and registers a test card, **Then** each works as before.
 4. **Given** the existing content policy and headers, **When** this feature lands, **Then** they are unchanged.
 
@@ -287,7 +294,8 @@ challenge, with `invalid_token` only for the second.
 - The deployed Azure portal already sends HSTS and trusts one proxy: nothing changes there but the new headers,
   the failure limit, the challenge, the smaller public configuration and the 404s.
 - In Azure the ingress can't filter paths, so the health routes stay reachable from the internet there; they
-  say only `ok`, `ready` or `starting`, and that is recorded.
+  say only `ok`, `ready` or `starting`, and that is recorded. (Since SPEC 1.26 that applies only if the Azure profile
+  is deployed again.)
 - The owner on a phone's mobile network has no fixed address: they reach the dev host through the private
   network. Approvals by Guardian push don't need the portal and keep working from anywhere.
 - The sign-in pop-up talks to the tenant directly from the browser, so the allow-list doesn't affect it; only
@@ -405,7 +413,7 @@ challenge, with `invalid_token` only for the second.
 
 - **NFR-001**: Local work MUST be unchanged: `demo:local`'s summary, the local stack, the VS Code runner, and dev
   tokens pasted into a portal or agent reached on `localhost`.
-- **NFR-002**: The deployed portal's sign-in pop-up, sign-out, identity confirmation, card registration and
+- **NFR-002**: The deployed portal's (on the dev host) sign-in pop-up, sign-out, identity confirmation, card registration and
   administrator decisions MUST keep working with the new headers.
 - **NFR-003**: No new secret and no new required setting. Nothing new in a log names a person, a token or a
   client address.
@@ -443,7 +451,7 @@ challenge, with `invalid_token` only for the second.
 - **SC-006**: With the dev sign-in, 100% of refused configurations stop the service at start-up, and 0 requests
   through a public host name or a proxy are served.
 - **SC-007**: 100% of 401 answers from the two public services carry the bearer challenge.
-- **SC-008**: On the deployed portal, a person signs in, confirms their identity, registers a test card and signs
+- **SC-008**: On the deployed portal (on the dev host), a person signs in, confirms their identity, registers a test card and signs
   out with the new headers in place, in one attempt each.
 - **SC-009**: The project's definition-of-done check stays green and the local demo's summary is unchanged.
 
