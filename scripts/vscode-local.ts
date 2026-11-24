@@ -20,7 +20,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, rmSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { DEV_JWKS_FILE, LOCAL_STACK, ProcessGroup, ROOT, childEnv, envFileFor, localStack, portInUse, sleep, type DemoProcess, type EnvFile, type StackRole } from "./demo-lib.js";
+import { DEV_JWKS_FILE, LOCAL_STACK, ProcessGroup, ROOT, callerTokenNeeded, childEnv, envFileFor, localStack, portInUse, sleep, type DemoProcess, type EnvFile, type StackRole } from "./demo-lib.js";
 import { DEV_TOKENS } from "../src/shared/config.js";
 import { DEV_ISSUER } from "../src/shared/identity-token.js";
 import { DEV_AGENT_CLIENT, DEV_MACHINE_CLIENT, loadOrCreateDevIssuer, signDevToken } from "./dev-issuer-lib.js";
@@ -175,11 +175,8 @@ const READY_MS = 60_000;
  */
 export const userAccountsOn = (status: number): boolean => status !== 404;
 
-/**
- * 016: whether the L2 that answers verifies callers' tokens: asked for a budget with the control token and no
- * caller's token, it then answers 401 `caller_token_required` (and 200 when it takes none).
- */
-export const callerTokenNeeded = (status: number, error: unknown): boolean => status === 401 && error === "caller_token_required";
+/** 016: the check lives with the stack's readiness probes (demo-lib), which need it too. */
+export { callerTokenNeeded };
 
 async function stack(users: boolean): Promise<number> {
   const local = localStack();
