@@ -173,12 +173,14 @@ describe("T-PRT-14 configuration and the flags (FR-001, CFG-2)", () => {
     expect(loadPortalConfig({ ...remote, PORTAL_ADMIN_TOKEN: "x" }).admin).toEqual({ token: "x" });
   });
 
-  it("T-PRT-14 /api/config says whether the administration area is on, and nothing about who may use it", async () => {
+  it("T-PRT-14 /api/config says nothing about the administration area (017); /api/me says whether it is the person's", async () => {
     const on = await start({ admin: true });
     const off = await start();
-    expect((await on.call<{ admin: unknown }>("GET", "/api/config")).body.admin).toEqual({ available: true });
-    expect((await off.call<{ admin: unknown }>("GET", "/api/config")).body.admin).toEqual({ available: false });
+    for (const p of [on, off]) expect((await p.call<Record<string, unknown>>("GET", "/api/config")).body).not.toHaveProperty("admin");
     expect((await on.call("GET", "/api/config")).text).not.toContain(TOKENS.portalAdmin);
+    // The web app reads the area from the administrator's own answer: true only where the area is on.
+    expect((await on.call<{ admin: boolean }>("GET", "/api/me", { token: await on.adminToken("dana") })).body.admin).toBe(true);
+    expect((await off.call<{ admin: boolean }>("GET", "/api/me", { token: await off.adminToken("dana") })).body.admin).toBe(false);
   });
 
   it("T-PRT-14 with the area off, a user's answers are what they were, plus the two flags on /api/me", async () => {

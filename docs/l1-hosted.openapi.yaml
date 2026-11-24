@@ -140,7 +140,10 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "429":
-          description: More than 2 concurrent runs, or 20 starts in the last hour, for this requester.
+          description: >-
+            More than 2 concurrent runs, or 20 starts in the last hour, for this requester (`too many runs`); or, before
+            the token is read, more than 300 requests in a minute from this address, or 20 failed authentications (401)
+            from it in a minute (v1.26; `too many requests`).
           headers:
             Retry-After:
               description: Seconds until a run may start.
@@ -308,6 +311,15 @@ components:
       description: >-
         Missing, malformed, invalid, expired or wrong-audience token, a machine token whose subject is not its
         client's, or a token of an issuer the service does not know.
+      headers:
+        WWW-Authenticate:
+          description: >-
+            v1.26 (RFC 6750): `Bearer realm="x402-agent"` when no bearer token was sent, and
+            `Bearer realm="x402-agent", error="invalid_token"` when one was sent and failed a check. Never a
+            description of the check.
+          required: true
+          schema:
+            type: string
       content:
         application/json:
           schema:

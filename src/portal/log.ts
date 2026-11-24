@@ -9,9 +9,11 @@ export interface PortalLogLine {
   userId?: string;
   /** A fixed label for an internal event (for example `card_vault_auth`). Never free text. */
   event?: string;
+  /** 017: a fixed number that goes with an event (the failed-authentication limit's). Never an identifier. */
+  count?: number;
 }
 
-export const LOG_KEYS: readonly string[] = ["time", "route", "status", "ms", "userId", "event"];
+export const LOG_KEYS: readonly string[] = ["time", "route", "status", "ms", "userId", "event", "count"];
 
 export type PortalLog = (line: PortalLogLine) => void;
 
@@ -20,6 +22,7 @@ export function createPortalLog(sink: (line: string) => void = (l) => console.lo
     const out: Record<string, unknown> = { time: line.time, route: line.route, status: line.status, ms: line.ms };
     if (line.userId !== undefined) out.userId = line.userId;
     if (line.event !== undefined) out.event = line.event;
+    if (line.count !== undefined) out.count = line.count;
     sink(JSON.stringify(out));
   };
 }

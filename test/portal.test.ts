@@ -17,6 +17,9 @@ const DIRECTORY_ISSUER = "https://login.microsoftonline.com/00000000-0000-4000-8
 import { userIdFor } from "../src/shared/user-id.js";
 import { OTHER_HOST, SELLER_HOST, STEP_UP_AGE, T0, TEST_MNEMONIC, TOKENS } from "./helpers/users.js";
 import { startPortal, type PortalTestApp, type StartPortalOptions } from "./helpers/portal.js";
+import { rawRequest, type RawReply } from "./helpers/raw-request.js";
+import { PORTAL_SCREENS } from "../src/shared/portal-screens.js";
+import { startCardVaultStub, type CardVaultStub } from "./helpers/card-vault-stub.js";
 
 let open: PortalTestApp[] = [];
 const start = async (o: StartPortalOptions = {}) => {
@@ -150,12 +153,10 @@ describe("T-PRT-01 access (FR-003, FR-005, SEC-19, SEC-20)", () => {
     const p = await start();
     const res = await p.call("GET", "/api/config");
     expect(res.status).toBe(200);
+    // 017 (T-PRT-18): what sign-in and cards need, nothing else: no network, and no word on the administration area.
     expect(res.body).toEqual({
       auth: { mode: "dev", domain: "", clientId: "x402-portal-dev", audience: "api://x402-l1-agent" },
-      network: "local",
       cards: { available: false },
-      // 014: additive. Off unless PORTAL_ADMIN=1.
-      admin: { available: false },
     });
     expect(res.text).not.toContain(TOKENS.portal);
   });
@@ -208,11 +209,12 @@ describe("T-PRT-01 access (FR-003, FR-005, SEC-19, SEC-20)", () => {
   });
 
   it("T-PRT-01 no role token opens the portal: the agent's, the verifier's, the operator's, or the portal's own (FR-005)", async () => {
-    const p = await start();
-    const before = p.l2.entries().length;
     // The tokens this L2 verifies, and the local dev defaults of all five roles: none is a person's sign-in.
     const roleTokens = [...Object.values(TOKENS), "dev-control-token", "dev-verifier-token", "dev-settlement-token", "dev-operator-token", "dev-portal-token"];
     for (const token of roleTokens) {
+      // 017: a portal per token, because one address gets 20 failed authentications a minute (T-EDGE-04).
+      const p = await start();
+      const before = p.l2.entries().length;
       for (const [method, path] of [
         ["GET", "/api/me"],
         ["PUT", "/api/profile"],
@@ -223,9 +225,9 @@ describe("T-PRT-01 access (FR-003, FR-005, SEC-19, SEC-20)", () => {
         const res = await p.call(method, path, { token, ...(method !== "GET" && { body: {} }) });
         expect([res.status, res.body], `${token} ${method} ${path}`).toEqual([401, { error: "unauthorized" }]);
       }
+      expect(p.l2.entries().length).toBe(before);
+      expect(existsSync(p.profilesDir)).toBe(false);
     }
-    expect(p.l2.entries().length).toBe(before);
-    expect(existsSync(p.profilesDir)).toBe(false);
   });
 
   it("T-PRT-01 a token issued for the agent service is refused, on every route (FR-005)", async () => {
@@ -364,18 +366,20 @@ describe("T-PRT-01 access (FR-003, FR-005, SEC-19, SEC-20)", () => {
 
   it("T-PRT-01 behind a trusted proxy each client address has its own count; without one the header is ignored", async () => {
     const from = (base: string, address: string) => fetch(`${base}/api/me`, { headers: { "x-forwarded-for": address } }).then((r) => r.status);
-    const proxied = await start({ maxRequestsPerAddress: 2, env: { TRUSTED_PROXY_HOPS: "1" } });
+    // The sign-in tenant's issuer: the dev sign-in refuses a declared proxy and any forwarded request (017 T-EDGE-02, -03).
+    const tenant = { AUTH_ISSUER: SIGN_IN_ISSUER, AUTH_JWKS_FILE: "" };
+    const proxied = await start({ maxRequestsPerAddress: 2, env: { ...tenant, TRUSTED_PROXY_HOPS: "1" } });
     expect([await from(proxied.base, "203.0.113.7"), await from(proxied.base, "203.0.113.7"), await from(proxied.base, "203.0.113.7")]).toEqual([401, 401, 429]);
     expect(await from(proxied.base, "203.0.113.8")).toBe(401);
     // Entries the caller writes itself come before the one the proxy appends, so they never reset its count.
-    const spoofed = await start({ maxRequestsPerAddress: 2, env: { TRUSTED_PROXY_HOPS: "1" } });
+    const spoofed = await start({ maxRequestsPerAddress: 2, env: { ...tenant, TRUSTED_PROXY_HOPS: "1" } });
     expect([
       await from(spoofed.base, "198.51.100.1, 203.0.113.7"),
       await from(spoofed.base, "198.51.100.2, 203.0.113.7"),
       await from(spoofed.base, "198.51.100.3, 203.0.113.7"),
     ]).toEqual([401, 401, 429]);
     // Not behind a proxy: a caller can't pick its own address by sending the header.
-    const direct = await start({ maxRequestsPerAddress: 2 });
+    const direct = await start({ maxRequestsPerAddress: 2, env: tenant });
     expect([await from(direct.base, "203.0.113.7"), await from(direct.base, "203.0.113.8"), await from(direct.base, "203.0.113.9")]).toEqual([401, 401, 429]);
   });
 
@@ -898,7 +902,7 @@ describe("T-PRT-07 headers on every response", () => {
       expect(res.headers.get("referrer-policy"), path).toBe("no-referrer");
       expect(res.headers.get("x-powered-by"), path).toBeNull();
       expect(res.headers.get("cache-control"), path).toBe(path.startsWith("/api") ? "no-store" : null);
-      // Loopback, local network: no HSTS.
+      // A loopback host name: no HSTS (017 research R1).
       expect(res.headers.get("strict-transport-security"), path).toBeNull();
     }
   });
@@ -938,7 +942,7 @@ describe("T-PRT-07 headers on every response", () => {
     expect((await p.call("GET", "/api/users")).status).toBe(401);
   });
 
-  it("T-PRT-07 the built web app is served with index.html for any other path, when it exists", async () => {
+  it("T-PRT-07 the built web app is served with index.html for its screens, when it exists", async () => {
     const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
     const { tmpdir } = await import("node:os");
     const root = mkdtempSync(join(tmpdir(), "portal-web-"));
@@ -950,9 +954,10 @@ describe("T-PRT-07 headers on every response", () => {
         expect(res.status, path).toBe(200);
         expect(res.text).toContain("x402 portal");
       }
-      // The earlier sign-in's redirect page is gone: its path is the app like any other.
-      const redirect = await p.call("GET", "/redirect.html");
-      expect(redirect.text).toContain("x402 portal");
+      // The earlier sign-in's redirect page is gone: its path is not a screen (017: 404, with the page for a browser).
+      const redirect = await fetch(`${p.base}/redirect.html`, { headers: { accept: "text/html" } });
+      expect(redirect.status).toBe(404);
+      expect(await redirect.text()).toContain("x402 portal");
       expect(redirect.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
       // The API is never shadowed by the page.
       expect((await p.call("GET", "/api/me")).status).toBe(401);
@@ -960,6 +965,233 @@ describe("T-PRT-07 headers on every response", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+});
+
+// ---------------------------------------------------------------------------
+// T-PRT-16 (017): transport and browser policies on every answer, chosen by the Host header
+// ---------------------------------------------------------------------------
+
+/** The HSTS value the portal sends to any host name but a loopback one (017 research R1). */
+const HSTS = "max-age=31536000; includeSubDomains";
+
+describe("T-PRT-16 transport and browser policies on every answer", () => {
+  /** A web root with the page and one built file, removed after the test. */
+  const webRoot = async () => {
+    const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const root = mkdtempSync(join(tmpdir(), "portal-web-"));
+    writeFileSync(join(root, "index.html"), "<!doctype html><title>x402 portal</title>");
+    mkdirSync(join(root, "assets"));
+    writeFileSync(join(root, "assets", "app.js"), "console.log('x402');");
+    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+    return root;
+  };
+  const cleanups: Array<() => void> = [];
+  afterEach(() => {
+    for (const c of cleanups.splice(0)) c();
+  });
+
+  /** Every kind of answer: the page, a file, an API answer, health, a 401, a 404 and a 429, for one host name. */
+  const answers = async (network: string, host: string | undefined) => {
+    // The sign-in tenant's issuer: the dev sign-in answers 421 to a public host name (T-EDGE-03).
+    const env = { NETWORK: network, AUTH_ISSUER: SIGN_IN_ISSUER, AUTH_JWKS_FILE: "" };
+    const p = await start({ webRoot: await webRoot(), env });
+    const limited = await start({ maxRequestsPerAddress: 1, env });
+    const out: Array<[string, RawReply]> = [];
+    for (const path of ["/", "/assets/app.js", "/api/config", "/api/me", "/healthz"]) {
+      out.push([path, await rawRequest(p.base, { path, ...(host !== undefined && { host }) })]);
+    }
+    // A 404 before and after 017's 404 rules (T-PRT-17): no route takes POST there.
+    out.push(["POST /nope", await rawRequest(p.base, { method: "POST", path: "/nope", ...(host !== undefined && { host }) })]);
+    await rawRequest(limited.base, { path: "/api/me", ...(host !== undefined && { host }) });
+    out.push(["429", await rawRequest(limited.base, { path: "/api/me", ...(host !== undefined && { host }) })]);
+    expect(out.map(([path, r]) => [path, r.status])).toEqual([
+      ["/", 200],
+      ["/assets/app.js", 200],
+      ["/api/config", 200],
+      ["/api/me", 401],
+      ["/healthz", 200],
+      ["POST /nope", 404],
+      ["429", 429],
+    ]);
+    // FR-023: the health route needs no token and says only its status.
+    expect(out.find(([path]) => path === "/healthz")![1].json).toEqual({ status: "ok" });
+    return out;
+  };
+
+  it("T-PRT-16 Permissions-Policy, CORP and COOP on every answer, whatever the host name, and no COEP", async () => {
+    // The pop-up sign-in answers by a web message, so the opener keeps its pop-ups (same-origin-allow-popups), and
+    // the card form's script host may ask for the Payment Request API.
+    const PERMISSIONS = 'camera=(), microphone=(), geolocation=(), display-capture=(), usb=(), serial=(), hid=(), payment=(self "https://js.stripe.com")';
+    for (const host of ["portal.example", undefined]) {
+      for (const [path, r] of await answers("local", host)) {
+        expect(r.headers["permissions-policy"], `${host} ${path}`).toBe(PERMISSIONS);
+        expect(r.headers["cross-origin-resource-policy"], `${host} ${path}`).toBe("same-origin");
+        expect(r.headers["cross-origin-opener-policy"], `${host} ${path}`).toBe("same-origin-allow-popups");
+        expect(r.headers["cross-origin-embedder-policy"], `${host} ${path}`).toBeUndefined();
+      }
+    }
+  });
+
+  for (const network of ["local", "base-sepolia"]) {
+    it(`T-PRT-16 HSTS on every answer to a public host name, and on none to a loopback one (${network})`, async () => {
+      for (const [path, r] of await answers(network, "portal.example")) expect(r.headers["strict-transport-security"], path).toBe(HSTS);
+      for (const [path, r] of await answers(network, "PORTAL.example:443")) expect(r.headers["strict-transport-security"], path).toBe(HSTS);
+      for (const host of [undefined, "localhost:4025", "[::1]:4025"]) {
+        for (const [path, r] of await answers(network, host)) expect(r.headers["strict-transport-security"], `${host} ${path}`).toBeUndefined();
+      }
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// T-PRT-17 (017): only the portal's own paths answer 200
+// ---------------------------------------------------------------------------
+
+/**
+ * A fixed probe list in the families the DAST probed (research R7): its named examples (`/.env`, `/.git/HEAD`,
+ * `/backup.zip`, a source map), then dotfiles and dot-folders, backups and archives, configuration and secret files,
+ * administration consoles and source maps. 56 paths.
+ */
+const SENSITIVE_PATHS = [
+  // Dotfiles and dot-folders (16)
+  "/.env", "/.env.local", "/.env.production", "/.git/HEAD", "/.git/config", "/.gitignore", "/.htaccess", "/.htpasswd",
+  "/.DS_Store", "/.npmrc", "/.aws/credentials", "/.ssh/id_rsa", "/.vscode/settings.json", "/.idea/workspace.xml",
+  "/.well-known/security.txt", "/.svn/entries",
+  // Backups and archives (10)
+  "/backup.zip", "/backup.tar.gz", "/site.tar", "/db.sql", "/dump.sql", "/index.html.bak", "/index.html~", "/www.zip",
+  "/backup.sql.gz", "/portal.7z",
+  // Configuration and secret files (12)
+  "/config.json", "/config.yml", "/package.json", "/package-lock.json", "/docker-compose.yml", "/Dockerfile",
+  "/web.config", "/server.js", "/app.js", "/credentials.json", "/secrets.yaml", "/env/portal.env",
+  // Administration consoles (10)
+  "/admin.php", "/phpmyadmin/", "/wp-admin/", "/wp-login.php", "/server-status", "/actuator/health", "/console",
+  "/manager/html", "/debug/vars", "/graphql",
+  // Source maps (8)
+  "/assets/index-ZtKxaTnm.js.map", "/assets/index.js.map", "/assets/app.js.map", "/assets/index-abc.js.map",
+  "/main.js.map", "/assets/vendor.js.map", "/assets/index.css.map", "/static/js/main.js.map",
+];
+/** Encoded, double-encoded and malformed traversal, sent byte for byte (`fetch` would normalize them). */
+const TRAVERSAL = [
+  "/assets/..%2f..%2fetc/passwd",
+  "/%2e%2e/%2e%2e/etc/passwd",
+  "/..%252f..%252fetc/passwd",
+  "/assets/%2e%2e%5c%2e%2e%5cwindows/win.ini",
+  "/x/%00",
+  "/%c0%ae%c0%ae/etc/passwd",
+  "/assets/....//....//etc/passwd",
+  "/assets/..;/..;/etc/passwd",
+];
+const PAGE_MARKER = "x402-portal-page-marker";
+const BUILT_JS = "console.log('x402-built-file');";
+
+describe("T-PRT-17 only the portal's own paths answer 200", () => {
+  const cleanups: Array<() => void> = [];
+  afterEach(() => {
+    for (const c of cleanups.splice(0)) c();
+  });
+  const withWebApp = async (o: StartPortalOptions = {}) => {
+    const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const root = mkdtempSync(join(tmpdir(), "portal-web-"));
+    writeFileSync(join(root, "index.html"), `<!doctype html><title>x402 portal</title><!-- ${PAGE_MARKER} -->`);
+    mkdirSync(join(root, "assets"));
+    writeFileSync(join(root, "assets", "index-abc.js"), BUILT_JS);
+    cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+    return start({ webRoot: root, ...o });
+  };
+  const HTML = { accept: "text/html,application/xhtml+xml" };
+  const NOT_FOUND = { error: "not found" };
+
+  it("T-PRT-17 the probe list is the families' 56 paths and 8 payloads", () => {
+    expect([SENSITIVE_PATHS.length, new Set(SENSITIVE_PATHS).size, TRAVERSAL.length]).toEqual([56, 56, 8]);
+  });
+
+  it("T-PRT-17 every screen answers 200 with the page on GET and HEAD; built files are served", async () => {
+    const p = await withWebApp();
+    for (const path of [...PORTAL_SCREENS.map((r) => r.example), "/policies/"]) {
+      const get = await rawRequest(p.base, { path, headers: HTML });
+      expect([get.status, get.body.includes(PAGE_MARKER)], path).toEqual([200, true]);
+      expect((await rawRequest(p.base, { method: "HEAD", path })).status, `HEAD ${path}`).toBe(200);
+    }
+    expect((await rawRequest(p.base, { path: "/index.html" })).body).toContain(PAGE_MARKER);
+    const js = await rawRequest(p.base, { path: "/assets/index-abc.js" });
+    expect([js.status, js.body]).toEqual([200, BUILT_JS]);
+  });
+
+  it("T-PRT-17 anything else is 404: the page for a browser's navigation, a bare 404 otherwise", async () => {
+    const p = await withWebApp();
+    const nav = await rawRequest(p.base, { path: "/nope", headers: HTML });
+    expect([nav.status, nav.body.includes(PAGE_MARKER)]).toEqual([404, true]);
+    for (const headers of [{ accept: "application/json" }, {}] as Array<Record<string, string>>) {
+      const r = await rawRequest(p.base, { path: "/nope", headers });
+      expect([r.status, r.json], JSON.stringify(headers)).toEqual([404, NOT_FOUND]);
+    }
+    for (const [method, path] of [["POST", "/"], ["PUT", "/policies"]] as const) {
+      const r = await rawRequest(p.base, { method, path, headers: HTML });
+      expect([r.status, r.json], `${method} ${path}`).toEqual([404, NOT_FOUND]);
+    }
+    // A built file that doesn't exist is never the page.
+    for (const path of ["/assets/missing.js", "/assets/index-abc.js.map", "/assets/"]) {
+      const r = await rawRequest(p.base, { path, headers: HTML });
+      expect([r.status, r.json], path).toEqual([404, NOT_FOUND]);
+    }
+  });
+
+  it("T-PRT-17 the probe list and the traversal payloads are all 404 and never a file; dot-paths and traversal get a bare 404", async () => {
+    const p = await withWebApp();
+    for (const path of [...SENSITIVE_PATHS, ...TRAVERSAL]) {
+      const r = await rawRequest(p.base, { path, headers: HTML });
+      expect(r.status, path).toBe(404);
+      expect(r.body.includes(BUILT_JS), path).toBe(false);
+      expect(r.body, path).not.toMatch(/root:|\[fonts\]/);
+      // FR-012: a dot-path, anything under /assets and every traversal payload is the bare 404; another path may
+      // carry the page, as a mistyped address would.
+      const bare = TRAVERSAL.includes(path) || path.split("/").some((seg) => seg.startsWith(".")) || path.startsWith("/assets/");
+      if (bare) expect(r.json, path).toEqual(NOT_FOUND);
+    }
+  });
+
+  it("T-PRT-17 must-fail: with the test-only skipNotFoundRules hook, the catch-all answers a probe with 200", async () => {
+    const p = await withWebApp({ skipNotFoundRules: true });
+    const r = await rawRequest(p.base, { path: "/.env", headers: HTML });
+    expect([r.status, r.body.includes(PAGE_MARKER)]).toEqual([200, true]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T-PRT-18 (017): the public configuration holds what sign-in and cards need, and nothing else
+// ---------------------------------------------------------------------------
+
+describe("T-PRT-18 the public configuration holds what sign-in and cards need, and nothing else", () => {
+  const stubs: CardVaultStub[] = [];
+  afterEach(async () => {
+    await Promise.all(stubs.splice(0).map((v) => v.close()));
+  });
+
+  for (const signIn of ["dev", "auth0"] as const) {
+    for (const cards of [false, true]) {
+      for (const admin of [false, true]) {
+        it(`T-PRT-18 ${signIn} sign-in, cards ${cards ? "on" : "off"}, administration ${admin ? "on" : "off"}: auth and cards only`, async () => {
+          const vault = cards ? await startCardVaultStub() : undefined;
+          if (vault) stubs.push(vault);
+          const p = await start({
+            ...(signIn === "auth0" && { env: { AUTH_ISSUER: SIGN_IN_ISSUER, AUTH_JWKS_FILE: "" } }),
+            ...(vault && { vault }),
+            ...(admin && { admin: true }),
+          });
+          const res = await p.call<Record<string, Record<string, unknown>>>("GET", "/api/config");
+          expect(res.status).toBe(200);
+          expect(Object.keys(res.body).sort()).toEqual(["auth", "cards"]);
+          expect(Object.keys(res.body.auth!).sort()).toEqual(["audience", "clientId", "domain", "mode"]);
+          expect(res.body.auth!.mode).toBe(signIn);
+          expect(res.body.cards).toEqual(cards ? { available: true, publishableKey: expect.stringMatching(/^pk_test_/) } : { available: false });
+          // Nothing names the network profile or the administration area.
+          expect(res.text).not.toMatch(/network|local|base-sepolia|eip155|admin/i);
+        });
+      }
+    }
+  }
 });
 
 describe("T-PRT-08 the log holds route templates and identifiers only (NFR-003, NFR-004)", () => {
@@ -971,6 +1203,8 @@ describe("T-PRT-08 the log holds route templates and identifiers only (NFR-003, 
     await p.call("GET", "/api/me");
     await p.call("PUT", "/api/profile", { token, body: { displayName: "", contactEmail: "x" } });
     expect(p.logs.length).toBeGreaterThan(5);
+    // 017: `count` joins the whitelist, for the failed-authentication burst line (T-EDGE-04).
+    expect(LOG_KEYS).toEqual(["time", "route", "status", "ms", "userId", "event", "count"]);
     for (const line of p.logs) expect(Object.keys(line).every((k) => LOG_KEYS.includes(k)), JSON.stringify(line)).toBe(true);
     const all = p.rawLogs.join("\n");
     for (const secret of [token, token.split(".")[2]!, TOKENS.portal, "Ana", "ana.perez", "Research APIs", "QUERYSECRET", policyId]) {

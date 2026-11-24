@@ -60,6 +60,29 @@ export function firstStepNotDone(o: Onboarding): string | null {
 }
 
 /**
+ * What each screen needs done first. 017: exported, so T-WEB-14 can check that the portal's screen table
+ * (src/shared/portal-screens.ts) has a row for every screen.
+ */
+export const SCREEN_NEEDS: Record<Screen["name"], keyof Onboarding | "all" | "none"> = {
+  home: "none",
+  "profile-step": "none",
+  "wallet-step": "profile",
+  "policy-step": "wallet",
+  profile: "all",
+  wallet: "profile",
+  policies: "wallet",
+  "policy-new": "wallet",
+  "policy-edit": "wallet",
+  "policy-history": "wallet",
+  account: "profile",
+  "admin-waiting": "none",
+  "admin-payment": "none",
+  "admin-activity": "none",
+  "admin-ledger": "none",
+  "not-found": "none",
+};
+
+/**
  * Where a person actually lands for a path. A step that is already done, or a screen whose step is not done yet,
  * goes to the first step not done; a finished onboarding step goes home.
  *
@@ -70,25 +93,7 @@ export function resolveRoute(path: string, o: Onboarding): string {
   if (isAdminPath(path)) return path;
   const screen = matchRoute(path);
   const next = firstStepNotDone(o);
-  const needs: Record<string, keyof Onboarding | "all" | "none"> = {
-    home: "none",
-    "profile-step": "none",
-    "wallet-step": "profile",
-    "policy-step": "wallet",
-    profile: "all",
-    wallet: "profile",
-    policies: "wallet",
-    "policy-new": "wallet",
-    "policy-edit": "wallet",
-    "policy-history": "wallet",
-    account: "profile",
-    "admin-waiting": "none",
-    "admin-payment": "none",
-    "admin-activity": "none",
-    "admin-ledger": "none",
-    "not-found": "none",
-  };
-  const need = needs[screen.name]!;
+  const need = SCREEN_NEEDS[screen.name];
   const missing = need === "all" ? next !== null : need !== "none" && !o[need];
   if (missing) return next ?? "/";
   // An onboarding step that is already done has nothing to show: go to the next one, or home.

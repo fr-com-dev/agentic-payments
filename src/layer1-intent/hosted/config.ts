@@ -1,6 +1,7 @@
 // L1-6 hosted agent service configuration (SPEC.md §9 CFG-2 `l1-hosted.env`; specs/011 contracts/model-access.md).
 // Errors name the variable and never echo its value: several of them are secrets.
 import { trustedProxyHops } from "../../shared/address-limit.js";
+import { isLoopbackBind } from "../../shared/local-only.js";
 import { apiDocsEnabled, ConfigError, serviceUrls, tokenFor } from "../../shared/config.js";
 import { DEV_ISSUER, PERSON_ISSUER_RE } from "../../shared/identity-token.js";
 
@@ -135,6 +136,13 @@ export function loadHostedConfig(env: Env = process.env): HostedConfig {
     if (dev) throw new ConfigError("API_DOCS_CLIENT_ID needs the sign-in tenant: the local dev issuer has no sign-in page");
   }
 
+  const bindHost = present(env.AGENT_BIND_HOST) ? env.AGENT_BIND_HOST : DEFAULT_AGENT_BIND_HOST;
+  const hops = trustedProxyHops(env);
+  // 017 (SEC-44): the dev issuer's tokens can be made by anyone with the repository, so with it the service serves
+  // this machine only: a loopback bind and no proxy in front. Each request is checked too (localOnly in server.ts).
+  if (dev && !isLoopbackBind(bindHost)) throw new ConfigError("AGENT_BIND_HOST must be a loopback address with AUTH_JWKS_FILE (the local dev issuer)");
+  if (dev && hops > 0) throw new ConfigError("TRUSTED_PROXY_HOPS must be 0 with AUTH_JWKS_FILE (the local dev issuer)");
+
   const secretRaw = required(env, "SESSION_REF_SECRET");
   const sessionRefSecret = decodeSecret(secretRaw);
   if (sessionRefSecret === null || sessionRefSecret.length < MIN_SECRET_BYTES) {
@@ -153,8 +161,8 @@ export function loadHostedConfig(env: Env = process.env): HostedConfig {
     auth: { issuer, audience, clientIds, ...(jwksFile !== undefined && { jwksFile }), ...(docsClientId !== undefined && { docsClientId }) },
     sessionRefSecret,
     port: agentPort(env),
-    bindHost: present(env.AGENT_BIND_HOST) ? env.AGENT_BIND_HOST : DEFAULT_AGENT_BIND_HOST,
-    trustedProxyHops: trustedProxyHops(env),
+    bindHost,
+    trustedProxyHops: hops,
     apiDocs: apiDocsEnabled(env),
   };
 }

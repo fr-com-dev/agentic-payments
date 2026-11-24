@@ -59,6 +59,15 @@ export function bearerToken(header: unknown): string | null {
 }
 
 /**
+ * 017 (RFC 6750 §3; specs/017 research R6): the `WWW-Authenticate` value of a 401 from a public service. A caller
+ * that sent no bearer token is told the scheme and the realm only; one that sent a token that failed any check also
+ * gets `error="invalid_token"`, and never a description of which check failed.
+ */
+export function bearerChallenge(realm: string, tokenPresented: boolean): string {
+  return `Bearer realm="${realm}"${tokenPresented ? ', error="invalid_token"' : ""}`;
+}
+
+/**
  * The `iss` a token claims, read WITHOUT verifying anything. Its only use is to choose which issuer's checks to run;
  * the chosen verifier then checks the signature and the issuer in full. Null when the token can't be read.
  */

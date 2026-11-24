@@ -59,7 +59,8 @@ describe("T-IMG-01 per-layer images", { timeout: 30_000 }, () => {
     // The web packages are devDependencies: a runtime image, installed with --omit=dev, can't hold them.
     for (const p of WEB_PACKAGES) expect(Object.keys(DEPS), p).not.toContain(p);
     const text = readFileSync(IMAGES.portal.dockerfile, "utf8");
-    expect(text).toContain("RUN npm run build && npm run build:web && npx tsx scripts/image-closure.ts portal /out\n");
+    // 017 (T-WEB-16): the image's web build is the deployment one, without the pasted-token sign-in.
+    expect(text).toContain("RUN npm run build && npm run build:web -- --mode deployment && npx tsx scripts/image-closure.ts portal /out\n");
     expect(text).toContain("COPY --from=build /app/dist/portal-web ./dist/portal-web\n");
     expect(text).toContain("COPY docs/portal.openapi.yaml ./dist/docs/\n");
     expect(text).toContain("RUN mkdir -p /app/.local/portal && chown node:node /app/.local/portal\n");
@@ -268,7 +269,7 @@ describe("T-IMG-03 the deploy pipeline's step 1 runs the images' builds", () => 
     expect(stepOneBuildProblems(dockerfiles, stepOne().filter((c) => c !== "npm run build:web"))).toEqual([web]);
     const late = stepOne().filter((c) => c !== "npm run build").concat("npm run build");
     expect(stepOneBuildProblems(dockerfiles, late)).toEqual(NAMES.map((n) => `${IMAGES[n].dockerfile}'s build stage runs npm run build: deploy.yml's step 1 must run it before npm test`));
-    const gained = { ...dockerfiles, [portal]: dockerfiles[portal]!.replace("npm run build:web &&", "npm run build:web && npm run build:docs &&") };
+    const gained = { ...dockerfiles, [portal]: dockerfiles[portal]!.replace("npm run build:web -- --mode deployment &&", "npm run build:web -- --mode deployment && npm run build:docs &&") };
     expect(gained[portal]).not.toBe(dockerfiles[portal]);
     expect(stepOneBuildProblems(gained, stepOne())).toEqual([`${portal}'s build stage runs npm run build:docs: deploy.yml's step 1 must run it before npm test`]);
     // A script the runtime stage runs is not a build.

@@ -2,6 +2,7 @@
 // refused sign-in: nothing is even asked of the portal for it.
 import { useState } from "react";
 import { Banner, ScreenHeading } from "../components/ui.js";
+import { DEV_SIGN_IN } from "../auth/dev-sign-in.js";
 import type { Auth } from "../auth/types.js";
 
 /**
@@ -54,7 +55,7 @@ export function SignedOut({ auth, refused, onSignedIn }: { auth: Auth; refused: 
           The sign-in did not complete{failed.code !== null ? <> (<code>{failed.code}</code>)</> : null}. {signInHint(failed.code)}
         </Banner>
       ) : null}
-      {auth.mode === "dev" ? (
+      {DEV_SIGN_IN && auth.mode === "dev" ? (
         <div className="field">
           <label htmlFor="dev-token">Development sign-in: paste a token from “npm run -s dev-token -- --subject alice --portal”</label>
           <textarea id="dev-token" rows={4} value={token} onChange={(e) => setToken(e.target.value)} spellCheck={false} />

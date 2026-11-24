@@ -148,13 +148,15 @@ describe("T-API-13 the person's token is the only credential, exactly where docu
     return out;
   }
 
+  // 017: these send one token-less request per documented operation from one address, more than the 20 failed
+  // authentications a minute the portal allows it (T-EDGE-04 covers that limit), so the limit is off here.
   it("T-API-13 no token gets 401, an agent-service token 403, the person's portal token passes; open routes need none", async () => {
-    const p = await start({ env: DOCS });
+    const p = await start({ env: DOCS, skipFailureLimit: true });
     expect(await mismatches(loadDoc(), p)).toEqual([]);
   });
 
   it("T-API-13 must-fail: a document that calls a protected route open, or an open one protected, is reported", async () => {
-    const p = await start({ env: DOCS });
+    const p = await start({ env: DOCS, skipFailureLimit: true });
     const doc = loadDoc();
     doc.paths["/api/me"]!.get!.security = [];
     doc.paths["/api/config"]!.get!.security = [{ personToken: [] }];
@@ -165,7 +167,8 @@ describe("T-API-13 the person's token is the only credential, exactly where docu
 describe("T-API-14 live responses match the documented status and schema", () => {
   it("T-API-14 a scenario reaching every documented status (except the generic ones) conforms to the document", async () => {
     const doc = loadDoc();
-    const { p, vault } = await startWithVault({ env: DOCS });
+    // 017: many token-less requests from one address, as in T-API-13: the failed-authentication limit is off.
+    const { p, vault } = await startWithVault({ env: DOCS, skipFailureLimit: true });
     const seen = new Set<string>();
     const errors: string[] = [];
     const tokens = {

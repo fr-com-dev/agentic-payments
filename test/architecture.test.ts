@@ -1053,8 +1053,15 @@ describe("T-ARCH-TRACE threat matrix → test titles (007 T051)", () => {
   // SEC-19..24 by 013 (v1.10, user accounts and the portal), SEC-25 by 012's convergence (v1.11, the Auth0 pipeline),
   // SEC-26 by 013 (v1.14, a portal that asks for no role), SEC-27..29 by 014 (v1.15, the portal's administration area),
   // SEC-30 by 015 (v1.16, approval by the person the run is for); SEC-31 is reserved by 015's open tasks;
-  // SEC-32..34 by 016 (v1.17: L1's word names no user, machine callers, the docs page's sign-in).
-  const SEC_ROWS = [...Array.from({ length: 30 }, (_, i) => `SEC-${i + 1}`), "SEC-32", "SEC-33", "SEC-34"];
+  // SEC-32..34 by 016 (v1.17: L1's word names no user, machine callers, the docs page's sign-in); SEC-35..42 (v1.19
+  // to v1.25) are in SPEC §11 only; SEC-43..48 by 017 (v1.26, the portal's DAST findings).
+  const SEC_ROWS = [
+    ...Array.from({ length: 30 }, (_, i) => `SEC-${i + 1}`),
+    "SEC-32",
+    "SEC-33",
+    "SEC-34",
+    ...Array.from({ length: 6 }, (_, i) => `SEC-${i + 43}`),
+  ];
   it(`every ${SEC_ROWS[0]}..${SEC_ROWS.at(-1)} row names at least one test, and each named ID is a test title`, () => {
     const rows = matrixRows(readFileSync(THREAT_MATRIX, "utf8"));
     expect(rows.map((r) => r.sec)).toEqual(SEC_ROWS);
@@ -1071,8 +1078,12 @@ describe("T-ARCH-TRACE threat matrix → test titles (007 T051)", () => {
 // T-ARCH-SWITCH: the must-fail switches stay test-only (Constitution VIII; CLAUDE.md "Gotchas")
 // ---------------------------------------------------------------------------
 
-/** The must-fail switches: every `skip…` and `bypass…` dep, and the others CLAUDE.md lists by name. */
-const SWITCH = String.raw`(?:skip[A-Z]\w*|bypass\w*|sharedSigner|sharedBudgets|trustIntentUser|echoCaller|fallbackToPlatform|unserialized\w*|singlePortalRole|serializeOutcomes)`;
+/**
+ * The must-fail switches: every `skip…` and `bypass…` dep, and the others CLAUDE.md lists by name. 017: but not
+ * express-rate-limit's own two options, `skipSuccessfulRequests` and `skipFailedRequests`, which say what a limiter
+ * counts (the failed-authentication limit counts 401s only) and turn no check off.
+ */
+const SWITCH = String.raw`(?:skip(?!SuccessfulRequests\b|FailedRequests\b)[A-Z]\w*|bypass\w*|sharedSigner|sharedBudgets|trustIntentUser|echoCaller|fallbackToPlatform|unserialized\w*|singlePortalRole|serializeOutcomes)`;
 /** A switch turned on with a literal: `name: true`, a list of string literals, or a set. */
 const SWITCH_ON = new RegExp(String.raw`\b(${SWITCH})\s*:\s*(?:true\b|\[\s*["'\x60]|new Set\()`, "g");
 /** Passing a caller's own switch on, `...(deps.name && { name: true })`, turns nothing on by itself. */
