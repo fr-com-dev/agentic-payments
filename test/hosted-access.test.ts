@@ -187,6 +187,38 @@ describe("T-AGT-10 the caller's token goes to L2, beside the control token, and 
 });
 
 // ---------------------------------------------------------------------------
+// T-AGT-15 a brand-new Google person (017 FR-013, SEC-26): Google sign-up is public, the agent is not
+// ---------------------------------------------------------------------------
+
+describe("T-AGT-15 a brand-new Google person (017 FR-013, SEC-26)", () => {
+  /** The subject a first Google sign-in makes (`google-oauth2|<Google's sub>`, digits only). */
+  const GOOGLE_SUB = "google-oauth2|104857600012345678901";
+
+  it("T-AGT-15 without agent:run: 403 forbidden, before any model or gate call; once the role is assigned, a run for that person's own token", async () => {
+    const model = mockModel([toolCall("check_budget", {}), text("done")]);
+    const ports = fakePorts();
+    const a = await start({ model, gate: ports.gate, settlement: ports.settlement });
+    const refused = await a.run("newcomer", { goal: "hi" }, { sub: GOOGLE_SUB, permissions: [] });
+    expect([refused.status, refused.body]).toEqual([403, { error: "forbidden" }]);
+    expect(modelCalls(model)).toHaveLength(0);
+    expect(ports.gateCalls).toHaveLength(0);
+    // A tenant administrator assigns x402-agent and the person signs in again: their next token carries agent:run.
+    const token = await a.token("newcomer", { sub: GOOGLE_SUB, permissions: ["agent:run"] });
+    const res = await fetch(`${a.base}/v1/runs`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify({ goal: "budget" }) });
+    expect(res.status).toBe(200);
+    expect(ports.gateCalls.length).toBeGreaterThan(0);
+    for (const c of ports.gateCalls) expect(c.callerToken).toBe(token);
+  });
+
+  it("T-AGT-15 must-fail: with the test-only skipPermission hook, the role-less Google person starts a run", async () => {
+    const model = mockModel();
+    const a = await start({ model, skipPermission: true });
+    expect((await a.run("newcomer", { goal: "hi" }, { sub: GOOGLE_SUB, permissions: [] })).status).toBe(200);
+    expect(modelCalls(model).length).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // T-AGT-03 access matrix (US3): every refusal happens before any model or L2 call, within 1 s
 // ---------------------------------------------------------------------------
 

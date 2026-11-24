@@ -14,8 +14,10 @@ import { ProfileStore, validDisplayName, validEmail, validPolicyName } from "../
 import { contentSecurityPolicy, MAX_REQUESTS_PER_MINUTE, signInOriginOf } from "../src/portal/server.js";
 /** The organization's directory as an issuer: the portal never knew it, and since 016 neither does the agent. */
 const DIRECTORY_ISSUER = "https://login.microsoftonline.com/00000000-0000-4000-8000-000000000000/v2.0";
+import { DEV_ISSUER } from "../src/shared/identity-token.js";
 import { userIdFor } from "../src/shared/user-id.js";
-import { OTHER_HOST, SELLER_HOST, STEP_UP_AGE, T0, TEST_MNEMONIC, TOKENS } from "./helpers/users.js";
+import { startCardVaultStub } from "./helpers/card-vault-stub.js";
+import { OTHER_HOST, PLATFORM_PAYER, SELLER_HOST, STEP_UP_AGE, T0, TEST_MNEMONIC, TOKENS } from "./helpers/users.js";
 import { startPortal, type PortalTestApp, type StartPortalOptions } from "./helpers/portal.js";
 
 let open: PortalTestApp[] = [];
@@ -795,6 +797,75 @@ describe("T-PRT-02 a person reaches only their own data (US4, FR-004)", () => {
     const res = await p.as("alice")("GET", `/api/policies/${bobs}`);
     expect(res.status).toBe(200);
     expect((res.body.values as { sellers: string[] }).sellers).toEqual([OTHER_HOST]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T-PRT-16: a brand-new Google person (017)
+// ---------------------------------------------------------------------------
+
+/**
+ * 017 (specs/017 contracts/new-person-access.md): the subject a first Google sign-in makes (`google-oauth2|<Google's
+ * sub>`, digits only), and an email-and-password person's subject with the same digits.
+ */
+const GOOGLE_SUB = "google-oauth2|104857600012345678901";
+const DATABASE_SUB = "auth0|104857600012345678901";
+
+describe("T-PRT-16 a brand-new Google person, with no role (017 FR-011..FR-016, SEC-26)", () => {
+  it("T-PRT-16 sets up their own profile, wallet, policy and card with no permission, and reaches nobody else's", async () => {
+    const vault = await startCardVaultStub();
+    try {
+      const p = await start({ vault });
+      const newcomer = p.as("newcomer", { sub: GOOGLE_SUB, permissions: [] });
+      const other = p.as("other", { sub: DATABASE_SUB, permissions: [] });
+      const mine = userIdFor(DEV_ISSUER, GOOGLE_SUB);
+      const theirs = userIdFor(DEV_ISSUER, DATABASE_SUB);
+      expect(mine).not.toBe(theirs);
+      expect((await p.call("GET", "/api/config")).status).toBe(200);
+      // No profile yet, and no role needed (R21).
+      expect((await newcomer("GET", "/api/me")).body).toEqual({ userId: mine, enabled: true, onboarding: { profile: false, wallet: false, policy: false }, admin: false });
+      // The same contact email for both: nothing links two people by email address (FR-016).
+      expect((await newcomer("PUT", "/api/profile", PROFILE)).status).toBe(200);
+      expect((await other("PUT", "/api/profile", PROFILE)).status).toBe(200);
+      expect(p.l2.entries("USER_REGISTERED").map((e) => e.data.userId)).toEqual([mine, theirs]);
+      const myWallet = await newcomer<{ account: { address: string } }>("PUT", "/api/wallet/account");
+      const theirWallet = await other<{ account: { address: string } }>("PUT", "/api/wallet/account");
+      expect(myWallet.status).toBe(200);
+      expect(myWallet.body.account.address).not.toBe(theirWallet.body.account.address);
+      expect([myWallet.body.account.address, theirWallet.body.account.address]).not.toContain(PLATFORM_PAYER);
+      expect((await newcomer("GET", "/api/wallet")).body.account).toMatchObject({ address: myWallet.body.account.address });
+      const myPolicy = await newcomer("POST", "/api/policies", POLICY);
+      expect(myPolicy.status, JSON.stringify(myPolicy.body)).toBe(201);
+      const theirPolicy = await other("POST", "/api/policies", { ...POLICY, sellers: [OTHER_HOST] });
+      expect(theirPolicy.status).toBe(201);
+      const listed = (await newcomer("GET", "/api/policies")).body.policies as { policyId: string }[];
+      expect(listed.map((x) => x.policyId)).toEqual([myPolicy.body.policyId]);
+      // The other person's policy answers as an unknown one (SEC-19).
+      const theirsRead = await newcomer("GET", `/api/policies/${String(theirPolicy.body.policyId)}`);
+      const unknown = await newcomer("GET", "/api/policies/pol_00000000-0000-4000-8000-000000000000");
+      expect(theirsRead.status).toBe(404);
+      expect(theirsRead.body).toEqual(unknown.body);
+      expect((await newcomer("POST", "/api/cards/setup")).status).toBe(200);
+      // Their token from the agent's client opens nothing here (SEC-20).
+      const agentToken = await p.agentToken("newcomer", { sub: GOOGLE_SUB, permissions: [] });
+      expect(await p.call("GET", "/api/me", { token: agentToken })).toMatchObject({ status: 403, body: { error: "forbidden" } });
+    } finally {
+      await vault.close();
+    }
+  });
+
+  it("T-PRT-16 the administration area refuses them, before any call to L2", async () => {
+    const p = await start({ admin: true });
+    const before = p.l2Calls();
+    const r = await p.as("newcomer", { sub: GOOGLE_SUB, permissions: [] })("GET", "/api/admin/escalations");
+    expect([r.status, r.body]).toEqual([403, { error: "forbidden" }]);
+    expect(p.l2Calls()).toBe(before);
+  });
+
+  it("T-PRT-16 must-fail: with the test-only skipAdminCheck, and L2's own person check off, the role-less Google person reads the waiting list", async () => {
+    const p = await start({ admin: true, skipAdminCheck: true, l2: { person: { skipPersonCheck: true } } });
+    const r = await p.as("newcomer", { sub: GOOGLE_SUB, permissions: [] })("GET", "/api/admin/escalations");
+    expect(r.status).toBe(200);
   });
 });
 

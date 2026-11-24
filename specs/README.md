@@ -1,8 +1,8 @@
 # Specs index: x402 three-layer agent payments
 
 These spec-kit feature specs decompose `SPEC.md` (v1.0 for 001–008, amended through v1.17 by 009, 010,
-011, 012, 013, 014, 015 (v1.16, in progress) and 016; v1.4 added the L2 API docs without a feature spec), which
-remains normative. Project principles live in `.specify/memory/constitution.md` (v2.0.0).
+011, 012, 013, 014, 015 (v1.16, in progress) and 016, and in v1.27 by 017; v1.4 added the L2 API docs without a
+feature spec), which remains normative. Project principles live in `.specify/memory/constitution.md` (v3.0.1).
 It covers INV-1..13, the definition of done and the governance rules.
 
 | # | Feature | Layer | Functional scope | Main non-functional scope |
@@ -22,6 +22,7 @@ It covers INV-1..13, the definition of done and the governance rules.
 | 013 | [l2-portal-onboarding](013-l2-portal-onboarding/spec.md) | L2 + portal (+ L1-6) | L2-8 user accounts and the L2 web portal: self-service onboarding, a profile, one crypto account per user signed by L2 only, registered cards that never pay, and expense policies per seller bounded by platform limits; L2-1 effective mandate, L2-2 R16/R17 and the user daily ceiling, L2-3 keyring, L2-4 entry types and owner filters, L2-5 portal routes, CFG-4, L1-6 user on intents | Off by default; one user never reaches another's data or budget (SEC-19), token separation between the two public services (SEC-20), step-up for loosening (SEC-21), no card data and no key outside their one place (SEC-22, SEC-24), no personal data in the ledger. In SPEC v1.10 |
 | 014 | [portal-l2-control-api](014-portal-l2-control-api/spec.md) | L2 + portal | L2-8 the portal's administration area: the rest of the control API that a person uses, for administrators with a separate permission: the pending escalations, approving and rejecting, the events in pages, the budget behind an escalation and the ledger check; L2-4 the `portal` channel on approvals and rejections, L2-4.3 three decision paths over one decision core, L2-5 six administration routes for a sixth role, CFG-2 `PORTAL_ADMIN` | Off by default; authorize and reconcile stay with the agent and L3; L2 checks who may decide (never one's own payment, a fresh identity confirmation for an approval) (SEC-25, SEC-28); a separate credential confined to one module (SEC-27, rule A13); reads write nothing; no typed text reaches L2. In SPEC v1.15 |
 | 016 | [agent-auth0-streaming](016-agent-auth0-streaming/spec.md) | L1 + L2 (+ tenant, cloud) | L1-6 callers of the hosted agent from the sign-in tenant only (people with `agent:run`, and machine callers); L1-2 and L2-5 the caller's token forwarded to L2, which verifies it and takes the user from it; §7 `PaymentIntent` names no user; L1-6 the run stream and the docs page's sign-in; L1-5 the smoke client; CFG-2, §3.1 and §3.3 for the agent's client, the machine caller's key and the docs switch | INV-13 as amended (the caller's token is no role token), SEC-13, SEC-14, SEC-20 amended, SEC-32..34, A14, A15, Constitution 2.0.0 (Principle V) |
+| 017 | [tenant-signup-hardening](017-tenant-signup-hardening/spec.md) | Tenant (+ portal, L1-6 tests) | Pentest finding P1: the people's connections declared in `auth0/` (email and password, Google), email-and-password sign-up closed by the connection's own setting so the page stops offering it, Google sign-up public by design on the project's own Google application, connections enabled for the portal's and the agent's clients only; CFG-2 the tenant's variables `google_client_id` and `google_sign_in`; rollout in two steps | SEC-26 rewritten (a role-less Google person reaches only their own account; no Google secret in anything the project keeps; drift shows in the next plan), Constitution 3.0.1. In SPEC v1.27 |
 
 ## Traceability (SPEC.md ID → feature)
 
@@ -61,6 +62,8 @@ It covers INV-1..13, the definition of done and the governance rules.
 | T-ADM-01..10, T-LED-07, T-PRT-10..14, T-WEB-09..12, T-ARCH-A13, T-E2E-14, T-IAC-01 rule 22 | 014 |
 | SEC-32..SEC-34, SEC-13, SEC-14 and SEC-20 as amended | 016 (with 007 for the threat matrix and rules A14, A15) |
 | T-CTK-01..08, T-AGT-08..14, T-API-16..17, T-E2E-15..17, T-ARCH-A14..A15, T-IAC-01 rule 23, T-IAC-02 as amended | 016 |
+| SEC-26 as rewritten in v1.27, CFG-2 the tenant's `google_client_id` and `google_sign_in` | 017 (with 007 for the threat matrix, 013 for SEC-26's first version) |
+| T-PRT-16, T-AGT-15, T-CTK-01 row 5 (a Google person), T-IAC-02 rules 1-8 of `specs/017` contracts/tenant-connections.md | 017 |
 | §3.1 Azure profile, §3.3 requester and Foundry rows, CFG-2 `l1-hosted.env` | 011 |
 | CFG-2 seller.env, §3.3 CDP row, §4.1 A8 | 009, 007 |
 | T-CDP-01..09, T-E2E-06 | 009 |

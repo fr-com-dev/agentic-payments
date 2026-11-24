@@ -13,8 +13,13 @@
 # secret. The tenant's applications are exactly L2's, the portal's, the agent's and the machine callers' (T-IAC-02
 # fails on any other). People's API has two permissions, portal:admin (014) and agent:run (016), each held by one
 # role. A tenant administrator assigns a role per person, by hand: nobody is assigned here, and no user is created
-# here. To keep one person out, block that user in Auth0; to keep strangers out, set var.allow_sign_ups to false
-# (the pre-user-registration Action at the end), or turn sign-ups off on the tenant's connection.
+# here. To keep one person out, block that user in Auth0.
+#
+# And how people sign in (SPEC v1.27, specs/017), after the callers: email and password, and Google, each enabled for
+# the portal's and the agent's clients only. Google sign-up is public by design: a first Google sign-in makes a person
+# with no role, through the project's own Google application. Email-and-password sign-up follows var.allow_sign_ups,
+# through the database connection's own Disable Sign Ups (and, until step B of specs/017, the pre-user-registration
+# Action at the end). var.google_sign_in false stops Google sign-in in an emergency, for existing Google people too.
 
 locals {
   # Must equal DETAILS_TYPE in src/layer2-control/payment-details.ts (T-IAC-02): Auth0's Guardian schema, the only
@@ -415,6 +420,101 @@ resource "auth0_client_grant" "machine" {
   scopes    = [local.agent_permission]
 
   depends_on = [auth0_resource_server_scopes.identity]
+}
+
+# ---- People's connections (specs/017) ------------------------------------------------------------------------------
+
+# How a person signs in: email and password, or Google, and nothing else (T-IAC-02 fails on a third connection). Only
+# the portal's and the agent's clients may use them. L2's approval client asks a person for an approval by Guardian
+# push and needs no connection, and a machine caller signs nobody in (research R3). Google sign-up is public by
+# design: a first Google sign-in creates the person, with no role. Email-and-password sign-up follows
+# var.allow_sign_ups.
+
+# Google's connection is read here, never managed: managing it would put the Google application's secret in the
+# state, and its write-only variant would keep that secret on the operator's host (research R4). The tenant holds the
+# secret, entered in its Dashboard by hand (quickstart section 1). hide_client_secret keeps it out of the state, and
+# the clients that may use Google are auth0_connection_clients.google's, below.
+data "auth0_connection" "google" {
+  name                 = "google-oauth2"
+  hide_client_secret   = true
+  skip_enabled_clients = true
+}
+
+# The email-and-password connection, imported (auth0/README.md, "Move to a new state"). Its own Disable Sign Ups is
+# the one switch (research R1): with var.allow_sign_ups false, Auth0 refuses every self-service sign-up (the page,
+# the sign-up address and the public endpoint) and the page shows no Sign up link, while the operator can still create
+# a person in the Dashboard. Auth0 replaces the whole options object on an update, so every option is written out,
+# with the values of a tenant's default database connection (research R2): the first plan after the import must
+# change disable_signup and nothing else. If it shows another change, make this block match the tenant, never the
+# other way, and never apply a plan that changes the password policy (quickstart section 3). It holds every
+# email-and-password person, so it is never destroyed, and the Management API credential has no delete:connections.
+resource "auth0_connection" "database" {
+  name     = "Username-Password-Authentication"
+  strategy = "auth0"
+
+  options {
+    disable_signup                 = !var.allow_sign_ups
+    password_policy                = "good"
+    brute_force_protection         = true
+    requires_username              = false
+    import_mode                    = false
+    enabled_database_customization = false
+    strategy_version               = 2
+
+    password_history {
+      enable = false
+      size   = 5
+    }
+
+    password_dictionary {
+      enable     = false
+      dictionary = []
+    }
+
+    password_no_personal_info {
+      enable = false
+    }
+
+    password_complexity_options {
+      min_length = 8
+    }
+
+    mfa {
+      active                 = true
+      return_enroll_settings = true
+    }
+  }
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+# The clients that may sign a person in through each connection: the portal's and the agent's, nothing else. Each
+# list is authoritative: a client enabled by hand in the Dashboard shows in the next plan, and the apply takes it off
+# again (FR-018). An existing tenant imports both lists first: creating one fails on a connection that already has
+# clients.
+resource "auth0_connection_clients" "database" {
+  connection_id   = auth0_connection.database.id
+  enabled_clients = [auth0_client.portal.client_id, auth0_client.agent.client_id]
+}
+
+# var.google_sign_in false is the emergency stop: no client may use Google, which stops new Google people and every
+# existing one until it is set back (research R6). The precondition stops the plan unless the tenant's Google
+# connection runs on the project's own Google application, var.google_client_id: on Auth0's developer keys the
+# connection has no client ID, so an empty var.google_client_id never passes. The live check reads the redirect to
+# Google (quickstart section 1). Terraform never writes Google's settings, so a change made there by hand fails the
+# next plan rather than being undone (FR-018).
+resource "auth0_connection_clients" "google" {
+  connection_id   = data.auth0_connection.google.id
+  enabled_clients = var.google_sign_in ? [auth0_client.portal.client_id, auth0_client.agent.client_id] : []
+
+  lifecycle {
+    precondition {
+      condition     = !var.google_sign_in || (var.google_client_id != "" && try(data.auth0_connection.google.options[0].client_id, "") == var.google_client_id)
+      error_message = "The tenant's google-oauth2 connection must use the project's own Google application, google_client_id (specs/017 quickstart section 1): it still runs on Auth0's developer keys or on another Google application, or google_client_id is empty."
+    }
+  }
 }
 
 # ---- Closed sign-ups (Phase 3, var.allow_sign_ups) -----------------------------------------------------------------

@@ -29,6 +29,8 @@ afterEach(async () => {
 });
 
 const nowSec = () => Math.floor(Date.now() / 1000);
+/** 017: the subject a first Google sign-in makes (`google-oauth2|<Google's sub>`, digits only). */
+const GOOGLE_SUB = "google-oauth2|104857600012345678901";
 const payerOf = (body: unknown) => String((body as { payer?: string }).payer ?? "").toLowerCase();
 const rulesOf = (body: unknown) => ((body as { violations?: { rule: string }[] }).violations ?? []).map((v) => v.rule);
 
@@ -119,6 +121,18 @@ describe("T-CTK-01 the order of checks on the two routes L1 calls (016 contracts
     expect(l2.entries().length).toBe(before);
   });
 
+  it("T-CTK-01 row 5 a brand-new Google person without agent:run, forwarded by a faulty L1: 403 caller_forbidden, nothing appended (017)", async () => {
+    const l2 = await start();
+    // A first Google sign-in made this person a moment ago (specs/017 contracts/new-person-access.md): Google's
+    // subject shape, no permission. They set up their account in the portal, which needs no role.
+    const newcomer = l2.callers.register(GOOGLE_SUB);
+    await l2.onboard(newcomer);
+    const before = l2.entries().length;
+    const caller = await l2.callers.person(GOOGLE_SUB, { permissions: [] });
+    expect(await both(l2, { caller })).toEqual(twice(403, "caller_forbidden"));
+    expect(l2.entries().length).toBe(before);
+  });
+
   it("T-CTK-01 row 6: a person's token while user accounts are off is 403: a person pays from their own account or not at all", async () => {
     const l2 = await start({ off: true, caller: {} });
     expect(await both(l2, { caller: await l2.callers.forUser(ALICE) })).toEqual(twice(403, "caller_forbidden"));
@@ -159,6 +173,11 @@ describe("T-CTK-01 the order of checks on the two routes L1 calls (016 contracts
     expect([person.body.status, payerOf(person.body)]).toEqual(["AUTHORIZED", address.toLowerCase()]);
     const machine = await unsafe.authorize(unsafe.intentFor("/api/weather", "1000", { sessionId: "sess_m" }), { caller: await unsafe.callers.machine({ scope: null }) });
     expect([machine.body.status, payerOf(machine.body)]).toEqual(["AUTHORIZED", PLATFORM_PAYER.toLowerCase()]);
+    // 017: so does a brand-new Google person without the role, from their own account.
+    const newcomer = unsafe.callers.register(GOOGLE_SUB);
+    const theirs = await unsafe.onboard(newcomer);
+    const google = await unsafe.authorize(unsafe.intentFor("/api/weather", "1000", { sessionId: "sess_g" }), { caller: await unsafe.callers.person(GOOGLE_SUB, { permissions: [] }) });
+    expect([google.body.status, payerOf(google.body)]).toEqual(["AUTHORIZED", theirs.address.toLowerCase()]);
   });
 });
 
