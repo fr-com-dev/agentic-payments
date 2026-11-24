@@ -3,6 +3,7 @@
 // else; a person who is not onboarded is taken to the first step not done (FR-008).
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Api } from "./api.js";
+import { DEV_SIGN_IN } from "./auth/dev-sign-in.js";
 import type { Auth } from "./auth/types.js";
 import type { CardFieldsFactory } from "./components/AddCard.js";
 import { Link } from "./components/Link.js";
@@ -111,7 +112,7 @@ function Screen({ path, cardFields, onSignOut, administrator }: { path: string; 
   }
 }
 
-/** Dev mode only: confirming identity means pasting a fresh token from the local dev issuer. */
+/** Dev mode only: confirming identity means pasting a fresh token from the local dev issuer. Not in a deployment build. */
 function DevConfirm({ auth, onDone }: { auth: Auth; onDone(ok: boolean): void }) {
   const [token, setToken] = useState("");
   return (
@@ -166,7 +167,7 @@ export function App({ api, auth, config, cardFields }: AppProps) {
   }, [me, shown]);
 
   const confirmIdentity = useCallback(async (): Promise<boolean> => {
-    if (auth.mode !== "dev") return auth.confirmIdentity();
+    if (!DEV_SIGN_IN || auth.mode !== "dev") return auth.confirmIdentity();
     return new Promise<boolean>((resolve) => setConfirming(() => resolve));
   }, [auth]);
   const signOut = useCallback(() => {
@@ -202,8 +203,10 @@ export function App({ api, auth, config, cardFields }: AppProps) {
   }
 
   const onboarded = firstStepNotDone(me.onboarding) === null;
-  // 014: the administration area exists for an administrator, in a deployment where it is on.
-  const administrator = me.admin && config.admin.available;
+  // 014: the administration area exists for an administrator, in a deployment where it is on. 017: the person's own
+  // answer says both: the portal sets `admin` only where the area is on (portalAccess), and the public configuration
+  // no longer says whether it is.
+  const administrator = me.admin;
   const adminLink = administrator ? <Link to={ADMIN_HOME}>Administration</Link> : null;
   return (
     <AppProvider value={context}>
@@ -240,7 +243,7 @@ export function App({ api, auth, config, cardFields }: AppProps) {
         {/* Keyed by path, so each screen starts fresh and its heading takes focus. */}
         <Screen key={shown} path={shown} onSignOut={signOut} administrator={administrator} {...(cardFields && { cardFields })} />
       </main>
-      {confirming ? (
+      {DEV_SIGN_IN && confirming ? (
         <DevConfirm
           auth={auth}
           onDone={(ok) => {

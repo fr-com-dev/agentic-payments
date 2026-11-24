@@ -22,7 +22,10 @@ publishes no routes (research R1).
    FR-007), the same order as `src/main.ts`.
 3. Validate the config. See
    [model-access](model-access.md) and [access-and-sessions](access-and-sessions.md). Any error
-   exits 1 with a message that never echoes a secret.
+   exits 1 with a message that never echoes a secret. v1.27 (`specs/017`): with `AUTH_JWKS_FILE` (the local dev
+   issuer), `AGENT_BIND_HOST` must be `127.0.0.1`, `::1` or `localhost` and `TRUSTED_PROXY_HOPS` 0, or the service
+   exits 1 naming the setting, never its value
+   ([017 contracts/hosted-agent-edge.md](../../017-dast-findings-remediation/contracts/hosted-agent-edge.md)).
 4. Build the model, the agent and the port adapters, then listen.
 
 ## `POST /v1/runs`
@@ -37,7 +40,11 @@ publishes no routes (research R1).
 
 Order of checks: requests per client address (429; SPEC v1.10) → auth (401/403) → limits (429) → body (400) → session
 (400/404) → run. The per-address limit is 300 requests a minute, counted before the token is verified, so it also
-bounds a caller without a valid token; `TRUSTED_PROXY_HOPS` (1 in Azure) makes the address the client's.
+bounds a caller without a valid token; `TRUSTED_PROXY_HOPS` (1 in Azure) makes the address the client's. v1.27
+(`specs/017`): right after it, failed authentications per address: 20 answers with 401 in a minute, then every request
+from that address gets `429 { "error": "too many requests" }` with `Retry-After` until the minute ends, before the
+token is read; one log line `{ "event": "auth_failure_limit", "count": 20 }` per burst. Every 401 carries
+`WWW-Authenticate: Bearer realm="x402-agent"`, with `, error="invalid_token"` when a token was sent (RFC 6750 §3).
 
 **200** when the run has ended, in any status:
 
@@ -118,6 +125,10 @@ deployment never sets `API_DOCS` (T-API-08).
 
 Any other method or path → 404 `{ "error": "not found" }`, after auth. Unauthenticated callers get
 401 for every path except the two health routes, so the 404 doesn't reveal which routes exist.
+
+v1.27 (`specs/017`): with the local dev issuer, before everything above (health included), a request whose `Host`
+is not a loopback name or that carries a forwarding header gets `421 { "error": "misdirected request" }`
+([017 contracts/hosted-agent-edge.md](../../017-dast-findings-remediation/contracts/hosted-agent-edge.md)).
 
 ## Logs (research R13)
 

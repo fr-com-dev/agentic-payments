@@ -19,7 +19,8 @@ export const SELLER = { host: "127.0.0.1:4021", name: "Local demo seller" };
 export const SELLER_2 = { host: "api.example.test", name: "Example data" };
 export const ADDRESS = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8";
 
-export const CONFIG: Config = { auth: { mode: "auth0", domain: "tenant.example", clientId: "c", audience: "https://x402.example/api" }, network: "eip155:31337", cards: { available: true, publishableKey: "pk_test_x" }, admin: { available: false } };
+// 017: the portal's public configuration is the sign-in's settings and the cards' only (T-PRT-18).
+export const CONFIG: Config = { auth: { mode: "auth0", domain: "tenant.example", clientId: "c", audience: "https://x402.example/api" }, cards: { available: true, publishableKey: "pk_test_x" } };
 
 export const platform = (over: Partial<Platform> = {}): Platform => ({
   limits: { hardCapPerPaymentAtomic: "100000", sessionBudgetAtomic: "100000", userDailyCeilingAtomic: "500000", maxAuthorizationsPerMinute: 10, maxPolicyDays: 730 },

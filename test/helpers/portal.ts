@@ -41,6 +41,10 @@ export interface StartPortalOptions {
   /** The per-address limit's test hooks (PortalDeps). */
   maxRequestsPerAddress?: number;
   skipAddressLimit?: boolean;
+  /** 017 must-fail switches (PortalDeps): T-EDGE-03, T-EDGE-04 and T-PRT-17. Passed only when true. */
+  skipLocalOnly?: boolean;
+  skipFailureLimit?: boolean;
+  skipNotFoundRules?: boolean;
   env?: Record<string, string>;
   webRoot?: string;
   /** Call markReady() after building the app (default true). */
@@ -148,6 +152,9 @@ export async function startPortal(o: StartPortalOptions = {}): Promise<PortalTes
     ...(o.skipAdminCheck && { skipAdminCheck: true }),
     ...(o.maxRequestsPerAddress !== undefined && { maxRequestsPerAddress: o.maxRequestsPerAddress }),
     ...(o.skipAddressLimit && { skipAddressLimit: true }),
+    ...(o.skipLocalOnly && { skipLocalOnly: true }),
+    ...(o.skipFailureLimit && { skipFailureLimit: true }),
+    ...(o.skipNotFoundRules && { skipNotFoundRules: true }),
   };
   const portal = createPortalApp(deps);
   if (o.ready !== false) portal.markReady();

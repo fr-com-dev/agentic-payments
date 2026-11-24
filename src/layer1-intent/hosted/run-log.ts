@@ -26,9 +26,17 @@ export interface RunLine {
   ms: number;
 }
 
+/** 017: an event of the service's edge, not of a run: the failed-authentication limit's burst, or an undeclared proxy. */
+export interface EventLine {
+  event: "auth_failure_limit" | "proxy_undeclared";
+  count?: number;
+}
+
 export interface RunLog {
   step(e: StepLine): void;
   run(e: RunLine): void;
+  /** 017: `{ event, count? }` and nothing else: never an address, a token, a path or a header. */
+  event(e: EventLine): void;
 }
 
 export function createRunLog(write: (line: string) => void = (line) => process.stdout.write(line + "\n")): RunLog {
@@ -61,6 +69,7 @@ export function createRunLog(write: (line: string) => void = (line) => process.s
           ms: e.ms,
         }),
       ),
+    event: (e) => write(JSON.stringify({ event: e.event, ...(e.count !== undefined && { count: e.count }) })),
   };
 }
 

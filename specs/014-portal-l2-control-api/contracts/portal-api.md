@@ -48,7 +48,7 @@ administrator. With the area off, `permissions` is not read at all.
 
 | Method & path | Change |
 |---|---|
-| `GET /api/config` (no token) | adds `admin: { available: boolean }`: whether the administration area is on. Public, like the rest |
+| `GET /api/config` (no token) | ~~adds `admin: { available: boolean }`~~: removed in v1.27 (`specs/017`). The web app shows the area from `GET /api/me` alone, whose `admin` is true only where the area is on |
 | `GET /api/me` | adds `admin: boolean`: the token carries `portal:admin` and the area is on |
 
 Both are additive. With administration off, `admin` is `false` everywhere and every existing answer is otherwise

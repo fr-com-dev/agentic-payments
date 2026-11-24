@@ -1142,6 +1142,15 @@ components:
       description: >-
         Missing, malformed, invalid or expired token, a token of another issuer (the organization's directory
         included), or the portal's own token without a usable sign-in time. Nothing is written.
+      headers:
+        WWW-Authenticate:
+          description: >-
+            v1.27 (RFC 6750): `Bearer realm="x402-portal"` when no bearer token was sent, and
+            `Bearer realm="x402-portal", error="invalid_token"` when one was sent and failed a check. Never a
+            description of the check.
+          required: true
+          schema:
+            type: string
       content:
         application/json:
           schema:
@@ -1156,7 +1165,9 @@ components:
           schema:
             $ref: "#/components/schemas/Error"
     TooManyRequests:
-      description: More than 120 requests in a minute for this person.
+      description: >-
+        Too many requests: more than 120 in a minute for this person, more than 300 in a minute from this address,
+        or 20 failed authentications (401) from this address in a minute, counted before the token is read (v1.27).
       headers:
         Retry-After:
           schema:
@@ -1592,7 +1603,10 @@ components:
     Config:
       type: object
       additionalProperties: false
-      required: [auth, network, cards, admin]
+      description: >-
+        v1.27: what sign-in and cards need, nothing else. The network profile and whether the administration area
+        is on are no longer here; the web app reads the area from `GET /api/me` (`admin`).
+      required: [auth, cards]
       properties:
         auth:
           type: object
@@ -1611,8 +1625,6 @@ components:
             audience:
               type: string
               description: The API's identifier, which the web app asks a token for.
-        network:
-          type: string
         cards:
           type: object
           additionalProperties: false
@@ -1623,14 +1635,6 @@ components:
             publishableKey:
               type: string
               description: The card vault's publishable test key. Public.
-        admin:
-          type: object
-          additionalProperties: false
-          required: [available]
-          description: v1.15. Whether the administration area is on. Who may use it comes from the person's token.
-          properties:
-            available:
-              type: boolean
 
     Onboarding:
       type: object
