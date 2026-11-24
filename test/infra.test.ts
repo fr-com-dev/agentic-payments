@@ -172,7 +172,7 @@ const COGNITIVE_SERVICES_USER = "a97b65f3-24c7-4388-baec-2e87135dc908";
 const JOBS_OPERATOR = "b9a307c4-5aa3-4b52-ba60-2b17c136cd7b";
 const CONTRIBUTOR = "b24988ac-6180-42a0-ab88-20f7382dd24c";
 const RBAC_ADMINISTRATOR = "f58310d9-a9f6-439a-9e8d-f62e7b41a168";
-/** Storage Blob Data Contributor: the deploy app's role on the Terraform state's container (rule 20), and (1.23) the head identity's on the ledger head's (rule 25). */
+/** Storage Blob Data Contributor: (1.23) the head identity's role on the ledger head's container (rule 25). */
 const BLOB_CONTRIBUTOR = "ba92f5b4-2d11-453d-a403-e96b0029c9fe";
 const GUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g;
 /** The two templates: everything in the resource group, and what precedes it. */
@@ -218,12 +218,11 @@ const STANDARD: Record<string, { type: string; app?: string; compact?: boolean; 
   jobs: { type: "caj", limits: [2, 32, /^[a-z](?!.*--)[a-z0-9-]*[a-z0-9]$/] },
   deployApp: { type: "app", app: "deploy", limits: [1, 120, /^[a-z][a-z0-9-]*[a-z0-9]$/] },
   operators: { type: "grp", app: "op", limits: [1, 64, /^[a-z][a-z0-9-]*[a-z0-9]$/] },
-  stateStorage: { type: "st", app: "tfstate", compact: true, limits: [3, 24, /^[a-z0-9]+$/] },
   // v1.25: the policy assignment that refuses federated credentials on the resource group's identities (rule 16)
   policy: { type: "pol", app: "x402", limits: [1, 64, /^[a-z][a-z0-9-]*[a-z0-9]$/] },
 };
-/** The {app} segments: the layers, the operator, the portal, the sellers, the smoke run (016), what the layers share, the deploy app, the Terraform state, and (1.23) the ledger's head. */
-const APPS = ["l1", "l2", "l3", "op", "portal", "seller", "seller-alias", "smoke", "x402", "deploy", "tfstate", "l2head"];
+/** The {app} segments: the layers, the operator, the portal, the sellers, the smoke run (016), what the layers share, the deploy app, and (1.23) the ledger's head. */
+const APPS = ["l1", "l2", "l3", "op", "portal", "seller", "seller-alias", "smoke", "x402", "deploy", "l2head"];
 /** An ARM format() expression's text, each {N} replaced by «its argument» ({{, }} and '' unescaped): rule 16's condition. */
 function formatText(expr: unknown): string {
   const m = /^\[format\('((?:[^']|'')*)', ([\s\S]*)\)\]$/.exec(String(expr));
@@ -281,7 +280,7 @@ const PER_RUN = ["unit", "imageTag", "seedIp", "recoverVaults", "agentStableRevi
 const TARGET = ["tenantId", "subscriptionId", "location", "names.resourceGroup"];
 /** GitHub's immutable OIDC subject for a deploy job: the owner and repository by name and ID (rule 16). */
 const IMMUTABLE_SUBJECT = "repo:<owner>@<githubOwnerId>/<name>@<githubRepositoryId>:environment:<githubEnvironment>";
-const FIC_PROBLEM = `rule 16: the deploy app's two federated credentials must trust only ${IMMUTABLE_SUBJECT}, for the deploy environment and the Auth0 environment`;
+const FIC_PROBLEM = `rule 16: the deploy app's one federated credential must trust only ${IMMUTABLE_SUBJECT}, for the deploy environment (SPEC 1.26: no Auth0 job signs in from GitHub)`;
 /**
  * Rule 16 (Phase 3; v1.25): the condition, as text, for one action: main.bicep's roles only, and only to the principals
  * main.bicep assigns them to (assigneeIds: the identities pre-deploy makes, and the operators' group). Before v1.25 the
@@ -294,6 +293,8 @@ const ASSIGNEES_ONLY = "rule 16: the deploy app's Role Based Access Control Admi
 const ASSIGNEE_IDS = "[concat(map(reference('ids').outputs.ids.value, lambda('i', lambdaVariables('i').principalId)), createArray(reference('operatorsGroup').id))]";
 const ASSIGNEES_PROBLEM = "rule 16: the deploy app's principals (assigneeIds) must be exactly the identities pre-deploy makes and the operators' group";
 /** v1.25: the built-in policy "[Preview]: Managed Identity Federated Credentials should be from allowed issuer types". */
+/** Rule 20 (SPEC 1.26). */
+const NO_STATE_IN_AZURE = "rule 20: pre-deploy must make no storage account and no role assignment but the deploy app's: the Terraform state of auth0/ is a local file on the operator's host (SPEC 1.26)";
 const FIC_POLICY = "tenantResourceId('Microsoft.Authorization/policyDefinitions', '2571b7c3-3056-4a61-b00a-9bc5232234f5')";
 const NO_FIC = "rule 16: pre-deploy must assign, on the resource group, the built-in policy that denies every federated credential on its identities (allowFederatedCredentials false, effect Deny), and no template may make one";
 /** Rule 24 (Phase 3): the ledger's MAC key, in L2's control container only. */
@@ -392,7 +393,6 @@ export function violations(arms: Templates, params: Params, infraFiles: Record<s
       (ra.module === "foundry" && role.includes(COGNITIVE_SERVICES_USER) && principal.includes("parameters('names').identities.l1)")) ||
       (ra.module === "operator-apps" && role.includes(JOBS_OPERATOR) && principal === "[parameters('operatorsGroupId')]" && scope.some((s) => s === MN.jobs.l2 || s.endsWith(`/${MN.jobs.l2}`))) ||
       (ra.module === "deploy-access" && (role.includes(CONTRIBUTOR) || role.includes(RBAC_ADMINISTRATOR)) && principal === "[parameters('principalId')]") ||
-      (ra.module === "state-storage" && role.includes(BLOB_CONTRIBUTOR) && principal === "[parameters('principalId')]") ||
       (ra.module === "ledger-head" && role.includes(BLOB_CONTRIBUTOR) && principal.includes("parameters('names').identities.l2head)") && String(ra.raw.scope).startsWith(HEAD_CONTAINER_SCOPE));
     if (!ok) v.push(`rule 1: role assignment ${ra.name} in ${ra.module} is not in the matrix`);
   }
@@ -695,8 +695,8 @@ export function violations(arms: Templates, params: Params, infraFiles: Record<s
   // is assigned to anyone; and nothing is left of the API app 011 made for the agent's callers (its role, scopes,
   // pre-authorization and claim, agentUsers, the retirePortalScope switch, its line in the output) or of the web app
   // 013 first made for the portal. The deploy app has no API, no permissions and no secret: GitHub signs in as it
-  // through two federated credentials, for the repository's deploy environment and its Auth0 environment
-  // (provision-auth0.yml). The deploy app's roles are Contributor and Role Based Access Control Administrator on the
+  // through one federated credential, for the repository's deploy environment (SPEC 1.26 removed the second, for the
+  // Auth0 environment: the tenant's Terraform runs on the operator's host). The deploy app's roles are Contributor and Role Based Access Control Administrator on the
   // resource group only, the latter limited by condition to exactly the roles main.bicep assigns. Phase 3: the
   // condition also refuses an assignment whose principal is the deploy app itself, written or deleted, so it can't
   // give itself one of those roles (Key Vault Secrets User on a vault).
@@ -710,6 +710,7 @@ export function violations(arms: Templates, params: Params, infraFiles: Record<s
     portalPreAuthorized: "the portal's origin is a Terraform variable of auth0/",
     agentUsers: "who may run the agent is a role of the sign-in tenant (auth0/), assigned there",
     retirePortalScope: "the API app the scope belonged to is gone",
+    githubAuth0Environment: "the Auth0 tenant's Terraform runs on the operator's host, so no Auth0 job signs in from GitHub (SPEC 1.26)",
   };
   for (const [gone, why] of Object.entries(GONE)) if (gone in ((arms["pre-deploy"].parameters ?? {}) as Json)) v.push(`rule 16: pre-deploy must have no ${gone} parameter: ${why}`);
   const mainParameters = JSON.stringify(((arms["pre-deploy"].outputs ?? {}) as Json).mainParameters ?? "");
@@ -730,9 +731,9 @@ export function violations(arms: Templates, params: Params, infraFiles: Record<s
     return viaVar ? String(f.vars[viaVar[1]!]) : subject;
   };
   if (
-    fics.length !== 2 ||
+    fics.length !== 1 ||
     fics.some((f) => !String(f.properties.name).includes("reference('deployApp')") || f.properties.issuer !== "https://token.actions.githubusercontent.com" || JSON.stringify(f.properties.audiences) !== '["api://AzureADTokenExchange"]') ||
-    JSON.stringify(fics.map(subjectOf).sort()) !== JSON.stringify([subjectFor("githubEnvironment"), subjectFor("githubAuth0Environment")].sort())
+    JSON.stringify(fics.map(subjectOf)) !== JSON.stringify([subjectFor("githubEnvironment")])
   ) {
     v.push(FIC_PROBLEM);
   }
@@ -797,7 +798,6 @@ export function violations(arms: Templates, params: Params, infraFiles: Record<s
     const pre = params[file]!;
     const mainParams = params[`main.${env}.bicepparam`] ?? {};
     for (const p of TARGET) if (at(pre, p) === undefined || at(pre, p) !== at(mainParams, p)) v.push(`rule 17: pre-deploy.${env}.bicepparam and main.${env}.bicepparam name different ${p}s (${at(pre, p)}, ${at(mainParams, p)})`);
-    if (pre.githubAuth0Environment !== `auth0-${env}`) v.push(`rule 17: pre-deploy.${env}.bicepparam's githubAuth0Environment ${pre.githubAuth0Environment} is not auth0-${env}, the environment provision-auth0.yml's job runs in`);
     if (pre.githubEnvironment !== env) v.push(`rule 17: pre-deploy.${env}.bicepparam's githubEnvironment ${pre.githubEnvironment} is not ${env}, the environment deploy.yml's job runs in`);
     // v1.25: pre-deploy makes the identities main's apps look up, so both files name the same ones.
     const ids = (p: Json) => JSON.stringify(Object.entries(((p.names as Json | undefined)?.identities ?? {}) as Json).sort());
@@ -866,30 +866,11 @@ export function violations(arms: Templates, params: Params, infraFiles: Record<s
   if (cibaChecked.includes("parameters('ciba').approver")) v.push("rule 19: main's ciba check still asks for an approver");
   if (!cibaChecked.includes("fail(") || !cibaChecked.includes("parameters('userAccounts').enabled")) v.push("rule 19: main must refuse (fail()) ciba.enabled without userAccounts.enabled");
 
-  // Rule 20: the Terraform state of auth0/ (pre-deploy.bicep's state-storage module; provision-auth0.yml). One
-  // storage account, with Entra sign-in only (no account key, no anonymous access, HTTPS and TLS 1.2), versions and
-  // deleted blobs kept, and one private container. The deploy app is the only principal with a role there: Storage
-  // Blob Data Contributor, on the container only. No other role assignment exists outside deploy-access.
-  const state = pre.filter((r) => r.module === "state-storage");
-  const account = state.filter((r) => r.type === "Microsoft.Storage/storageAccounts");
-  const acct = account[0]?.properties ?? {};
-  if (account.length !== 1 || pre.filter((r) => r.type === "Microsoft.Storage/storageAccounts").length !== 1 || acct.allowSharedKeyAccess !== false || acct.allowBlobPublicAccess !== false || acct.supportsHttpsTrafficOnly !== true || acct.minimumTlsVersion !== "TLS1_2") {
-    v.push("rule 20: the Terraform state's storage account must take Entra sign-in only: no account key, no anonymous access, HTTPS with TLS 1.2");
-  }
-  const blobService = state.find((r) => r.type === "Microsoft.Storage/storageAccounts/blobServices")?.properties ?? {};
-  if (blobService.isVersioningEnabled !== true || (blobService.deleteRetentionPolicy as Json | undefined)?.enabled !== true) v.push("rule 20: the Terraform state's blobs must keep their versions and deleted blobs");
-  const containers = state.filter((r) => r.type === "Microsoft.Storage/storageAccounts/blobServices/containers");
-  if (containers.length !== 1 || !/'tfstate'\)\]$/.test(containers[0]!.name) || containers[0]!.properties.publicAccess !== "None") v.push("rule 20: the Terraform state must have one private container, tfstate");
-  const stateRoles = pre.filter((r) => r.type === "Microsoft.Authorization/roleAssignments" && r.module !== "deploy-access");
-  if (
-    stateRoles.length !== 1 ||
-    stateRoles[0]!.module !== "state-storage" ||
-    !roleOf(stateRoles[0]!).includes(BLOB_CONTRIBUTOR) ||
-    !String(stateRoles[0]!.raw.scope).startsWith("[resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', parameters('names').stateStorage, ") ||
-    deploymentParam(pre, "state-storage", "principalId") !== JSON.stringify({ value: "[reference('deploySp').id]" }) ||
-    stateRoles[0]!.properties.principalId !== "[parameters('principalId')]"
-  ) {
-    v.push("rule 20: only the deploy app may read and write the Terraform state: Storage Blob Data Contributor on the tfstate container only");
+  // Rule 20 (SPEC 1.26): the Terraform state of auth0/ is a local file on the operator's host (scripts/auth0-tenant.sh),
+  // not in Azure. pre-deploy makes no storage account, and no role assignment outside deploy-access: the state's
+  // account and the deploy app's Storage Blob Data Contributor on its container, which 012 made here, are gone.
+  if (pre.some((r) => r.type === "Microsoft.Storage/storageAccounts") || pre.some((r) => r.type === "Microsoft.Authorization/roleAssignments" && r.module !== "deploy-access")) {
+    v.push(NO_STATE_IN_AZURE);
   }
 
   // Rule 21 (013, SPEC L2-8; specs/013 contracts/config-and-secrets.md): user accounts. L2's control app (container
@@ -1523,25 +1504,37 @@ resource extraRead 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
       "#disable-next-line no-unused-params\nvar githubSubject = 'repo:${githubRepository}:environment:${githubEnvironment}'",
     );
     expect(plain).toContain(FIC_PROBLEM);
-    const sameEnvironment = await mutant("pre-deploy.bicep", "@${githubRepositoryId}:environment:${githubAuth0Environment}'", "@${githubRepositoryId}:environment:${githubEnvironment}'");
-    expect(sameEnvironment).toContain(FIC_PROBLEM);
+    // SPEC 1.26: the Auth0 job's credential, back again.
+    const second = await mutant(
+      "pre-deploy.bicep",
+      "resource deploySp 'Microsoft.Graph/servicePrincipals@v1.0' = {",
+      "resource auth0Credential 'Microsoft.Graph/applications/federatedIdentityCredentials@v1.0' = {\n  name: '${deployApp.uniqueName}/github-auth0-${githubEnvironment}'\n  audiences: ['api://AzureADTokenExchange']\n  issuer: 'https://token.actions.githubusercontent.com'\n  subject: 'repo:${split(githubRepository, '/')[0]}@${githubOwnerId}/${split(githubRepository, '/')[1]}@${githubRepositoryId}:environment:auth0-${githubEnvironment}'\n  dependsOn: [githubCredential]\n}\n\nresource deploySp 'Microsoft.Graph/servicePrincipals@v1.0' = {",
+    );
+    expect(second).toContain(FIC_PROBLEM);
   }, 60_000);
 
-  it("T-IAC-01 must-fail rule 20: a Terraform state readable with an account key, a role on the whole account, or another role, is reported", async () => {
-    const key = await mutant("modules/state-storage.bicep", "allowSharedKeyAccess: false", "allowSharedKeyAccess: true");
-    expect(key).toContain("rule 20: the Terraform state's storage account must take Entra sign-in only: no account key, no anonymous access, HTTPS with TLS 1.2");
-    const ROLE = "rule 20: only the deploy app may read and write the Terraform state: Storage Blob Data Contributor on the tfstate container only";
-    const wide = await mutant("modules/state-storage.bicep", "  scope: container\n", "  scope: st\n");
-    expect(wide).toContain(ROLE);
-    const owner = await mutant("modules/state-storage.bicep", "var blobContributorRoleId = 'ba92f5b4-2d11-453d-a403-e96b0029c9fe'", "var blobContributorRoleId = 'b7e6dc6d-f1e8-4753-8033-0f276bb0955b'");
-    expect(owner).toContain(ROLE);
-    const unversioned = await mutant("modules/state-storage.bicep", "isVersioningEnabled: true", "isVersioningEnabled: false");
-    expect(unversioned).toContain("rule 20: the Terraform state's blobs must keep their versions and deleted blobs");
+  it("T-IAC-01 must-fail rule 20 (SPEC 1.26): a storage account for the Terraform state in pre-deploy, or a role on it, is reported", async () => {
+    const account = await mutant(
+      "modules/identities.bicep",
+      "output ids array",
+      "resource st 'Microsoft.Storage/storageAccounts@2023-05-01' = {\n  name: 'sttfstate${location}'\n  location: location\n  kind: 'StorageV2'\n  sku: { name: 'Standard_LRS' }\n}\n\noutput ids array",
+    );
+    expect(account).toContain(NO_STATE_IN_AZURE);
+    const role = await mutant(
+      "modules/no-federated-credentials.bicep",
+      "param names object",
+      "param names object\n\nresource stateAccess 'Microsoft.Authorization/roleAssignments@2022-04-01' = {\n  name: guid(resourceGroup().id, 'tfstate')\n  properties: {\n    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'ba92f5b4-2d11-453d-a403-e96b0029c9fe')\n    principalId: '00000000-0000-0000-0000-000000000000'\n    principalType: 'ServicePrincipal'\n  }\n}",
+    );
+    expect(role).toContain(NO_STATE_IN_AZURE);
   }, 120_000);
 
-  it("T-IAC-01 must-fail rule 17: an Auth0 environment that is the deploy environment is reported", async () => {
-    const v = await mutant("pre-deploy.dev.bicepparam", "param githubAuth0Environment = 'auth0-${environment}'", "param githubAuth0Environment = environment");
-    expect(v).toContain("rule 17: pre-deploy.dev.bicepparam's githubAuth0Environment dev is not auth0-dev, the environment provision-auth0.yml's job runs in");
+  it("T-IAC-01 must-fail rule 16 (SPEC 1.26): the Auth0 job's GitHub environment back in pre-deploy is reported", async () => {
+    const v = await mutant(
+      "pre-deploy.bicep",
+      "param githubEnvironment string",
+      "param githubEnvironment string\n#disable-next-line no-unused-params\nparam githubAuth0Environment string = 'auth0-dev'",
+    );
+    expect(v).toContain("rule 16: pre-deploy must have no githubAuth0Environment parameter: the Auth0 tenant's Terraform runs on the operator's host, so no Auth0 job signs in from GitHub (SPEC 1.26)");
   }, 60_000);
 
   it("T-IAC-01 must-fail rule 16: an unconditioned Role Based Access Control Administrator, or one that may grant Owner, is reported", async () => {

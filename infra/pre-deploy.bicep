@@ -2,18 +2,20 @@
 // specs/011 contracts/cloud-topology.md, access-and-sessions.md), as one subscription deployment that an
 // administrator runs by hand (quickstart §4 step 0):
 // - the resource group main.bicep deploys into;
-// - the deploy app registration app-deploy-<location>-<environment>, its service principal and a federated
-//   credential for each of the repository's two GitHub environments, the deploy pipelines' and the Auth0 pipeline's:
-//   GitHub Actions sign in with OIDC, and no secret exists;
+// - the deploy app registration app-deploy-<location>-<environment>, its service principal and one federated
+//   credential, for the repository's deploy environment: GitHub Actions sign in with OIDC, and no secret exists;
 // - the operators' group grp-op-<location>-<environment> (main.bicep lets it start the operator job);
 // - (SPEC 1.25) the units' user-assigned identities, id-<unit>-<location>-<environment>, which main.bicep's apps and
 //   jobs look up by name: made here so their principal IDs are known to the deploy app's condition;
 // - the deploy app's roles on the resource group (modules/deploy-access.bicep): it may give main.bicep's roles to
 //   those identities and the operators' group, and to no other principal;
 // - (SPEC 1.25) a policy that refuses any federated credential on an identity of the resource group
-//   (modules/no-federated-credentials.bicep), so nobody outside Azure can sign in as one of them;
-// - the storage for the Terraform state of auth0/, which only the deploy app reads and writes
-//   (modules/state-storage.bicep; .github/workflows/provision-auth0.yml).
+//   (modules/no-federated-credentials.bicep), so nobody outside Azure can sign in as one of them.
+// SPEC 1.26: nothing here is the Auth0 tenant's. Its Terraform (auth0/) runs on the operator's host, with its state
+// a local file there (scripts/auth0-tenant.sh), so the state's storage account (sttfstate<location><environment>,
+// modules/state-storage.bicep) and the deploy app's second federated credential, for the GitHub environment
+// auth0-<environment>, are gone from this file. Bicep never deletes what a template stops naming: in an environment
+// deployed before 1.26, delete both by hand (az storage account delete, az ad app federated-credential delete).
 // The Entra objects come from the Microsoft Graph Bicep extension (bicepconfig.json), which what-if can't preview.
 // Every value comes from pre-deploy.<environment>.bicepparam, the target and every name included: run anywhere other
 // than the file's tenant and subscription, the deployment fails validation before it creates anything. T-IAC-01
@@ -37,7 +39,7 @@ param tenantId string
 @description('The subscription the resource group goes in.')
 param subscriptionId string
 param location string
-@description('The names, {type}-{app}-{location}-{environment}: resourceGroup (the one main.bicep deploys into), deployApp, operators, stateStorage (the Terraform state of auth0/), identities (the units\', the same as main\'s) and policy (the assignment that refuses federated credentials).')
+@description('The names, {type}-{app}-{location}-{environment}: resourceGroup (the one main.bicep deploys into), deployApp, operators, identities (the units\', the same as main\'s) and policy (the assignment that refuses federated credentials).')
 param names object
 @description('owner/name of the GitHub repository whose deploy job signs in as the deploy app.')
 param githubRepository string
@@ -47,8 +49,6 @@ param githubOwnerId string
 param githubRepositoryId string
 @description('The GitHub environment the deploy job runs in (deploy.yml: environment: <environment>), so named like the environment.')
 param githubEnvironment string
-@description('The GitHub environment the Auth0 job runs in (provision-auth0.yml: environment: auth0-<environment>). It holds the Auth0 Management API credential, so it is not the deploy pipelines\' environment.')
-param githubAuth0Environment string
 @description('People who may start the operator job, by user principal name: the operators\' group members.')
 param operators array
 
@@ -81,19 +81,6 @@ resource githubCredential 'Microsoft.Graph/applications/federatedIdentityCredent
   audiences: ['api://AzureADTokenExchange']
   issuer: 'https://token.actions.githubusercontent.com'
   subject: githubSubject
-}
-
-// The Auth0 pipeline's job (provision-auth0.yml, job `environment: <githubAuth0Environment>`) signs in the same way,
-// for the Terraform state only. One credential at a time: Entra refuses concurrent writes to one application.
-var githubAuth0Subject = 'repo:${split(githubRepository, '/')[0]}@${githubOwnerId}/${split(githubRepository, '/')[1]}@${githubRepositoryId}:environment:${githubAuth0Environment}'
-
-resource githubAuth0Credential 'Microsoft.Graph/applications/federatedIdentityCredentials@v1.0' = {
-  name: '${deployApp.uniqueName}/github-${githubAuth0Environment}'
-  description: 'GitHub Actions: the Auth0 job of ${githubRepository} in its ${githubAuth0Environment} environment'
-  audiences: ['api://AzureADTokenExchange']
-  issuer: 'https://token.actions.githubusercontent.com'
-  subject: githubAuth0Subject
-  dependsOn: [githubCredential]
 }
 
 resource deploySp 'Microsoft.Graph/servicePrincipals@v1.0' = {
@@ -147,17 +134,6 @@ module noFederatedCredentials 'modules/no-federated-credentials.bicep' = {
   name: 'no-federated-credentials'
   scope: rg
   params: { names: names }
-}
-
-// ---- The Terraform state of auth0/: the deploy app's, on its container only ------------------------------------
-module stateStorage 'modules/state-storage.bicep' = {
-  name: 'state-storage'
-  scope: rg
-  params: {
-    location: location
-    names: names
-    principalId: deploySp.id
-  }
 }
 
 output resourceGroup string = rg.name

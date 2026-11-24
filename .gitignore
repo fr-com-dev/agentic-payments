@@ -8,9 +8,9 @@ dist/
 build/
 .env*
 env/*.json
-# auth0/ (Terraform, specs/012 research R17): local state and plans can hold tenant data, and tfvars name the tenant
-# and the approver: the pipeline takes those from its GitHub environment's variables, never from a file. The
-# provider lock file (.terraform.lock.hcl) is committed.
+# auth0/ (Terraform, specs/012 research R17): local state and plans can hold tenant data, and tfvars name the tenant.
+# SPEC 1.26: all three live outside every checkout, in ~/x402-tfstate on the operator's host (scripts/auth0-tenant.sh),
+# never here. The provider lock file (.terraform.lock.hcl) is committed.
 auth0/.terraform/
 auth0/*.tfstate
 auth0/*.tfstate.*

@@ -69,7 +69,7 @@ param sellerPayTo = '0x95Aca02416F949489C1128223B35fBBE8c04f057'
 param payerAddress = '0x0048A66969cE8886A5e9bC00059Cb8c5D3989516'
 
 // 012 backchannel approval (SPEC L2-7): the values are Terraform's output bicepparam_ciba (auth0/, applied by
-// provision-auth0.yml on 2026-11-12). Still off in dev: enabled goes to true only once the l2 vault's
+// provision-auth0.yml on 2026-11-12, and with scripts/auth0-tenant.sh on 2026-11-24, unchanged). Still off in dev: enabled goes to true only once the l2 vault's
 // ciba-client-credential holds L2's private key (specs/012 quickstart §6), and it needs userAccounts.enabled. Until
 // then the vault holds the placeholder off. There is no approver (SPEC v1.16, specs/015): each request goes to the
 // user the payment is for.
@@ -111,8 +111,8 @@ param identity = {
 }
 
 // 016: the agent's client, the docs switch and the pipeline's machine caller. clientId, machineClientId and
-// machineKeyId are Terraform's output bicepparam_agent (auth0/): empty until provision-auth0.yml has applied 016's
-// tenant and its values are pasted here, and until then main.bicep refuses the l1 and l2 units. apiDocs is this
+// machineKeyId are Terraform's output bicepparam_agent (auth0/): empty until 016's tenant is applied (it was on
+// 2026-11-24, with scripts/auth0-tenant.sh, without a machine caller) and its values are pasted here, and until then main.bicep refuses the l1 and l2 units. apiDocs is this
 // environment's own choice: true in dev, where the agent serves its docs page and signs people in through clientId.
 // The l1 vault holds machine-client-key, the private half of the machine caller's key (the placeholder off until
 // the tenant has the client).

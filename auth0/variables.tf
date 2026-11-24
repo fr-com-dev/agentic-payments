@@ -1,7 +1,8 @@
-# No tfvars file exists: the pipeline (provision-auth0.yml) sets every value as TF_VAR_<name>, from the variables of
-# its GitHub environment (AUTH0_TENANT_DOMAIN and the like; auth0/README.md). None of those is a secret. The pipeline
-# always sets credential = "key": GitHub never holds a credential of L2's (Constitution V), so it never sets
-# client_secret. No variable holds a private key: L2's and every machine caller's are public halves only.
+# The values live in one tfvars file on the operator's host, outside every checkout (by default
+# ~/x402-tfstate/auth0.<environment>.tfvars, auth0/README.md), never in the repository. None of them is a secret.
+# scripts/auth0-tenant.sh sets environment and credential itself, always credential = "key", and refuses a tfvars
+# file that sets either, or client_secret: L2's credential is held by L2 only (Constitution V). No variable holds a
+# private key: L2's and every machine caller's are public halves only.
 
 variable "environment" {
   description = "The deployment environment these objects serve, as in infra/main.<environment>.bicepparam (dev)."
@@ -51,7 +52,7 @@ variable "client_public_key_pem" {
 }
 
 variable "client_secret" {
-  description = "L2's client secret, when credential = secret: the pipeline never sets it (it provisions credential = key only), because the secret is held by L2 only; it would come from TF_VAR_client_secret in an administrator's own shell, with the same value seeded into the l2 vault. Write-only: never stored in state or plan."
+  description = "L2's client secret, when credential = secret: scripts/auth0-tenant.sh never sets it (it provisions credential = key only), because the secret is held by L2 only; it would come from TF_VAR_client_secret in an administrator's own shell running Terraform by hand, with the same value given to L2. Write-only: never stored in state or plan."
   type        = string
   default     = null
   sensitive   = true
@@ -81,7 +82,7 @@ variable "guardian_policy" {
 }
 
 variable "portal_origin" {
-  description = "The deployed portal's origin, https://<host> (infra/main.bicep's portalFqdn output), which becomes an allowed callback, web origin and logout URL of the portal's client (beside http://localhost:4025 where var.local_origins is on). Empty until the portal is deployed."
+  description = "The deployed portal's origin, https://<host> (infra/main.bicep's portalFqdn output, or the VPS's, https://dev.fabriciorojas.com), which becomes an allowed callback, web origin and logout URL of the portal's client (beside http://localhost:4025 where var.local_origins is on). Empty until the portal is deployed."
   type        = string
   default     = ""
   validation {
@@ -91,7 +92,7 @@ variable "portal_origin" {
 }
 
 variable "agent_origin" {
-  description = "The deployed hosted agent's origin, https://<host> (infra/main.bicep's agentFqdn output), whose docs page (/docs) then may sign people in through the agent's client (beside http://localhost:4024 and http://127.0.0.1:4024 where var.local_origins is on). Empty until the agent is deployed; needed only where its docs page is on (agent.apiDocs)."
+  description = "The deployed hosted agent's origin, https://<host> (infra/main.bicep's agentFqdn output, or the VPS's, https://agent.fabriciorojas.com), whose docs page (/docs) then may sign people in through the agent's client (beside http://localhost:4024 and http://127.0.0.1:4024 where var.local_origins is on). Empty until the agent is deployed; needed only where its docs page is on (agent.apiDocs)."
   type        = string
   default     = ""
   validation {
@@ -101,7 +102,7 @@ variable "agent_origin" {
 }
 
 variable "machine_caller_keys" {
-  description = "The machine callers: each one's name (it names the client, app-machine-<name>-<environment>) and the PUBLIC half (SPKI PEM, RSA 2048-4096) of its key, as text. The pipeline's own caller is checks. The private half goes only where the caller runs (the l1 vault's machine-client-key for checks), never here. Empty: no machine caller."
+  description = "The machine callers: each one's name (it names the client, app-machine-<name>-<environment>) and the PUBLIC half (SPKI PEM, RSA 2048-4096) of its key, as text. The deployment pipeline's own caller is checks. The private half goes only where the caller runs (the l1 vault's machine-client-key for checks), never here. Empty: no machine caller."
   type        = map(string)
   default     = {}
   validation {
@@ -115,7 +116,7 @@ variable "machine_caller_keys" {
 }
 
 variable "local_origins" {
-  description = "Add the local portal's and the local agent's origins (http://localhost:4025, http://localhost:4024 and http://127.0.0.1:4024) to the portal's and the agent's clients, for development against this tenant. Off by default: a deployed environment's clients accept their deployed origins only. infra/github-setup.sh creates AUTH0_LOCAL_ORIGINS as true for dev and false elsewhere."
+  description = "Add the local portal's and the local agent's origins (http://localhost:4025, http://localhost:4024 and http://127.0.0.1:4024) to the portal's and the agent's clients, for development against this tenant. Off by default: a deployed environment's clients accept their deployed origins only."
   type        = bool
   default     = false
 }

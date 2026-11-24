@@ -1,0 +1,40 @@
+# The Auth0 tenant's offline check (SPEC 1.26; auth0/README.md): on a pull request or a push to main that touches
+# auth0/ or its operator command, the pinned Terraform (checked against its SHA-256), the provider exactly as
+# .terraform.lock.hcl pins it, `terraform fmt -check` and `terraform validate`, through the operator command itself
+# (scripts/auth0-tenant.sh validate), with no backend. It changes nothing and holds nothing: no GitHub secret or
+# variable, no GitHub environment, no OIDC token, a read-only GITHUB_TOKEN that the checkout doesn't keep. The tenant
+# is planned and applied only on the operator's host, where its state is (npm run auth0:tenant -- plan, then
+# apply). T-IAC-02 (test/auth0-iac.test.ts) checks this file.
+name: validate-auth0
+
+on:
+  pull_request:
+    branches: [main]
+    paths: ["auth0/**", "scripts/auth0-tenant.sh", ".github/workflows/validate-auth0.yml"]
+  push:
+    branches: [main]
+    paths: ["auth0/**", "scripts/auth0-tenant.sh", ".github/workflows/validate-auth0.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-auth0-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: the pinned Terraform, the locked provider, fmt and validate
+        run: bash scripts/auth0-tenant.sh validate
