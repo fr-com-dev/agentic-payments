@@ -1,4 +1,4 @@
-# Data Model: Sign-Up Hardening for the Sign-In Tenant (017)
+# Data Model: Sign-Up Hardening for the Sign-In Tenant (018)
 
 Nothing changes in L2's ledger, the portal's files or any contract type in `src/shared/contracts.ts`. The entities
 below live in the sign-in tenant and in its declaration (`auth0/`).

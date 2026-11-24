@@ -95,7 +95,7 @@ read_credential() {
 
 # The variables file: L2's credential is held by L2 only (Constitution V), so this script provisions
 # credential = "key" and never takes a client secret; no private key either. No secret of any kind goes in this file
-# (specs/017 research R9): the Google application's is entered in the tenant's Dashboard only.
+# (specs/018 research R9): the Google application's is entered in the tenant's Dashboard only.
 check_tfvars() {
   private "$STATE_DIR" 700
   private "$TFVARS" 600

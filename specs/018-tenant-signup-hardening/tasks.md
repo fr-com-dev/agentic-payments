@@ -1,11 +1,11 @@
 ---
 
-description: "Task list for 017: sign-up hardening for the sign-in tenant (pentest finding P1)"
+description: "Task list for 018: sign-up hardening for the sign-in tenant (pentest finding P1)"
 ---
 
 # Tasks: Sign-Up Hardening for the Sign-In Tenant (pentest finding P1)
 
-**Input**: Design documents from `specs/017-tenant-signup-hardening/`
+**Input**: Design documents from `specs/018-tenant-signup-hardening/`
 
 **Prerequisites**:
 - [plan.md](plan.md)
@@ -17,11 +17,11 @@ description: "Task list for 017: sign-up hardening for the sign-in tenant (pente
 
 **Tests**: included and required. Constitution Principle VIII and NFR-003 require a must-fail case for every new
 rule.
-- **Test IDs.** Each test title carries its ID: T-IAC-02 (rules 1–8 of contracts/tenant-connections.md), T-PRT-16,
+- **Test IDs.** Each test title carries its ID: T-IAC-02 (rules 1–8 of contracts/tenant-connections.md), T-PRT-19,
   T-AGT-15, T-CTK-01 (row 5), T-ARCH-TRACE.
 - **Order.** Write the T-IAC-02 rules and their mutants first, and see the real configuration fail them, before you
   change `auth0/`.
-- **Behavior already in place.** T-PRT-16, T-AGT-15 and the T-CTK-01 case pin behavior that already holds. They pass
+- **Behavior already in place.** T-PRT-19, T-AGT-15 and the T-CTK-01 case pin behavior that already holds. They pass
   at once. Their must-fail halves, with the existing test-only deps (`skipAdminCheck`, `skipPermission`), are the
   proof.
 - **No secret in a test.** Build a Google-secret-shaped value at runtime, as
@@ -78,7 +78,7 @@ documents in `SPEC.md`, `CLAUDE.md`, `specs/` and `.specify/memory/constitution.
   - There is exactly one `data "auth0_connection"`, named `google`, with `name = "google-oauth2"`, `hide_client_secret = true` and `skip_enabled_clients = true`.
   - No connection resource or connection data source holds `client_secret`, `options_client_secret_wo` or `client_id =`. Scope this check to connection blocks only: L2's `var.client_secret` and its write-only `client_secret_wo` stay.
   - Mutants: `hide_client_secret = false`; the attribute removed; `skip_enabled_clients` removed; `client_secret = "x"` added to the data source.
-- [X] T005 In `auth0/main.tf`, add a section `# ---- People's connections (specs/017) ----` after "The hosted agent's callers" and before "Closed sign-ups". Start it with `data "auth0_connection" "google"` (T004's shape).
+- [X] T005 In `auth0/main.tf`, add a section `# ---- People's connections (specs/018) ----` after "The hosted agent's callers" and before "Closed sign-ups". Start it with `data "auth0_connection" "google"` (T004's shape).
   - Its comment says why it is read-only: managing it would put the Google secret in state, and the write-only secret would have to stay on the operator's host (research R4).
   - Run `terraform -chdir=auth0 fmt` where Terraform is installed. T-IAC-02 is green.
 
@@ -127,13 +127,13 @@ documents in `SPEC.md`, `CLAUDE.md`, `specs/` and `.specify/memory/constitution.
 
 **Goal**: show, rather than assume, that a role-less person with a Google-shaped subject reaches exactly their own account (FR-011..FR-016, contracts/new-person-access.md).
 
-**Independent Test**: `npx vitest run test/portal.test.ts -t "T-PRT-16"`, `npx vitest run test/hosted-access.test.ts -t "T-AGT-15"` and `npx vitest run test/caller-token.test.ts -t "T-CTK-01"`. They pass, and each must-fail half turns a refusal into an acceptance.
+**Independent Test**: `npx vitest run test/portal.test.ts -t "T-PRT-19"`, `npx vitest run test/hosted-access.test.ts -t "T-AGT-15"` and `npx vitest run test/caller-token.test.ts -t "T-CTK-01"`. They pass, and each must-fail half turns a refusal into an acceptance.
 
 **Independent of Phases 2 and 3**: test files only, so this phase can run beside them.
 
 ### Tests for User Story 2
 
-- [X] T008 [P] [US2] In `test/portal.test.ts`, add `describe("T-PRT-16 a brand-new Google person, with no role (017 FR-011..FR-016, SEC-26)")`.
+- [X] T008 [P] [US2] In `test/portal.test.ts`, add `describe("T-PRT-19 a brand-new Google person, with no role (018 FR-011..FR-016, SEC-26)")`.
   - The people:
     - the new person: `sub: "google-oauth2|"` followed by 21 digits, with `permissions: []`, using `test/helpers/portal.ts` (which takes the whole `sub` in `o.sub`);
     - a second person, `auth0|<the same 21 digits>`.
@@ -149,23 +149,23 @@ documents in `SPEC.md`, `CLAUDE.md`, `specs/` and `.specify/memory/constitution.
     - their token from the agent's client is 403 `forbidden`.
   - The two people get two different users and two wallets (FR-016).
   - Must-fail half: with the portal's test-only `skipAdminCheck`, the new person reaches `/api/admin/escalations`.
-- [X] T009 [P] [US2] In `test/hosted-access.test.ts`, add `describe("T-AGT-15 a brand-new Google person (017 FR-013)")`.
+- [X] T009 [P] [US2] In `test/hosted-access.test.ts`, add `describe("T-AGT-15 a brand-new Google person (018 FR-013)")`.
   - The new person's token, from `a.run(…, { sub: "google-oauth2|<21 digits>", permissions: [] })`, gets 403 `forbidden`. Check that there is no model call, and that the fake gate's `authorize` and `budget` are never called (`fakePorts()`).
   - The same `sub` with `permissions: ["agent:run"]` gets 200. The gate's calls carry that person's token, and no intent names a user.
   - Must-fail half: with the test-only `skipPermission`, the role-less person starts a run and the model is called.
-- [X] T010 [P] [US2] In `test/caller-token.test.ts`, add a case to T-CTK-01 row 5: "T-CTK-01 row 5 a brand-new Google person without agent:run, forwarded by a faulty L1: 403 caller_forbidden, nothing appended (017)".
+- [X] T010 [P] [US2] In `test/caller-token.test.ts`, add a case to T-CTK-01 row 5: "T-CTK-01 row 5 a brand-new Google person without agent:run, forwarded by a faulty L1: 403 caller_forbidden, nothing appended (018)".
   - Use `test/helpers/caller-tokens.ts` `personToken({ sub: "google-oauth2|<21 digits>", permissions: [] })` against L2 with user accounts on.
   - The ledger's entry count is the same before and after.
   - The existing must-fail case ("must fail without the permission", around line 155) covers the switch. Add this `sub` to it as well.
 - [X] T011 [US2] Run T008–T010. They must pass with no change in `src/`. If one fails, stop: it is a service defect against R21, SEC-19 or SEC-20. Report it to the owner, and fix nothing in `src/` without their agreement.
 
-**Checkpoint**: the public way in is pinned by tests. T-ARCH-TRACE can now find T-PRT-16 and T-AGT-15 (T018).
+**Checkpoint**: the public way in is pinned by tests. T-ARCH-TRACE can now find T-PRT-19 and T-AGT-15 (T018).
 
 ---
 
 ## Phase 5: User Story 4 - The tenant's sign-in connections can't drift unnoticed (Priority: P2)
 
-**Goal**: the people's connections and their enabled applications are declared and authoritative. Only the portal's and the agent's clients may sign a person in (FR-017, FR-018, research R3, R5, R6).
+**Goal**: the people's connections and their enabled applications are declared and authoritative. Only the portal's and the agent's clients may sign a person in (FR-018, FR-018, research R3, R5, R6).
 
 **Independent Test**: offline, T-IAC-02 rules 1 and 2 with their mutants. Live: quickstart §3.6 (T032). A client enabled by hand shows in the next plan, and apply removes it.
 
@@ -196,7 +196,7 @@ documents in `SPEC.md`, `CLAUDE.md`, `specs/` and `.specify/memory/constitution.
 
   Run `terraform -chdir=auth0 fmt`. T-IAC-02 is green.
 
-**Checkpoint**: offline, every rule of FR-017 has a must-fail case except the Google client ID (Phase 6).
+**Checkpoint**: offline, every rule of FR-018 has a must-fail case except the Google client ID (Phase 6).
 
 ---
 
@@ -230,7 +230,7 @@ documents in `SPEC.md`, `CLAUDE.md`, `specs/` and `.specify/memory/constitution.
   - Add `if grep -q 'GOCSPX-' "$TFVARS"; then fail "$TFVARS holds a Google client secret: it goes into the tenant's Dashboard only"; fi`.
   - Update the function's comment.
   - `bash -n scripts/auth0-tenant.sh` passes, and T015 is green.
-- [X] T017 [US3] In `auth0/main.tf`, add T014's precondition to `auth0_connection_clients.google`. Its comment says: the evidence of whose Google application is used is the client ID the tenant holds. The live check reads the redirect to Google (quickstart §1.4). A hand change of Google's application fails the next plan rather than being undone, because Terraform never writes Google's options (FR-018). Run `terraform -chdir=auth0 fmt`. T-IAC-02 is green.
+- [X] T018 [US3] In `auth0/main.tf`, add T014's precondition to `auth0_connection_clients.google`. Its comment says: the evidence of whose Google application is used is the client ID the tenant holds. The live check reads the redirect to Google (quickstart §1.4). A hand change of Google's application fails the next plan rather than being undone, because Terraform never writes Google's options (FR-018). Run `terraform -chdir=auth0 fmt`. T-IAC-02 is green.
 
 **Checkpoint**: T-IAC-02 rules 1–5, 7 and 8 are in place, each with its mutants. Rule 6 comes with step B (T036).
 
@@ -244,9 +244,9 @@ documents in `SPEC.md`, `CLAUDE.md`, `specs/` and `.specify/memory/constitution.
 
 **Depends on**: Phase 4 (T-ARCH-TRACE needs the test titles), and Phases 3, 5 and 6 (the rules described).
 
-- [X] T018 [P] [US6] `SPEC.md` 1.27:
+- [X] T018 [P] [US6] `SPEC.md` 1.28:
   - Update the version in the header.
-  - Add "Changes in 1.27" above 1.26. Its table names finding P1 and each part's resolution:
+  - Add "Changes in 1.28" above 1.26. Its table names finding P1 and each part's resolution:
     - the page offer: the connection's own setting, one switch;
     - email-and-password sign-up stays closed;
     - Google sign-up is public by design;
@@ -254,9 +254,9 @@ documents in `SPEC.md`, `CLAUDE.md`, `specs/` and `.specify/memory/constitution.
     - the connections are declared and checked;
     - test accounts are possible after step B.
     - Add one row each for step A and step B (research R7), and one line on adopting it (quickstart §1–§4).
-  - In §11, rewrite SEC-26: Google sign-up is public by design; email and password are closed by `allow_sign_ups` through the connection's "Disable Sign Ups"; Google runs on the project's own application; the connections are declared; block a person in the tenant; the emergency stop `google_sign_in = false` and its cost. Its tests are T-PRT-01, T-PRT-02, T-PRT-16, T-AGT-15 and T-IAC-02.
-  - Delete the v1.19 residual risk "A social connection's first sign-in doesn't run the pre-user-registration trigger …" (around line 1800). Add "Residual risks added in v1.27": anyone with a Google account can create a portal user, with no cap on how many, held only by the rate limits and blocking; the emergency stop also stops existing Google people.
-  - In §12: new rows T-PRT-16 (portal) and T-AGT-15 (hosted-access); amend T-CTK-01's row (row 5, a Google-shaped person) and T-IAC-02's row (the people's connections, rules 1–8).
+  - In §11, rewrite SEC-26: Google sign-up is public by design; email and password are closed by `allow_sign_ups` through the connection's "Disable Sign Ups"; Google runs on the project's own application; the connections are declared; block a person in the tenant; the emergency stop `google_sign_in = false` and its cost. Its tests are T-PRT-01, T-PRT-02, T-PRT-19, T-AGT-15 and T-IAC-02.
+  - Delete the v1.19 residual risk "A social connection's first sign-in doesn't run the pre-user-registration trigger …" (around line 1800). Add "Residual risks added in v1.28": anyone with a Google account can create a portal user, with no cap on how many, held only by the rate limits and blocking; the emergency stop also stops existing Google people.
+  - In §12: new rows T-PRT-19 (portal) and T-AGT-15 (hosted-access); amend T-CTK-01's row (row 5, a Google-shaped person) and T-IAC-02's row (the people's connections, rules 1–8).
   - In §9, add the tenant's variables `google_client_id` and `google_sign_in` wherever the tfvars values are listed.
 - [X] T019 [P] [US6] In `specs/007-process-isolation-security/contracts/threat-matrix.md`, give SEC-26 the same text and tests as T018. `SEC_ROWS` in `test/architecture.test.ts` is unchanged. Run `npx vitest run test/architecture.test.ts -t "T-ARCH-TRACE"`.
 - [X] T020 [P] [US6] `.specify/memory/constitution.md` 3.0.1 (PATCH):
@@ -284,8 +284,8 @@ documents in `SPEC.md`, `CLAUDE.md`, `specs/` and `.specify/memory/constitution.
     - the four connection scopes;
     - an existing tenant imports the three connection objects first;
     - never apply a plan that changes the database connection's password policy.
-- [X] T023 [P] [US6] `specs/README.md`: add the 017 row and SPEC 1.27, with traceability for FR-001..FR-020, SEC-26, T-PRT-16, T-AGT-15, T-CTK-01 row 5 and T-IAC-02 rules 1–8.
-- [X] T024 [US6] Update `auth0/main.tf`'s header comment (lines 1–17). Add a paragraph on the people's connections (specs/017). Replace "to keep strangers out … (the pre-user-registration Action at the end), or turn sign-ups off on the …" with: Google sign-up is public by design; email and password follow `var.allow_sign_ups` through the database connection; block a person in the tenant; the emergency stop is `var.google_sign_in`. Keep "Closed sign-ups" described as the step A fallback until T037.
+- [X] T023 [P] [US6] `specs/README.md`: add the 018 row and SPEC 1.28, with traceability for FR-001..FR-020, SEC-26, T-PRT-19, T-AGT-15, T-CTK-01 row 5 and T-IAC-02 rules 1–8.
+- [X] T024 [US6] Update `auth0/main.tf`'s header comment (lines 1–17). Add a paragraph on the people's connections (specs/018). Replace "to keep strangers out … (the pre-user-registration Action at the end), or turn sign-ups off on the …" with: Google sign-up is public by design; email and password follow `var.allow_sign_ups` through the database connection; block a person in the tenant; the emergency stop is `var.google_sign_in`. Keep "Closed sign-ups" described as the step A fallback until T037.
 
 **Checkpoint**: step A is complete in the repository.
 
@@ -295,27 +295,27 @@ documents in `SPEC.md`, `CLAUDE.md`, `specs/` and `.specify/memory/constitution.
 
 **Purpose**: put step A on `main`, set up the Google application, apply, and run the live checks of US1, US2, US3 and US4. The deny Action stays bound throughout, so sign-up is never open (FR-003).
 
-- [X] T025 Run `npm run check`: green, with T001's demo summary unchanged. Run `npx vitest run test/auth0-iac.test.ts test/portal.test.ts test/hosted-access.test.ts test/caller-token.test.ts test/architecture.test.ts`. Scan the diff for secrets (`gitleaks`, or a grep for key patterns and `GOCSPX-`). Then commit with the task and requirement IDs. Open the step A pull request only when the owner says to. `checks (Node 22)` and `checks (Node 26)` and `validate-auth0` must be green before merging. Add a "Validation log" section at the end of `specs/017-tenant-signup-hardening/quickstart.md` for the results of T026–T034.
-- [ ] T026 [US3] *Owner*, before step A's plan: do `specs/017-tenant-signup-hardening/quickstart.md` §1.1–§1.2. Create the Google Cloud OAuth client: Web application, redirect URI `https://<tenant>/login/callback` only, consent screen In production, `openid`, `email` and `profile`. Enter its client ID and secret on the tenant's `google-oauth2` connection in the Dashboard. The secret goes nowhere else.
-- [ ] T027 [US3] *Owner*: do `specs/017-tenant-signup-hardening/quickstart.md` §1.3 (research R8). One existing Google person signs in again. Their `user_id`, portal user and wallet address must be unchanged, and no second user may appear with their email. If anything changed, put the old setting back and stop the rollout here (spec Assumptions). Then do §1.4: the redirect goes to `accounts.google.com` with the project's client ID and the tenant's callback, never `login.auth0.com`. Log both.
-- [ ] T028 *Owner*: add the four connection scopes to the Management API application (`specs/017-tenant-signup-hardening/quickstart.md` §0, research R10). Note the `con_…` IDs of `Username-Password-Authentication` and `google-oauth2`.
-- [ ] T029 [US4] *Operator*, on the VPS after the merge: do `specs/017-tenant-signup-hardening/quickstart.md` §2 for both clients (the "before" values), then §3.1–§3.3.
+- [X] T025 Run `npm run check`: green, with T001's demo summary unchanged. Run `npx vitest run test/auth0-iac.test.ts test/portal.test.ts test/hosted-access.test.ts test/caller-token.test.ts test/architecture.test.ts`. Scan the diff for secrets (`gitleaks`, or a grep for key patterns and `GOCSPX-`). Then commit with the task and requirement IDs. Open the step A pull request only when the owner says to. `checks (Node 22)` and `checks (Node 26)` and `validate-auth0` must be green before merging. Add a "Validation log" section at the end of `specs/018-tenant-signup-hardening/quickstart.md` for the results of T026–T034.
+- [ ] T026 [US3] *Owner*, before step A's plan: do `specs/018-tenant-signup-hardening/quickstart.md` §1.1–§1.2. Create the Google Cloud OAuth client: Web application, redirect URI `https://<tenant>/login/callback` only, consent screen In production, `openid`, `email` and `profile`. Enter its client ID and secret on the tenant's `google-oauth2` connection in the Dashboard. The secret goes nowhere else.
+- [ ] T027 [US3] *Owner*: do `specs/018-tenant-signup-hardening/quickstart.md` §1.3 (research R8). One existing Google person signs in again. Their `user_id`, portal user and wallet address must be unchanged, and no second user may appear with their email. If anything changed, put the old setting back and stop the rollout here (spec Assumptions). Then do §1.4: the redirect goes to `accounts.google.com` with the project's client ID and the tenant's callback, never `login.auth0.com`. Log both.
+- [ ] T028 *Owner*: add the four connection scopes to the Management API application (`specs/018-tenant-signup-hardening/quickstart.md` §0, research R10). Note the `con_…` IDs of `Username-Password-Authentication` and `google-oauth2`.
+- [ ] T029 [US4] *Operator*, on the VPS after the merge: do `specs/018-tenant-signup-hardening/quickstart.md` §2 for both clients (the "before" values), then §3.1–§3.3.
   - Write the three `import {}` blocks in an uncommitted `auth0/imports.tf`, and add `google_client_id` to `~/x402-tfstate/auth0.dev.tfvars`.
   - Plan. Expect three imports, a single database change (`disable_signup`), the lists trimmed to the portal and the agent, and nothing destroyed or replaced.
   - Apply exactly that plan, then delete `auth0/imports.tf`.
   - If the plan shows any other database option changing, stop before applying and do T030.
 - [ ] T030 [US1] Only if T029's plan changes another option of `auth0_connection.database`: change that resource's `options` in `auth0/main.tf` to match the tenant. Use the operator's copy of that resource's plan diff, which holds no secret. Commit through a pull request, then repeat T029's plan. Never apply a plan that changes the password policy.
-- [ ] T031 [US1] *Operator*: do `specs/017-tenant-signup-hardening/quickstart.md` §2, §3.4 and §3.5, and log the results. Each client lists exactly the two connections, with `"showSignup":false` and `"showForgot":true`. The portal's page has no "Sign up" link, but has "Continue with Google" and "Forgot password". `POST /dbconnections/signup` with a throwaway `example.com` address gets 400, `/u/signup` is refused, and no user is created (SC-001, SC-002).
-- [ ] T032 [US4] *Operator*: do `specs/017-tenant-signup-hardening/quickstart.md` §3.6. The plan shows no changes. A connection enabled by hand for L2's client shows in the plan, and apply removes it. A Google client ID changed by hand fails the precondition, and is then put back (SC-007). Log the results.
-- [ ] T033 [US3] *Operator*: do `specs/017-tenant-signup-hardening/quickstart.md` §7. `grep -c 'GOCSPX-'` gives `0` for the state and the tfvars file, and the saved plan's output names no `client_secret` (SC-005). Log the result.
-- [ ] T034 [US2] *Owner*: do `specs/017-tenant-signup-hardening/quickstart.md` §5.1–§5.3, and log the results:
+- [ ] T031 [US1] *Operator*: do `specs/018-tenant-signup-hardening/quickstart.md` §2, §3.4 and §3.5, and log the results. Each client lists exactly the two connections, with `"showSignup":false` and `"showForgot":true`. The portal's page has no "Sign up" link, but has "Continue with Google" and "Forgot password". `POST /dbconnections/signup` with a throwaway `example.com` address gets 400, `/u/signup` is refused, and no user is created (SC-001, SC-002).
+- [ ] T032 [US4] *Operator*: do `specs/018-tenant-signup-hardening/quickstart.md` §3.6. The plan shows no changes. A connection enabled by hand for L2's client shows in the plan, and apply removes it. A Google client ID changed by hand fails the precondition, and is then put back (SC-007). Log the results.
+- [ ] T033 [US3] *Operator*: do `specs/018-tenant-signup-hardening/quickstart.md` §7. `grep -c 'GOCSPX-'` gives `0` for the state and the tfvars file, and the saved plan's output names no `client_secret` (SC-005). Log the result.
+- [ ] T034 [US2] *Owner*: do `specs/018-tenant-signup-hardening/quickstart.md` §5.1–§5.3, and log the results:
   - a never-seen Google account signs up and saves a profile in under 3 minutes (SC-003);
   - their run is 403 and `/admin` is refused;
   - after `x402-agent` is assigned and they sign in again, a run pays from their own account;
   - then remove the role.
 
   Where backchannel approval is on, also do §5.4. If §5.4 fails because L2's client has no connection, do T035.
-- [ ] T035 [US4] Only if T034's §5.4 fails because the person's connection isn't enabled for L2's client (research R3, fallback): add `auth0_client.l2.client_id` to both lists in `auth0/main.tf`. Add the exception to T-IAC-02 rule 2 in `test/auth0-iac.test.ts`, keeping the machine-caller mutant. Note it in SEC-26 (`SPEC.md`, `specs/007-process-isolation-security/contracts/threat-matrix.md`) and in `specs/017-tenant-signup-hardening/contracts/tenant-connections.md`. Then plan and apply again.
+- [ ] T035 [US4] Only if T034's §5.4 fails because the person's connection isn't enabled for L2's client (research R3, fallback): add `auth0_client.l2.client_id` to both lists in `auth0/main.tf`. Add the exception to T-IAC-02 rule 2 in `test/auth0-iac.test.ts`, keeping the machine-caller mutant. Note it in SEC-26 (`SPEC.md`, `specs/007-process-isolation-security/contracts/threat-matrix.md`) and in `specs/018-tenant-signup-hardening/contracts/tenant-connections.md`. Then plan and apply again.
 
 **Checkpoint**: step A is live and checked. Do not start step B's merge before T031 has passed (research R7).
 
@@ -350,11 +350,11 @@ documents in `SPEC.md`, `CLAUDE.md`, `specs/` and `.specify/memory/constitution.
 - [ ] T038 [P] [US5] Step B's documents:
   - `auth0/README.md`: the Action's resource row (around line 64) and the Actions list (around line 333). Test accounts: quickstart §4.3–§4.4. Create them in the Dashboard while sign-up stays closed, give the administrator a second factor before `x402-admin`, and delete both after the test.
   - `CLAUDE.md`: any mention of the deny Action.
-  - `SPEC.md`: "Changes in 1.27", where the step B row becomes done, and T-IAC-02's row (rule 6).
-  - `SPEC.md`'s version stays 1.27.
+  - `SPEC.md`: "Changes in 1.28", where the step B row becomes done, and T-IAC-02's row (rule 6).
+  - `SPEC.md`'s version stays 1.28.
 - [ ] T039 [US5] Run `npm run check` (green, demo summary unchanged) and the secret scan, then commit with the task and requirement IDs. Open the step B pull request only when the owner says to.
-- [ ] T040 [US5] *Operator*, after the merge: do `specs/017-tenant-signup-hardening/quickstart.md` §4.1–§4.2, and log the results. The plan destroys `auth0_trigger_action.deny_sign_up[0]` and `auth0_action.deny_sign_up[0]` and nothing else. Apply it. `POST /dbconnections/signup` is still 400.
-- [ ] T041 [US5] *Owner*: do `specs/017-tenant-signup-hardening/quickstart.md` §4.3–§4.4, and log the results (SC-008).
+- [ ] T040 [US5] *Operator*, after the merge: do `specs/018-tenant-signup-hardening/quickstart.md` §4.1–§4.2, and log the results. The plan destroys `auth0_trigger_action.deny_sign_up[0]` and `auth0_action.deny_sign_up[0]` and nothing else. Apply it. `POST /dbconnections/signup` is still 400.
+- [ ] T041 [US5] *Owner*: do `specs/018-tenant-signup-hardening/quickstart.md` §4.3–§4.4, and log the results (SC-008).
   - Create a named test person in the Dashboard while someone repeats the self-service sign-up, which must be refused.
   - Create a test administrator: second factor first, then `x402-admin`. They reach `/admin`, and the test person does not.
   - After the pentest, delete both. Neither can sign in, and their ledger entries stay.
@@ -367,8 +367,8 @@ documents in `SPEC.md`, `CLAUDE.md`, `specs/` and `.specify/memory/constitution.
 ## Phase 10: Polish & Cross-Cutting Concerns
 
 - [ ] T042 [P] Search the repository for text that no longer holds: `deny-sign-up`, `deny_sign_up`, "Sign-ups are closed", "turn sign-ups off", "social connection's first sign-in". Leave the older change-log sections of `SPEC.md` and the earlier specs as history. Fix any live text in `README.md`, `docs/` or `auth0/`.
-- [ ] T043 Run `specs/017-tenant-signup-hardening/quickstart.md` §6 (the offline checks) and `npm run check` on `main` after both merges, and log the results. Check that NFR-004's negative results still hold through the existing suites: T-PRT-01 and T-PRT-07, and T-IAC-02's callback and implicit-flow checks.
-- [ ] T044 *Owner*: give the report's author the two test accounts out of band, never in the repository, an issue or chat, and ask for P1's retest (SC-009). Note the outcome in `specs/017-tenant-signup-hardening/quickstart.md`'s Validation log.
+- [ ] T043 Run `specs/018-tenant-signup-hardening/quickstart.md` §6 (the offline checks) and `npm run check` on `main` after both merges, and log the results. Check that NFR-004's negative results still hold through the existing suites: T-PRT-01 and T-PRT-07, and T-IAC-02's callback and implicit-flow checks.
+- [ ] T044 *Owner*: give the report's author the two test accounts out of band, never in the repository, an issue or chat, and ask for P1's retest (SC-009). Note the outcome in `specs/018-tenant-signup-hardening/quickstart.md`'s Validation log.
 
 ---
 
@@ -393,16 +393,16 @@ document change goes in Phase 7, in the same merge.
 
 ### Parallel opportunities
 
-- T008, T009 and T010 (three test files), beside any of T002–T017.
+- T008, T009 and T010 (three test files), beside any of T002–T018.
 - T018–T023 (six different documents).
 - T026–T028 (the owner's hand steps), beside T025's review.
 - T042 beside T043.
-- Not in parallel: T002, T004, T006, T012, T014, T015 and T036 all edit `test/auth0-iac.test.ts`. T005, T007, T013, T017, T024 and T037 all edit `auth0/main.tf`.
+- Not in parallel: T002, T004, T006, T012, T014, T015 and T036 all edit `test/auth0-iac.test.ts`. T005, T007, T013, T018, T024 and T037 all edit `auth0/main.tf`.
 
 ### Parallel example: User Story 2
 
 ```text
-Task: "T008 [US2] T-PRT-16 in test/portal.test.ts"
+Task: "T008 [US2] T-PRT-19 in test/portal.test.ts"
 Task: "T009 [US2] T-AGT-15 in test/hosted-access.test.ts"
 Task: "T010 [US2] T-CTK-01 row 5 case in test/caller-token.test.ts"
 ```
@@ -410,7 +410,7 @@ Task: "T010 [US2] T-CTK-01 row 5 case in test/caller-token.test.ts"
 ### Parallel example: User Story 6
 
 ```text
-Task: "T018 [US6] SPEC.md 1.27"
+Task: "T018 [US6] SPEC.md 1.28"
 Task: "T019 [US6] threat-matrix.md SEC-26"
 Task: "T020 [US6] constitution 3.0.1"
 Task: "T021 [US6] auth0/README.md"

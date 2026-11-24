@@ -15,10 +15,10 @@
 # role. A tenant administrator assigns a role per person, by hand: nobody is assigned here, and no user is created
 # here. To keep one person out, block that user in Auth0.
 #
-# And how people sign in (SPEC v1.27, specs/017), after the callers: email and password, and Google, each enabled for
+# And how people sign in (SPEC v1.28, specs/018), after the callers: email and password, and Google, each enabled for
 # the portal's and the agent's clients only. Google sign-up is public by design: a first Google sign-in makes a person
 # with no role, through the project's own Google application. Email-and-password sign-up follows var.allow_sign_ups,
-# through the database connection's own Disable Sign Ups (and, until step B of specs/017, the pre-user-registration
+# through the database connection's own Disable Sign Ups (and, until step B of specs/018, the pre-user-registration
 # Action at the end). var.google_sign_in false stops Google sign-in in an emergency, for existing Google people too.
 
 locals {
@@ -422,7 +422,7 @@ resource "auth0_client_grant" "machine" {
   depends_on = [auth0_resource_server_scopes.identity]
 }
 
-# ---- People's connections (specs/017) ------------------------------------------------------------------------------
+# ---- People's connections (specs/018) ------------------------------------------------------------------------------
 
 # How a person signs in: email and password, or Google, and nothing else (T-IAC-02 fails on a third connection). Only
 # the portal's and the agent's clients may use them. L2's approval client asks a person for an approval by Guardian
@@ -512,7 +512,7 @@ resource "auth0_connection_clients" "google" {
   lifecycle {
     precondition {
       condition     = !var.google_sign_in || (var.google_client_id != "" && try(data.auth0_connection.google.options[0].client_id, "") == var.google_client_id)
-      error_message = "The tenant's google-oauth2 connection must use the project's own Google application, google_client_id (specs/017 quickstart section 1): it still runs on Auth0's developer keys or on another Google application, or google_client_id is empty."
+      error_message = "The tenant's google-oauth2 connection must use the project's own Google application, google_client_id (specs/018 quickstart section 1): it still runs on Auth0's developer keys or on another Google application, or google_client_id is empty."
     }
   }
 }

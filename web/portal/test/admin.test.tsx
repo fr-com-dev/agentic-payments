@@ -29,7 +29,8 @@ const ALICE = "usr_aaaaaaaaaaaaaaaaaaaaaaaa11112222";
 const DANA = "usr_dddddddddddddddddddddddd33334444";
 const T0 = Date.parse("2026-11-11T10:00:00.000Z");
 const iso = (ms: number) => new Date(ms).toISOString();
-const ADMIN_CONFIG: Config = { ...CONFIG, admin: { available: true } };
+// 017: the configuration no longer says whether the area is on; the person's own answer does (`me.admin`).
+const ADMIN_CONFIG: Config = CONFIG;
 const all = { profile: true, wallet: true, policy: true };
 const none = { profile: false, wallet: false, policy: false };
 
@@ -211,8 +212,14 @@ describe("T-WEB-09 who sees the administration area (FR-002..FR-006)", () => {
     expect(within(screen.getByRole("navigation", { name: "Main" })).getAllByRole("link").map((a) => a.textContent)).toEqual(["Administration"]);
   });
 
-  it("T-WEB-09 with the area off in the deployment there is nothing, even for a token that says administrator", async () => {
-    const view = renderAdmin("/admin", BOTH, {}, { config: { ...CONFIG, admin: { available: false } } });
+  it("T-WEB-15 the area comes from the person's own answer: shown when me.admin is true, absent when it is false", async () => {
+    // The portal sets `admin` only where the area is on and the token carries portal:admin, so with the area off in
+    // the deployment an administrator's answer says false, and there is nothing (017: the configuration says nothing).
+    renderAdmin("/admin", BOTH);
+    expect(await screen.findByRole("heading", { level: 1, name: "Waiting for approval" })).toBeTruthy();
+    expect(within(screen.getByRole("navigation", { name: "Main" })).getByRole("link", { name: "Administration" })).toBeTruthy();
+    cleanup();
+    const view = renderAdmin("/admin", { ...BOTH, admin: false });
     expect(await screen.findByRole("heading", { level: 1, name: "Not found" })).toBeTruthy();
     expect(within(screen.getByRole("navigation", { name: "Main" })).queryByRole("link", { name: "Administration" })).toBeNull();
     expect(adminCalls(view.api)).toBe(0);

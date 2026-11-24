@@ -1,8 +1,13 @@
 # Implementation Plan: Sign-Up Hardening for the Sign-In Tenant (pentest finding P1)
 
-**Branch**: `claude/pentest-report-fixes-0709b1` (spec-kit feature `017-tenant-signup-hardening`) | **Date**: 2026-11-24 | **Spec**: [spec.md](spec.md)
+**Branch**: `claude/pentest-report-fixes-0709b1` (spec-kit feature `018-tenant-signup-hardening`) | **Date**: 2026-11-24 | **Spec**: [spec.md](spec.md)
 
-**Input**: Feature specification from `specs/017-tenant-signup-hardening/spec.md`
+**Input**: Feature specification from `specs/018-tenant-signup-hardening/spec.md`
+
+**Renumbered (2026-11-24)**: this feature was written as 017, for SPEC 1.27, with the test T-PRT-16, and committed
+that way in `d97909f`. `main` then took 017, SPEC 1.27 and T-PRT-16..18 for the portal's DAST remediation
+(`specs/017-dast-findings-remediation`). So this feature is 018, for SPEC 1.28, and its portal test is T-PRT-19.
+Nothing else changed.
 
 ## Summary
 
@@ -27,7 +32,7 @@ The approach is almost entirely in the tenant's declaration (`auth0/`):
 - The deny-all pre-user-registration Action is removed in a second rollout step. It also refuses the operator's own
   user creation (R1, R7).
 
-No service changes. Two new tests pin what a role-less Google person reaches (R11). The SPEC (1.27), SEC-26, the
+No service changes. Two new tests pin what a role-less Google person reaches (R11). The SPEC (1.28), SEC-26, the
 constitution (3.0.1) and the guides follow (R12).
 
 ## Technical Context
@@ -47,7 +52,7 @@ SPEC 1.26), and no Google secret reaches it (R4). L2's ledger is unchanged.
 
 **Testing**:
 
-- vitest: T-IAC-02, offline, extended with must-fail mutants for every new rule; the new T-PRT-16 in
+- vitest: T-IAC-02, offline, extended with must-fail mutants for every new rule; the new T-PRT-19 in
   `test/portal.test.ts`; the new T-AGT-15 in `test/hosted-access.test.ts`, the suite of the agent's access
   rules; a case for the same person in T-CTK-01 row 5 (`test/caller-token.test.ts`), where L2 checks the
   permission on the forwarded token; T-ARCH-TRACE through SEC-26's row.
@@ -109,11 +114,11 @@ How VIII passes:
   quickstart §3.5 and §4.2 check it live.
 - What the Action did beyond that (refusing the operator's own creations) is exactly what FR-004 needs removed.
 - Its passwordless coverage is kept by the declaration and the live check (R5).
-- Every other new rule has a must-fail mutant. T-PRT-16 and T-AGT-15 each check a refusal that a mutant
+- Every other new rule has a must-fail mutant. T-PRT-19 and T-AGT-15 each check a refusal that a mutant
   (`skipPermission`, `bypassAuth`) turns into an acceptance.
 
 **Development Workflow & Quality Gates**: `npm run check` stays green. The demo summary is unchanged: no service
-behavior changes. SPEC is updated in the same change (1.27). Requirement IDs go in commit messages and test names.
+behavior changes. SPEC is updated in the same change (1.28). Requirement IDs go in commit messages and test names.
 **Governance**: the constitution goes to 3.0.1 (PATCH) with a Sync Impact Report. Technology & Scope Constraints
 gains the two people's connections, and the residual risk is added. No principle is redefined.
 
@@ -124,7 +129,7 @@ Gate result: **pass**. There are no violations, so Complexity Tracking stays emp
 ### Documentation (this feature)
 
 ```text
-specs/017-tenant-signup-hardening/
+specs/018-tenant-signup-hardening/
 ├── spec.md                       # /speckit-specify (amended by this plan: FR-003, FR-007, FR-018, US3, SC-005)
 ├── plan.md                       # This file
 ├── research.md                   # R1–R12
@@ -132,7 +137,7 @@ specs/017-tenant-signup-hardening/
 ├── quickstart.md                 # live check and offline checks, steps A and B
 ├── contracts/
 │   ├── tenant-connections.md     # the declaration, what a visitor gets, T-IAC-02 rules 1–8
-│   └── new-person-access.md      # what a role-less Google person reaches (T-PRT-16, T-AGT-15)
+│   └── new-person-access.md      # what a role-less Google person reaches (T-PRT-19, T-AGT-15)
 ├── checklists/requirements.md
 └── tasks.md                      # /speckit-tasks (not created here)
 ```
@@ -149,10 +154,10 @@ scripts/
 └── auth0-tenant.sh    # check_tfvars: refuse *secret* variables and GOCSPX- values
 test/
 ├── auth0-iac.test.ts  # T-IAC-02 rules 1–8 and their mutants; the deny Action's checks replaced
-├── portal.test.ts     # T-PRT-16: a role-less google-oauth2| person in the portal
+├── portal.test.ts     # T-PRT-19: a role-less google-oauth2| person in the portal
 ├── hosted-access.test.ts  # T-AGT-15: the same person refused by the agent, no model or gate call
 └── caller-token.test.ts   # T-CTK-01 row 5: the same person's forwarded token refused at L2, nothing appended
-SPEC.md                # 1.27: Changes in 1.27, SEC-26, residual risks, T-IAC-02 row, T-PRT-16, T-AGT-15, §13
+SPEC.md                # 1.28: Changes in 1.28, SEC-26, residual risks, T-IAC-02 row, T-PRT-19, T-AGT-15, §13
 .specify/memory/constitution.md   # 3.0.1
 specs/007-process-isolation-security/contracts/threat-matrix.md   # SEC-26
 specs/README.md, CLAUDE.md        # the sign-up notes, the auth0/ gotchas

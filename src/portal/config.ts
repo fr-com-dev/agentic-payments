@@ -2,6 +2,7 @@
 // Errors name the variable and never echo its value. The card vault credential is read in ./card-vault.ts only
 // (rule A10); this file just asks it for the result.
 import { trustedProxyHops } from "../shared/address-limit.js";
+import { isLoopbackBind } from "../shared/local-only.js";
 import { apiDocsEnabled, ConfigError, networkProfile, PORTAL_BIND_HOST_DEFAULT, portalPort, serviceUrls, tokenFor } from "../shared/config.js";
 import { DEFAULT_AUTH_TIME_CLAIM, DEV_ISSUER, PERSON_ISSUER_RE } from "../shared/identity-token.js";
 import { cardVaultFromEnv, type CardVaultConfig } from "./card-vault.js";
@@ -82,6 +83,12 @@ export function loadPortalConfig(env: Env = process.env): PortalConfig {
       throw new ConfigError("PORTAL_ADMIN_TOKEN is required with PORTAL_ADMIN=1 (env/portal.env)");
     }
   }
+  const bindHost = present(env.PORTAL_BIND_HOST) ? env.PORTAL_BIND_HOST : PORTAL_BIND_HOST_DEFAULT;
+  const hops = trustedProxyHops(env);
+  // 017 (SEC-44): the dev sign-in accepts tokens anyone can make, so it serves this machine only: a loopback bind and
+  // no proxy in front. Each request is checked too (localOnly in server.ts).
+  if (dev && !isLoopbackBind(bindHost)) throw new ConfigError("PORTAL_BIND_HOST must be a loopback address with AUTH_JWKS_FILE (the local dev issuer)");
+  if (dev && hops > 0) throw new ConfigError("TRUSTED_PROXY_HOPS must be 0 with AUTH_JWKS_FILE (the local dev issuer)");
   return {
     network,
     rpcUrl: networkProfile(network, { env }).rpcUrl,
@@ -91,8 +98,8 @@ export function loadPortalConfig(env: Env = process.env): PortalConfig {
     profileDir: present(env.PROFILE_DIR) ? env.PROFILE_DIR : DEFAULT_PROFILE_DIR,
     webRoot: present(env.PORTAL_WEB_ROOT) ? env.PORTAL_WEB_ROOT : DEFAULT_WEB_ROOT,
     port: portalPort(env),
-    bindHost: present(env.PORTAL_BIND_HOST) ? env.PORTAL_BIND_HOST : PORTAL_BIND_HOST_DEFAULT,
-    trustedProxyHops: trustedProxyHops(env),
+    bindHost,
+    trustedProxyHops: hops,
     apiDocs: apiDocsEnabled(env),
     ...(cardVault && { cardVault }),
     ...(admin && { admin }),

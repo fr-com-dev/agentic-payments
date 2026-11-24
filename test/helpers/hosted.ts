@@ -147,9 +147,18 @@ export function fakePorts(o: FakePortsOptions = {}) {
 // The app
 // ---------------------------------------------------------------------------
 
+/** 017: an issuer in the sign-in tenant's shape, for tests that need the agent out of dev mode (`tenant: true`). */
+export const TENANT_TEST_ISSUER = "https://x402-test.eu.auth0.com/";
+
 export interface StartHostedOptions extends Partial<Omit<HostedDeps, "config" | "keys">> {
   /** Use a harness's URLs and tokens, with real HTTP port adapters. */
   harness?: Harness;
+  /**
+   * 017: start the agent with the sign-in tenant's issuer (TENANT_TEST_ISSUER) instead of the dev one, with the same
+   * local keys, and sign `token()` with that issuer. The dev sign-in refuses a declared proxy and a public `Host`
+   * (T-EDGE-02, T-EDGE-03); a test that needs either uses this.
+   */
+  tenant?: true;
   /** Extra or overriding env for loadHostedConfig. */
   env?: Record<string, string>;
   /** Call markReady() after listen (default true). */
@@ -172,7 +181,7 @@ export interface HostedTestApp {
 const devKeys = (jwks: Parameters<typeof createLocalJWKSet>[0]) => ({ keys: createLocalJWKSet(jwks), algorithms: ["ES256"] });
 
 export async function startHostedApp(opts: StartHostedOptions = {}): Promise<HostedTestApp> {
-  const { env: envOver, ready, harness, ...deps } = opts;
+  const { env: envOver, ready, harness, tenant, ...deps } = opts;
   const dir = mkdtempSync(join(tmpdir(), "hosted-"));
   const issuer = await loadOrCreateDevIssuer(join(dir, "issuer"), { NETWORK: "local" });
   // 016: with a harness whose L2 verifies callers' tokens, the agent verifies the same issuer's tokens with the
@@ -187,6 +196,7 @@ export async function startHostedApp(opts: StartHostedOptions = {}): Promise<Hos
     AGENT_CLIENT_IDS: DEV_AGENT_CLIENT,
     AUTH_JWKS_FILE: issuer.jwksPath,
     SESSION_REF_SECRET: randomBytes(32).toString("hex"),
+    ...(tenant && { AUTH_ISSUER: TENANT_TEST_ISSUER, AUTH_JWKS_FILE: "" }),
     ...(harness && {
       SELLER_URL: harness.urls.seller,
       CONTROL_URL: harness.urls.control,
@@ -221,7 +231,7 @@ export async function startHostedApp(opts: StartHostedOptions = {}): Promise<Hos
   });
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   const token: HostedTestApp["token"] = (subject, o = {}) => {
-    if (!callers) return signDevToken(issuer, { subject, ...o });
+    if (!callers) return signDevToken(issuer, { subject, ...(tenant && { issuer: TENANT_TEST_ISSUER }), ...o });
     const { service, sub, issuer: _issuer, audience: _audience, ...rest } = o;
     return service ? callers.machine({ client: subject, ...rest }) : callers.person(sub ?? devSubject(subject), rest);
   };

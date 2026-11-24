@@ -1,4 +1,4 @@
-# Quickstart: validating Sign-Up Hardening (017)
+# Quickstart: validating Sign-Up Hardening (018)
 
 How to prove the feature works, offline and against the dev tenant (`fabriciorojas.us.auth0.com`, portal
 `https://dev.fabriciorojas.com`). The rollout has two steps, A and B, each its own merge to `main` (research R7).
@@ -124,7 +124,7 @@ npx vitest run test/auth0-iac.test.ts
 ```
 
 ```bash
-npx vitest run test/portal.test.ts -t "T-PRT-16"
+npx vitest run test/portal.test.ts -t "T-PRT-19"
 ```
 
 ```bash
@@ -142,7 +142,7 @@ npm run check
 **Expected**:
 
 - T-IAC-02 passes, and so does each new must-fail mutant (`contracts/tenant-connections.md`, rules 1–8);
-- T-PRT-16 and T-AGT-15 pass;
+- T-PRT-19 and T-AGT-15 pass;
 - the demo summary is unchanged.
 
 ## 7. No Google secret anywhere the project keeps things
@@ -168,6 +168,6 @@ email address: name a person by their role ("an existing Google person", "the te
 
 | Date | Section | Who | Result |
 |---|---|---|---|
-| 2026-11-24 | §6 offline checks, on a Mac (step A in the working tree) | implementer | `npm run typecheck` green. T-IAC-02 290 tests, T-PRT-16, T-AGT-15 and the T-CTK-01 row 5 case pass; the operator command's run cases pass with a GNU `stat` stand-in on `PATH` (macOS `stat` has no `-c`, so 9 of them fail on a Mac as before this change, and pass on Linux). `npm run check` result below. |
+| 2026-11-24 | §6 offline checks, on a Mac (step A in the working tree) | implementer | `npm run typecheck` green. T-IAC-02 290 tests, T-PRT-19, T-AGT-15 and the T-CTK-01 row 5 case pass; the operator command's run cases pass with a GNU `stat` stand-in on `PATH` (macOS `stat` has no `-c`, so 9 of them fail on a Mac as before this change, and pass on Linux). `npm run check` result below. |
 | 2026-11-24 | §6 `npm run check` | implementer | typecheck green; 1844 tests passed, then the three on-chain suites (T-E2E-01..09, T-E2E-17, the demo's) failed only on `EADDRINUSE 127.0.0.1:8545`, a port another process held during the run; run again with the port free, they pass (49 tests). `npm run demo:local`: `spent on-chain: 0.006 USDC`, `hash chain ok=true` (the entry count grows because `.local/ledger-local.jsonl` is kept between runs). Secret scan of the change: no key, token, private key or `GOCSPX-` value. |
 | 2026-11-24 | §6 again, in one pass, before the step A pull request | implementer | `npm run check` green: typecheck, 69 test files and 1891 tests passed (3 files skipped without `BICEP_PATH`), demo `spent on-chain: 0.006 USDC`, `hash chain ok=true`. With `BICEP_PATH` set, the four Bicep suites pass (129 tests). `npm run build`, `npm run build:web` and `npm run audit:shipped` pass; shellcheck finds nothing in `scripts/auth0-tenant.sh`, as before. |

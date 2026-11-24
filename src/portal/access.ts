@@ -8,7 +8,7 @@
 // 014: the administration area is the one thing that needs a permission, `portal:admin`, which an administrator of
 // the tenant gives to a person by hand; it is read here and nowhere else.
 import type { RequestHandler } from "express";
-import { bearerToken, PORTAL_ADMIN_PERMISSION, signInTimeOf, verifyPersonToken, type TokenKeys } from "../shared/identity-token.js";
+import { bearerChallenge, bearerToken, PORTAL_ADMIN_PERMISSION, signInTimeOf, verifyPersonToken, type TokenKeys } from "../shared/identity-token.js";
 import { withPersonToken } from "./person-context.js";
 
 /** 014: the permission that opens the administration area. The only permission the portal reads. */
@@ -46,14 +46,18 @@ export interface AccessOptions {
 
 const unauthorized = { error: "unauthorized" };
 const forbidden = { error: "forbidden" };
+/** 017: the realm of the portal's bearer challenge. */
+export const PORTAL_REALM = "x402-portal";
 
 export function portalAccess(o: AccessOptions): RequestHandler {
   const now = o.now ?? Date.now;
   return async (req, res, next) => {
+    const token = bearerToken(req.headers.authorization);
     const refuse = (status: 401 | 403) => {
+      // 017 (FR-024): every 401 says how to authenticate; a 403 says nothing more.
+      if (status === 401) res.set("WWW-Authenticate", bearerChallenge(PORTAL_REALM, token !== null));
       res.status(status).json(status === 401 ? unauthorized : forbidden);
     };
-    const token = bearerToken(req.headers.authorization);
     if (token === null) return refuse(401);
     // 401: not a valid token of the sign-in tenant. 403 from here: a machine token (a system identity).
     const checked = await verifyPersonToken(token, {

@@ -3,7 +3,7 @@
 # scripts/auth0-tenant.sh sets environment and credential itself, always credential = "key", and refuses a tfvars
 # file that sets either, or any variable named for a secret: L2's credential is held by L2 only (Constitution V). No
 # variable holds a private key: L2's and every machine caller's are public halves only. No variable holds the Google
-# application's secret either: it is entered in the tenant's Dashboard only (specs/017 research R4, R9).
+# application's secret either: it is entered in the tenant's Dashboard only (specs/018 research R4, R9).
 
 variable "environment" {
   description = "The deployment environment these objects serve, as in infra/main.<environment>.bicepparam (dev)."
@@ -123,13 +123,13 @@ variable "local_origins" {
 }
 
 variable "allow_sign_ups" {
-  description = "Let anyone create an email-and-password account through self-service sign-up (specs/017). True by default, as before. It sets the database connection's own Disable Sign Ups (disable_signup = !allow_sign_ups): false refuses every self-service sign-up, at the page, the sign-up address and the public endpoint, and hides the page's Sign up link, while the operator can still create a person. It says nothing about Google, whose sign-up is public by design (google_sign_in). Until step B of specs/017, false also binds the pre-user-registration Action deny-sign-up.js, which refuses the operator's creations too."
+  description = "Let anyone create an email-and-password account through self-service sign-up (specs/018). True by default, as before. It sets the database connection's own Disable Sign Ups (disable_signup = !allow_sign_ups): false refuses every self-service sign-up, at the page, the sign-up address and the public endpoint, and hides the page's Sign up link, while the operator can still create a person. It says nothing about Google, whose sign-up is public by design (google_sign_in). Until step B of specs/018, false also binds the pre-user-registration Action deny-sign-up.js, which refuses the operator's creations too."
   type        = bool
   default     = true
 }
 
 variable "google_client_id" {
-  description = "The project's own Google application (a Google Cloud OAuth client of type Web application, specs/017 quickstart section 1): its client ID, which is not a secret. While google_sign_in is on, the tenant's google-oauth2 connection must use exactly this client ID or the plan stops; empty stops it too, so a tenant still on Auth0's developer keys can't be planned. Its secret is never a variable: it is entered in the tenant's Dashboard only."
+  description = "The project's own Google application (a Google Cloud OAuth client of type Web application, specs/018 quickstart section 1): its client ID, which is not a secret. While google_sign_in is on, the tenant's google-oauth2 connection must use exactly this client ID or the plan stops; empty stops it too, so a tenant still on Auth0's developer keys can't be planned. Its secret is never a variable: it is entered in the tenant's Dashboard only."
   type        = string
   default     = ""
   validation {
@@ -139,7 +139,7 @@ variable "google_client_id" {
 }
 
 variable "google_sign_in" {
-  description = "Google sign-in, and so Google sign-up (a first Google sign-in creates the person, with no role: public by design, specs/017), for the portal's and the agent's clients. True by default. False is the emergency stop: no client may use Google, which also stops every existing Google person from signing in until it is set back."
+  description = "Google sign-in, and so Google sign-up (a first Google sign-in creates the person, with no role: public by design, specs/018), for the portal's and the agent's clients. True by default. False is the emergency stop: no client may use Google, which also stops every existing Google person from signing in until it is set back."
   type        = bool
   default     = true
 }

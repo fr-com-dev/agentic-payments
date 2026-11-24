@@ -20,7 +20,8 @@ COPY tsconfig.json tsconfig.build.json ./
 COPY src ./src
 COPY scripts ./scripts
 COPY web ./web
-RUN npm run build && npm run build:web && npx tsx scripts/image-closure.ts portal /out
+# 017: the deployment build of the web app has no pasted-token sign-in (SPEC v1.27, T-WEB-16).
+RUN npm run build && npm run build:web -- --mode deployment && npx tsx scripts/image-closure.ts portal /out
 
 FROM ${NODE_IMAGE} AS runtime
 ENV NODE_ENV=production

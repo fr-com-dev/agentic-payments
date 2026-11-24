@@ -187,10 +187,10 @@ describe("T-AGT-10 the caller's token goes to L2, beside the control token, and 
 });
 
 // ---------------------------------------------------------------------------
-// T-AGT-15 a brand-new Google person (017 FR-013, SEC-26): Google sign-up is public, the agent is not
+// T-AGT-15 a brand-new Google person (018 FR-013, SEC-26): Google sign-up is public, the agent is not
 // ---------------------------------------------------------------------------
 
-describe("T-AGT-15 a brand-new Google person (017 FR-013, SEC-26)", () => {
+describe("T-AGT-15 a brand-new Google person (018 FR-013, SEC-26)", () => {
   /** The subject a first Google sign-in makes (`google-oauth2|<Google's sub>`, digits only). */
   const GOOGLE_SUB = "google-oauth2|104857600012345678901";
 

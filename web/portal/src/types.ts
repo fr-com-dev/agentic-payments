@@ -30,12 +30,10 @@ export interface Me {
   profile?: { displayName: string; contactEmail: string };
 }
 
+/** 017: the portal's public configuration, what sign-in and cards need and nothing else (T-PRT-18). */
 export interface Config {
   auth: { mode: "auth0" | "dev"; domain: string; clientId: string; audience: string };
-  network: string;
   cards: { available: boolean; publishableKey?: string };
-  /** 014: whether the administration area is on in this deployment. */
-  admin: { available: boolean };
 }
 
 export interface Limits {

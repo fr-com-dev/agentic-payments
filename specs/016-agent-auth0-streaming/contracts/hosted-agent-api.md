@@ -19,7 +19,17 @@ is no longer read first to choose a set of checks: there is one set
 | 4 | Person's token: it carries `agent:run`, and its client is on `AGENT_CLIENT_IDS` | 403 |
 
 A token from the organization's directory fails check 2 (another issuer). The body is not read, and no model,
-L2 or L3 call is made, before all four pass. The per-address limit still runs before them.
+L2 or L3 call is made, before all four pass. The per-address limit still runs before them, and since v1.27
+(`specs/017`) so does the failed-authentication limit: 20 answers with 401 per address in a minute, then 429
+`{ "error": "too many requests" }` with `Retry-After` until the minute ends, whatever the token. Every 401
+carries `WWW-Authenticate: Bearer realm="x402-agent"`, with `, error="invalid_token"` when a token was sent and
+failed a check (RFC 6750 §3); a 403, 421 or 429 carries none.
+
+v1.27 (`specs/017`): with the local dev issuer the service serves the machine it runs on only. It refuses to start
+off a loopback bind or with `TRUSTED_PROXY_HOPS` above 0, and before any route answers
+`421 { "error": "misdirected request" }` to a request whose `Host` is not a loopback name or that carries
+`Forwarded`, `X-Forwarded-For`, `X-Forwarded-Host`, `X-Forwarded-Proto` or `Via`. The full table is in
+[017 contracts/hosted-agent-edge.md](../../017-dast-findings-remediation/contracts/hosted-agent-edge.md).
 
 **The requester.** `kind` is `user` for a person and `service` for a machine caller; `authority` is the issuer
 for both; `subject` is the token's `sub`. The key for limits and logs is `<issuer host>:<sub>` for both. A
@@ -111,7 +121,7 @@ data: {"runId":"run_0b6c…","sessionRef":"sr1.…","status":"completed","stopRe
 | `AUTH_ISSUER`, `AUTH_AUDIENCE`, `AGENT_CLIENT_IDS` | required (were all-or-none) |
 | `AUTH_TENANT_ID`, `SERVICE_AUDIENCE` | removed; the service refuses to start when either is set, naming it |
 | `API_DOCS_CLIENT_ID` | new, optional, only read with `API_DOCS=1` |
-| `AUTH_JWKS_FILE` | unchanged (local only); one issuer signs both kinds of dev token |
+| `AUTH_JWKS_FILE` | unchanged (local only); one issuer signs both kinds of dev token. v1.27: with it, `AGENT_BIND_HOST` must be a loopback address and `TRUSTED_PROXY_HOPS` 0 |
 
 ## Tests
 

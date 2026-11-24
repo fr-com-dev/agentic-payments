@@ -1,6 +1,6 @@
 <!--
 Sync Impact Report
-- Version change: 3.0.0 → 3.0.1 (PATCH, 2026-11-24, SPEC 1.27, feature 017-tenant-signup-hardening). PATCH
+- Version change: 3.0.0 → 3.0.1 (PATCH, 2026-11-24, SPEC 1.28, feature 018-tenant-signup-hardening). PATCH
   because nothing is redefined (Governance: "PATCH for clarifications"): it states which ways people sign in to
   the tenant and records the owner's decision that Google sign-up is public by design, in answer to pentest
   finding P1. Using the portal still needs no role, and starting runs still needs x402-agent.
@@ -10,7 +10,7 @@ Sync Impact Report
   tenant alone holds; one residual risk added for 3.0.1).
 - Added sections: none. Removed sections: none.
 - Templates reviewed: plan-template.md, spec-template.md, tasks-template.md (no change)
-- Source: SPEC.md v1.27 (Changes in 1.27, §9 CFG-2, §11 SEC-26 and the residual risks, §12 T-PRT-16, T-AGT-15,
+- Source: SPEC.md v1.28 (Changes in 1.28, §9 CFG-2, §11 SEC-26 and the residual risks, §12 T-PRT-19, T-AGT-15,
   T-CTK-01, T-IAC-02)
 - Documents changed with it: SPEC.md, CLAUDE.md, auth0/README.md, specs/README.md,
   specs/007-process-isolation-security/contracts/threat-matrix.md

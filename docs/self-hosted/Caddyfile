@@ -1,0 +1,57 @@
+# Reference front proxy for a self-hosted portal (SPEC.md L2-8 "Self-hosted behind a front proxy", v1.27;
+# specs/017 contracts/self-hosted-proxy.md, P1-P10). For one machine that runs the portal on 127.0.0.1:4025 with
+# Caddy 2 in front of it. Copy it to the host and adapt it there; nothing in this repository runs it.
+#
+# Caddy's environment sets two values:
+#   PORTAL_HOST        the portal's public DNS name (Caddy gets its certificate)
+#   PORTAL_ALLOW_FROM  the addresses allowed in, as space-separated CIDR ranges (for example a VPN's range)
+# The default allow-list, 192.0.2.1/32 (TEST-NET-1, RFC 5737), matches nobody: with the variable unset, every
+# request is refused with 403. The allow-list is personal data: keep it in Caddy's environment on the host, never
+# in this file or in the repository.
+#
+# The portal behind it: the sign-in tenant (no AUTH_JWKS_FILE), PORTAL_BIND_HOST=127.0.0.1, TRUSTED_PROXY_HOPS=1,
+# and the web app built with `npm run build:web -- --mode deployment` (docs/self-hosted/README.md).
+
+{
+	# P9: the admin endpoint stays on this machine.
+	admin localhost:2019
+	# The plain HTTP site below answers instead of Caddy's own redirect server, which would add its Server header
+	# and skip the allow-list.
+	auto_https disable_redirects
+}
+
+# P2, P3, P7: plain HTTP. Off the list: 403. On it: a permanent redirect to HTTPS.
+http://{$PORTAL_HOST} {
+	header -Server
+	route {
+		@outside not remote_ip {$PORTAL_ALLOW_FROM:192.0.2.1/32}
+		respond @outside 403
+		redir https://{host}{uri} 308
+	}
+}
+
+# P1, P3-P8: HTTPS.
+{$PORTAL_HOST} {
+	tls {
+		protocols tls1.2 tls1.3
+	}
+	# P6, P7: on every answer, Caddy's own 403 and 404 included. Deleting a field defers the whole block until the
+	# response is written, so the Server and Via that reverse_proxy adds are removed too.
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		-Server
+		-Via
+	}
+	# One route, so the order is literal: the allow-list, then the routes kept inside, then the portal.
+	route {
+		# P3: the connection's own address, never X-Forwarded-For.
+		@outside not remote_ip {$PORTAL_ALLOW_FROM:192.0.2.1/32}
+		respond @outside 403
+		# P5: health and docs answer the host's own probes only (curl 127.0.0.1:4025/healthz on the host).
+		@internal path /healthz /readyz /docs /docs/*
+		respond @internal 404
+		# P8: Caddy replaces an untrusted client's X-Forwarded-For with the connection's address, so the portal,
+		# declared behind one proxy, counts each client by its own address.
+		reverse_proxy 127.0.0.1:4025
+	}
+}

@@ -3,7 +3,7 @@
 A "brand-new person" is someone whose tenant account a first Google sign-in made a moment earlier. Their subject has
 Google's shape (`google-oauth2|<Google's sub>`, digits only), their token carries no permission, and they have no
 portal user yet. Nothing in this contract changes a route. It pins the behavior that already holds (SEC-19,
-SEC-20, SEC-26, R21) so that a public way in cannot weaken it unnoticed. The new tests T-PRT-16 and T-AGT-15 check
+SEC-20, SEC-26, R21) so that a public way in cannot weaken it unnoticed. The new tests T-PRT-19 and T-AGT-15 check
 each row with that person, next to a second person with an `auth0|…` subject.
 
 ## The portal (`docs/portal.openapi.yaml`, unchanged)

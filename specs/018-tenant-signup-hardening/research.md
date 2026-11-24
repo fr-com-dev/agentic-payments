@@ -1,4 +1,4 @@
-# Research: Sign-Up Hardening for the Sign-In Tenant (017)
+# Research: Sign-Up Hardening for the Sign-In Tenant (018)
 
 All sources were read on 2026-11-23/24. The Terraform provider's files come from tag v1.60.0 of
 `auth0/terraform-provider-auth0`, the version pinned in `auth0/.terraform.lock.hcl`. Where a fact comes from Auth0's
@@ -208,7 +208,7 @@ Nothing here signed in anywhere or called the tenant.
 
 ## R11. What a first Google sign-in gives a person
 
-- **Decision**: No change to any service. Tests T-PRT-16 and T-AGT-15 pin the behavior for a person with a
+- **Decision**: No change to any service. Tests T-PRT-19 and T-AGT-15 pin the behavior for a person with a
   Google-shaped subject and no permission (`contracts/new-person-access.md`).
 - **Rationale**:
   - The pre-user-registration trigger runs only for "a Database or Passwordless connection". Auth0's support article
@@ -224,16 +224,16 @@ Nothing here signed in anywhere or called the tenant.
 ## R12. Documents and versions
 
 - **Decision**:
-  - SPEC goes to 1.27. "Changes in 1.27" names finding P1 and each part of its resolution.
+  - SPEC goes to 1.28. "Changes in 1.28" names finding P1 and each part of its resolution.
   - SEC-26 is rewritten, here and in the threat matrix (`specs/007` contracts/threat-matrix.md). It now says Google
     sign-up is public by design, email-and-password sign-up is closed by the switch through the connection's own
     setting, the Google application is the project's own, the connections are declared, and how to block a person
-    and the emergency stop. Its tests become T-PRT-01, T-PRT-02, T-PRT-16, T-AGT-15 and T-IAC-02.
-  - The v1.19 residual risk on social first sign-ins is replaced by a v1.27 one: anyone with a Google account can
+    and the emergency stop. Its tests become T-PRT-01, T-PRT-02, T-PRT-19, T-AGT-15 and T-IAC-02.
+  - The v1.19 residual risk on social first sign-ins is replaced by a v1.28 one: anyone with a Google account can
     create a portal user, with no cap on how many.
   - T-IAC-02's row and §13 follow.
   - The constitution goes to 3.0.1 (PATCH). Technology & Scope Constraints gains the two people's connections,
     and the residual risk is added. No principle or section changes.
   - `CLAUDE.md`, `auth0/README.md` and `specs/README.md` follow.
 - **Rationale**: SEC-26 already owns this threat, so a new row isn't needed. The architecture test's SEC_ROWS stops
-  at SEC-34 and lists SEC-26, so T-ARCH-TRACE then requires T-PRT-16 and T-AGT-15 to exist as test titles.
+  at SEC-34 and lists SEC-26, so T-ARCH-TRACE then requires T-PRT-19 and T-AGT-15 to exist as test titles.

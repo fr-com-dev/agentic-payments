@@ -6,7 +6,10 @@
 > [specs/014 contracts/portal-api.md](../../014-portal-l2-control-api/contracts/portal-api.md).
 
 The portal process serves the web app's static files and this JSON API under `/api`. It is the only new public
-entry point. Normative for SPEC L2-8 and `docs/portal.openapi.yaml`; T-API-12..15 fail until they match the service.
+entry point. v1.27 (`specs/017`): outside `/api` it answers 200 with the web app's page for the web app's screens
+only; any other path is 404, with the page for a browser's navigation and the bare `{ "error": "not found" }`
+otherwise, and a dot-path, a traversal or a missing file under `/assets/` always gets the bare 404
+([017 contracts/portal-edge.md](../../017-dast-findings-remediation/contracts/portal-edge.md) "Paths outside the API"). Normative for SPEC L2-8 and `docs/portal.openapi.yaml`; T-API-12..15 fail until they match the service.
 `API_DOCS=1` adds Swagger UI at `/docs`, as on the other services, and is never set in Azure.
 
 ## Access (FR-003, FR-005; SEC-19, SEC-20)
@@ -32,10 +35,17 @@ The checks, in this order:
 
 - A token issued for the agent service comes from another client, so the portal refuses it with 403 (FR-005). The
   agent service in turn refuses a portal token ([hosted-agent delta](#hosted-agent-delta-l1-6)).
-- 401 and 403 bodies are `{ "error": "unauthorized" }` and `{ "error": "forbidden" }`, nothing more. A refused
+- 401 and 403 bodies are `{ "error": "unauthorized" }` and `{ "error": "forbidden" }`, nothing more. v1.27
+  (`specs/017`): every 401 carries `WWW-Authenticate: Bearer realm="x402-portal"`, with `, error="invalid_token"`
+  when a token was sent and failed a check (RFC 6750 §3); a 403 carries none. A refused
   request creates no file, no ledger entry and no call to L2 or the card vault (T-PRT-01).
 - **The user** is `userIdFor(issuer, sub)` ([data-model.md](../data-model.md#identifiers)). It is never read from the path, the query or the body: no route takes a
   user identifier (FR-004).
+- **The dev sign-in stays on the machine** (v1.27, `specs/017`). With `AUTH_JWKS_FILE` the portal refuses to start
+  unless `PORTAL_BIND_HOST` is a loopback address and `TRUSTED_PROXY_HOPS` is 0, and right after its headers, before
+  every route, answers `421 { "error": "misdirected request" }` to a request whose `Host` is not a loopback name or
+  that carries a forwarding header. The full table is in
+  [017 contracts/portal-edge.md](../../017-dast-findings-remediation/contracts/portal-edge.md).
 - **Identity confirmed at** is the sign-in time claim × 1000. The portal passes it to L2 as `identityConfirmedAtMs` on every
   loosening call; L2 decides whether it is fresh enough ([control-api.md](control-api.md)).
 
@@ -46,10 +56,18 @@ The checks, in this order:
   is verified (429 `{ "error": "too many requests" }` with `Retry-After`), so a caller without a valid token is
   bounded too. With `TRUSTED_PROXY_HOPS` set (1 in Azure) the address is the client's, from `X-Forwarded-For`;
   unset, that header is ignored.
-- Then 120 requests per minute per user (429 with `Retry-After`). Both per replica.
+- v1.27 (`specs/017`): right after it, failed authentications per address: 20 answers with 401 in a minute, then
+  every `/api` request from that address gets the same 429 until the minute ends, before the token is read.
+  Authenticated requests, 403s, `/api/config` and the health routes never count. One log line per burst,
+  `{ "route": "/api/*", "status": 429, "event": "auth_failure_limit", "count": 20 }`, never the address.
+- Then 120 requests per minute per user (429 with `Retry-After`). All three per replica.
 - Every `/api` response: `Cache-Control: no-store`.
 - Every response: `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`,
-  `Strict-Transport-Security` off loopback, and this Content-Security-Policy:
+  `Strict-Transport-Security` when the `Host` header is not a loopback name (v1.27, `specs/017`; until then,
+  off the local network profile), v1.27 `Permissions-Policy: camera=(), microphone=(), geolocation=(),
+  display-capture=(), usb=(), serial=(), hid=(), payment=(self "https://js.stripe.com")`,
+  `Cross-Origin-Resource-Policy: same-origin` and `Cross-Origin-Opener-Policy: same-origin-allow-popups` (the
+  sign-in pop-up answers by a web message), and this Content-Security-Policy:
 
   ```text
   default-src 'none'; script-src 'self' https://js.stripe.com https://*.js.stripe.com;
@@ -77,7 +95,7 @@ them.
 
 | Method & path | Request | 200 response | Errors |
 |---|---|---|---|
-| `GET /api/config` (no token) | — | `{ auth: { mode: "auth0" \| "dev", domain, clientId, audience }, network, cards: { available, publishableKey? } }`: public values only | — |
+| `GET /api/config` (no token) | — | `{ auth: { mode: "auth0" \| "dev", domain, clientId, audience }, cards: { available, publishableKey? } }`: public values only. v1.27 (`specs/017`): `network` (and 014's `admin`) removed | — |
 | `GET /api/me` | — | `{ userId, enabled, onboarding: { profile, wallet, policy }, profile?: { displayName, contactEmail } }` | 401, 403 |
 | `PUT /api/profile` | `{ displayName, contactEmail, acknowledgedTestFunds? }` | the `/api/me` body. First save needs `acknowledgedTestFunds: true` and registers the user at L2 | 400, 422 `invalid_profile` (`issues[]` by field) |
 | `GET /api/platform` | — | `{ limits, sellers: [{ host, name }], network, asset, decimals }`. Payee addresses are not returned | — |

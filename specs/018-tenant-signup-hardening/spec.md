@@ -300,7 +300,7 @@ uncovered gap.
 
 **The tenant's connections, declared and checked**
 
-- **FR-017**: People's connections (email and password, and Google), and the applications allowed to use each,
+- **FR-018**: People's connections (email and password, and Google), and the applications allowed to use each,
   MUST be declared with the rest of the tenant. Only the portal's and the agent's applications may sign a person
   in. An offline check MUST fail on any of these: a third people's connection; a connection enabled for L2's
   approval client or a machine caller beyond what the backchannel approval needs; email-and-password sign-up that
@@ -382,7 +382,7 @@ uncovered gap.
   the variables file, the saved plan or the state.
 - **SC-006**: Every person who could sign in before the change signs in after it with the same account, the same
   wallet address and the same history, the owner's Google sign-in included.
-- **SC-007**: The offline check fails on each forbidden connection change listed in FR-017, and a change made by
+- **SC-007**: The offline check fails on each forbidden connection change listed in FR-018, and a change made by
   hand to a connection appears in the next plan every time.
 - **SC-008**: The operator creates a named test account in under 5 minutes, while every self-service sign-up
   attempt made at the same time is refused.

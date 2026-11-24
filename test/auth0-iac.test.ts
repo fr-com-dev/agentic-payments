@@ -22,7 +22,7 @@
 // sign-in (push or a one-time code, both on in Guardian, with the tenant's setting that lets an Action choose); with
 // var.allow_sign_ups false, a pre-user-registration Action (deny-sign-up.js) refuses every new account. Each Action's
 // code is run here.
-// 017 (specs/017 contracts/tenant-connections.md, rules 1-8): people's connections. Email and password, imported and
+// 018 (specs/018 contracts/tenant-connections.md, rules 1-8): people's connections. Email and password, imported and
 // never destroyed, whose own Disable Sign Ups follows var.allow_sign_ups (the deny Action stays bound until step B);
 // Google, read only with its secret kept out of the state; each enabled for the portal's and the agent's clients
 // alone; the operator command refuses a secret in the tfvars file.
@@ -123,7 +123,7 @@ const LOCKED_FOR_RUNNER = `auth0/.terraform.lock.hcl must hold the provider's h1
 const LOCAL_STATE = 'the state must be a local file (one backend, "local"), on the operator\'s host: no remote backend';
 const NO_STATE_PATH = "the backend block must name no path: the operator command passes it (-backend-config), outside every checkout";
 const ORIGIN = (name: string) => `var.${name} must be empty or one https origin: a host, with no path, port, wildcard or trailing slash`;
-/** 017 (specs/017 contracts/tenant-connections.md): what var.google_client_id must accept, a Google OAuth client ID. */
+/** 018 (specs/018 contracts/tenant-connections.md): what var.google_client_id must accept, a Google OAuth client ID. */
 const GOOD_GOOGLE_CLIENT_IDS = ["123456789012-abc123def456ghi789jkl012mno345pq.apps.googleusercontent.com", "1-a.apps.googleusercontent.com"];
 /** A Google client secret's shape, built here so that no secret scanner meets one in the source. */
 const GOOGLE_SECRET_SHAPE = "GOCSPX" + "-" + "x".repeat(28);
@@ -142,7 +142,7 @@ const GOOGLE_SIGN_IN = "var.google_sign_in must be a bool, true by default: fals
 const GOOGLE_READ_ONLY = 'Google\'s connection must be read, never managed: exactly one data "auth0_connection", google, with name = "google-oauth2", hide_client_secret = true and skip_enabled_clients = true, so that its secret never reaches the state';
 const NO_CONNECTION_SECRET = "no connection or connection data source may set a client ID or a secret (client_id, client_secret, options_client_secret_wo): the Google application's are entered in the tenant only";
 const DATABASE = 'the email-and-password connection must be auth0_connection.database, the one connection managed here: name = "Username-Password-Authentication", strategy = "auth0", never destroyed (prevent_destroy), with no configuration, custom_scripts or enabled_clients';
-const DISABLE_SIGNUP = 'the email-and-password connection\'s own "Disable Sign Ups" must follow the one switch, disable_signup = !var.allow_sign_ups: it refuses self-service sign-up and hides the page\'s "Sign up" link (specs/017 FR-001, FR-002)';
+const DISABLE_SIGNUP = 'the email-and-password connection\'s own "Disable Sign Ups" must follow the one switch, disable_signup = !var.allow_sign_ups: it refuses self-service sign-up and hides the page\'s "Sign up" link (specs/018 FR-001, FR-002)';
 /** Rule 1: every connection object of the tenant's declaration, as `[data.]<type>.<name>`, sorted. */
 const CONNECTION_OBJECTS = ["auth0_connection.database", "auth0_connection_clients.database", "auth0_connection_clients.google", "data.auth0_connection.google"];
 const CONNECTIONS = `the people's connections must be exactly ${CONNECTION_OBJECTS.join(", ")}: no third connection, no auth0_connection_client, and no managed Google connection (it would put the secret in the state)`;
@@ -520,7 +520,7 @@ export function auth0Problems(s: Sources): string[] {
     p.push(MFA_SETTINGS);
   }
 
-  // ---- 017: people's connections (specs/017 contracts/tenant-connections.md) --------------------------------------
+  // ---- 018: people's connections (specs/018 contracts/tenant-connections.md) --------------------------------------
   // Rule 8 and rule 5's variables: the project's own Google application, by its client ID (never its secret), and
   // the emergency stop. The validation's pattern is run against good and bad client IDs.
   const googleClientId = block(tf, /variable\s+"google_client_id"\s*\{/) ?? "";
@@ -705,8 +705,8 @@ const SCRIPT_PRIVATE = "the operator command must refuse a state directory, tfva
 const SCRIPT_LOCKED = "every init must use the provider exactly as .terraform.lock.hcl pins it (-lockfile=readonly)";
 const SCRIPT_CREDENTIAL = "the Management API credential must come from its own file (~/x402-secrets/auth0-management.<environment>.env), read as two lines and never sourced, and reach Terraform's environment only: never exported or printed";
 const SCRIPT_KEY_ONLY = 'the operator command must provision credential = "key" only, refuse a tfvars file that sets environment, credential or a client secret, and never take L2\'s client secret (Constitution V)';
-/** 017 research R9: the one place on the operator's host where someone would be tempted to put the Google secret. */
-const SCRIPT_NO_SECRET = "the operator command must refuse a tfvars file that sets any variable whose name holds secret, or that holds a Google client secret (GOCSPX-): the Google application's secret is entered in the tenant's Dashboard only (specs/017 research R9)";
+/** 018 research R9: the one place on the operator's host where someone would be tempted to put the Google secret. */
+const SCRIPT_NO_SECRET = "the operator command must refuse a tfvars file that sets any variable whose name holds secret, or that holds a Google client secret (GOCSPX-): the Google application's secret is entered in the tenant's Dashboard only (specs/018 research R9)";
 const SCRIPT_ONLY_APPLY = "the only change to the tenant must be `apply`, applying exactly the plan `plan` saved, after validate: no other apply, no destroy, no -auto-approve, -target or -replace, and the passthrough refuses apply and destroy";
 const SCRIPT_NPM = `npm run auth0:tenant must run the operator command (bash ${SCRIPT})`;
 /** The only lines that read the secret: the check that the file had it, and Terraform's environment. */
@@ -786,7 +786,7 @@ export function scriptProblems(s: Sources): string[] {
   ) {
     p.push(SCRIPT_KEY_ONLY);
   }
-  // 017: no secret of any kind in the tfvars file, and never the Google application's.
+  // 018: no secret of any kind in the tfvars file, and never the Google application's.
   if (!tfvars.includes("(environment|credential|[[:alnum:]_]*secret[[:alnum:]_]*)") || !tfvars.includes(`if grep -q 'GOCSPX-' "$TFVARS"; then fail`)) p.push(SCRIPT_NO_SECRET);
   // An apply of exactly the saved plan, made after validate, and nothing else that changes the tenant.
   const plan = caseBody("plan");
@@ -1198,7 +1198,7 @@ describe("T-IAC-02 Auth0 tenant as code (auth0/)", () => {
     expect(auth0Problems(mutate(load(), file, from, to))).toContain(message);
   });
 
-  // 017: people's connections. One mutant, at least, for each rule of contracts/tenant-connections.md.
+  // 018: people's connections. One mutant, at least, for each rule of contracts/tenant-connections.md.
   it.each<[string, string, string | RegExp, string, string]>([
     // Rule 8 and rule 5's variables.
     ["a Google client ID that may be any text", "variables.tf", /can\(regex\("\^\[0-9\]\+-[^"]+", var\.google_client_id\)\)/, "length(var.google_client_id) > 0", GOOGLE_CLIENT_ID],
@@ -1240,7 +1240,7 @@ describe("T-IAC-02 Auth0 tenant as code (auth0/)", () => {
     ["any Google application but the declared one", "main.tf", 'try(data.auth0_connection.google.options[0].client_id, "") == var.google_client_id', 'try(data.auth0_connection.google.options[0].client_id, "") != ""', GOOGLE_APP],
     ["a check only while Google is off", "main.tf", /(condition\s*= )!var\.google_sign_in \|\|/, "$1var.google_sign_in ||", GOOGLE_APP],
     ["a message that names nothing to fix", "main.tf", /(resource "auth0_connection_clients" "google" \{[\s\S]*?error_message\s*= ")[^"]*"/, '$1The Google connection is not ready."', GOOGLE_APP],
-  ])("017 must fail: %s is reported", (_label, file, from, to, message) => {
+  ])("018 must fail: %s is reported", (_label, file, from, to, message) => {
     expect(auth0Problems(mutate(load(), file, from, to))).toContain(message);
   });
 
@@ -1372,7 +1372,7 @@ describe("T-IAC-02 Auth0 tenant as code (auth0/)", () => {
     // Constitution V.
     ["a credential kind from the tfvars file", " TF_VAR_credential=key", "", SCRIPT_KEY_ONLY],
     ["a client secret let through the tfvars file", "(environment|credential|[[:alnum:]_]*secret[[:alnum:]_]*)", "(environment|credential)", SCRIPT_KEY_ONLY],
-    // 017 research R9.
+    // 018 research R9.
     ["only L2's secret refused by name", "[[:alnum:]_]*secret[[:alnum:]_]*", "client_secret|client_secret_version", SCRIPT_NO_SECRET],
     ["a Google client secret's value let through", /\n\s*if grep -q 'GOCSPX-'[^\n]*/, "", SCRIPT_NO_SECRET],
     ["L2's client secret from the environment", 'TF_VAR_credential=key "$TF"', 'TF_VAR_credential=key TF_VAR_client_secret="${L2_CLIENT_SECRET:-}" "$TF"', SCRIPT_KEY_ONLY],
@@ -1405,7 +1405,7 @@ describe("T-IAC-02 Auth0 tenant as code (auth0/)", () => {
     ["a tfvars file others can read", (home) => chmodSync(join(home, "x402-tfstate", "auth0.dev.tfvars"), 0o644), /auth0\.dev\.tfvars must be yours, with mode 600/],
     ["a credential file others can read", (home) => chmodSync(join(home, "x402-secrets", "auth0-management.dev.env"), 0o640), /auth0-management\.dev\.env must be yours, with mode 600/],
     ["a tfvars file that picks the credential", (home) => writeFileSync(join(home, "x402-tfstate", "auth0.dev.tfvars"), 'credential = "secret"\n', { mode: 0o600 }), /must not set environment, credential or any variable whose name holds secret/],
-    // 017 research R9: the Google application's secret, by its variable's name or by its value.
+    // 018 research R9: the Google application's secret, by its variable's name or by its value.
     ["a tfvars file with a variable for the Google secret", (home) => writeFileSync(join(home, "x402-tfstate", "auth0.dev.tfvars"), 'google_client_secret = "x"\n', { mode: 0o600 }), /must not set environment, credential or any variable whose name holds secret/],
     ["a tfvars file holding a Google client secret", (home) => writeFileSync(join(home, "x402-tfstate", "auth0.dev.tfvars"), `google_client_id = "${GOOGLE_SECRET_SHAPE}"\n`, { mode: 0o600 }), /holds a Google client secret/],
     ["a tfvars file with a private key", (home) => writeFileSync(join(home, "x402-tfstate", "auth0.dev.tfvars"), 'client_public_key_pem = "-----BEGIN PRIVATE KEY-----"\n', { mode: 0o600 }), /holds a private key/],

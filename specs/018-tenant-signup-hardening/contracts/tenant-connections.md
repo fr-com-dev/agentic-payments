@@ -1,4 +1,4 @@
-# Contract: the tenant's people's connections (FR-001 to FR-010, FR-017, FR-018)
+# Contract: the tenant's people's connections (FR-001 to FR-010, FR-018, FR-018)
 
 What `auth0/` declares about the ways people sign in, what the sign-in page and the public endpoints answer, and
 what T-IAC-02 enforces. The values are in `data-model.md`; the reasons are in `research.md`.

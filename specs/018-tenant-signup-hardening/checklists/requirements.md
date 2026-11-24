@@ -42,7 +42,7 @@
   the agent role is needed to run the agent.
 - Two facts for planning to confirm, both listed in Assumptions. First, Google's account identifier must not change
   with the Google application (FR-009); if it does, the switch stops. Second, it must settle whether L2's approval
-  client needs a person's connection for the backchannel request (FR-017).
+  client needs a person's connection for the backchannel request (FR-018).
 - Validation pass 2 (2026-11-24, after `/speckit-plan`). Planning settled both facts and made three requirements
   precise:
   - Google publishes the "public" subject type, the same `sub` for every client, so existing Google people keep

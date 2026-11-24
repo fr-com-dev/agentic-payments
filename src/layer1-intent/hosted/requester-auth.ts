@@ -6,7 +6,7 @@
 // and budget question. Only the run route reads it, and it goes to `gate.forCaller` and nowhere else: never to L3,
 // the model, a step, a log line or the answer (SEC-32).
 import type { RequestHandler, Response } from "express";
-import { AGENT_RUN_PERMISSION, bearerToken, personKeys, verifyCaller, type CallerCheckName, type TokenKeys } from "../../shared/identity-token.js";
+import { AGENT_RUN_PERMISSION, bearerChallenge, bearerToken, personKeys, verifyCaller, type CallerCheckName, type TokenKeys } from "../../shared/identity-token.js";
 import { issuerHost } from "../../shared/user-id.js";
 import type { HostedConfig } from "./config.js";
 
@@ -38,6 +38,8 @@ export interface RequesterAuthOptions {
 
 const unauthorized = { error: "unauthorized" };
 const forbidden = { error: "forbidden" };
+/** 017: the realm of the agent's bearer challenge. */
+export const AGENT_REALM = "x402-agent";
 
 /** The tenant's JWKS, or the dev issuer's local JWKS when `AUTH_JWKS_FILE` is set (local only). */
 export function keysFor(config: Pick<HostedConfig, "auth">): TokenKeys {
@@ -55,7 +57,8 @@ export function requesterAuth(o: RequesterAuthOptions): RequestHandler {
   return async (req, res, next) => {
     const token = bearerToken(req.headers.authorization);
     if (token === null) {
-      res.status(401).json(unauthorized);
+      // 017 (FR-024): every 401 says how to authenticate.
+      res.set("WWW-Authenticate", bearerChallenge(AGENT_REALM, false)).status(401).json(unauthorized);
       return;
     }
     const checked = await verifyCaller(token, {
@@ -67,6 +70,7 @@ export function requesterAuth(o: RequesterAuthOptions): RequestHandler {
       ...(skipChecks.length > 0 && { skipChecks }),
     });
     if (!checked.ok) {
+      if (checked.status === 401) res.set("WWW-Authenticate", bearerChallenge(AGENT_REALM, true));
       res.status(checked.status).json(checked.status === 401 ? unauthorized : forbidden);
       return;
     }

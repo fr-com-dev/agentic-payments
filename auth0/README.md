@@ -5,8 +5,8 @@ Terraform for what the project needs from Auth0:
 - L2's backchannel approval (SPEC L2-7, `specs/012`);
 - people's sign-in at the portal (SPEC L2-8, `specs/013` research R19);
 - the hosted agent's callers, people and machines (SPEC v1.17, `specs/016` research R9 and R10);
-- the two ways people sign in, email and password and Google, and the clients that may use them (SPEC v1.27,
-  `specs/017`).
+- the two ways people sign in, email and password and Google, and the clients that may use them (SPEC v1.28,
+  `specs/018`).
 
 It makes exactly four kinds of application (T-IAC-02 fails on any other):
 
@@ -66,9 +66,9 @@ For people's sign-in:
 | `auth0_client.portal`, `auth0_client_credentials.portal` | The portal's web app: a public single-page client with no secret. It uses the authorization code with PKCE, and the `refresh_token` grant because its refresh tokens rotate. Its callbacks, web origins and logout URLs are `portal_origin` when set, and `http://localhost:4025` only where `local_origins` is on (dev). | `PORTAL_CLIENT_ID`, `userAccounts.portalClientId` |
 | `auth0_action.sign_in_time`, `auth0_trigger_action.sign_in_time` | The first post-login Action, in `sign-in-time.js`. It writes one claim on the access token, `https://x402.dev/auth_time`: the time of the person's most recent authentication, in seconds. Phase 3: on an interactive sign-in in a browser of a holder of `x402-admin` whose latest second factor is older than the rest of the sign-in, or missing, it asks Auth0 to challenge them with Guardian push or a one-time code. Never on a refresh-token exchange, never for anyone else. It is appended to the tenant's post-login flow and replaces nothing there. | `AUTH_TIME_CLAIM` |
 | `auth0_action.mfa_time`, `auth0_trigger_action.mfa_time` | Phase 3: the second post-login Action, in `mfa-time.js`, bound after the first (Auth0 challenges once an Action has run, so only a later one sees the second factor). It writes `https://x402.dev/mfa_time`: the time of the person's most recent second factor, in seconds, or nothing without one. The services require it, fresh, for an administrator's decision. | `DEFAULT_MFA_TIME_CLAIM` |
-| `auth0_action.deny_sign_up`, `auth0_trigger_action.deny_sign_up` | Phase 3, only while `allow_sign_ups` is false: the pre-user-registration Action in `deny-sign-up.js`, which refuses every new account in the database and passwordless connections (`sign_up_closed`), the Dashboard's and the Management API's included. A first sign-in through a social or enterprise connection doesn't run it. Removed in step B of `specs/017`, once the connection's own setting (next rows) has been checked live. | — |
+| `auth0_action.deny_sign_up`, `auth0_trigger_action.deny_sign_up` | Phase 3, only while `allow_sign_ups` is false: the pre-user-registration Action in `deny-sign-up.js`, which refuses every new account in the database and passwordless connections (`sign_up_closed`), the Dashboard's and the Management API's included. A first sign-in through a social or enterprise connection doesn't run it. Removed in step B of `specs/018`, once the connection's own setting (next rows) has been checked live. | — |
 
-For the ways people sign in (SPEC v1.27, `specs/017`):
+For the ways people sign in (SPEC v1.28, `specs/018`):
 
 | Resource | What it is | Becomes |
 |---|---|---|
@@ -118,20 +118,20 @@ Who accepts what:
   only once the area is on (`userAccounts.administration`), to people who should decide payments, and once they are
   enrolled in a second factor (above).
 - **People.** There is no role to assign for using the portal (SPEC v1.14, `specs/013` research R21): whoever signs in through the
-  portal's application may use the portal, for their own account. Terraform creates no user. Since SPEC v1.27
-  (`specs/017`):
+  portal's application may use the portal, for their own account. Terraform creates no user. Since SPEC v1.28
+  (`specs/018`):
   - **Google sign-up is public by design.** A first "Continue with Google" makes the person, with no role. They
     reach their own profile, wallet, policies and cards only, never the agent (that needs `x402-agent`) or the
     administration area (that needs `x402-admin`), and never anyone else's data or the platform account.
   - **Email-and-password sign-up** is closed by `allow_sign_ups = false`, through the connection's own "Disable Sign
-    Ups": the page shows no "Sign up" link and every self-service sign-up is refused. Once step B of `specs/017` is
+    Ups": the page shows no "Sign up" link and every self-service sign-up is refused. Once step B of `specs/018` is
     applied (the deny Action gone), you can still add a person in the Dashboard (**User Management → Users →
     Create User**, connection `Username-Password-Authentication`), for example a test account.
   - **To keep one person out**, block that user (**User Management → Users → the user → Block**).
   - **To stop all new Google accounts** in an emergency, set `google_sign_in = false` and apply. It also stops every
     existing Google person from signing in until you set it back.
   - Nothing links two accounts with the same email address: a person who signs up both ways is two people.
-- **The project's Google application** (`specs/017` quickstart §1). In Google Cloud, an OAuth client of type Web
+- **The project's Google application** (`specs/018` quickstart §1). In Google Cloud, an OAuth client of type Web
   application, whose only redirect URI is `https://<tenant domain>/login/callback`, consent screen in production
   with `openid`, `email` and `profile` only. Enter its client ID and secret on the tenant's `google-oauth2`
   connection in the Dashboard (**Authentication → Social**): the secret goes nowhere else, not this folder, the
@@ -161,7 +161,7 @@ Everything below runs on the operator's host, from a checkout of `main`.
    - for people's sign-in: `read:actions`, `create:actions`, `update:actions`, `delete:actions`, `read:triggers`,
      `update:triggers`;
    - for the two roles (014, 016): `read:roles`, `create:roles`, `update:roles`, `delete:roles`;
-   - for the people's connections (017): `read:connections`, `update:connections`, `read:connections_options`,
+   - for the people's connections (018): `read:connections`, `update:connections`, `read:connections_options`,
      `update:connections_options`. Never `create:connections` or `delete:connections`: the connections hold
      people's accounts, so nothing here may replace one.
 
@@ -196,7 +196,7 @@ Everything below runs on the operator's host, from a checkout of `main`.
    values is a secret. The command sets `environment` (from `AUTH0_ENVIRONMENT`, default `dev`) and
    `credential = "key"` itself, and refuses a file that sets either or any variable whose name holds `secret`, or
    that holds a private key or a Google client secret (`GOCSPX-`). dev's, as applied on 2026-11-24, with the two
-   Google lines of `specs/017`:
+   Google lines of `specs/018`:
 
    ```hcl
    tenant_domain  = "fabriciorojas.us.auth0.com"
@@ -310,7 +310,7 @@ duplicates. Import them first, in the same plan:
    `auth0_client_credentials`; `cgr_…` for `auth0_client_grant`; the Action's ID for `auth0_action` and
    `post-login::<Action ID>` for its `auth0_trigger_action`; the role's ID for `auth0_role` and
    `auth0_role_permissions`; any word for the singletons `auth0_guardian.this[0]` and `auth0_tenant.mfa_actions[0]`;
-   (017) the database connection's ID (`con_…`) for `auth0_connection.database` and
+   (018) the database connection's ID (`con_…`) for `auth0_connection.database` and
    `auth0_connection_clients.database`, and Google's connection ID for `auth0_connection_clients.google`
    (`data.auth0_connection.google` is read, not imported). The first plan after these imports must change the
    database connection's `disable_signup` only, and nothing in its password policy: if it shows another option

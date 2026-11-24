@@ -2,13 +2,15 @@
 // Only `createHostedApp` lives here. The entry point that loads env, enforces INV-3 and listens is
 // src/hosted-main.ts, outside this layer, because rule A5 bans the payer key's name in L1 code.
 // 016: the caller's token is kept from auth to the end of the run and goes to one place, `gate.forCaller` (SEC-32).
-// Order per request: auth (401/403) → limits (429) → body (400/413) → session → run. Only POST /v1/runs and the two
+// Order per request: [dev issuer] machine only (421) → health → per address (429) → failed authentications per
+// address (429) → auth (401/403) → run limits (429) → body (400/413) → session → run. Only POST /v1/runs and the two
 // health routes exist, plus the token-free docs routes with API_DOCS=1 (v1.6); Mastra publishes no routes
 // (research R1). docs/l1-hosted.openapi.yaml describes them; test/openapi-hosted.test.ts keeps it in sync.
 import { randomUUID } from "node:crypto";
 import express, { type Express, type NextFunction, type Request, type Response } from "express";
 import type { MastraModelConfig } from "@mastra/core/llm";
-import { addressLimit, trustProxies } from "../../shared/address-limit.js";
+import { addressLimit, failedAuthLimit, MAX_FAILED_AUTH_PER_ADDRESS, onceInWindow, proxyWarning, trustProxies } from "../../shared/address-limit.js";
+import { localOnly } from "../../shared/local-only.js";
 import type { CallerGates, SettlementVerifierPort } from "../../shared/contracts.js";
 import type { TokenKeys } from "../../shared/identity-token.js";
 import { runGoal } from "./agent.js";
@@ -55,6 +57,10 @@ export interface HostedDeps {
   log?: (line: string) => void;
   /** Test hook (T-AGT-11): a shorter keep-alive period for the run stream. Never set by the entry point. */
   keepAliveMs?: number;
+  /** 017 test hook (T-EDGE-03 must-fail): the dev sign-in serves any host name and any proxy. Never set by the entry point. */
+  skipLocalOnly?: boolean;
+  /** 017 test hook (T-EDGE-04 must-fail): failed authentications are never limited. Never set by the entry point. */
+  skipFailureLimit?: boolean;
 }
 
 export interface HostedApp {
@@ -85,6 +91,11 @@ export function createHostedApp(deps: HostedDeps): HostedApp {
   const runLog = createRunLog(deps.log);
   const requesterOf = (res: Response) => (res.locals.requester as Requester | undefined) ?? BYPASS_REQUESTER;
 
+  // 017 (SEC-44): the dev issuer's tokens are accepted from this machine only. First, before health and every route.
+  if (deps.config.auth.jwksFile !== undefined && !deps.skipLocalOnly) app.use(localOnly());
+  // 017 (research R5): no proxy declared, and a request came through one: one line, once.
+  app.use(proxyWarning(deps.config.trustedProxyHops ?? 0, () => runLog.event({ event: "proxy_undeclared" })));
+
   app.get("/healthz", (_req, res) => {
     res.json({ status: "ok" });
   });
@@ -97,6 +108,12 @@ export function createHostedApp(deps: HostedDeps): HostedApp {
 
   // Per address, before any token is verified: a caller without a valid token is bounded too (SEC-14).
   if (!deps.skipAddressLimit) app.use(addressLimit({ ...(deps.maxRequestsPerAddress !== undefined && { max: deps.maxRequestsPerAddress }) }));
+  // 017 (SEC-45): then failed authentications per address, also before the token is read. One line per burst.
+  const firstInWindow = onceInWindow();
+  const onLimit = (key: string, resetMs: number) => {
+    if (firstInWindow(key, resetMs)) runLog.event({ event: "auth_failure_limit", count: MAX_FAILED_AUTH_PER_ADDRESS });
+  };
+  if (!deps.skipFailureLimit) app.use(failedAuthLimit({ onLimit }));
 
   if (!deps.bypassAuth) {
     app.use(
