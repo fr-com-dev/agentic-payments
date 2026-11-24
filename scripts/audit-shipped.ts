@@ -13,7 +13,7 @@
 // exception never covers a severity, a package's other advisories or another package, and it lasts at most
 // `MAX_EXCEPTION_DAYS`. From its expiry on the script fails, whether or not the advisory is still reported, until
 // the exception is removed or renewed with a new reason. Anything it can't read (no report, an advisory without
-// an identifier, an unknown severity) fails the gate.
+// an identifier, an unknown severity) fails the gate. SPEC 1.22.2 removed the one exception; the mechanism stays.
 import { spawnSync } from "node:child_process";
 import { copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -42,18 +42,11 @@ export interface AuditException {
 
 export const MAX_EXCEPTION_DAYS = 31;
 
-export const AUDIT_EXCEPTIONS: readonly AuditException[] = [
-  {
-    advisory: "GHSA-fc5q-39xc-vjpf",
-    package: "picomatch",
-    added: "2026-11-17",
-    expires: "2026-12-17",
-    reason:
-      "ReDoS only through a glob pattern the attacker supplies, and no picomatch is patched (<= 4.0.7, the latest; " +
-      "@mastra/core 1.84.0 still asks for ^4.0.7). Only the L1 image ships it, through @mastra/core, which calls it " +
-      "from a workspace's tools, skills and auto-index only; the hosted agent configures none of them (SPEC 1.22.1, §11).",
-  },
-];
+/**
+ * None in force (SPEC 1.22.2): GitHub withdrew GHSA-fc5q-39xc-vjpf (picomatch), the one entry 1.22.1 added, on
+ * 2026-11-18. A new entry needs its reason, a reach check like 1.22.1's and a SPEC amendment.
+ */
+export const AUDIT_EXCEPTIONS: readonly AuditException[] = [];
 
 const DAY_MS = 86_400_000;
 const GHSA = /^GHSA-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}$/;

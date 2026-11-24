@@ -131,6 +131,8 @@ describe("T-IMG-02 the dependency audit covers what the images install", { timeo
 
 // SPEC 1.22.1: one advisory for one package, until a date. The report below is npm audit's own (`--json`, 2026-11-17)
 // for the shipped tree, trimmed: picomatch carries the advisory, and @mastra/core is vulnerable only through it.
+// SPEC 1.22.2 removed that exception from `AUDIT_EXCEPTIONS` (GitHub withdrew the advisory on 2026-11-18), so the
+// cases below pass it in as they had it: they test the gate, not today's list.
 const advisory = (name: string, id: string, severity: string, title = "an advisory") => ({ source: 1, name, dependency: name, title, url: `https://github.com/advisories/${id}`, severity, range: "*" });
 const PICOMATCH = advisory("picomatch", "GHSA-fc5q-39xc-vjpf", "high", "picomatch vulnerable to ReDoS through single-branch repeated extglobs");
 type Report = { vulnerabilities: Record<string, { name: string; severity: string; via: unknown[] }> };
@@ -140,22 +142,41 @@ const REPORT_2026_11_17 = (): Report => ({
     picomatch: { name: "picomatch", severity: "high", via: [PICOMATCH] },
   },
 });
+const PICOMATCH_EXCEPTION: AuditException = {
+  advisory: "GHSA-fc5q-39xc-vjpf",
+  package: "picomatch",
+  added: "2026-11-17",
+  expires: "2026-12-17",
+  reason: "ReDoS only through a glob pattern the attacker supplies (SPEC 1.22.1)",
+};
+const EXCEPTIONS = [PICOMATCH_EXCEPTION];
 const BEFORE_EXPIRY = new Date("2026-12-16T23:59:59Z");
 const AT_EXPIRY = new Date("2026-12-17T00:00:00Z");
 
 describe("T-IMG-02 the gate lets one advisory through, until its expiry", () => {
   it("T-IMG-02 the exceptions are well formed: one GitHub advisory, one package, a reason, at most 31 days", () => {
     expect(exceptionProblems(AUDIT_EXCEPTIONS)).toEqual([]);
+    expect(exceptionProblems(EXCEPTIONS)).toEqual([]);
     expect(MAX_EXCEPTION_DAYS).toBe(31);
-    const picomatch = AUDIT_EXCEPTIONS.find((e) => e.advisory === "GHSA-fc5q-39xc-vjpf");
-    expect(picomatch).toMatchObject({ package: "picomatch", added: "2026-11-17", expires: "2026-12-17" });
   });
 
-  it("T-IMG-02 the report of 2026-11-17 passes: the picomatch advisory is let through, and @mastra/core is judged by it", () => {
+  it("T-IMG-02 none is in force (SPEC 1.22.2): the report of 2026-11-17 fails the gate as it stands", () => {
+    expect(AUDIT_EXCEPTIONS).toEqual([]);
     const v = auditVerdict(REPORT_2026_11_17(), "high", BEFORE_EXPIRY);
+    expect(v.ok).toBe(false);
+    expect(v.lines).toEqual([expect.stringMatching(/^FAIL picomatch: high GHSA-fc5q-39xc-vjpf /)]);
+    expect(auditVerdict({ vulnerabilities: {} }, "high", BEFORE_EXPIRY)).toEqual({ ok: true, lines: [] });
+  });
+
+  it("T-IMG-02 with the exception of 1.22.1, the report of 2026-11-17 passes: the picomatch advisory is let through, and @mastra/core is judged by it", () => {
+    const v = auditVerdict(REPORT_2026_11_17(), "high", BEFORE_EXPIRY, EXCEPTIONS);
     expect(v.ok).toBe(true);
     expect(v.lines).toEqual([expect.stringMatching(/^let through until 2026-12-17 picomatch: high GHSA-fc5q-39xc-vjpf /)]);
-    expect(auditVerdict({ vulnerabilities: {} }, "high", BEFORE_EXPIRY).ok).toBe(true);
+    // An exception that matches nothing is only a note: the gate passes and says to remove it.
+    expect(auditVerdict({ vulnerabilities: {} }, "high", BEFORE_EXPIRY, EXCEPTIONS)).toEqual({
+      ok: true,
+      lines: ["note: the exception for GHSA-fc5q-39xc-vjpf (picomatch) matched nothing; remove it"],
+    });
   });
 
   it("T-IMG-02 must-fail: another advisory still fails the gate, on picomatch, on @mastra/core or on another package", () => {
@@ -170,7 +191,7 @@ describe("T-IMG-02 the gate lets one advisory through, until its expiry", () => 
       [onMastra, "@mastra/core: critical GHSA-dddd-eeee-ffff"],
       [elsewhere, "express: high GHSA-gggg-hhhh-jjjj"],
     ] as const) {
-      const v = auditVerdict(report, "high", BEFORE_EXPIRY);
+      const v = auditVerdict(report, "high", BEFORE_EXPIRY, EXCEPTIONS);
       expect(v.ok, failing).toBe(false);
       expect(v.lines.filter((l) => l.startsWith("FAIL "))).toEqual([expect.stringContaining(failing)]);
     }
@@ -179,35 +200,35 @@ describe("T-IMG-02 the gate lets one advisory through, until its expiry", () => 
   it("T-IMG-02 must-fail: the excepted advisory reported on another package fails; below the level nothing does, as before", () => {
     const moved = REPORT_2026_11_17();
     moved.vulnerabilities.minimatch = { name: "minimatch", severity: "high", via: [advisory("minimatch", "GHSA-fc5q-39xc-vjpf", "high")] };
-    expect(auditVerdict(moved, "high", BEFORE_EXPIRY).lines.filter((l) => l.startsWith("FAIL "))).toEqual([expect.stringContaining("minimatch: high GHSA-fc5q-39xc-vjpf")]);
+    expect(auditVerdict(moved, "high", BEFORE_EXPIRY, EXCEPTIONS).lines.filter((l) => l.startsWith("FAIL "))).toEqual([expect.stringContaining("minimatch: high GHSA-fc5q-39xc-vjpf")]);
     const moderate = REPORT_2026_11_17();
     moderate.vulnerabilities.jose = { name: "jose", severity: "moderate", via: [advisory("jose", "GHSA-kkkk-mmmm-nnnn", "moderate")] };
-    expect(auditVerdict(moderate, "high", BEFORE_EXPIRY).ok).toBe(true);
-    expect(auditVerdict(moderate, "moderate", BEFORE_EXPIRY).ok).toBe(false);
+    expect(auditVerdict(moderate, "high", BEFORE_EXPIRY, EXCEPTIONS).ok).toBe(true);
+    expect(auditVerdict(moderate, "moderate", BEFORE_EXPIRY, EXCEPTIONS).ok).toBe(false);
   });
 
   it("T-IMG-02 must-fail: from its expiry day the exception fails the gate, even once the advisory is gone", () => {
     for (const report of [REPORT_2026_11_17(), { vulnerabilities: {} }]) {
-      const v = auditVerdict(report, "high", AT_EXPIRY);
+      const v = auditVerdict(report, "high", AT_EXPIRY, EXCEPTIONS);
       expect(v.ok).toBe(false);
       expect(v.lines).toContainEqual(expect.stringContaining("the exception for GHSA-fc5q-39xc-vjpf (picomatch) expired on 2026-12-17"));
     }
     // Past its expiry the advisory itself fails too: nothing lets it through any longer.
-    expect(auditVerdict(REPORT_2026_11_17(), "high", AT_EXPIRY).lines).toContainEqual(expect.stringMatching(/^FAIL picomatch: high GHSA-fc5q-39xc-vjpf/));
+    expect(auditVerdict(REPORT_2026_11_17(), "high", AT_EXPIRY, EXCEPTIONS).lines).toContainEqual(expect.stringMatching(/^FAIL picomatch: high GHSA-fc5q-39xc-vjpf/));
   });
 
   it("T-IMG-02 must-fail: what the gate can't read fails it: no report, an advisory without an identifier, an unknown severity, an unlisted dependency", () => {
     for (const report of [undefined, null, {}, { error: { code: "ENOAUDIT" } }, { vulnerabilities: [] }]) {
-      expect(auditVerdict(report, "high", BEFORE_EXPIRY).ok, JSON.stringify(report)).toBe(false);
+      expect(auditVerdict(report, "high", BEFORE_EXPIRY, EXCEPTIONS).ok, JSON.stringify(report)).toBe(false);
     }
     const noId = { vulnerabilities: { x: { name: "x", severity: "high", via: [{ name: "x", severity: "high", title: "no url" }] } } };
     const unknownSeverity = { vulnerabilities: { x: { name: "x", severity: "severe", via: [{ ...advisory("x", "GHSA-pppp-qqqq-rrrr", "severe") }] } } };
     const unlisted = { vulnerabilities: { x: { name: "x", severity: "high", via: ["y"] } } };
-    for (const report of [noId, unknownSeverity, unlisted]) expect(auditVerdict(report, "high", BEFORE_EXPIRY).ok, JSON.stringify(report)).toBe(false);
+    for (const report of [noId, unknownSeverity, unlisted]) expect(auditVerdict(report, "high", BEFORE_EXPIRY, EXCEPTIONS).ok, JSON.stringify(report)).toBe(false);
   });
 
   it("T-IMG-02 must-fail: a malformed or long-lived exception fails the gate", () => {
-    const good = AUDIT_EXCEPTIONS[0]!;
+    const good = PICOMATCH_EXCEPTION;
     const bad: AuditException[] = [
       { ...good, expires: "2027-11-17" },
       { ...good, advisory: "CVE-2026-112366" },
