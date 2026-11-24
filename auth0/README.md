@@ -180,7 +180,7 @@ Everything below runs on the operator's host, from a checkout of `main`.
    manage_guardian     = true
    guardian_policy     = "never"
    portal_origin       = "https://dev.fabriciorojas.com"
-   agent_origin        = "https://dev.fabriciorojas.com:8443"
+   agent_origin        = "https://agent.fabriciorojas.com"
    machine_caller_keys = {}
    local_origins       = false
    allow_sign_ups      = false
@@ -196,8 +196,8 @@ Everything below runs on the operator's host, from a checkout of `main`.
    | `machine_caller_keys` | to declare a machine caller (`{}`: none) |
    | `local_origins` | `true` lets the local portal and agent (`http://localhost:4025`, `:4024`) sign in against this tenant |
    | `allow_sign_ups` | `false` closes sign-ups (default `true`) |
-   | `portal_origin` | once the portal is deployed: `https://<host>[:<port>]`, no path or trailing slash |
-   | `agent_origin` | once the agent is deployed, and only where its docs page is on: `https://<host>[:<port>]` |
+   | `portal_origin` | once the portal is deployed: `https://<host>`, no port, path or trailing slash |
+   | `agent_origin` | once the agent is deployed, and only where its docs page is on: `https://<host>` |
 
    `machine_caller_keys` maps each machine caller's name to the public half of its key, as PEM text. Declare
    `checks` with the public half from step 4:

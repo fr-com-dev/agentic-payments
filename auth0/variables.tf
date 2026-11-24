@@ -82,22 +82,22 @@ variable "guardian_policy" {
 }
 
 variable "portal_origin" {
-  description = "The deployed portal's origin, https://<host>[:<port>] (infra/main.bicep's portalFqdn output, or the VPS's address), which becomes an allowed callback, web origin and logout URL of the portal's client (beside http://localhost:4025 where var.local_origins is on). Empty until the portal is deployed."
+  description = "The deployed portal's origin, https://<host> (infra/main.bicep's portalFqdn output, or the VPS's, https://dev.fabriciorojas.com), which becomes an allowed callback, web origin and logout URL of the portal's client (beside http://localhost:4025 where var.local_origins is on). Empty until the portal is deployed."
   type        = string
   default     = ""
   validation {
-    condition     = var.portal_origin == "" || can(regex("^https://[a-z0-9][a-z0-9.-]*(:[1-9][0-9]{0,4})?$", var.portal_origin))
-    error_message = "portal_origin must be empty or https://<host>[:<port>], with no path, wildcard or trailing slash."
+    condition     = var.portal_origin == "" || can(regex("^https://[a-z0-9][a-z0-9.-]*$", var.portal_origin))
+    error_message = "portal_origin must be empty or https://<host>, with no path, port, wildcard or trailing slash."
   }
 }
 
 variable "agent_origin" {
-  description = "The deployed hosted agent's origin, https://<host>[:<port>] (infra/main.bicep's agentFqdn output, or the VPS's address, https://dev.fabriciorojas.com:8443), whose docs page (/docs) then may sign people in through the agent's client (beside http://localhost:4024 and http://127.0.0.1:4024 where var.local_origins is on). Empty until the agent is deployed; needed only where its docs page is on (agent.apiDocs)."
+  description = "The deployed hosted agent's origin, https://<host> (infra/main.bicep's agentFqdn output, or the VPS's, https://agent.fabriciorojas.com), whose docs page (/docs) then may sign people in through the agent's client (beside http://localhost:4024 and http://127.0.0.1:4024 where var.local_origins is on). Empty until the agent is deployed; needed only where its docs page is on (agent.apiDocs)."
   type        = string
   default     = ""
   validation {
-    condition     = var.agent_origin == "" || can(regex("^https://[a-z0-9][a-z0-9.-]*(:[1-9][0-9]{0,4})?$", var.agent_origin))
-    error_message = "agent_origin must be empty or https://<host>[:<port>], with no path, wildcard or trailing slash."
+    condition     = var.agent_origin == "" || can(regex("^https://[a-z0-9][a-z0-9.-]*$", var.agent_origin))
+    error_message = "agent_origin must be empty or https://<host>, with no path, port, wildcard or trailing slash."
   }
 }
 

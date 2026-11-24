@@ -39,10 +39,10 @@ const WORKFLOW = ".github/workflows/validate-auth0.yml";
 const SCRIPT = "scripts/auth0-tenant.sh";
 /** The variables the operator's tfvars file sets (auth0/README.md); none is a secret. environment and credential are the script's. */
 const VARIABLES = ["tenant_domain", "api_identifier", "client_public_key_pem", "manage_guardian", "guardian_policy", "portal_origin", "agent_origin", "machine_caller_keys", "local_origins", "allow_sign_ups"];
-/** What each origin variable must accept: a host, and a port where one is used (the VPS's agent, SPEC 1.26). */
-const GOOD_ORIGINS = ["https://dev.fabriciorojas.com", "https://dev.fabriciorojas.com:8443", "https://ca-portal-eastus2-dev.example.azurecontainerapps.io", "https://x402.example:65535"];
-/** And what it must refuse: another scheme, a path or a trailing slash, a wildcard, a user, an empty or zero port. */
-const BAD_ORIGINS = ["http://dev.fabriciorojas.com", "https://dev.fabriciorojas.com/", "https://dev.fabriciorojas.com/docs", "https://dev.fabriciorojas.com:8443/", "https://*.fabriciorojas.com", "https://user@dev.fabriciorojas.com", "https://dev.fabriciorojas.com:", "https://dev.fabriciorojas.com:0", "https://dev.fabriciorojas.com:84a3", "https://Dev.fabriciorojas.com", "https://dev.fabriciorojas.com:8443 "];
+/** What each origin variable must accept: one https host (the VPS's portal and agent, SPEC 1.26, and an Azure app's). */
+const GOOD_ORIGINS = ["https://dev.fabriciorojas.com", "https://agent.fabriciorojas.com", "https://ca-portal-eastus2-dev.example.azurecontainerapps.io"];
+/** And what it must refuse: another scheme, a path or a trailing slash, a port, a wildcard, a user, upper case, a space. */
+const BAD_ORIGINS = ["http://dev.fabriciorojas.com", "https://dev.fabriciorojas.com/", "https://agent.fabriciorojas.com/docs", "https://dev.fabriciorojas.com:8443", "https://dev.fabriciorojas.com:", "https://*.fabriciorojas.com", "https://user@dev.fabriciorojas.com", "https://Dev.fabriciorojas.com", "https://agent.fabriciorojas.com "];
 /** 013 research R21: using the portal needs no permission. 014: its administration area needs this one. */
 const ADMIN_PERMISSION = "portal:admin";
 const ADMIN_ROLE = "x402-admin";
@@ -118,7 +118,7 @@ const LOCKED_FOR_RUNNER = `auth0/.terraform.lock.hcl must hold the provider's h1
 /** SPEC 1.26: the state. */
 const LOCAL_STATE = 'the state must be a local file (one backend, "local"), on the operator\'s host: no remote backend';
 const NO_STATE_PATH = "the backend block must name no path: the operator command passes it (-backend-config), outside every checkout";
-const ORIGIN = (name: string) => `var.${name} must be empty or one https origin: a host and an optional port, with no path, wildcard or trailing slash`;
+const ORIGIN = (name: string) => `var.${name} must be empty or one https origin: a host, with no path, port, wildcard or trailing slash`;
 
 interface Sources {
   /** auth0/*.tf by file name. */
@@ -379,8 +379,8 @@ export function auth0Problems(s: Sources): string[] {
   ) {
     p.push(LOCAL_ORIGINS);
   }
-  // The validation's pattern, run here: it takes a host and an optional port (SPEC 1.26: the VPS's agent is at :8443),
-  // and refuses everything else an origin could carry. Auth0 compares a callback or an origin literally.
+  // The validation's pattern, run here (SPEC 1.26): it takes one https host and refuses everything else an origin
+  // could carry. Auth0 compares a callback or an origin literally.
   for (const name of ["portal_origin", "agent_origin"]) {
     const condition = /^\s*condition\s*=\s*(.+)$/m.exec(block(tf, new RegExp(`variable\\s+"${name}"\\s*\\{`)) ?? "")?.[1]?.trim() ?? "";
     const accepts = anchored(new RegExp(`^var\\.${name} == "" \\|\\| can\\(regex\\("(.+)", var\\.${name}\\)\\)$`).exec(condition)?.[1]);
@@ -950,9 +950,9 @@ describe("T-IAC-02 Auth0 tenant as code (auth0/)", () => {
     ["another local origin", "main.tf", `"${LOCAL_PORTAL}"`, '"http://localhost:3000"', PORTAL_URLS],
     ["a callback written in the client", "main.tf", /callbacks(\s*)= local\.portal_origins/, 'callbacks$1= ["https://portal.example/callback"]', PORTAL_URLS],
     ["a cross-origin URL of its own", "main.tf", /(\n  web_origins\s*= local\.portal_origins)/, "$1\n  allowed_origins     = local.portal_origins", PORTAL_URLS],
-    ["a wildcard portal origin", "variables.tf", 'can(regex("^https://[a-z0-9][a-z0-9.-]*(:[1-9][0-9]{0,4})?$", var.portal_origin))', 'startswith(var.portal_origin, "https://")', ORIGIN("portal_origin")],
-    ["SPEC 1.26: a portal origin with a path", "variables.tf", '"^https://[a-z0-9][a-z0-9.-]*(:[1-9][0-9]{0,4})?$", var.portal_origin', '"^https://[a-z0-9][a-z0-9./-]*(:[1-9][0-9]{0,4})?$", var.portal_origin', ORIGIN("portal_origin")],
-    ["SPEC 1.26: a portal origin that may be http", "variables.tf", '"^https://[a-z0-9][a-z0-9.-]*(:[1-9][0-9]{0,4})?$", var.portal_origin', '"^https?://[a-z0-9][a-z0-9.-]*(:[1-9][0-9]{0,4})?$", var.portal_origin', ORIGIN("portal_origin")],
+    ["a wildcard portal origin", "variables.tf", 'can(regex("^https://[a-z0-9][a-z0-9.-]*$", var.portal_origin))', 'startswith(var.portal_origin, "https://")', ORIGIN("portal_origin")],
+    ["SPEC 1.26: a portal origin with a path", "variables.tf", '"^https://[a-z0-9][a-z0-9.-]*$", var.portal_origin', '"^https://[a-z0-9][a-z0-9./-]*$", var.portal_origin', ORIGIN("portal_origin")],
+    ["SPEC 1.26: a portal origin that may be http", "variables.tf", '"^https://[a-z0-9][a-z0-9.-]*$", var.portal_origin', '"^https?://[a-z0-9][a-z0-9.-]*$", var.portal_origin', ORIGIN("portal_origin")],
     ["refresh tokens that don't rotate", "main.tf", 'rotation_type                = "rotating"', 'rotation_type                = "non-rotating"', "the portal client's refresh tokens must rotate and expire"],
     ["refresh tokens that never expire", "main.tf", "infinite_token_lifetime      = false", "infinite_token_lifetime      = true", "the portal client's refresh tokens must rotate and expire"],
     ["an Action that replaces the tenant's flow", "main.tf", /resource "auth0_trigger_action" "sign_in_time" \{\n\s+trigger\s*= "post-login"\n\s+action_id\s*= auth0_action\.sign_in_time\.id\n\}/, 'resource "auth0_trigger_actions" "sign_in_time" {\n  trigger = "post-login"\n  actions {\n    id           = auth0_action.sign_in_time.id\n    display_name = "x"\n  }\n}', ONE_ACTION],
@@ -1024,10 +1024,10 @@ describe("T-IAC-02 Auth0 tenant as code (auth0/)", () => {
     ["a third origin written for the docs page", "main.tf", `"${LOCAL_AGENT[1]}"]`, `"${LOCAL_AGENT[1]}", "https://agent.example"]`, AGENT_URLS],
     ["the portal's origins on the agent's client", "main.tf", /(\n  web_origins\s*= )local\.agent_origins/, "$1local.portal_origins", AGENT_URLS],
     ["a logout URL on the agent's client", "main.tf", /(\n  web_origins\s*= local\.agent_origins)/, "$1\n  allowed_logout_urls = local.agent_origins", AGENT_URLS],
-    ["a wildcard agent origin", "variables.tf", 'can(regex("^https://[a-z0-9][a-z0-9.-]*(:[1-9][0-9]{0,4})?$", var.agent_origin))', 'startswith(var.agent_origin, "https://")', ORIGIN("agent_origin")],
-    ["SPEC 1.26: an agent origin without its port", "variables.tf", '"^https://[a-z0-9][a-z0-9.-]*(:[1-9][0-9]{0,4})?$", var.agent_origin', '"^https://[a-z0-9][a-z0-9.-]*$", var.agent_origin', ORIGIN("agent_origin")],
-    ["SPEC 1.26: an agent origin with a trailing slash", "variables.tf", '"^https://[a-z0-9][a-z0-9.-]*(:[1-9][0-9]{0,4})?$", var.agent_origin', '"^https://[a-z0-9][a-z0-9.-]*(:[1-9][0-9]{0,4})?/?$", var.agent_origin', ORIGIN("agent_origin")],
-    ["SPEC 1.26: an agent origin whose port may be any text", "variables.tf", '"^https://[a-z0-9][a-z0-9.-]*(:[1-9][0-9]{0,4})?$", var.agent_origin', '"^https://[a-z0-9][a-z0-9.-]*(:.+)?$", var.agent_origin', ORIGIN("agent_origin")],
+    ["a wildcard agent origin", "variables.tf", 'can(regex("^https://[a-z0-9][a-z0-9.-]*$", var.agent_origin))', 'startswith(var.agent_origin, "https://")', ORIGIN("agent_origin")],
+    ["SPEC 1.26: an agent origin with a port", "variables.tf", '"^https://[a-z0-9][a-z0-9.-]*$", var.agent_origin', '"^https://[a-z0-9][a-z0-9.-]*(:[0-9]+)?$", var.agent_origin', ORIGIN("agent_origin")],
+    ["SPEC 1.26: an agent origin with a trailing slash", "variables.tf", '"^https://[a-z0-9][a-z0-9.-]*$", var.agent_origin', '"^https://[a-z0-9][a-z0-9.-]*/?$", var.agent_origin', ORIGIN("agent_origin")],
+    ["SPEC 1.26: an agent origin that may be any text", "variables.tf", '"^https://[a-z0-9][a-z0-9.-]*$", var.agent_origin', '"^https://.+$", var.agent_origin', ORIGIN("agent_origin")],
     // A machine caller's client (FR-021, FR-022).
     ["a machine client that can sign a person in", "main.tf", '["client_credentials"]', '["client_credentials", "authorization_code"]', MACHINE],
     ["a machine client with refresh tokens", "main.tf", '["client_credentials"]', '["client_credentials", "refresh_token"]', MACHINE],
