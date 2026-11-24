@@ -444,39 +444,77 @@ data "auth0_connection" "google" {
 # the one switch (research R1): with var.allow_sign_ups false, Auth0 refuses every self-service sign-up (the page,
 # the sign-up address and the public endpoint) and the page shows no Sign up link, while the operator can still create
 # a person in the Dashboard. Auth0 replaces the whole options object on an update, so every option is written out,
-# with the values of a tenant's default database connection (research R2): the first plan after the import must
-# change disable_signup and nothing else. If it shows another change, make this block match the tenant, never the
-# other way, and never apply a plan that changes the password policy (quickstart section 3). It holds every
-# email-and-password person, so it is never destroyed, and the Management API credential has no delete:connections.
+# with the dev tenant's values as its first plan read them on 2026-11-24 (research R2): the first plan after the
+# import must change disable_signup and nothing else. If it shows another change, make this block match the tenant,
+# never the other way, and never apply a plan that changes the password policy (quickstart section 3). The password
+# policy is Auth0's flexible one, password_options; the provider refuses it together with the legacy fields
+# (password_policy, password_complexity_options, password_history, password_dictionary, password_no_personal_info),
+# so T-IAC-02 fails on any of those. It holds every email-and-password person, so it is never destroyed, and the
+# Management API credential has no delete:connections.
 resource "auth0_connection" "database" {
   name     = "Username-Password-Authentication"
   strategy = "auth0"
 
   options {
     disable_signup                 = !var.allow_sign_ups
-    password_policy                = "good"
     brute_force_protection         = true
     requires_username              = false
     import_mode                    = false
     enabled_database_customization = false
     strategy_version               = 2
 
-    password_history {
-      enable = false
-      size   = 5
+    password_options {
+      complexity {
+        min_length            = 15
+        character_type_rule   = "all"
+        character_types       = []
+        identical_characters  = "allow"
+        sequential_characters = "allow"
+        max_length_exceeded   = "error"
+      }
+
+      dictionary {
+        active  = false
+        default = "en_100k"
+        custom  = []
+      }
+
+      history {
+        active = false
+        size   = 3
+      }
+
+      profile_data {
+        active = false
+        blocked_fields = [
+          "email",
+          "name",
+          "nickname",
+          "phone_number",
+          "user_metadata.first",
+          "user_metadata.last",
+          "user_metadata.name",
+          "username",
+        ]
+      }
     }
 
-    password_dictionary {
-      enable     = false
-      dictionary = []
+    authentication_methods {
+      password {
+        enabled         = true
+        api_behavior    = "required"
+        signup_behavior = "allow"
+      }
+
+      passkey {
+        enabled = false
+      }
     }
 
-    password_no_personal_info {
-      enable = false
-    }
-
-    password_complexity_options {
-      min_length = 8
+    passkey_options {
+      challenge_ui                   = "both"
+      local_enrollment_enabled       = true
+      progressive_enrollment_enabled = true
     }
 
     mfa {

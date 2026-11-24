@@ -7,7 +7,7 @@ what T-IAC-02 enforces. The values are in `data-model.md`; the reasons are in `r
 
 | Object | Shape | Rules |
 |---|---|---|
-| `auth0_connection.database` | `name = "Username-Password-Authentication"`, `strategy = "auth0"`. `options` explicit, as imported. `disable_signup = !var.allow_sign_ups` | `lifecycle { prevent_destroy = true }`. No `configuration`, `custom_scripts` or `password =` |
+| `auth0_connection.database` | `name = "Username-Password-Authentication"`, `strategy = "auth0"`. `options` explicit, as imported, the password policy as `password_options`. `disable_signup = !var.allow_sign_ups` | `lifecycle { prevent_destroy = true }`. No `configuration`, `custom_scripts` or `password =` |
 | `data "auth0_connection" "google"` | `name = "google-oauth2"`, `hide_client_secret = true`, `skip_enabled_clients = true` | Read only: Terraform never writes Google's options or secret |
 | `auth0_connection_clients.database` | `connection_id = auth0_connection.database.id`. `enabled_clients = [auth0_client.portal.client_id, auth0_client.agent.client_id]` | Authoritative: a client enabled by hand shows in the next plan |
 | `auth0_connection_clients.google` | `connection_id = data.auth0_connection.google.id`. `enabled_clients = var.google_sign_in ? [portal, agent] : []` | Precondition: while `var.google_sign_in`, `var.google_client_id != ""` and `try(data.auth0_connection.google.options[0].client_id, "") == var.google_client_id` (on developer keys both sides are empty, so the first test is needed) |
@@ -51,6 +51,10 @@ is refused for both applications.
 3. **Email-and-password sign-up**: `disable_signup = !var.allow_sign_ups`. `allow_sign_ups` stays a bool, true by
    default.
 4. **The database connection**: `prevent_destroy`, no `configuration` or `custom_scripts` block, no password value.
+   Its password policy is written out as `password_options` (complexity, dictionary, history, profile_data),
+   never as the legacy fields (`password_policy`, `password_complexity_options`, `password_history`,
+   `password_dictionary`, `password_no_personal_info`): the tenant uses the flexible policy, and the provider refuses
+   both kinds together.
 5. **Google**:
    - the data source has `hide_client_secret = true`;
    - there is the client-ID precondition;
