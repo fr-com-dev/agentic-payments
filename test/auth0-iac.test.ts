@@ -750,10 +750,14 @@ export function scriptProblems(s: Sources): string[] {
     p.push(SCRIPT_STATE);
   }
   const privateFn = fn("private");
+  const ownerMode = fn("owner_mode");
   const tfvars = fn("check_tfvars");
   const credential = fn("read_credential");
   if (
-    !privateFn.includes(`[[ "$(stat -c '%u %a' "$path")" == "$(id -u) $mode" ]]`) ||
+    !privateFn.includes(`[[ "$(owner_mode "$path")" == "$(id -u) $mode" ]]`) ||
+    // GNU stat (the operator's Linux host) first, then BSD stat (macOS) cut to the same bits, special bits included.
+    !ownerMode.includes(`if found=$(stat -c '%u %a' "$1" 2> /dev/null); then\n    echo "$found"\n  elif found=$(stat -f '%u %Op' "$1" 2> /dev/null)`) ||
+    !ownerMode.includes("$((8#${BASH_REMATCH[2]} & 8#7777))") ||
     !privateFn.includes('! -L "$path"') ||
     !tfvars.includes('private "$STATE_DIR" 700') ||
     !tfvars.includes('private "$TFVARS" 600') ||
@@ -1359,7 +1363,10 @@ describe("T-IAC-02 Auth0 tenant as code (auth0/)", () => {
     ["a state directory others can list", 'private "$STATE_DIR" 700', 'private "$STATE_DIR" 755', SCRIPT_PRIVATE],
     ["an unchecked state", '  [[ ! -e "$STATE" ]] || private "$STATE" 600\n', "", SCRIPT_PRIVATE],
     ["an unchecked plan", '    private "$PLAN" 600\n', "", SCRIPT_PRIVATE],
-    ["a file someone else owns", `[[ "$(stat -c '%u %a' "$path")" == "$(id -u) $mode" ]]`, `[[ "$(stat -c '%a' "$path")" == "$mode" ]]`, SCRIPT_PRIVATE],
+    ["a file someone else owns", `[[ "$(owner_mode "$path")" == "$(id -u) $mode" ]]`, `[[ "$(owner_mode "$path")" == *" $mode" ]]`, SCRIPT_PRIVATE],
+    ["a file someone else owns, on GNU stat", `stat -c '%u %a' "$1"`, `stat -c '%a' "$1"`, SCRIPT_PRIVATE],
+    ["a file someone else owns, on BSD stat", `stat -f '%u %Op' "$1"`, `stat -f '%Op' "$1"`, SCRIPT_PRIVATE],
+    ["the special bits dropped on BSD stat", "& 8#7777))", "& 8#777))", SCRIPT_PRIVATE],
     ["a link followed", ' && ! -L "$path"', "", SCRIPT_PRIVATE],
     ["a provider the lock file doesn't pin", "tf init -reconfigure -lockfile=readonly", "tf init -reconfigure -upgrade", SCRIPT_LOCKED],
     // The credential.
