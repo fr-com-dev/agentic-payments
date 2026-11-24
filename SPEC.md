@@ -128,6 +128,16 @@ The advisory needs the attacker to supply the glob pattern (`+(*)`, `+(*a)`). In
 | §11 | Residual risk of the exception. |
 | §12 | T-IMG-02 amended: the exceptions' shape, the report of 2026-11-17 passing, and must-fails for another advisory (on picomatch, on `@mastra/core`, on another package), the excepted advisory on another package, the expiry day, an unreadable report and a malformed or long-lived exception. |
 
+### 1.22.2 (2026-11-24): the picomatch exception removed
+
+GitHub withdrew GHSA-fc5q-39xc-vjpf on 2026-11-18, so npm audit no longer reports it at any level for the picomatch the L1 image ships (still 4.0.7, through `@mastra/core` 1.85.0). Since then every run of `npm run audit:shipped` noted that the exception matched nothing. The entry is removed now, rather than left to fail the gate on 2026-12-17. If GitHub publishes the advisory again, the gate fails on it until picomatch is fixed or a new entry, with its own reach check, lets it through. It is numbered as a second amendment of 1.22, like 1.22.1.
+
+| Area | Change |
+|---|---|
+| §6, §13 | `AUDIT_EXCEPTIONS` is empty. The gate and the rules for an entry (1.22.1) are unchanged. |
+| §11 | The v1.22.1 residual risk "until 2026-12-17 the audit doesn't report GHSA-fc5q-39xc-vjpf" is removed. |
+| §12 | T-IMG-02 amended: its cases pass the 1.22.1 exception in themselves, and a new case requires `AUDIT_EXCEPTIONS` to be empty and the report of 2026-11-17 to fail the gate as it stands. |
+
 ## Changes in 1.21
 
 The images' builds in the pull request check (2026-11-16). The images' build stages run `npm run build` (every image) and `npm run build:web` (the portal's), but the deploy pipeline's step 1, and so the pull request check, ran neither: a change that breaks only the build, as `@ai-sdk/anthropic` 4 did (`src/hosted-main.ts`), merged green and failed in step 2 of a deployment.
@@ -1830,9 +1840,6 @@ Residual risks added in v1.17:
 - L2 cannot tell whether the token L1 forwards is the token of the caller of this run. A compromised hosted agent can therefore spend for a person whose token it has seen, within that person's own policies and the platform limits, until the token expires (an hour at most). It can no longer spend for a person who has not called it: the v1.10 risk "the hosted agent service is trusted to name the right user" is removed.
 - The agent's identity can read the machine caller's key: it reads the l1 vault, which holds `machine-client-key`, so the agent process could get machine tokens for itself. A compromised agent can therefore still request payments from the platform account, within the platform mandate, as it could before with its role token alone. No person's account can be spent without that person's token. A unit of its own for the pipeline's checks (identity, vault, image and pipeline) would close this and is not built.
 
-Residual risks added in v1.22.1:
-- Until 2026-12-17 the audit doesn't report GHSA-fc5q-39xc-vjpf (picomatch ReDoS). The finding that it can't be reached holds for `@mastra/core` 1.83.0 and the hosted agent as built. It would no longer hold if the agent got a workspace, skills or a Mastra instance (L1-6 allows no workspace and §5 no Mastra instance), or if a Mastra version built a glob from text that a request, the model or a fetched page supplies; the audit would say nothing either way. A `@mastra/core` update before that date needs the check in 1.22.1 repeated by hand. If picomatch publishes a fix, take it and remove the exception.
-
 Residual risks added in v1.4:
 - With `API_DOCS=1`, anyone who can reach L2's loopback port reads the API description without a token. It holds nothing that is not in the repository.
 - "Try it out" acts on the live L2: an operator who enters a token there signs, approves or rejects for real, and the ledger keeps every entry.
@@ -2224,7 +2231,7 @@ Each item must preserve every `INV-*` invariant.
 - ganache prints a `uws_linux…node` warning and falls back to a Node implementation. This is harmless; `demo-local.ts` filters it.
 - `npm ci` fails on Linux because ganache's lockfile has a darwin-only `fsevents` entry. Use `npm install`.
 - `npm audit --omit=dev` at the root never reaches zero (v1.18): ganache ships its own `node_modules`, which the lockfile records as extraneous and npm audits anyway (webpack, sha.js, pbkdf2 and others). No image holds ganache. Use `npm run audit:shipped`.
-- `audit:shipped` lets GHSA-fc5q-39xc-vjpf (picomatch) through until 2026-12-17 (v1.22.1). From that day it fails until the entry in `AUDIT_EXCEPTIONS` is removed (take picomatch's fix if one exists) or renewed with a new reason and a new expiry, at most 31 days on.
+- `audit:shipped` lets no advisory through: `AUDIT_EXCEPTIONS` is empty since v1.22.2. An entry (v1.22.1) lets one advisory through for one package for at most 31 days; from its expiry day the gate fails until it is removed or renewed with a new reason and a new expiry.
 - On a Linux sandbox without IPv6, binding `::` fails. The tests bind the seller on `0.0.0.0` and use `localhost` as the not-allowlisted alias.
 - Local ECDSA signing finishes within microtasks, so concurrency races are invisible without `signerLatencyMs`. Keep that hook in T-E2E-04.
 - Base Sepolia USDC's EIP-712 name is `"USDC"`, not `"USD Coin"`. A wrong `extra.name` makes signatures fail verification.
