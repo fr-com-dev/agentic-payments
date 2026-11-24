@@ -38,20 +38,20 @@
     "build": "tsc -p tsconfig.build.json"
   },
   "dependencies": {
-    "@ai-sdk/anthropic": "3.0.142",
-    "@anthropic-ai/sdk": "^1.8.0",
+    "@ai-sdk/anthropic": "3.0.143",
+    "@anthropic-ai/sdk": "^1.11.0",
     "@azure/identity": "^4.14.1",
     "@coinbase/cdp-sdk": "1.62.0",
-    "@mastra/core": "1.83.0",
+    "@mastra/core": "1.85.0",
     "@x402/core": "2.31.0",
     "@x402/evm": "2.31.0",
     "@x402/express": "2.31.0",
     "dotenv": "^18.0.10",
     "express": "^5.3.0",
-    "express-rate-limit": "8.7.4",
-    "jose": "^6.2.12",
-    "swagger-ui-dist": "5.35.0",
-    "viem": "^2.57.19",
+    "express-rate-limit": "8.7.5",
+    "jose": "^6.2.18",
+    "swagger-ui-dist": "5.35.1",
+    "viem": "^2.58.2",
     "zod": "^4.6.7"
   },
   "overrides": {
