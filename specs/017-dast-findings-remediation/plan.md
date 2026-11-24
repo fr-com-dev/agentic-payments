@@ -32,8 +32,9 @@ the contracts changes. SPEC goes to v1.27.
 (T-API-05..08 agent, T-API-12..15 portal); T-IMG-03 for the image's build commands; an optional
 `caddy validate` when `CADDY_PATH` is set, as the Bicep suites use `BICEP_PATH`.
 
-**Target Platform**: The portal and the hosted agent on Linux containers (Azure Container Apps) and on a developer's
-machine; the self-hosted dev host behind Caddy; evergreen browsers for the web app.
+**Target Platform**: The portal and the hosted agent on a developer's machine and on the self-hosted dev host behind
+Caddy (the only deployment since SPEC 1.26 deleted the Azure environment; the Azure Container Apps profile stays as
+code in `infra/`); evergreen browsers for the web app.
 
 **Project Type**: Web services plus a single-page web app, in one repository with layered processes.
 

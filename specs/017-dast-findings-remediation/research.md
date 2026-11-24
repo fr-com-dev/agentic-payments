@@ -234,7 +234,8 @@ Each entry: the decision, why, and what else was considered. Facts about the cod
 
 - **Decision**: `/healthz` and `/readyz` keep answering without a token, status only, on the portal and the agent.
   The reference proxy answers 404 for them (and `/docs`) from outside. In Azure the ingress can't filter by path,
-  so they stay reachable there: recorded as a residual (they say `ok`, `ready` or `starting`).
+  so they stay reachable there: recorded as a residual (they say `ok`, `ready` or `starting`). Since SPEC 1.26 the
+  Azure profile has no environment, so the residual applies only if it is deployed again.
 - **Rationale**: Azure's liveness probes (`infra/modules/portal-apps.bicep`, `l1-apps.bicep`) and the smoke client
   (`src/smoke-main.ts`) call them.
 
