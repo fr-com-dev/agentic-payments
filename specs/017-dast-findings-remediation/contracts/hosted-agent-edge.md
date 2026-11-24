@@ -1,4 +1,4 @@
-# Contract: the Hosted Agent's Answers at the Edge (v1.26)
+# Contract: the Hosted Agent's Answers at the Edge (v1.27)
 
 Amends `specs/016` contracts/hosted-agent-api.md and SPEC L1-6. Only these three behaviors change; the run route,
 its stream, its body and its other statuses are unchanged. The agent gets none of the portal's browser headers or

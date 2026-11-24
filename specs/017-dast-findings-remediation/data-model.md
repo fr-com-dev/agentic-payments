@@ -82,7 +82,7 @@ gives its name from `matchRoute`; no row's pattern matches a path under `/api` o
 
 ## Public configuration (`GET /api/config`)
 
-| Field | Before (v1.25) | After (v1.26) |
+| Field | Before (v1.25) | After (v1.27) |
 |---|---|---|
 | `auth.mode`, `auth.domain`, `auth.clientId`, `auth.audience` | yes | yes |
 | `cards.available`, `cards.publishableKey?` | yes | yes |

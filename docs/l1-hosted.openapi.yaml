@@ -143,7 +143,7 @@ paths:
           description: >-
             More than 2 concurrent runs, or 20 starts in the last hour, for this requester (`too many runs`); or, before
             the token is read, more than 300 requests in a minute from this address, or 20 failed authentications (401)
-            from it in a minute (v1.26; `too many requests`).
+            from it in a minute (v1.27; `too many requests`).
           headers:
             Retry-After:
               description: Seconds until a run may start.
@@ -314,7 +314,7 @@ components:
       headers:
         WWW-Authenticate:
           description: >-
-            v1.26 (RFC 6750): `Bearer realm="x402-agent"` when no bearer token was sent, and
+            v1.27 (RFC 6750): `Bearer realm="x402-agent"` when no bearer token was sent, and
             `Bearer realm="x402-agent", error="invalid_token"` when one was sent and failed a check. Never a
             description of the check.
           required: true

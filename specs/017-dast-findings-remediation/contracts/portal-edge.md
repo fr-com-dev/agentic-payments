@@ -1,4 +1,4 @@
-# Contract: the Portal's Answers at the Edge (v1.26)
+# Contract: the Portal's Answers at the Edge (v1.27)
 
 Amends `specs/013` contracts/portal-api.md "Limits and headers" and "Access", and `specs/014`
 contracts/portal-api.md where it names `admin.available`. Everything not listed here is unchanged.
@@ -63,7 +63,7 @@ which the portal sets only when the area is on and the token carries `portal:adm
 | Limit | Counted | Key | Answer |
 |---|---|---|---|
 | Per address (v1.10) | every `/api` request but `/api/config` | client address | `429 { "error": "too many requests" }`, `Retry-After` |
-| Failed authentications (v1.26) | `/api` answers with 401 | client address | same body and header, until the key's window ends; checked before any token is read |
+| Failed authentications (v1.27) | `/api` answers with 401 | client address | same body and header, until the key's window ends; checked before any token is read |
 | Per person (v1.10) | every `/api` request after access | user | same body and header |
 
 When an address goes over the failure limit, one log line in that window:

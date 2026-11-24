@@ -2,8 +2,8 @@
 
 One row per finding of the unauthenticated scan of the self-hosted dev portal (spec FR-027; fields from
 [data-model.md](data-model.md) "Finding disposition"). The report itself and the host's name stay outside the
-repository. SPEC v1.26 records the controls (§11 SEC-43..SEC-48) and the residual risks ("Residual risks added in
-v1.26").
+repository. SPEC v1.27 records the controls (§11 SEC-43..SEC-48) and the residual risks ("Residual risks added in
+v1.27").
 
 | # | Finding | Severity | Outcome | Requirements | Proof | Reason for anything accepted |
 |---|---|---|---|---|---|---|

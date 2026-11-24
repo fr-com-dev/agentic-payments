@@ -1,7 +1,7 @@
 # A self-hosted portal behind a front proxy
 
 How to run the portal on one machine, reachable at a public name, behind Caddy, with only an allow-list of
-addresses let in (SPEC.md L2-8 "Self-hosted behind a front proxy", v1.26; `specs/017`
+addresses let in (SPEC.md L2-8 "Self-hosted behind a front proxy", v1.27; `specs/017`
 contracts/self-hosted-proxy.md). The reference configuration is [Caddyfile](Caddyfile). Nothing in this repository
 runs it: copy both files to the host and adapt them there.
 

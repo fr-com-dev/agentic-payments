@@ -16,7 +16,7 @@ challenge; the portal answers 404 to anything that isn't its API, a built file o
 browser policy headers are added; the public configuration loses `network` and `admin`; the image's web build drops
 the pasted-token sign-in. A Caddyfile and a procedure in `docs/self-hosted/` put the dev host behind the owner's
 allow-list, without proxy banners or reachable health and docs routes. Nothing in L2, L3, the seller, the ledger or
-the contracts changes. SPEC goes to v1.26.
+the contracts changes. SPEC goes to v1.27.
 
 ## Technical Context
 
@@ -65,7 +65,7 @@ spec's Clarifications, and every technical unknown is decided in [research.md](r
 | VII. Protocol fidelity | Pass. x402 headers untouched. | Pass. |
 | VIII. Proven safety | Pass, planned: every new mechanism gets a must-fail switch. | Pass. Must-fail switches, all test-only deps, never env: `skipLocalOnly` (portal and agent), `skipFailureLimit` (portal and agent), `skipNotFoundRules` (portal). The headers and the challenge are proven by assertions on every kind of answer, and the deployment build by a control build that does contain the dev sign-in (spec FR-028 as amended below). |
 | Technology & scope | Pass. No new package; Caddy appears only as a reference configuration for an environment the owner already runs. | Pass. |
-| Quality gates | Pass, planned: typecheck, full tests, demo summary, SPEC v1.26 in the same change, requirement IDs in test names and commits. | Pass. |
+| Quality gates | Pass, planned: typecheck, full tests, demo summary, SPEC v1.27 in the same change, requirement IDs in test names and commits. | Pass. |
 
 No violation, so Complexity Tracking stays empty. The constitution needs no amendment: no principle, invariant or
 package changes, and the residual risks go to SPEC §11, as 1.18–1.25's security remediations did.
@@ -155,7 +155,7 @@ public services (and, for the screen table, the web app) need the same rule. The
 
 Each slice leaves `npm run check` green and can be reviewed on its own. Slices 1–8 are the user stories in the
 spec's priority order and match tasks.md Phases 3–10; slice 9 is its Phase 11. Every slice starts after tasks.md's
-Phases 1–2 (the baseline, `local-only.ts`'s rule, the test helpers and the 1.26 heading).
+Phases 1–2 (the baseline, `local-only.ts`'s rule, the test helpers and the 1.27 heading).
 
 1. **US1, HSTS by host name (P1)**: HSTS unless the `Host` is a loopback name (R1, R2's `isLoopbackHost`);
    T-PRT-07's HSTS line and T-PRT-16's HSTS part; SPEC L2-8 "Limits and headers", SEC-43. Closes finding 1 in the
@@ -177,7 +177,7 @@ Phases 1–2 (the baseline, `local-only.ts`'s rule, the test helpers and the 1.2
    SEC-48.
 8. **US8, the challenge (P3)**: `bearerChallenge` in both access checks (R6); T-EDGE-06; both OpenAPI files; the
    PKCE residual (R14).
-9. **Records and the manual checks**: SPEC v1.26 "Changes", §11 SEC-43..48 and residuals, §12 (each slice adds its
+9. **Records and the manual checks**: SPEC v1.27 "Changes", §11 SEC-43..48 and residuals, §12 (each slice adds its
    own rows; this one checks they're complete); `dispositions.md` (FR-027); specs index, threat matrix, CLAUDE.md;
    the deployed and dev-host checks.
 
@@ -209,7 +209,7 @@ Found during implementation (same rule: the old behavior, not a weaker check):
 | T-ARCH-SWITCH (`test/architecture.test.ts`) | Every `skip[A-Z]…: true` is a switch turned on | express-rate-limit's own `skipSuccessfulRequests` and `skipFailedRequests` are excluded by name (slice 3) |
 | T-ARCH-TRACE `SEC_ROWS` | SEC-1..30, 32..34 | Also SEC-43..48, so their rows' test IDs are checked too (slice 9) |
 | T-IMG-01 portal image (`test/images.test.ts`) | Expects the build line with `npm run build:web &&` | Expects `npm run build:web -- --mode deployment &&` (slice 7) |
-| `specs/011` quickstart §3, the agent image run locally | `AGENT_BIND_HOST=0.0.0.0` with the dev issuer | Refused at start-up now (spec edge case): the run needs the sign-in tenant; recorded as a v1.26 residual (slice 2) |
+| `specs/011` quickstart §3, the agent image run locally | `AGENT_BIND_HOST=0.0.0.0` with the dev issuer | Refused at start-up now (spec edge case): the run needs the sign-in tenant; recorded as a v1.27 residual (slice 2) |
 
 ## Complexity Tracking
 

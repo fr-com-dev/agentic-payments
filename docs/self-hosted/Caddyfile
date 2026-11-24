@@ -1,4 +1,4 @@
-# Reference front proxy for a self-hosted portal (SPEC.md L2-8 "Self-hosted behind a front proxy", v1.26;
+# Reference front proxy for a self-hosted portal (SPEC.md L2-8 "Self-hosted behind a front proxy", v1.27;
 # specs/017 contracts/self-hosted-proxy.md, P1-P10). For one machine that runs the portal on 127.0.0.1:4025 with
 # Caddy 2 in front of it. Copy it to the host and adapt it there; nothing in this repository runs it.
 #

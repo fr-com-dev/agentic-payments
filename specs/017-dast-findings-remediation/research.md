@@ -253,11 +253,11 @@ Each entry: the decision, why, and what else was considered. Facts about the cod
 
 ## R15. What else changes with it
 
-- **SPEC.md v1.26**: "Changes in 1.26"; L1-6 (dev sign-in on loopback only, the failure limit, the challenge);
+- **SPEC.md v1.27**: "Changes in 1.27"; L1-6 (dev sign-in on loopback only, the failure limit, the challenge);
   L2-8 "Limits and headers" (HSTS by host, the three new headers, the failure limit, the challenge, the 404
   rules, the public configuration's fields, the deployment build); CFG-2 notes on `AUTH_JWKS_FILE` with
   `PORTAL_BIND_HOST`, `AGENT_BIND_HOST` and `TRUSTED_PROXY_HOPS` (no new variable); §11 new SEC-43..SEC-48 and the
-  v1.26 residual risks; §12 the new tests.
+  v1.27 residual risks; §12 the new tests.
 - **Constitution**: no amendment. No principle, invariant or package changes, and 1.18–1.25's security
   remediations were recorded in SPEC §11 only; the residual risks above go there too.
 - **Contracts and docs**: `docs/portal.openapi.yaml` and `docs/l1-hosted.openapi.yaml` (the `WWW-Authenticate`

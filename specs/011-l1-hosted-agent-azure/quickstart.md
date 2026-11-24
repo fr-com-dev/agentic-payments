@@ -85,7 +85,7 @@ curl -s -H "Authorization: Bearer $(cat .local/alice.jwt)" -H 'content-type: app
 
 **The same L1 image as Azure** (Docker Desktop). A container reaches the host at `host.docker.internal`,
 and L2 only pays sellers whose host its mandate lists (R6), so start the stack with `--docker`.
-Since v1.26 (`specs/017`) the agent refuses to start with the local dev issuer and a bind address other than a
+Since v1.27 (`specs/017`) the agent refuses to start with the local dev issuer and a bind address other than a
 loopback one, which a container that publishes its port needs (`AGENT_BIND_HOST=0.0.0.0`): run the image this
 way with the sign-in tenant's settings (`AUTH_ISSUER`, `AUTH_AUDIENCE`, `AGENT_CLIENT_IDS`, no `AUTH_JWKS_FILE`
 and no dev-issuer mount) and a token from the tenant.

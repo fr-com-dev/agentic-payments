@@ -50,7 +50,7 @@ export interface PortalDeps {
   skipLocalOnly?: boolean;
   /** 017 test hook (T-EDGE-04 must-fail): failed authentications are never limited. Never set by the entry point. */
   skipFailureLimit?: boolean;
-  /** 017 test hook (T-PRT-17 must-fail): the page for any path again, as before v1.26. Never set by the entry point. */
+  /** 017 test hook (T-PRT-17 must-fail): the page for any path again, as before v1.27. Never set by the entry point. */
   skipNotFoundRules?: boolean;
 }
 
