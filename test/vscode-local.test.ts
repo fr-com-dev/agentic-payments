@@ -4,8 +4,9 @@
 // says, and nothing else from VS Code's environment.
 import { existsSync, readFileSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
-import { childEnv, DEV_SIGN_IN, parseEnvFile, type EnvFile } from "../scripts/demo-lib.js";
+import { childEnv, DEV_SIGN_IN, httpOk, l2Answers, parseEnvFile, type EnvFile } from "../scripts/demo-lib.js";
 import { callerTokenNeeded, localRunEnv, PASSTHROUGH, RUN_ROLES, runWarnings, stackAction, userAccountsOn, type RunRole } from "../scripts/vscode-local.js";
+import { startUsersL2, TOKENS } from "./helpers/users.js";
 
 /** VS Code's JSON with comments: these files use whole-line `//` comments only. */
 const jsonc = (path: string) => JSON.parse(readFileSync(path, "utf8").replace(/^\s*\/\/.*$/gm, "")) as Record<string, unknown>;
@@ -238,6 +239,22 @@ describe("016 local sign-in: L2 verifies callers' tokens only when the stack is 
     expect(callerTokenNeeded(0, undefined)).toBe(false);
     const runner = readFileSync("scripts/vscode-local.ts", "utf8");
     expect(runner).toMatch(/r === "agent" && !file\?\.values\.CALLER_TOKEN && !file\?\.values\.MACHINE_CLIENT_ID/);
+  });
+
+  it("016 the stack's L2 readiness probe sees an L2 that verifies callers' tokens as up (stack:local --users, --sign-in)", async () => {
+    const signedIn = await startUsersL2();
+    try {
+      const budget = `${signedIn.url}/v1/budget/sess_stackready`;
+      expect(await l2Answers(budget, TOKENS.control)).toBe(true);
+      // Must-fail: the probe that took only a 200 never saw this L2 ready, so the stack timed out after 30 s.
+      expect(await httpOk(budget, { authorization: `Bearer ${TOKENS.control}` })).toBe(false);
+      // Still a check of the control token: a wrong one is not ready.
+      expect(await l2Answers(budget, "wrong")).toBe(false);
+    } finally {
+      await signedIn.close();
+    }
+    // An L2 that is down is not ready either.
+    expect(await l2Answers("http://127.0.0.1:9/v1/budget/sess_stackready", TOKENS.control)).toBe(false);
   });
 });
 
