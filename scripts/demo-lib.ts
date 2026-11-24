@@ -242,6 +242,28 @@ export async function httpOk(url: string, headers: Record<string, string> = {}, 
   }
 }
 
+/**
+ * 016: whether the L2 that answers verifies callers' tokens: asked for a budget with the control token and no
+ * caller's token, it then answers 401 `caller_token_required` (and 200 when it takes none).
+ */
+export const callerTokenNeeded = (status: number, error: unknown): boolean => status === 401 && error === "caller_token_required";
+
+/**
+ * Whether L2 is up and accepts the control token. Asked for a budget, an L2 without sign-in answers 200; one that
+ * verifies callers' tokens (016: `stack:local -- --users` or `--sign-in`) answers 401 `caller_token_required`, which
+ * it gives only after the control token has passed (a wrong one is 401 `unauthorized`).
+ */
+export async function l2Answers(url: string, controlToken: string): Promise<boolean> {
+  try {
+    const res = await fetch(url, { headers: { authorization: `Bearer ${controlToken}` }, signal: AbortSignal.timeout(1_000) });
+    if (res.status === 200) return true;
+    const body = (await res.json().catch(() => null)) as { error?: unknown } | null;
+    return callerTokenNeeded(res.status, body?.error);
+  } catch {
+    return false;
+  }
+}
+
 export async function getJson<T>(url: string, token: string): Promise<T | null> {
   try {
     const res = await fetch(url, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(5_000) });
@@ -309,7 +331,7 @@ export function localStack(): LocalStack {
     },
     facilitator: () => httpOk(`http://127.0.0.1:${ports.facilitator}/supported`),
     seller: () => httpOk(`http://127.0.0.1:${ports.seller}/api/catalog`),
-    l2: () => httpOk(`http://127.0.0.1:${ports.l2}/v1/budget/sess_stackready`, { authorization: `Bearer ${controlToken}` }),
+    l2: () => l2Answers(`http://127.0.0.1:${ports.l2}/v1/budget/sess_stackready`, controlToken),
     l3: () => portInUse(ports.l3),
   };
   return { files, ports, network: fileValue("l2", "NETWORK") ?? "local", controlToken, deploymentPath, ready };

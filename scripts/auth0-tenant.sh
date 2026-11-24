@@ -12,7 +12,8 @@
 #
 # Its files, each the operator's own and readable by nobody else (it refuses one that is not):
 #   $X402_TFSTATE_DIR (default ~/x402-tfstate, mode 0700)
-#     auth0.<environment>.tfstate   the state: no secret (T-IAC-02), but what Terraform plans against. Back it up.
+#     auth0.<environment>.tfstate   the state: what Terraform plans against, and the client secrets Auth0 generates
+#                                   for the public applications (unused, still secrets). Back it up, privately.
 #     auth0.<environment>.tfvars    Terraform's variables (auth0/README.md); never environment, credential or
 #                                   client_secret, which this script sets or never sets
 #     auth0.<environment>.tfplan    the plan the last `plan` saved, until `apply` applies it
