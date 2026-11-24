@@ -68,11 +68,23 @@ install_terraform() {
   echo "auth0-tenant: installed Terraform $TERRAFORM_VERSION in $TF"
 }
 
+# The owner's user ID and the mode's permission bits, special bits included, as GNU stat's '%u %a' prints them (the
+# operator's Linux host). BSD stat (macOS, where the tests also run) has no -c: its '%u %Op' prints the whole mode in
+# octal, file type included, cut here to the same bits. Anything else prints nothing, which no mode matches.
+owner_mode() {
+  local found
+  if found=$(stat -c '%u %a' "$1" 2> /dev/null); then
+    echo "$found"
+  elif found=$(stat -f '%u %Op' "$1" 2> /dev/null) && [[ "$found" =~ ^([0-9]+)\ ([0-7]+)$ ]]; then
+    printf '%s %o\n' "${BASH_REMATCH[1]}" $((8#${BASH_REMATCH[2]} & 8#7777))
+  fi
+}
+
 # The file exists, is not a link, is the operator's own, and nobody else may read or write it.
 private() {
   local path=$1 mode=$2
   [[ -e "$path" && ! -L "$path" ]] || fail "$path is missing (or a link): auth0/README.md, \"Run it\""
-  [[ "$(stat -c '%u %a' "$path")" == "$(id -u) $mode" ]] || fail "$path must be yours, with mode $mode (chmod $mode $path)"
+  [[ "$(owner_mode "$path")" == "$(id -u) $mode" ]] || fail "$path must be yours, with mode $mode (chmod $mode $path)"
 }
 
 # The Management API credential, from its own file: two lines and nothing else, never sourced as a script.
