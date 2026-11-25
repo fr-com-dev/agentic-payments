@@ -969,6 +969,8 @@ describe("013 user accounts end to end", () => {
     const { address } = await onboard(carol, 500n);
     const r = await l1For("sess_carol", carol).fetchPaid(`${h.urls.seller}/api/weather?city=Lima`, "underfunded");
     expect(r.outcome).toBe("PAYMENT_FAILED");
+    // 1.29.2: the step says why, in the facilitator's code as the seller passed it on.
+    expect(r.error).toBe("the seller answered HTTP 402: invalid_exact_evm_insufficient_balance");
     expect(await h.balanceOf(address)).toBe(500n);
   });
 
