@@ -5,9 +5,10 @@
 // T-CTK-01 the order of checks; T-CTK-02 who the payment is for; T-CTK-03 a request names nobody; T-CTK-04 the
 // caller's token opens nothing by itself; T-CTK-05 where a token is required; T-CTK-06 startup; T-CTK-07 the token
 // is written nowhere; T-CTK-08 it is verified outside the serialized section; T-CTK-09 the check is bounded per
-// calling address.
+// calling address. 019: T-CTK-10 the budget user view says whether the person can pay; T-CTK-11 accounts off has its
+// own code (row 6).
 // Every must-fail switch (`trustIntentUser`, `skipRequired`, `skipClientCheck`, `skipPermission`, `echoCaller`,
-// `skipLimit`) is a test-only dep of L2's caller check, never an environment variable.
+// `skipLimit`, `singleForbiddenCode`) is a test-only dep of L2's caller check, never an environment variable.
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DEV_PORTAL_CLIENT } from "../scripts/dev-issuer-lib.js";
@@ -15,7 +16,7 @@ import { callerSettingsFromEnv } from "../src/layer2-control/caller.js";
 import { ConfigError } from "../src/shared/config.js";
 import type { TokenKeys } from "../src/shared/identity-token.js";
 import { createTestIssuer } from "./helpers/caller-tokens.js";
-import { ALICE, BOB, PLATFORM_PAYER, startUsersL2, TOKENS, type UsersL2 } from "./helpers/users.js";
+import { ALICE, BOB, CAROL, PLATFORM_PAYER, startUsersL2, TOKENS, type UsersL2 } from "./helpers/users.js";
 
 const opened: UsersL2[] = [];
 async function start(o: Parameters<typeof startUsersL2>[0] = {}) {
@@ -133,13 +134,32 @@ describe("T-CTK-01 the order of checks on the two routes L1 calls (016 contracts
     expect(l2.entries().length).toBe(before);
   });
 
-  it("T-CTK-01 row 6: a person's token while user accounts are off is 403: a person pays from their own account or not at all", async () => {
+  it("T-CTK-01 row 6: a person's token while user accounts are off is 403 user_accounts_off (019): a person pays from their own account or not at all", async () => {
     const l2 = await start({ off: true, caller: {} });
-    expect(await both(l2, { caller: await l2.callers.forUser(ALICE) })).toEqual(twice(403, "caller_forbidden"));
+    expect(await both(l2, { caller: await l2.callers.forUser(ALICE) })).toEqual(twice(403, "user_accounts_off"));
     expect(l2.entries()).toEqual([]);
     // A machine caller still pays from the platform account there.
     const machine = await l2.authorize(l2.intentFor("/api/weather", "1000"), { caller: await l2.callers.machine() });
     expect([machine.body.status, payerOf(machine.body)]).toEqual(["AUTHORIZED", PLATFORM_PAYER.toLowerCase()]);
+  });
+
+  it("T-CTK-11 accounts off is its own answer: 403 user_accounts_off on both routes, while a person's token from a client L2 doesn't list is still 403 caller_forbidden (019)", async () => {
+    const off = await start({ off: true, caller: {} });
+    // Row 5 comes before row 6: a token L2 refuses is a misconfiguration, whatever this L2 holds.
+    expect(await both(off, { caller: await off.callers.forUser(ALICE, { azp: "some-other-client" }) })).toEqual(twice(403, "caller_forbidden"));
+    expect(await both(off, { caller: await off.callers.forUser(ALICE, { permissions: [] }) })).toEqual(twice(403, "caller_forbidden"));
+    // A token L2 accepts, for a person, where there are no person accounts: a state of L2, never of the person.
+    expect(await both(off, { caller: await off.callers.forUser(ALICE) })).toEqual(twice(403, "user_accounts_off"));
+    expect(off.entries()).toEqual([]);
+    // The same where user accounts are on: an unlisted client is still caller_forbidden.
+    const on = await start();
+    await on.onboard(ALICE);
+    expect(await both(on, { caller: await on.callers.forUser(ALICE, { azp: "some-other-client" }) })).toEqual(twice(403, "caller_forbidden"));
+  });
+
+  it("T-CTK-11 must fail with one code for both refusals (singleForbiddenCode): accounts off reads as caller_forbidden, so the agent can't tell it from a misconfiguration", async () => {
+    const unsafe = await start({ off: true, caller: { singleForbiddenCode: true } });
+    expect(await both(unsafe, { caller: await unsafe.callers.forUser(ALICE) })).toEqual(twice(403, "caller_forbidden"));
   });
 
   it("T-CTK-01 a refused caller's body is never read: a body that is not JSON gets the caller's refusal, not a 400", async () => {
@@ -231,6 +251,42 @@ describe("T-CTK-02 who the payment is for comes from the token L2 verified (016 
     await l2.authorize(l2.intentFor("/api/weather", "1000"), { caller: await l2.callers.forUser(ALICE) });
     expect((await l2.budget("sess_u", { userId: ALICE })).body).toMatchObject({ scope: "user_daily", spentOrReservedAtomic: "1000" });
     expect((await l2.budget("sess_u", { userId: BOB })).body).toMatchObject({ scope: "user_daily", spentOrReservedAtomic: "0" });
+  });
+});
+
+describe("T-CTK-10 the budget user view says whether the person can pay (019 FR-016, specs/019 contracts/control-api.md)", () => {
+  it("T-CTK-10 ready, not onboarded and disabled, each from the person's own token; the platform view has no account; nothing is appended", async () => {
+    const l2 = await start();
+    await l2.onboard(ALICE);
+    await l2.onboard(CAROL);
+    expect((await l2.portal("POST", `/v1/users/${CAROL}/disable`)).status).toBe(200);
+    const before = l2.entries().length;
+    expect((await l2.budget("sess_u", { userId: ALICE })).body).toMatchObject({ scope: "user_daily", account: "ready" });
+    // Bob never onboarded, and Carol turned her account off: no ceiling, as before, and now the reason.
+    expect((await l2.budget("sess_u", { userId: BOB })).body).toMatchObject({ scope: "user_daily", account: "not_onboarded", sessionCapAtomic: "0", perPaymentCapAtomic: "0" });
+    expect((await l2.budget("sess_u", { userId: CAROL })).body).toMatchObject({ scope: "user_daily", account: "disabled", sessionCapAtomic: "0", perPaymentCapAtomic: "0" });
+    // A machine caller reads the platform view: nothing about a person's account.
+    const platform = await l2.budget("sess_machine");
+    expect([platform.status, platform.body.scope, "account" in platform.body]).toEqual([200, undefined, false]);
+    expect(l2.entries().length).toBe(before);
+  });
+
+  it("T-CTK-10 a person whose policies are all paused is ready: readiness is the account's, and each purchase is denied by policy", async () => {
+    const l2 = await start();
+    const { policyId } = await l2.onboard(ALICE);
+    expect((await l2.portal("POST", `/v1/users/${ALICE}/policies/${policyId}/pause`, {})).status).toBe(200);
+    expect((await l2.budget("sess_u", { userId: ALICE })).body.account).toBe("ready");
+    const res = await l2.authorize(l2.intentFor("/api/weather", "1000"), { caller: await l2.callers.forUser(ALICE) });
+    expect([res.body.status, rulesOf(res.body)]).toEqual(["DENIED", ["host_not_allowed"]]);
+  });
+
+  it("T-CTK-10 must fail when L2 takes the user from the request (trustIntentUser): alice's token, ?userId= naming bob, and bob's readiness is answered", async () => {
+    const l2 = await start({ caller: { trustIntentUser: true } });
+    await l2.onboard(ALICE);
+    const caller = await l2.callers.forUser(ALICE);
+    expect((await l2.budget("sess_u", { caller })).body.account).toBe("ready");
+    const named = await l2.call<{ account?: string }>("GET", `/v1/budget/sess_u?userId=${BOB}`, { token: TOKENS.control, caller });
+    expect([named.status, named.body.account]).toEqual([200, "not_onboarded"]);
   });
 });
 

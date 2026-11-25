@@ -603,6 +603,8 @@ const TEMPLATES: Record<string, TemplateSpec> = {
       "TRUSTED_PROXY_HOPS",
       "API_DOCS",
       "API_DOCS_CLIENT_ID",
+      // 019 (CFG-2): the desktop client whose sign-in settings the agent serves; a public client ID.
+      "AGENT_DESKTOP_CLIENT_ID",
       "PORTAL_CLIENT_ID",
     ],
   },

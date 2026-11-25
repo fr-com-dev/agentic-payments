@@ -18,6 +18,11 @@ export const DEV_MACHINE_CLIENT = "x402-checks-dev";
 export const DEV_ADMIN_PERMISSION = PORTAL_ADMIN_PERMISSION;
 /** The client a person's agent token comes from (`AGENT_CLIENT_IDS` in env/l1-hosted.env.example). */
 export const DEV_AGENT_CLIENT = "x402-agent-cli-dev";
+/**
+ * 019: the desktop client's ID with the dev issuer (a person signs in from their own computer: browser, loopback
+ * return, PKCE). Beside DEV_AGENT_CLIENT on the local stack's `AGENT_CLIENT_IDS`; `dev-token -- --desktop`.
+ */
+export const DEV_DESKTOP_CLIENT = "x402-agent-desktop-dev";
 /** 013: the portal web app's client ID with the dev issuer (`PORTAL_CLIENT_ID` in env/portal.env.example). */
 export const DEV_PORTAL_CLIENT = "x402-portal-dev";
 /** A person's `sub` with the dev issuer, in the tenant's `<connection>|<id>` shape. */

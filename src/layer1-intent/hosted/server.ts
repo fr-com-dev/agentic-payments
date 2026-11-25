@@ -2,21 +2,24 @@
 // Only `createHostedApp` lives here. The entry point that loads env, enforces INV-3 and listens is
 // src/hosted-main.ts, outside this layer, because rule A5 bans the payer key's name in L1 code.
 // 016: the caller's token is kept from auth to the end of the run and goes to one place, `gate.forCaller` (SEC-32).
-// Order per request: [dev issuer] machine only (421) → health → per address (429) → failed authentications per
-// address (429) → auth (401/403) → run limits (429) → body (400/413) → session → run. Only POST /v1/runs and the two
-// health routes exist, plus the token-free docs routes with API_DOCS=1 (v1.6); Mastra publishes no routes
-// (research R1). docs/l1-hosted.openapi.yaml describes them; test/openapi-hosted.test.ts keeps it in sync.
+// Order per request: [dev issuer] machine only (421) → health, docs → per address (429) → failed authentications per
+// address (429) → [019: GET /.well-known/agent-auth, token-free] → auth (401/403) → run limits (429) → body
+// (400/413) → session (400/404) → [019: the account question, a person's run only (409/401/503)] → run. Only
+// POST /v1/runs and the two health routes exist, plus the token-free docs routes with API_DOCS=1 (v1.6) and the sign-in
+// settings with AGENT_DESKTOP_CLIENT_ID (019); Mastra publishes no routes (research R1). docs/l1-hosted.openapi.yaml
+// describes them; test/openapi-hosted.test.ts keeps it in sync.
 import { randomUUID } from "node:crypto";
 import express, { type Express, type NextFunction, type Request, type Response } from "express";
 import type { MastraModelConfig } from "@mastra/core/llm";
 import { addressLimit, failedAuthLimit, MAX_FAILED_AUTH_PER_ADDRESS, onceInWindow, proxyWarning, trustProxies } from "../../shared/address-limit.js";
 import { localOnly } from "../../shared/local-only.js";
 import type { CallerGates, SettlementVerifierPort } from "../../shared/contracts.js";
-import type { TokenKeys } from "../../shared/identity-token.js";
+import { bearerChallenge, type TokenKeys } from "../../shared/identity-token.js";
+import { checkAccount } from "./account-check.js";
 import { runGoal } from "./agent.js";
 import { docsSignIn, mountHostedApiDocs } from "./api-docs.js";
 import type { HostedConfig } from "./config.js";
-import { callerTokenOf, requesterAuth, type Requester } from "./requester-auth.js";
+import { AGENT_REALM, callerTokenOf, REQUIRED_PERMISSION, requesterAuth, type Requester } from "./requester-auth.js";
 import { createRunLimiter } from "./run-limits.js";
 import { createRunLog, stepOutcome } from "./run-log.js";
 import { issueSessionRef, newSessionId, SESSION_REF_RE, verifySessionRef } from "./session-ref.js";
@@ -61,6 +64,34 @@ export interface HostedDeps {
   skipLocalOnly?: boolean;
   /** 017 test hook (T-EDGE-04 must-fail): failed authentications are never limited. Never set by the entry point. */
   skipFailureLimit?: boolean;
+  /** 019 test hook (T-AGT-17 must-fail): a person's run starts without the account question. Never set by the entry point. */
+  skipAccountCheck?: boolean;
+  /**
+   * 019 test hook (T-AGT-19 must-fail): the key the run limits count by. Default `requester.key`
+   * (`<issuer host>:<sub>`): one person, whatever client and token. Never set by the entry point.
+   */
+  limitKey?: (requester: Requester) => string;
+  /** 019 test hook (T-AGT-16 must-fail): a 401 describes the refused token. Never set by the entry point. */
+  revealCheck?: boolean;
+}
+
+/** 019: the desktop client's return address, on the person's own computer (specs/019 FR-002). */
+export const DESKTOP_REDIRECT_URI = "http://127.0.0.1:53682/callback";
+/** 019: the scopes a desktop client asks for: an ID token, a refresh token, and the agent's permission. */
+export const DESKTOP_SCOPES = ["openid", "offline_access", REQUIRED_PERMISSION] as const;
+
+/** 019: `GET /.well-known/agent-auth`, the public values a desktop client signs in with, all from the settings. */
+export function agentAuthSettings(auth: Pick<HostedConfig["auth"], "issuer" | "audience">, clientId: string) {
+  return {
+    issuer: auth.issuer,
+    // The tenant's issuer is https://<domain>/ with the final slash, so a custom domain moves both endpoints with it.
+    authorization_endpoint: `${auth.issuer}authorize`,
+    token_endpoint: `${auth.issuer}oauth/token`,
+    audience: auth.audience,
+    client_id: clientId,
+    scopes: [...DESKTOP_SCOPES],
+    redirect_uri: DESKTOP_REDIRECT_URI,
+  };
 }
 
 export interface HostedApp {
@@ -68,7 +99,7 @@ export interface HostedApp {
   markReady(): void;
 }
 
-const BYPASS_REQUESTER: Requester = { kind: "user", authority: "bypass", subject: "bypass", key: "bypass:bypass" };
+const BYPASS_REQUESTER: Requester = { kind: "user", authority: "bypass", subject: "bypass", key: "bypass:bypass", client: "bypass" };
 
 /** `goal` (1–4,000 characters after trimming) and optional `sessionRef`; nothing else. */
 function parseBody(body: unknown): { goal: string; sessionRef?: string } | { error: string } {
@@ -90,6 +121,7 @@ export function createHostedApp(deps: HostedDeps): HostedApp {
   const limiter = createRunLimiter({ ...(deps.now && { now: deps.now }) });
   const runLog = createRunLog(deps.log);
   const requesterOf = (res: Response) => (res.locals.requester as Requester | undefined) ?? BYPASS_REQUESTER;
+  const limitKey = deps.limitKey ?? ((r: Requester) => r.key);
 
   // 017 (SEC-44): the dev issuer's tokens are accepted from this machine only. First, before health and every route.
   if (deps.config.auth.jwksFile !== undefined && !deps.skipLocalOnly) app.use(localOnly());
@@ -115,6 +147,16 @@ export function createHostedApp(deps: HostedDeps): HostedApp {
   };
   if (!deps.skipFailureLimit) app.use(failedAuthLimit({ onLimit }));
 
+  // 019 (specs/019 FR-024, FR-025): the desktop client's sign-in settings, token-free, behind both limits, before auth.
+  // A pure function of the settings: no session, model, L2 or L3, and nothing secret.
+  const desktopClientId = deps.config.auth.desktopClientId;
+  if (desktopClientId !== undefined) {
+    const settings = agentAuthSettings(deps.config.auth, desktopClientId);
+    app.get("/.well-known/agent-auth", (_req, res) => {
+      res.set("Cache-Control", "public, max-age=300").json(settings);
+    });
+  }
+
   if (!deps.bypassAuth) {
     app.use(
       requesterAuth({
@@ -124,12 +166,13 @@ export function createHostedApp(deps: HostedDeps): HostedApp {
         keys: deps.keys,
         ...(deps.skipClientCheck && { skipClientCheck: true }),
         ...(deps.skipPermission && { skipPermission: true }),
+        ...(deps.revealCheck && { revealCheck: true }),
       }),
     );
   }
 
   const checkLimits = (_req: Request, res: Response, next: NextFunction) => {
-    const retryAfter = limiter.check(requesterOf(res).key);
+    const retryAfter = limiter.check(limitKey(requesterOf(res)));
     if (retryAfter !== null) {
       res.set("Retry-After", String(retryAfter)).status(429).json({ error: "too many runs" });
       return;
@@ -162,7 +205,21 @@ export function createHostedApp(deps: HostedDeps): HostedApp {
       }
       sessionId = check.sessionId;
     }
-    const release = limiter.start(requester.key);
+    // 016 (SEC-32): who every payment of this run is for is decided by L2, from the caller's token. The gate made
+    // here carries that token on each call and is the only thing that holds it; neither the goal text, the model
+    // nor a tool input can change it or see it. With auth bypassed (tests only) the gate carries none.
+    const gate = deps.gate.forCaller(callerTokenOf(res) ?? "");
+    // 019 (FR-015..019): before a person's run, ask L2 through that gate whether they can pay now. A refusal is
+    // JSON whatever the client asked for, opens no stream, makes no model call and is not counted as a start.
+    if (requester.kind === "user" && !deps.skipAccountCheck) {
+      const account = await checkAccount(gate, sessionId);
+      if (!account.ok) {
+        if (account.challenge) res.set("WWW-Authenticate", bearerChallenge(AGENT_REALM, true));
+        res.status(account.status).json(account.body);
+        return;
+      }
+    }
+    const release = limiter.start(limitKey(requester));
     const runId = `run_${randomUUID()}`;
     const startedMs = Date.now();
     const startedAt = new Date(startedMs).toISOString();
@@ -171,10 +228,6 @@ export function createHostedApp(deps: HostedDeps): HostedApp {
     res.on("close", () => {
       if (!res.writableEnded) controller.abort("client_disconnected");
     });
-    // 016 (SEC-32): who every payment of this run is for is decided by L2, from the caller's token. The gate made
-    // here carries that token on each call and is the only thing that holds it; neither the goal text, the model
-    // nor a tool input can change it or see it. With auth bypassed (tests only) the gate carries none.
-    const gate = deps.gate.forCaller(callerTokenOf(res) ?? "");
     // 016: every refusal is behind us, so the answer's form is chosen here. A stream starts with the run's
     // identifier, at once; the JSON form says nothing until the run ends.
     const stream = wantsStream(req) ? openEventStream(res, { ...(deps.keepAliveMs !== undefined && { keepAliveMs: deps.keepAliveMs }) }) : undefined;
@@ -189,7 +242,7 @@ export function createHostedApp(deps: HostedDeps): HostedApp {
         settlement: deps.settlement,
         sellerUrl: deps.config.urls.seller,
         onStep: (step, ms) => {
-          runLog.step({ runId, requester: requester.key, sessionId, index: step.index, tool: step.tool, ...stepOutcome(step.result), ms });
+          runLog.step({ runId, requester: requester.key, client: requester.client, sessionId, index: step.index, tool: step.tool, ...stepOutcome(step.result), ms });
           stream?.send("step", step);
         },
         ...(stream && { onText: (delta: string) => stream.send("text", { delta }) }),
@@ -197,6 +250,7 @@ export function createHostedApp(deps: HostedDeps): HostedApp {
       runLog.run({
         runId,
         requester: requester.key,
+        client: requester.client,
         sessionId,
         status: outcome.status,
         stopReason: outcome.stopReason,

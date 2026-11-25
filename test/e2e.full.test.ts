@@ -27,6 +27,7 @@ import { RegressionBaseline } from "./helpers/baseline.js";
 import { type CibaStub, startCibaStub, testRsaKeyPair } from "./helpers/ciba-stub.js";
 import { type Harness, startHarness } from "./helpers/harness.js";
 import { mockModel, startHostedApp, text, toolCall, type HostedTestApp, type ModelScript } from "./helpers/hosted.js";
+import { DEV_DESKTOP_CLIENT } from "../scripts/dev-issuer-lib.js";
 import { type PortalTestApp, startPortal } from "./helpers/portal.js";
 
 const CLIENT_ID = "l2-ciba-client-e2e-full";
@@ -244,6 +245,26 @@ describe("T-E2E-17 the whole system end to end: portal onboarding, both agents, 
     expect(await h.balanceOf(people.ana.address)).toBe(FUNDS - people.ana.spent);
   }, 60_000);
 
+  it("T-E2E-17 019 US1 ana signs in from the desktop client: her run pays from her own wallet, L2 takes the same user from that token, and the portal refuses it", async () => {
+    const a = await hostedWith([buy("/api/weather?city=Lima", "weather"), text("Lima is fine today.")]);
+    const jwt = await a.token("ana", { sub: ANA_SUB, azp: DEV_DESKTOP_CLIENT });
+    tokens.push(jwt);
+    const res = await fetch(`${a.base}/v1/runs`, { method: "POST", headers: { authorization: `Bearer ${jwt}`, "content-type": "application/json" }, body: JSON.stringify({ goal: "Get the weather for Lima." }) });
+    expect(res.status).toBe(200);
+    const run = (await res.json()) as Run;
+    expect(outcomes(run)).toEqual(["PAID"]);
+    expect(run.steps[0]!.result.payment?.settlement?.status).toBe("CONFIRMED");
+    notePaid(run.steps);
+    people.ana.spent += PRICE.weather;
+    expect(await h.balanceOf(people.ana.address)).toBe(FUNDS - people.ana.spent);
+    expect(platform0 - (await h.balanceOf(h.addresses.payer))).toBe(platformSpent);
+    // The user is the token's issuer and subject, whichever client the token was issued to: the same ana, the same policy.
+    const entry = entries("AUTHORIZED").find((e) => e.authorizationId === run.steps[0]!.result.authorizationId)!;
+    expect([entry.data.userId, entry.data.policyId]).toEqual([people.ana.userId, people.ana.policyId]);
+    // The desktop client's token opens no portal: the portal accepts its own client's tokens only.
+    expect((await portal.call("GET", "/api/me", { token: jwt })).status).toBe(403);
+  }, 60_000);
+
   // --- 3. a purchase that needs a person: the phone (simulated CIBA) -------------------------------------------
 
   it("T-E2E-17 an escalated purchase asks ana's own phone, from the token L2 verified: she approves, and the same run pays from her wallet", async () => {
@@ -432,13 +453,13 @@ describe("T-E2E-17 the whole system end to end: portal onboarding, both agents, 
 
   // --- 7. an account its owner switched off ---------------------------------------------------------------------
 
-  it("T-E2E-17 ana disables her account in the portal: her agent's next purchase is denied, and her wallet keeps what it has", async () => {
+  it("T-E2E-17 019 US4 ana disables her account in the portal: her agent refuses her next goal before the model, with 409 account_disabled, and her wallet keeps what it has", async () => {
     const off = await at("ana")<{ enabled: boolean }>("POST", "/api/account/disable", { confirm: true });
     expect(off.body.enabled).toBe(false);
-    const a = await hostedWith([buy("/api/weather?city=Lima", "weather"), text("It was denied.")]);
-    const { run } = await runAs(a, "ana", "Get the weather for Lima.");
-    expect(outcomes(run)).toEqual(["DENIED"]);
-    expect((run.steps[0]!.result.violations ?? []).map((v) => v.rule)).toEqual(["user_disabled"]);
+    const a = await hostedWith(async () => text("The model was called."));
+    const { status, run } = await runAs(a, "ana", "Get the weather for Lima.");
+    // 019 (FR-015..017): the agent asks L2 before the model, so the goal is refused at once and says why.
+    expect([status, run]).toEqual([409, { error: "account not ready", error_code: "account_disabled" }]);
     expect(await h.balanceOf(people.ana.address)).toBe(FUNDS - people.ana.spent);
     // Never the platform account instead.
     expect(platform0 - (await h.balanceOf(h.addresses.payer))).toBe(platformSpent);
@@ -461,8 +482,9 @@ describe("T-E2E-17 the whole system end to end: portal onboarding, both agents, 
 
     // Every payment a run reported is an AUTHORIZED entry with exactly one effective settlement: CONFIRMED, by L3.
     expect(new Set(paidIds).size).toBe(paidIds.length);
-    // Ana: weather, brief, premium. Ben: weather, premium, weather. The platform: weather, brief, premium, brief.
-    expect(paidIds).toHaveLength(10);
+    // Ana: weather, brief, a weather from the desktop client, premium. Ben: weather, premium, weather. The platform:
+    // weather, brief, premium, brief.
+    expect(paidIds).toHaveLength(11);
     const settlements = entries("SETTLEMENT").filter((e) => e.data.anomaly !== true);
     for (const id of paidIds) {
       expect(entries("AUTHORIZED").filter((e) => e.authorizationId === id), id).toHaveLength(1);
@@ -472,7 +494,7 @@ describe("T-E2E-17 the whole system end to end: portal onboarding, both agents, 
     expect(entries("AUTHORIZED").map((e) => String(e.authorizationId)).sort()).toEqual([...paidIds].sort());
 
     // The money: each account paid exactly its own purchases, and the seller received their sum.
-    expect(people.ana.spent).toBe(PRICE.weather + PRICE.brief + PRICE.premium);
+    expect(people.ana.spent).toBe(PRICE.weather + PRICE.brief + PRICE.weather + PRICE.premium);
     expect(people.ben.spent).toBe(PRICE.weather + PRICE.premium + PRICE.weather);
     expect(platformSpent).toBe(PRICE.weather + PRICE.brief + PRICE.premium + PRICE.brief);
     expect(await h.balanceOf(people.ana.address)).toBe(FUNDS - people.ana.spent);

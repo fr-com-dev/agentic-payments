@@ -4,7 +4,7 @@
 openapi: 3.1.0
 info:
   title: L2 control API
-  version: "1.4"
+  version: "1.5"
   summary: Policy, signing and ledger service of the x402 three-layer agent payments PoC.
   description: |
     L2 is the only process that holds the payer key. It decides every payment against the spending
@@ -116,7 +116,9 @@ paths:
         the answer is the user view (`scope: user_daily`): the user daily ceiling, that person's committed spend
         over the last 24 hours, and the highest auto-approve limit among their active policies. A person who has
         not finished onboarding or is disabled gets zeros. For a machine caller's token, or with no sign-in
-        configured, it is the session view. The `userId` query of v1.10 is no longer accepted.
+        configured, it is the session view. The `userId` query of v1.10 is no longer accepted. v1.29: the user view
+        also says whether the person can pay now (`account`), from the ledger, in the same read: the hosted agent
+        asks before a person's run. Nothing is appended.
       security:
         - controlToken: []
       parameters:
@@ -1358,8 +1360,10 @@ components:
     CallerForbidden:
       description: >-
         v1.17. `caller_forbidden`: the caller's token is valid and its holder may not call the agent: no
-        `agent:run`, a person's token from a client that is not the agent's (the portal's included), or a
-        person's token while user accounts are off. Nothing is appended.
+        `agent:run`, or a person's token from a client that is not one of the agent's (the portal's included).
+        v1.29: `user_accounts_off`: a person's token, valid and allowed, while user accounts are off at this L2 (a
+        person pays from their own account or not at all); its own code, so the agent can tell this state of L2
+        from a token L2 refuses. Nothing is appended.
       content:
         application/json:
           schema:
@@ -1617,6 +1621,13 @@ components:
           description: >-
             v1.10. What the figures count. Absent means the session (the platform account). `user_daily`: the user
             daily ceiling and the user's last 24 hours, with the highest auto-approve limit among their policies.
+        account:
+          type: string
+          enum: [ready, not_onboarded, disabled]
+          description: >-
+            v1.29, on the user view only. Whether the person in the verified token can pay now: `not_onboarded`
+            (no account set up at the portal), `disabled` (turned off at the portal), else `ready`. Paused or
+            removed policies leave it `ready`: each purchase is then denied by policy. Never personal data.
 
     SettlementReport:
       type: object

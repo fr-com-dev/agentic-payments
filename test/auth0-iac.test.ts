@@ -26,6 +26,12 @@
 // of the state; each enabled for the portal's and the agent's clients alone; the operator command refuses a secret in
 // the tfvars file. Step B (rule 6): Phase 3's pre-user-registration Action, which refused the operator's own
 // creations too, is gone, and no Action may come back on that trigger: the connection's setting is the one switch.
+// 019 (specs/019 contracts/tenant-and-config.md): the desktop client, a fifth kind of application. Public and native,
+// authorization code and refresh token only, returning to the two loopback addresses in every environment, with
+// rotating refresh tokens (30 days, 7 days unused, leeway 0) and the marker sign-in-time.js recognizes it by; on
+// people's connections beside the agent's docs page client; on both services' lists in the outputs; no default
+// audience. sign-in-time.js, run here, refuses a desktop sign-in or renewal without x402-agent and one without S256,
+// before any challenge, and asks the desktop client's people for a second factor as it asks an administrator.
 import { spawnSync } from "node:child_process";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -86,16 +92,24 @@ const BROWSER_PROTOCOLS = ["oidc-basic-profile", "oidc-hybrid-profile", "oidc-im
 /** The second factors sign-in-time.js asks an administrator for, each on in auth0_guardian. */
 const SECOND_FACTORS = [{ type: "push-notification" }, { type: "otp" }];
 const DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code";
-/** 016 research R10 (FR-026): the tenant's applications. A machine caller's is one resource, by for_each. */
-const APPLICATIONS = ["agent", "l2", "machine", "portal"];
-const FOUR_KINDS = "the applications must be exactly L2's, the portal's, the agent's and the machine callers' (auth0_client.l2, portal, agent and machine, one per name in var.machine_caller_keys), each with its own auth0_client_credentials: the tenant has no other";
+/** 016 research R10 (FR-026): the tenant's applications. A machine caller's is one resource, by for_each. 019: the desktop client. */
+const APPLICATIONS = ["agent", "desktop", "l2", "machine", "portal"];
+const FIVE_KINDS = "the applications must be exactly L2's, the portal's, the agent's, the desktop client and the machine callers' (auth0_client.l2, portal, agent, desktop and machine, one per name in var.machine_caller_keys), each with its own auth0_client_credentials: the tenant has no other";
+/** 019 (specs/019 contracts/tenant-and-config.md): the desktop client's loopback returns, on the person's own computer. */
+const DESKTOP_CALLBACKS = ["http://127.0.0.1:53682/callback", "http://localhost:53682/callback"];
+/** 019: the public marker in the desktop client's client_metadata, by which sign-in-time.js recognizes it. */
+const DESKTOP_MARKER = "agent-desktop";
+const DESKTOP_URLS = `the desktop client's callbacks must be exactly local.desktop_callbacks, ${DESKTOP_CALLBACKS.join(" and ")}, in every environment (never under var.local_origins): no origin, no logout URL, no login URI and no other address`;
+const DESKTOP_METADATA = `the desktop client's client_metadata must be exactly x402_client = "${DESKTOP_MARKER}", the marker sign-in-time.js looks for, and its tokens RS256`;
+const DESKTOP_REFRESH = "the desktop client's refresh tokens must rotate with no reuse interval (leeway 0) and expire: 30 days after the sign-in (token_lifetime 2592000) and 7 days unused (idle_token_lifetime 604800, no more than token_lifetime), never infinite";
+const DESKTOP_IN_ACTION = `sign-in-time.js must refuse for the desktop client by its marker, "${DESKTOP_MARKER}" (auth0_client.desktop's client_metadata), and for the holders of ${AGENT_ROLE}, auth0_role.agent's name, only`;
 const AGENT_URLS = `the agent client's callbacks must be exactly <origin>${DOCS_REDIRECT}, and its allowed origins and web origins <origin>, for ${LOCAL_AGENT.join(", ")} and var.agent_origin when set: no logout URL and no other address`;
 const AGENT_NO_REFRESH = "the agent's client must have no refresh tokens (no refresh_token block): a person signs in again when the token expires";
 const MACHINE = `every machine caller's client must be non_interactive with the client_credentials grant only, authenticate by private_key_jwt with its one public key (RS256), and have exactly one grant, for people's API with exactly ${AGENT_RUN_PERMISSION}: no callback, no secret, no ${ADMIN_PERMISSION}`;
 const CALLER_KEYS = "var.machine_caller_keys must be a map of public keys, never a private one, and empty by default: no machine caller";
 const IDENTITY_OUTPUT = "output bicepparam_identity must be the tenant's issuer and people's API only, and name no client";
-const AGENT_OUTPUT = `output bicepparam_agent must be the agent's client, and the machine caller ${PIPELINE_CALLER}'s client and key ID, each empty when ${PIPELINE_CALLER} is not declared`;
-const ENV_OUTPUTS = "outputs l1_env and l2_env must give the same AUTH_ISSUER, AUTH_AUDIENCE and AGENT_CLIENT_IDS (the agent's client only: never the portal's, never a machine caller's), and l1_env the agent's client as API_DOCS_CLIENT_ID";
+const AGENT_OUTPUT = `output bicepparam_agent must be the agent's client, the desktop client, and the machine caller ${PIPELINE_CALLER}'s client and key ID, each empty when ${PIPELINE_CALLER} is not declared`;
+const ENV_OUTPUTS = "outputs l1_env and l2_env must give the same AUTH_ISSUER, AUTH_AUDIENCE and AGENT_CLIENT_IDS (the agent's client and the desktop client: never the portal's, never a machine caller's), and l1_env the agent's client as API_DOCS_CLIENT_ID and the desktop client as AGENT_DESKTOP_CLIENT_ID";
 /** How the lock file gets the checksum of each platform that runs Terraform: the operator's host and the check's runner (Linux), and a Mac. */
 const LOCK_COMMAND = "terraform -chdir=auth0 providers lock -platform=linux_amd64 -platform=darwin_arm64";
 /** Phase 3 (finding #11): no localhost address in a deployed environment's clients. */
@@ -109,7 +123,7 @@ const SIGN_UPS = "var.allow_sign_ups must be a bool, true by default";
 /** 018 rule 6 (step B): the connection's Disable Sign Ups is the one switch, so no Action refuses sign-ups. */
 const NO_SIGN_UP_ACTION = `no Action may run on pre-user-registration and ${SIGN_UP_ACTION_FILE} must be gone: such an Action refused the operator's own creations too, and the email-and-password connection's Disable Sign Ups is the one switch (specs/018 FR-002, FR-004, research R1)`;
 const ONE_ACTION = `the Actions must be exactly ${ACTIONS.map(([resource, file, trigger]) => `${resource} (${file}, ${trigger})`).join(", ")}, with no secret and no package, each appended to its flow (auth0_trigger_action), never replacing it`;
-const ONE_CLAIM = `the sign-in time Action must write one namespaced claim, ${AUTH_TIME_CLAIM}, on the access token and challenge ${ADMIN_ROLE}'s holders with ${SECOND_FACTORS.map((f) => f.type).join(" or ")}, and do nothing else`;
+const ONE_CLAIM = `the sign-in time Action must write one namespaced claim, ${AUTH_TIME_CLAIM}, on the access token, refuse for the desktop client only (not_authorized_for_agent without ${AGENT_ROLE}, pkce_required without S256), and challenge ${ADMIN_ROLE}'s holders and the desktop client's people with ${SECOND_FACTORS.map((f) => f.type).join(" or ")}, and do nothing else`;
 const ONE_MFA_CLAIM = `the second-factor time Action must write one namespaced claim, ${MFA_TIME_CLAIM}, on the access token, and do nothing else`;
 const NO_USER_READ = "no user is read here: there is no configured approver (SPEC v1.16), each request goes to the person the payment is for";
 const NO_APPROVER_OUTPUT = "no output may give CIBA_APPROVER: L2 refuses to start with it (SPEC v1.16)";
@@ -145,9 +159,9 @@ const PASSWORD_OPTIONS = `the email-and-password connection must write out its p
 /** Rule 1: every connection object of the tenant's declaration, as `[data.]<type>.<name>`, sorted. */
 const CONNECTION_OBJECTS = ["auth0_connection.database", "auth0_connection_clients.database", "auth0_connection_clients.google", "data.auth0_connection.google"];
 const CONNECTIONS = `the people's connections must be exactly ${CONNECTION_OBJECTS.join(", ")}: no third connection, no auth0_connection_client, and no managed Google connection (it would put the secret in the state)`;
-const CONNECTION_CLIENTS = "each people's connection must be enabled for exactly the portal's and the agent's clients (auth0_connection_clients, authoritative): the database one always, Google's only while var.google_sign_in; never L2's approval client or a machine caller";
-/** Rule 2: the clients that may sign a person in. */
-const PEOPLE_CLIENTS = "[auth0_client.portal.client_id, auth0_client.agent.client_id]";
+const CONNECTION_CLIENTS = "each people's connection must be enabled for exactly the portal's client, the agent's and the desktop client (auth0_connection_clients, authoritative): the database one always, Google's only while var.google_sign_in; never L2's approval client or a machine caller";
+/** Rule 2: the clients that may sign a person in. 019: the desktop client beside the agent's docs page client. */
+const PEOPLE_CLIENTS = "[auth0_client.portal.client_id, auth0_client.agent.client_id, auth0_client.desktop.client_id]";
 /**
  * Rule 5: the plan stops unless the tenant's Google connection runs on the project's own application. The non-empty
  * test matters: on Auth0's developer keys the connection has no client ID, and "" == "" would let it through.
@@ -404,6 +418,35 @@ export function auth0Problems(s: Sources): string[] {
     }
     if (has(agentClient, /\brefresh_token\s*\{/)) p.push(AGENT_NO_REFRESH);
   }
+
+  // 019: the desktop client, a public native client: authorization code (with PKCE) and rotating refresh tokens. It
+  // returns to the person's own computer only, at the same two loopback addresses in every environment, and carries
+  // the marker the post-login rule recognizes it by.
+  const desktopClient = publicClient("desktop", "the desktop client", "native", ["authorization_code", "refresh_token"]);
+  const desktopCallbacks = /^\s*desktop_callbacks\s*=\s*(.+)$/m.exec(tf)?.[1] ?? "";
+  if (desktopClient) {
+    if (
+      JSON.stringify(urlArguments(desktopClient)) !== JSON.stringify(["callbacks = local.desktop_callbacks"]) ||
+      JSON.stringify(quoted(desktopCallbacks)) !== JSON.stringify(DESKTOP_CALLBACKS) ||
+      /var\.|\*/.test(desktopCallbacks) ||
+      desktopClient.includes("://")
+    ) {
+      p.push(DESKTOP_URLS);
+    }
+    const metadata = block(desktopClient, /client_metadata\s*=\s*\{/) ?? "";
+    if (
+      JSON.stringify([...metadata.matchAll(/^\s*(\w+)\s*=\s*(.+)$/gm)].map((m) => `${m[1]} = ${m[2]!.trim()}`)) !== JSON.stringify([`x402_client = "${DESKTOP_MARKER}"`]) ||
+      !has(block(desktopClient, /jwt_configuration\s*\{/), /alg\s*=\s*"RS256"/)
+    ) {
+      p.push(DESKTOP_METADATA);
+    }
+    const refresh = block(desktopClient, /refresh_token\s*\{/) ?? "";
+    const refreshArgs = Object.fromEntries([...refresh.matchAll(/^\s*(\w+)\s*=\s*(.+)$/gm)].map((m) => [m[1]!, m[2]!.trim()]));
+    const want = { rotation_type: '"rotating"', expiration_type: '"expiring"', token_lifetime: "2592000", idle_token_lifetime: "604800", infinite_token_lifetime: "false", infinite_idle_token_lifetime: "false", leeway: "0" };
+    if (JSON.stringify(Object.entries(refreshArgs).sort()) !== JSON.stringify(Object.entries(want).sort()) || !(Number(refreshArgs.idle_token_lifetime) <= Number(refreshArgs.token_lifetime))) {
+      p.push(DESKTOP_REFRESH);
+    }
+  }
   // Phase 3 (finding #11): the localhost origins only where var.local_origins is on, and it is off by default.
   const localOrigins = block(tf, /variable\s+"local_origins"\s*\{/) ?? "";
   if (
@@ -460,7 +503,7 @@ export function auth0Problems(s: Sources): string[] {
   if (!/type\s*=\s*map\(string\)/.test(callerKeys) || !/default\s*=\s*\{\}/.test(callerKeys) || !callerKeys.includes('!strcontains(pem, "PRIVATE KEY")')) p.push(CALLER_KEYS);
 
   // The applications: exactly these four kinds, each with its own credentials resource (FR-026).
-  if (JSON.stringify(names("auth0_client")) !== JSON.stringify(APPLICATIONS) || JSON.stringify(names("auth0_client_credentials")) !== JSON.stringify(APPLICATIONS)) p.push(FOUR_KINDS);
+  if (JSON.stringify(names("auth0_client")) !== JSON.stringify(APPLICATIONS) || JSON.stringify(names("auth0_client_credentials")) !== JSON.stringify(APPLICATIONS)) p.push(FIVE_KINDS);
 
   // The Actions: each one's code is the file this suite runs (actionProblems and the like), it holds no secret and no
   // package, and it is appended to its flow, never replacing it. Phase 3: two post-login Actions, the second-factor
@@ -502,9 +545,18 @@ export function auth0Problems(s: Sources): string[] {
   const strings = (js: string) => JSON.stringify([...js.matchAll(/"([^"]*)"|'([^']*)'|`([^`]*)`/g)].map((m) => m[1] ?? m[2] ?? m[3]));
   const loads = (js: string) => /\bapi\s*\[|\brequire\s*\(|\bimport\b|\bfetch\s*\(|\bevent\.secrets\b/.test(js);
   const signInJs = jsOf(ACTION_FILE);
-  const signInStrings = [AUTH_TIME_CLAIM, ADMIN_ROLE, ...BROWSER_PROTOCOLS, ...SECOND_FACTORS.map((f) => f.type), "mfa"];
-  if (apiUses(signInJs) !== '["accessToken.setCustomClaim","authentication.challengeWithAny"]' || strings(signInJs) !== JSON.stringify(signInStrings) || loads(signInJs)) p.push(ONE_CLAIM);
+  // 019: the desktop client's two refusals (in source order), then the challenge.
+  const signInStrings = [AUTH_TIME_CLAIM, ADMIN_ROLE, AGENT_ROLE, DESKTOP_MARKER, "oauth2-refresh-token", ...BROWSER_PROTOCOLS, ...SECOND_FACTORS.map((f) => f.type), "mfa", "not_authorized_for_agent", "S256", "pkce_required"];
+  if (apiUses(signInJs) !== '["accessToken.setCustomClaim","access.deny","access.deny","authentication.challengeWithAny"]' || strings(signInJs) !== JSON.stringify(signInStrings) || loads(signInJs)) p.push(ONE_CLAIM);
   if (/^const ADMIN_ROLE = "([^"]+)";$/m.exec(signInJs)?.[1] !== ADMIN_ROLE || !has(block(tf, /resource\s+"auth0_role"\s+"admin"\s*\{/), new RegExp(`name\\s*=\\s*"${ADMIN_ROLE}"`))) p.push(ADMIN_ROLE_IN_ACTION);
+  if (
+    /^const AGENT_ROLE = "([^"]+)";$/m.exec(signInJs)?.[1] !== AGENT_ROLE ||
+    !has(block(tf, /resource\s+"auth0_role"\s+"agent"\s*\{/), new RegExp(`name\\s*=\\s*"${AGENT_ROLE}"`)) ||
+    /^const DESKTOP_CLIENT = "([^"]+)";$/m.exec(signInJs)?.[1] !== DESKTOP_MARKER ||
+    !has(block(block(tf, /resource\s+"auth0_client"\s+"desktop"\s*\{/) ?? "", /client_metadata\s*=\s*\{/), new RegExp(`x402_client\\s*=\\s*"${DESKTOP_MARKER}"`))
+  ) {
+    p.push(DESKTOP_IN_ACTION);
+  }
   const mfaJs = jsOf(MFA_ACTION_FILE);
   if (apiUses(mfaJs) !== '["accessToken.setCustomClaim"]' || strings(mfaJs) !== JSON.stringify([MFA_TIME_CLAIM, "mfa"]) || loads(mfaJs)) p.push(ONE_MFA_CLAIM);
   // Phase 3 (finding #6): the second factors the first Action asks for are on, and so is the tenant's setting that
@@ -626,7 +678,8 @@ export function auth0Problems(s: Sources): string[] {
     p.push(`output bicepparam_agent must have exactly the agent keys of the parameter file but apiDocs (${wantAgent.join(", ")}), got ${gotAgent.join(", ")}`);
   }
   if (
-    !/clientId\s*=\s*auth0_client\.agent\.client_id\b/.test(agentOut) ||
+    !/^\s*clientId\s*=\s*auth0_client\.agent\.client_id$/m.test(agentOut) ||
+    !/^\s*desktopClientId\s*=\s*auth0_client\.desktop\.client_id$/m.test(agentOut) ||
     !agentOut.includes(`try(auth0_client.machine["${PIPELINE_CALLER}"].client_id, "")`) ||
     !agentOut.includes(`try(one(auth0_client_credentials.machine["${PIPELINE_CALLER}"].private_key_jwt[0].credentials).key_id, "")`) ||
     !/machineClientId\s*=\s*try\(auth0_client\.machine\b/.test(agentOut) ||
@@ -637,9 +690,9 @@ export function auth0Problems(s: Sources): string[] {
   // The lines for local env files: the agent and L2 get the same sign-in settings, and the list of clients a
   // person's token may come from is the agent's client alone.
   const envLines = (name: string) => [...(block(tf, new RegExp(`output\\s+"${name}"\\s*\\{`)) ?? "").matchAll(/^\s*"([A-Z_]+=[^"]*)",?$/gm)].map((m) => m[1]!);
-  const signIn = ["AUTH_ISSUER=${local.issuer}", "AUTH_AUDIENCE=${auth0_resource_server.identity.identifier}", "AGENT_CLIENT_IDS=${auth0_client.agent.client_id}"];
+  const signIn = ["AUTH_ISSUER=${local.issuer}", "AUTH_AUDIENCE=${auth0_resource_server.identity.identifier}", "AGENT_CLIENT_IDS=${auth0_client.agent.client_id},${auth0_client.desktop.client_id}"];
   if (
-    JSON.stringify(envLines("l1_env")) !== JSON.stringify([...signIn, "API_DOCS_CLIENT_ID=${auth0_client.agent.client_id}"]) ||
+    JSON.stringify(envLines("l1_env")) !== JSON.stringify([...signIn, "API_DOCS_CLIENT_ID=${auth0_client.agent.client_id}", "AGENT_DESKTOP_CLIENT_ID=${auth0_client.desktop.client_id}"]) ||
     JSON.stringify(envLines("l2_env").filter((line) => !line.startsWith("CIBA_"))) !== JSON.stringify(signIn)
   ) {
     p.push(ENV_OUTPUTS);
@@ -878,6 +931,49 @@ const mfaTime = (iso: string): ApiCall => ["accessToken.setCustomClaim", [MFA_TI
 const CHALLENGE: ApiCall = ["authentication.challengeWithAny", [SECOND_FACTORS]];
 type Case = [label: string, event: unknown, want: ApiCall[]];
 
+/** 019: an /authorize request's PKCE parameters, as the post-login event has them (event.request.query). */
+const S256_QUERY = { code_challenge: "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM", code_challenge_method: "S256" };
+const RENEWAL = "oauth2-refresh-token";
+/**
+ * 019: a sign-in (or a renewal) through a client: its metadata (the desktop client's marker, none, or no metadata at
+ * all), the person's roles, the protocol, the /authorize query (null: no request) and the methods so far (a
+ * password only, by default: a second factor is due).
+ */
+const through = (metadata: Record<string, string> | undefined, roles: string[], protocol: string, query: Record<string, string> | null = S256_QUERY, methods: unknown[] = [method("pwd", FIRST)]) => ({
+  authentication: { methods },
+  authorization: { roles },
+  client: { client_id: "c-1", ...(metadata !== undefined && { metadata }) },
+  transaction: { protocol },
+  ...(query !== null && { request: { query } }),
+  user: { user_id: "auth0|1" },
+});
+const DESKTOP_METADATA_OF = { x402_client: DESKTOP_MARKER };
+const NOT_FOR_AGENT: ApiCall = ["access.deny", ["not_authorized_for_agent"]];
+const PKCE_REQUIRED: ApiCall = ["access.deny", ["pkce_required"]];
+
+/**
+ * 019 (spec NFR-004): the 12 combinations of the three clients a person signs in through (the desktop client, the
+ * agent's docs page client and the portal's, the last two without the marker, the portal's with no metadata at all),
+ * with and without x402-agent, on a sign-in and on a renewal. Only the desktop client is ever refused, and its
+ * refusals come before the challenge; every other client gets exactly today's calls.
+ */
+function desktopCombinations(): Case[] {
+  const clients: [string, Record<string, string> | undefined][] = [["the desktop client", DESKTOP_METADATA_OF], ["the docs page's client", {}], ["the portal's client", undefined]];
+  const cases: Case[] = [];
+  for (const [client, metadata] of clients) {
+    for (const holds of [true, false]) {
+      for (const protocol of ["oidc-basic-profile", RENEWAL]) {
+        const desktop = metadata === DESKTOP_METADATA_OF;
+        const renewal = protocol === RENEWAL;
+        const want: ApiCall[] = !desktop ? [authTime(FIRST)] : !holds ? [authTime(FIRST), NOT_FOR_AGENT] : renewal ? [authTime(FIRST)] : [authTime(FIRST), CHALLENGE];
+        const label = `${client} ${holds ? "with" : "without"} ${AGENT_ROLE} on ${protocol}`;
+        cases.push([label, through(metadata, holds ? [AGENT_ROLE] : [], protocol, renewal ? null : S256_QUERY), want]);
+      }
+    }
+  }
+  return cases;
+}
+
 /** Runs each case; one message per case whose calls differ, or that throws (a failing Action stops sign-ins). */
 async function caseProblems(source: string, cases: Case[], handler = "onExecutePostLogin"): Promise<string[]> {
   const p: string[] = [];
@@ -916,6 +1012,18 @@ export async function actionProblems(source: string): Promise<string[]> {
     ["an administrator's event without a transaction", admin([method("pwd", FIRST)], null), [authTime(FIRST)]],
     ["a person without the administrator's role", { ...admin([method("pwd", FIRST)]), authorization: { roles: ["x402-agent"] } }, [authTime(FIRST)]],
     ["a role named like the administrator's", { ...admin([method("pwd", FIRST)]), authorization: { roles: [`${ADMIN_ROLE}istrator`] } }, [authTime(FIRST)]],
+    // 019: the desktop client.
+    ...desktopCombinations(),
+    ["the desktop client with no code_challenge", through(DESKTOP_METADATA_OF, [AGENT_ROLE], "oidc-basic-profile", {}), [authTime(FIRST), PKCE_REQUIRED]],
+    ["the desktop client with code_challenge_method plain", through(DESKTOP_METADATA_OF, [AGENT_ROLE], "oidc-basic-profile", { ...S256_QUERY, code_challenge_method: "plain" }), [authTime(FIRST), PKCE_REQUIRED]],
+    ["the desktop client with no code_challenge_method", through(DESKTOP_METADATA_OF, [AGENT_ROLE], "oidc-basic-profile", { code_challenge: S256_QUERY.code_challenge }), [authTime(FIRST), PKCE_REQUIRED]],
+    ["the desktop client with the method in lower case", through(DESKTOP_METADATA_OF, [AGENT_ROLE], "oidc-basic-profile", { ...S256_QUERY, code_challenge_method: "s256" }), [authTime(FIRST), PKCE_REQUIRED]],
+    ["the desktop client with no request", through(DESKTOP_METADATA_OF, [AGENT_ROLE], "oidc-basic-profile", null), [authTime(FIRST), PKCE_REQUIRED]],
+    ["the desktop client without the role and without a code_challenge", through(DESKTOP_METADATA_OF, [], "oidc-basic-profile", {}), [authTime(FIRST), NOT_FOR_AGENT]],
+    ["the desktop client with a fresh second factor", through(DESKTOP_METADATA_OF, [AGENT_ROLE], "oidc-basic-profile", S256_QUERY, [method("pwd", FIRST), method("mfa", LAST)]), [authTime(LAST)]],
+    ["the desktop client by oidc-hybrid-profile", through(DESKTOP_METADATA_OF, [AGENT_ROLE], "oidc-hybrid-profile"), [authTime(FIRST), CHALLENGE]],
+    ["an administrator without x402-agent through the desktop client", through(DESKTOP_METADATA_OF, [ADMIN_ROLE], "oidc-basic-profile"), [authTime(FIRST), NOT_FOR_AGENT]],
+    ["a role named like x402-agent through the desktop client", through(DESKTOP_METADATA_OF, [`${AGENT_ROLE}s`], RENEWAL, null), [authTime(FIRST), NOT_FOR_AGENT]],
   ]);
 }
 
@@ -992,8 +1100,8 @@ describe("T-IAC-02 Auth0 tenant as code (auth0/)", () => {
     expect(Object.keys(bicepObject(load().bicepparam, "identity")).sort()).toEqual(["audience", "issuer"]);
   });
 
-  it("016: the parameter file's agent object has the four keys main.bicep reads: Terraform's three and its own apiDocs", () => {
-    expect(Object.keys(bicepObject(load().bicepparam, "agent")).sort()).toEqual(["apiDocs", "clientId", "machineClientId", "machineKeyId"]);
+  it("016, 019: the parameter file's agent object has the five keys main.bicep reads: Terraform's four and its own apiDocs", () => {
+    expect(Object.keys(bicepObject(load().bicepparam, "agent")).sort()).toEqual(["apiDocs", "clientId", "desktopClientId", "machineClientId", "machineKeyId"]);
   });
 
   it.each<[string, string, string | RegExp, string, string]>([
@@ -1086,14 +1194,14 @@ describe("T-IAC-02 Auth0 tenant as code (auth0/)", () => {
   // 016: the hosted agent's callers. One mutant, at least, for each rule of contracts/tenant-and-config.md "The tenant".
   const AGENT_PUBLIC = "the agent's client must be a public spa client: authentication_method none, no secret and no key";
   const AGENT_GRANT = "the agent's client must have only its own grant (authorization_code)";
-  const AGENT_KEYS = "output bicepparam_agent must have exactly the agent keys of the parameter file but apiDocs (clientId, machineClientId, machineKeyId), got clientId, machineClientId";
+  const AGENT_KEYS = "output bicepparam_agent must have exactly the agent keys of the parameter file but apiDocs (clientId, desktopClientId, machineClientId, machineKeyId), got clientId, desktopClientId, machineClientId";
   const GRANT_FOR_PAYMENTS = 'resource "auth0_client_grant" "machine_payments" {\n  for_each = var.machine_caller_keys\n\n  client_id = auth0_client.machine[each.key].client_id\n  audience  = auth0_resource_server.payments.identifier\n  scopes    = []\n}\n\n';
   it.each<[string, string, string | RegExp, string, string]>([
     // The applications (FR-026).
-    ["a fourth kind of application", "main.tf", 'resource "auth0_client" "portal" {', 'resource "auth0_client" "cli" {\n  name     = "agent-cli"\n  app_type = "native"\n}\n\nresource "auth0_client" "portal" {', FOUR_KINDS],
-    ["credentials for an application that isn't one of the four", "main.tf", 'resource "auth0_client_credentials" "portal" {', 'resource "auth0_client_credentials" "cli" {\n  client_id             = "abc"\n  authentication_method = "none"\n}\n\nresource "auth0_client_credentials" "portal" {', FOUR_KINDS],
-    ["no client for the agent's callers", "main.tf", /resource "auth0_client" "agent" \{[\s\S]*?\n\}\n\n/, "", FOUR_KINDS],
-    ["no client for the machine callers", "main.tf", /resource "auth0_client" "machine" \{[\s\S]*?\n\}\n\n/, "", FOUR_KINDS],
+    ["another kind of application", "main.tf", 'resource "auth0_client" "portal" {', 'resource "auth0_client" "cli" {\n  name     = "agent-cli"\n  app_type = "native"\n}\n\nresource "auth0_client" "portal" {', FIVE_KINDS],
+    ["credentials for an application that isn't one of the five", "main.tf", 'resource "auth0_client_credentials" "portal" {', 'resource "auth0_client_credentials" "cli" {\n  client_id             = "abc"\n  authentication_method = "none"\n}\n\nresource "auth0_client_credentials" "portal" {', FIVE_KINDS],
+    ["no client for the agent's callers", "main.tf", /resource "auth0_client" "agent" \{[\s\S]*?\n\}\n\n/, "", FIVE_KINDS],
+    ["no client for the machine callers", "main.tf", /resource "auth0_client" "machine" \{[\s\S]*?\n\}\n\n/, "", FIVE_KINDS],
     // The permissions and the roles (FR-025).
     ["a third permission on the API", "main.tf", /(\n  scopes \{\n[^}]*local\.agent_permission[^}]*\})/, '$1\n\n  scopes {\n    name = "portal:owner"\n  }', TWO_ROLES],
     ["no permission to start a run", "main.tf", /\n  scopes \{\n[^}]*local\.agent_permission[^}]*\}\n/, "", TWO_ROLES],
@@ -1229,10 +1337,10 @@ describe("T-IAC-02 Auth0 tenant as code (auth0/)", () => {
     ["one client enabled on its own, beside the authoritative list", "main.tf", 'data "auth0_connection" "google" {', 'resource "auth0_connection_client" "l2" {\n  connection_id = auth0_connection.database.id\n  client_id     = auth0_client.l2.client_id\n}\n\ndata "auth0_connection" "google" {', CONNECTIONS],
     ["Google's connection managed, with its secret in the state", "main.tf", 'data "auth0_connection" "google" {', 'resource "auth0_connection" "google" {', CONNECTIONS],
     ["no list for Google, so clients enabled by hand stay", "main.tf", /resource "auth0_connection_clients" "google" \{[\s\S]*?\n\}\n/, "", CONNECTIONS],
-    ["L2's approval client on the database connection", "main.tf", /(resource "auth0_connection_clients" "database" \{[\s\S]*?enabled_clients\s*= )\[auth0_client\.portal\.client_id, auth0_client\.agent\.client_id\]/, "$1[auth0_client.portal.client_id, auth0_client.agent.client_id, auth0_client.l2.client_id]", CONNECTION_CLIENTS],
-    ["the machine callers on Google", "main.tf", /(resource "auth0_connection_clients" "google" \{[\s\S]*?enabled_clients\s*= var\.google_sign_in \? )\[auth0_client\.portal\.client_id, auth0_client\.agent\.client_id\]/, "$1concat([auth0_client.portal.client_id, auth0_client.agent.client_id], values(auth0_client.machine)[*].client_id)", CONNECTION_CLIENTS],
+    ["L2's approval client on the database connection", "main.tf", /(resource "auth0_connection_clients" "database" \{[\s\S]*?enabled_clients\s*= )\[auth0_client\.portal\.client_id, auth0_client\.agent\.client_id, auth0_client\.desktop\.client_id\]/, "$1[auth0_client.portal.client_id, auth0_client.agent.client_id, auth0_client.desktop.client_id, auth0_client.l2.client_id]", CONNECTION_CLIENTS],
+    ["the machine callers on Google", "main.tf", /(resource "auth0_connection_clients" "google" \{[\s\S]*?enabled_clients\s*= var\.google_sign_in \? )\[auth0_client\.portal\.client_id, auth0_client\.agent\.client_id, auth0_client\.desktop\.client_id\]/, "$1concat([auth0_client.portal.client_id, auth0_client.agent.client_id, auth0_client.desktop.client_id], values(auth0_client.machine)[*].client_id)", CONNECTION_CLIENTS],
     ["Google on whatever the emergency stop", "main.tf", /(enabled_clients\s*= )var\.google_sign_in \? (\[[^\]]+\]) : \[\]/, "$1$2", CONNECTION_CLIENTS],
-    ["the agent left off the database connection", "main.tf", /(resource "auth0_connection_clients" "database" \{[\s\S]*?enabled_clients\s*= )\[auth0_client\.portal\.client_id, auth0_client\.agent\.client_id\]/, "$1[auth0_client.portal.client_id]", CONNECTION_CLIENTS],
+    ["the agent left off the database connection", "main.tf", /(resource "auth0_connection_clients" "database" \{[\s\S]*?enabled_clients\s*= )\[auth0_client\.portal\.client_id, auth0_client\.agent\.client_id, auth0_client\.desktop\.client_id\]/, "$1[auth0_client.portal.client_id, auth0_client.desktop.client_id]", CONNECTION_CLIENTS],
     ["the database list on another connection", "main.tf", /(resource "auth0_connection_clients" "database" \{[\s\S]*?connection_id\s*= )auth0_connection\.database\.id/, "$1data.auth0_connection.google.id", CONNECTION_CLIENTS],
     // Rule 5: the project's own Google application, or the plan stops.
     ["no check of Google's application", "main.tf", /(resource "auth0_connection_clients" "google" \{[\s\S]*?: \[\]\n)\n {2}lifecycle \{\n {4}precondition \{[\s\S]*?\n {4}\}\n {2}\}\n/, "$1", GOOGLE_APP],
@@ -1246,6 +1354,61 @@ describe("T-IAC-02 Auth0 tenant as code (auth0/)", () => {
     ["a sign-up Action that replaces the flow", "main.tf", /$/, `\nresource "auth0_trigger_actions" "sign_up" {\n  trigger = "pre-user-registration"\n  actions {\n    id           = auth0_action.sign_in_time.id\n    display_name = "x"\n  }\n}\n`, NO_SIGN_UP_ACTION],
     ["the post-login Action moved to pre-user-registration", "main.tf", /(resource "auth0_trigger_action" "sign_in_time" \{[\s\S]*?trigger\s*= )"post-login"/, '$1"pre-user-registration"', NO_SIGN_UP_ACTION],
   ])("018 must fail: %s is reported", (_label, file, from, to, message) => {
+    expect(auth0Problems(mutate(load(), file, from, to))).toContain(message);
+  });
+
+  // 019: the desktop client. One mutant, at least, for each rule of specs/019 contracts/tenant-and-config.md.
+  const DESKTOP_PUBLIC = "the desktop client must be a public native client: authentication_method none, no secret and no key";
+  const DESKTOP_GRANT = "the desktop client must have only its own grant (authorization_code, refresh_token)";
+  it.each<[string, string, string | RegExp, string, string]>([
+    // The applications and the client's kind.
+    ["no desktop client", "main.tf", /resource "auth0_client" "desktop" \{[\s\S]*?\n\}\n\n/, "", FIVE_KINDS],
+    ["the desktop client without its own credentials", "main.tf", /resource "auth0_client_credentials" "desktop" \{[\s\S]*?\n\}\n/, "", FIVE_KINDS],
+    ["a desktop client with a secret", "main.tf", /(resource "auth0_client_credentials" "desktop" \{[\s\S]*?authentication_method\s*=\s*)"none"/, '$1"client_secret_post"', DESKTOP_PUBLIC],
+    ["a desktop client with a key", "main.tf", /(resource "auth0_client_credentials" "desktop" \{[\s\S]*?authentication_method\s*=\s*)"none"/, '$1"private_key_jwt"', DESKTOP_PUBLIC],
+    ["a desktop client that is a web page's", "main.tf", /(resource "auth0_client" "desktop" \{[\s\S]*?app_type\s*=\s*)"native"/, '$1"spa"', DESKTOP_PUBLIC],
+    // The grants.
+    ["a third grant on the desktop client", "main.tf", /(resource "auth0_client" "desktop" \{[\s\S]*?grant_types\s*= )\["authorization_code", "refresh_token"\]/, '$1["authorization_code", "refresh_token", "implicit"]', DESKTOP_GRANT],
+    ["the desktop client with client credentials", "main.tf", /(resource "auth0_client" "desktop" \{[\s\S]*?grant_types\s*= )\["authorization_code", "refresh_token"\]/, '$1["authorization_code", "refresh_token", "client_credentials"]', DESKTOP_GRANT],
+    ["the desktop client with the device grant", "main.tf", /(resource "auth0_client" "desktop" \{[\s\S]*?grant_types\s*= )\["authorization_code", "refresh_token"\]/, `$1["authorization_code", "refresh_token", "${DEVICE_GRANT}"]`, DESKTOP_GRANT],
+    // The loopback returns.
+    ["a wildcard port", "main.tf", '"http://127.0.0.1:53682/callback"', '"http://127.0.0.1:*/callback"', DESKTOP_URLS],
+    ["a third loopback callback", "main.tf", '"http://localhost:53682/callback"]', '"http://localhost:53682/callback", "http://127.0.0.1:53683/callback"]', DESKTOP_URLS],
+    ["another path", "main.tf", '"http://127.0.0.1:53682/callback"', '"http://127.0.0.1:53682/other"', DESKTOP_URLS],
+    ["the callbacks only where var.local_origins is on", "main.tf", /desktop_callbacks = (\[[^\]]+\])/, "desktop_callbacks = var.local_origins ? $1 : []", DESKTOP_URLS],
+    ["a callback written in the desktop client", "main.tf", /callbacks(\s*)= local\.desktop_callbacks/, 'callbacks$1= ["http://127.0.0.1:53682/callback"]', DESKTOP_URLS],
+    ["a web origin on the desktop client", "main.tf", /(\n  callbacks = local\.desktop_callbacks)/, "$1\n  web_origins = local.desktop_callbacks", DESKTOP_URLS],
+    ["a logout URL on the desktop client", "main.tf", /(\n  callbacks = local\.desktop_callbacks)/, '$1\n  allowed_logout_urls = ["http://127.0.0.1:53682/"]', DESKTOP_URLS],
+    ["a login URI on the desktop client", "main.tf", /(\n  callbacks = local\.desktop_callbacks)/, '$1\n  initiate_login_uri = "https://desktop.example/login"', DESKTOP_URLS],
+    // The marker and the signature.
+    ["no marker", "main.tf", /\n  client_metadata = \{\n    x402_client = "agent-desktop"\n  \}\n/, "\n", DESKTOP_METADATA],
+    ["another marker", "main.tf", /(client_metadata = \{\n    x402_client = )"agent-desktop"/, '$1"agent-cli"', DESKTOP_METADATA],
+    ["a second metadata key", "main.tf", '    x402_client = "agent-desktop"\n', '    x402_client = "agent-desktop"\n    team        = "x"\n', DESKTOP_METADATA],
+    ["HS256 desktop tokens", "main.tf", /(resource "auth0_client" "desktop" \{[\s\S]*?alg = )"RS256"/, '$1"HS256"', DESKTOP_METADATA],
+    // The refresh tokens.
+    ["a reuse interval", "main.tf", /(resource "auth0_client" "desktop" \{[\s\S]*?leeway\s*= )0/, "$130", DESKTOP_REFRESH],
+    ["desktop refresh tokens that never expire", "main.tf", /(resource "auth0_client" "desktop" \{[\s\S]*?\n    infinite_token_lifetime\s*= )false/, "$1true", DESKTOP_REFRESH],
+    ["desktop refresh tokens that are never idle", "main.tf", /(resource "auth0_client" "desktop" \{[\s\S]*?infinite_idle_token_lifetime = )false/, "$1true", DESKTOP_REFRESH],
+    ["desktop refresh tokens that don't rotate", "main.tf", /(resource "auth0_client" "desktop" \{[\s\S]*?rotation_type\s*= )"rotating"/, '$1"non-rotating"', DESKTOP_REFRESH],
+    ["an idle lifetime longer than the whole", "main.tf", /(resource "auth0_client" "desktop" \{[\s\S]*?idle_token_lifetime\s*= )604800/, "$12592001", DESKTOP_REFRESH],
+    ["a 90-day sign-in", "main.tf", /(resource "auth0_client" "desktop" \{[\s\S]*?\n    token_lifetime\s*= )2592000/, "$17776000", DESKTOP_REFRESH],
+    // No default audience: the tenant setting sets nothing but its MFA setting (spec FR-004).
+    ["a default audience for the tenant", "main.tf", /(\n\s+customize_mfa_in_postlogin_action = true)/, "$1\n  default_audience                  = local.identity_audience", MFA_SETTINGS],
+    // The connections.
+    ["the desktop client on a third connection", "main.tf", 'data "auth0_connection" "google" {', 'resource "auth0_connection_client" "desktop_email" {\n  connection_id = "con_email"\n  client_id     = auth0_client.desktop.client_id\n}\n\ndata "auth0_connection" "google" {', CONNECTIONS],
+    ["the desktop client left off the database connection", "main.tf", /(resource "auth0_connection_clients" "database" \{[\s\S]*?enabled_clients\s*= )\[auth0_client\.portal\.client_id, auth0_client\.agent\.client_id, auth0_client\.desktop\.client_id\]/, "$1[auth0_client.portal.client_id, auth0_client.agent.client_id]", CONNECTION_CLIENTS],
+    ["the desktop client left off Google", "main.tf", /(resource "auth0_connection_clients" "google" \{[\s\S]*?enabled_clients\s*= var\.google_sign_in \? )\[auth0_client\.portal\.client_id, auth0_client\.agent\.client_id, auth0_client\.desktop\.client_id\]/, "$1[auth0_client.portal.client_id, auth0_client.agent.client_id]", CONNECTION_CLIENTS],
+    // The outputs: both services' lists, and the advertised client.
+    ["L2's list without the desktop client", "outputs.tf", /(output "l2_env" \{[\s\S]*?AGENT_CLIENT_IDS=\$\{auth0_client\.agent\.client_id\}),\$\{auth0_client\.desktop\.client_id\}/, "$1", ENV_OUTPUTS],
+    ["the agent's list without the desktop client", "outputs.tf", /(output "l1_env" \{[\s\S]*?AGENT_CLIENT_IDS=\$\{auth0_client\.agent\.client_id\}),\$\{auth0_client\.desktop\.client_id\}/, "$1", ENV_OUTPUTS],
+    ["no advertised desktop client", "outputs.tf", /\n\s+"AGENT_DESKTOP_CLIENT_ID=[^\n]+/, "", ENV_OUTPUTS],
+    ["the agent's own client advertised as the desktop client", "outputs.tf", "AGENT_DESKTOP_CLIENT_ID=${auth0_client.desktop.client_id}", "AGENT_DESKTOP_CLIENT_ID=${auth0_client.agent.client_id}", ENV_OUTPUTS],
+    ["the portal's client as the desktop client in the agent object", "outputs.tf", "desktopClientId = auth0_client.desktop.client_id", "desktopClientId = auth0_client.portal.client_id", AGENT_OUTPUT],
+    // The rule and the tenant agree on the role and the marker.
+    ["a refusal by another role", ACTION_FILE, `const AGENT_ROLE = "${AGENT_ROLE}";`, `const AGENT_ROLE = "${ADMIN_ROLE}";`, DESKTOP_IN_ACTION],
+    ["a refusal for another client's marker", ACTION_FILE, `const DESKTOP_CLIENT = "${DESKTOP_MARKER}";`, 'const DESKTOP_CLIENT = "agent-cli";', DESKTOP_IN_ACTION],
+    ["a third refusal", ACTION_FILE, '      api.access.deny("pkce_required");\n', '      api.access.deny("pkce_required");\n      api.access.deny("again");\n', ONE_CLAIM],
+  ])("019 must fail: %s is reported", (_label, file, from, to, message) => {
     expect(auth0Problems(mutate(load(), file, from, to))).toContain(message);
   });
 
@@ -1301,7 +1464,16 @@ describe("T-IAC-02 Auth0 tenant as code (auth0/)", () => {
     ["a password taken as a second factor", ACTION_FILE, 'method.name === "mfa"', "method.name !== undefined", /for an administrator's sign-in without a second factor, must call/],
     ["a challenge with push only", ACTION_FILE, '[{ type: "push-notification" }, { type: "otp" }]', '[{ type: "push-notification" }]', /for an administrator's sign-in without a second factor, must call/],
     ["an error without authorization details", ACTION_FILE, "(event.authorization && event.authorization.roles) || []", "event.authorization.roles", /for a sign-in with two methods, must not throw/],
-    ["an error without a transaction", ACTION_FILE, "event.transaction && event.transaction.protocol", "event.transaction.protocol", /for an administrator's event without a transaction, must not throw/],
+    ["an error without a transaction", ACTION_FILE, "const browser = BROWSER_PROTOCOLS.includes(event.transaction && event.transaction.protocol);", "const browser = BROWSER_PROTOCOLS.includes(event.transaction.protocol);", /for an administrator's event without a transaction, must not throw/],
+    // 019: the desktop client's refusals.
+    ["019: the role checked on a sign-in only, never on a renewal", ACTION_FILE, "if (!(Array.isArray(roles) && roles.includes(AGENT_ROLE))) {", "if ((event.transaction && event.transaction.protocol) !== RENEWAL && !(Array.isArray(roles) && roles.includes(AGENT_ROLE))) {", /for the desktop client without x402-agent on oauth2-refresh-token, must call/],
+    ["019: plain accepted", ACTION_FILE, 'query.code_challenge_method !== "S256"', '!["S256", "plain"].includes(query.code_challenge_method)', /for the desktop client with code_challenge_method plain, must call/],
+    ["019: a challenge before the refusals", ACTION_FILE, "  if (desktop) {\n", "  if (desktop) {\n    if (browser && !freshSecondFactor) api.authentication.challengeWithAny(SECOND_FACTORS);\n", /for the desktop client without x402-agent on oidc-basic-profile, must call/],
+    ["019: no PKCE check", ACTION_FILE, '      api.access.deny("pkce_required");\n      return;\n', "", /for the desktop client with no code_challenge, must call/],
+    ["019: the desktop rule for every client", ACTION_FILE, "metadata.x402_client === DESKTOP_CLIENT", "true", /for the docs page's client without x402-agent on oidc-basic-profile, must call/],
+    ["019: no second factor for the desktop client", ACTION_FILE, "(admin || desktop) && browser", "admin && browser", /for the desktop client with x402-agent on oidc-basic-profile, must call/],
+    ["019: an error without a client", ACTION_FILE, "(event.client && event.client.metadata) || {}", "event.client.metadata", /for a sign-in with two methods, must not throw/],
+    ["019: an error without a request", ACTION_FILE, "(event.request && event.request.query) || {}", "event.request.query", /for the desktop client with no request, must not throw/],
     ["any method's time as the second factor's", MFA_ACTION_FILE, 'method && method.name === "mfa" && ', "method && ", /for a second factor older than the password, must call/],
     ["the first second factor, not the latest", MFA_ACTION_FILE, "at > latest", "latest === 0", /for two second factors, must call/],
     ["milliseconds", MFA_ACTION_FILE, "Math.floor(latest / 1000)", "latest", /for a sign-in with a second factor, must call/],

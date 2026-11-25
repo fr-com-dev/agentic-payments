@@ -49,6 +49,11 @@ export interface CallerDeps extends Omit<CallerSettings, "jwksFile">, TokenKeys 
   maxChecksPerMinute?: number;
   /** Test hook (T-CTK-09 must-fail): no bound on token checks. Never set by main(). */
   skipLimit?: boolean;
+  /**
+   * Test hook (T-CTK-11 must-fail, 019): answer row 6 (a person while user accounts are off) with `caller_forbidden`,
+   * as before 019, so the agent can't tell "no person accounts here" from a misconfiguration. Never set by main().
+   */
+  singleForbiddenCode?: boolean;
 }
 
 /**
@@ -113,6 +118,8 @@ export const forwardedIdentityOf = (res: Response): ForwardedIdentity => (res.lo
 /**
  * The checks of specs/016 contracts/control-api.md "Order of checks", rows 2 to 6. Mounted after `requireRole` and
  * before the body parser. `deps` absent: sign-in is not configured, so a token is not accepted and none is needed.
+ * Rows 2 to 4 answer 400 or 401; row 5 (no permission, or a person's client not on the list) 403 `caller_forbidden`;
+ * row 6 (a person while user accounts are off) 403 `user_accounts_off` (019, specs/019 contracts/control-api.md).
  */
 export function callerAuth(deps: CallerDeps | undefined, o: { usersOn: boolean }): RequestHandler {
   const refuse = (res: Response, status: 400 | 401 | 403, error: string) => {
@@ -155,7 +162,9 @@ export function callerAuth(deps: CallerDeps | undefined, o: { usersOn: boolean }
       return next();
     }
     // A person pays from their own account or not at all (hard rule 11): with user accounts off there is none.
-    if (!o.usersOn) return refuse(res, 403, "caller_forbidden");
+    // 019 (row 6): its own code, a state of this L2 and never of the person, so the agent's account question can
+    // answer it (409 accounts_off) apart from a token L2 refuses (403 caller_forbidden, a misconfiguration: 503).
+    if (!o.usersOn) return refuse(res, 403, deps.singleForbiddenCode ? "caller_forbidden" : "user_accounts_off");
     let userId: string;
     try {
       userId = userIdFor(caller.issuer, caller.subject);

@@ -64,7 +64,7 @@ For people's sign-in:
 | `auth0_resource_server_scopes.identity` | The two permissions of people's API: `portal:admin` (014) and `agent:run` (016). | — |
 | `auth0_role.admin`, `auth0_role_permissions.admin` | 014: the role `x402-admin`, which holds exactly `portal:admin`. It opens the portal's administration area and nothing else. Nobody is assigned here. | read by the portal from the token |
 | `auth0_client.portal`, `auth0_client_credentials.portal` | The portal's web app: a public single-page client with no secret. It uses the authorization code with PKCE, and the `refresh_token` grant because its refresh tokens rotate. Its callbacks, web origins and logout URLs are `portal_origin` when set, and `http://localhost:4025` only where `local_origins` is on (dev). | `PORTAL_CLIENT_ID`, `userAccounts.portalClientId` |
-| `auth0_action.sign_in_time`, `auth0_trigger_action.sign_in_time` | The first post-login Action, in `sign-in-time.js`. It writes one claim on the access token, `https://x402.dev/auth_time`: the time of the person's most recent authentication, in seconds. Phase 3: on an interactive sign-in in a browser of a holder of `x402-admin` whose latest second factor is older than the rest of the sign-in, or missing, it asks Auth0 to challenge them with Guardian push or a one-time code. Never on a refresh-token exchange, never for anyone else. It is appended to the tenant's post-login flow and replaces nothing there. | `AUTH_TIME_CLAIM` |
+| `auth0_action.sign_in_time`, `auth0_trigger_action.sign_in_time` | The first post-login Action, in `sign-in-time.js`. It writes one claim on the access token, `https://x402.dev/auth_time`: the time of the person's most recent authentication, in seconds. Phase 3: on an interactive sign-in in a browser of a holder of `x402-admin` whose latest second factor is older than the rest of the sign-in, or missing, it asks Auth0 to challenge them with Guardian push or a one-time code. Never on a refresh-token exchange, never for anyone else but the desktop client's people. 019: for the desktop client only, before any challenge, it refuses a sign-in or a renewal by a person without `x402-agent` (`not_authorized_for_agent`) and a sign-in whose authorization did not use PKCE with S256 (`pkce_required`), then asks for the second factor as it does for an administrator. It is appended to the tenant's post-login flow and replaces nothing there. | `AUTH_TIME_CLAIM` |
 | `auth0_action.mfa_time`, `auth0_trigger_action.mfa_time` | Phase 3: the second post-login Action, in `mfa-time.js`, bound after the first (Auth0 challenges once an Action has run, so only a later one sees the second factor). It writes `https://x402.dev/mfa_time`: the time of the person's most recent second factor, in seconds, or nothing without one. The services require it, fresh, for an administrator's decision. | `DEFAULT_MFA_TIME_CLAIM` |
 
 For the ways people sign in (SPEC v1.28, `specs/018`):
@@ -73,7 +73,7 @@ For the ways people sign in (SPEC v1.28, `specs/018`):
 |---|---|---|
 | `auth0_connection.database` | The email-and-password connection, `Username-Password-Authentication`, imported. Its own "Disable Sign Ups" is `!allow_sign_ups`: closed, Auth0 refuses every self-service sign-up (the page, `/u/signup`, `POST /dbconnections/signup`) and the page shows no "Sign up" link, while you can still create a person in the Dashboard. Every option is written out, because an update replaces them all. It is never destroyed: it holds every email-and-password person. | — |
 | `data.auth0_connection.google` | Google's connection, `google-oauth2`, read and never written, with `hide_client_secret`: the Google application's secret stays in the tenant and never reaches the state. | — |
-| `auth0_connection_clients.database`, `auth0_connection_clients.google` | The clients that may sign a person in through each connection: exactly the portal's and the agent's (Google's only while `google_sign_in`). Each list is authoritative: a client enabled by hand shows in the next plan, and the apply takes it off. L2's approval client and the machine callers get no connection. A precondition on Google's list stops the plan unless the connection uses `google_client_id`, the project's own Google application. | — |
+| `auth0_connection_clients.database`, `auth0_connection_clients.google` | The clients that may sign a person in through each connection: exactly the portal's, the agent's and (019) the desktop client (Google's only while `google_sign_in`). Each list is authoritative: a client enabled by hand shows in the next plan, and the apply takes it off. L2's approval client and the machine callers get no connection. A precondition on Google's list stops the plan unless the connection uses `google_client_id`, the project's own Google application. | — |
 
 For the hosted agent's callers:
 
@@ -81,13 +81,15 @@ For the hosted agent's callers:
 |---|---|---|
 | `auth0_role.agent`, `auth0_role_permissions.agent` | The role `x402-agent`, which holds exactly `agent:run`. Its holder may start runs at the hosted agent, for their own account. Nobody is assigned here. | read by the agent and L2 from the token |
 | `auth0_client.agent`, `auth0_client_credentials.agent` | The agent's client: a public single-page client with no secret. Its only grant is the authorization code (with PKCE), so it gets no refresh token. Its callbacks are `<origin>/docs/oauth2-redirect.html`, and its allowed origins and web origins `<origin>`, for `agent_origin` when set, and `http://localhost:4024` and `http://127.0.0.1:4024` only where `local_origins` is on (dev). | `AGENT_CLIENT_IDS`, `API_DOCS_CLIENT_ID`, `agent.clientId` |
+| `auth0_client.desktop`, `auth0_client_credentials.desktop` | 019 (SPEC v1.29): the desktop client, through which a person signs in from their own computer: a public native client with no secret. Authorization code (with PKCE, S256 only: `sign-in-time.js` refuses anything else) and the `refresh_token` grant; its refresh tokens rotate with no reuse interval (leeway 0: a spent one presented again revokes the whole family) and expire 30 days after the sign-in and 7 days unused. Its callbacks are exactly `http://127.0.0.1:53682/callback` and `http://localhost:53682/callback`, in every environment: the person's own computer, never a served page, so not under `local_origins`. No origin and no logout URL. Its `client_metadata` carries the public marker `x402_client = "agent-desktop"`, by which `sign-in-time.js` recognizes it. Allowed on both people's connections. | `AGENT_CLIENT_IDS` (beside the agent's client), `AGENT_DESKTOP_CLIENT_ID`, `agent.desktopClientId` |
 | `auth0_client.machine`, `auth0_client_credentials.machine`, `auth0_client_grant.machine` | One of each per name in `machine_caller_keys`. The client is confidential, with the client-credentials grant only and no callback, so it can't sign a person in. It authenticates with `private_key_jwt` and the **public** half of the caller's RS256 key: no secret exists. Its one grant is for people's API, with `agent:run` only. | for `checks`: `MACHINE_CLIENT_ID`, `MACHINE_CLIENT_KEY_ID`, `agent.machineClientId`, `agent.machineKeyId` |
 
 Who accepts what:
 
 - The portal accepts only its own client's tokens, and reads only `portal:admin`.
-- The agent and L2 accept a person's token only from the agent's client (`AGENT_CLIENT_IDS`), and only with
-  `agent:run`. Both refuse to start with the portal's client on that list.
+- The agent and L2 accept a person's token only from the agent's client or (019) the desktop client
+  (`AGENT_CLIENT_IDS`), and only with `agent:run`. Both refuse to start with the portal's client on that list.
+- A desktop sign-in, or its renewal, needs `x402-agent` at the tenant itself (`sign-in-time.js`), and S256.
 - The agent and L2 accept a machine caller's token only with `agent:run` from its grant. A machine caller's client
   is never on `AGENT_CLIENT_IDS`.
 - The agent role gives nothing at the portal, and the administrator's role gives nothing at the agent.
@@ -286,11 +288,16 @@ Everything below runs on the operator's host, from a checkout of `main`.
    `userAccounts.portalClientId` in `infra/main.dev.bicepparam`; then run `deploy-portal.yml`.
 6. **Decide who can sign up.** Nobody needs a role to use the portal ("What stays by hand", People).
 7. **Hand the callers' values to the agent and L2** (016; `specs/016` quickstart §5). `l1_env` holds the lines for
-   `env/l1-hosted.env` (remove `AUTH_JWKS_FILE` there), and `l2_env` L2's. For Azure, paste `bicepparam_agent`
-   into `param agent` in `infra/main.dev.bicepparam` (keep its own `apiDocs`), seed the private half of the
-   `checks` key as `machine-client-key` in the l1 vault, and run `deploy-l2.yml`, then `deploy-l1.yml`.
+   `env/l1-hosted.env` (remove `AUTH_JWKS_FILE` there), and `l2_env` L2's. 019: both lists now name the agent's
+   client and the desktop client (`AGENT_CLIENT_IDS=<agent>,<desktop>`), and `l1_env` adds
+   `AGENT_DESKTOP_CLIENT_ID`: copy both lines to the agent's env file and the list to L2's, then restart L2 and
+   then the agent. For Azure, paste `bicepparam_agent` into `param agent` in `infra/main.dev.bicepparam` (keep its
+   own `apiDocs`), seed the private half of the `checks` key as `machine-client-key` in the l1 vault, and run
+   `deploy-l2.yml`, then `deploy-l1.yml`.
 8. **Choose who may start runs.** Assign the role `x402-agent` to each of them in Auth0 ("What stays by hand",
-   People who may start runs). Without it a signed-in person gets 403 from the agent.
+   People who may start runs). Without it a signed-in person gets 403 from the agent. 019: first enroll the person
+   in a second factor (a desktop sign-in asks for one) and give them an account at the portal (without one the
+   agent answers 409 `account_not_onboarded`); then the role.
 
 Other Terraform commands run on the same state through the command's passthrough, which never runs `apply` or
 `destroy` (those go through `plan`):
@@ -383,6 +390,10 @@ public half of L2's key. L2's credential is held by L2 only (Constitution V), wh
   `mfa_time` and their decisions are refused.
 - **Blocking a person.** A blocked user can't sign in or renew, but the access token they already hold stays
   valid until it expires, one hour at most.
+- **The desktop client's rollback** (019). Take its ID off `AGENT_CLIENT_IDS` at the agent and at L2 and restart
+  them: its tokens get 403 at once. Then turn it off at the tenant (no new sign-ins or renewals), and revoke the
+  people's refresh tokens there to end their sign-ins. A desktop sign-in returns to the person's own computer, so
+  the tenant may show a consent screen once: accepted (`specs/019` spec, Edge Cases).
 - **Offline checks.** `npm run auth0:tenant -- validate` runs both, with no backend and no credential: it is what
   `validate-auth0.yml` runs. With Terraform on `PATH`, T-IAC-02 runs `fmt -check` too, and `validate` once
   `auth0/.terraform/` exists.

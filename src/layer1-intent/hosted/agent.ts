@@ -75,7 +75,13 @@ export function createRunTools(d: RunToolsDeps): Record<"fetch_resource" | "chec
       id: "check_budget",
       description: AGENT_TOOLS[1]!.description!,
       inputSchema: z.object({}),
-      execute: async () => d.record("check_budget", {}, budget),
+      // 019: `account` answers the agent's question before a person's run, never the model's: the tool's output
+      // (and so a step's `result`) keeps the fields it had.
+      execute: async () =>
+        d.record("check_budget", {}, async () => {
+          const { account: _account, ...status } = await budget();
+          return status;
+        }),
     }) as RunTool,
   };
 }

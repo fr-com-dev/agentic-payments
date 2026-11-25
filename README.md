@@ -254,6 +254,8 @@ With `API_DOCS=1` the agent serves Swagger UI at `/docs`. Started with the tenan
 
 Sessions are bound to their requester by a signed `sessionRef`, so a requester can continue a session after an operator approves an escalation.
 
+A person can also sign in from a desktop client on their own computer (SPEC v1.29, `specs/019`): the client opens the browser at the tenant, receives the code on `http://127.0.0.1:53682/callback`, exchanges it with its PKCE verifier and keeps a rotating refresh token, so a weekly user signs in through the browser about once a month and never copies a token. The tenant refuses that sign-in, and its renewal, to anyone without `x402-agent`, and asks for a second factor. A deployed agent started with `AGENT_DESKTOP_CLIENT_ID` serves the sign-in settings at `/.well-known/agent-auth`. Before a person's run the agent asks L2 whether that person can pay, and answers 409 with a reason before any model call when they can't; a 401 says whether to send a token, renew it or sign in again (`error_code`). Locally, `npm run -s dev-token -- --subject alice --desktop` makes a desktop client's token. How to check it, locally and against the tenant: [specs/019 quickstart](specs/019-loopback-pkce-sign-in/quickstart.md).
+
 Locally, against the local stack:
 
 ```bash
@@ -355,6 +357,7 @@ A milestone must pass its exit check before the next one starts.
 | `test/e2e.local.test.ts` | T-E2E-01..05, T-E2E-07 (operator reject) and T-E2E-08 (expiry) on the in-process harness (`test/helpers/harness.ts`) |
 | `test/demo.local.test.ts` | the real six-process demo, port preflight, process-group shutdown |
 | `test/hosted-agent.test.ts`, `test/hosted-access.test.ts`, `test/hosted-sessions.test.ts`, `test/hosted-run.test.ts` | T-AGT-02..05: the hosted service's exact two tools, requester access and limits, session binding, run semantics and log redaction |
+| `test/hosted-refusals.test.ts`, `test/hosted-account.test.ts`, `test/hosted-sign-in-settings.test.ts`, `test/hosted-desktop.test.ts`, `test/hosted-run-log.test.ts` | T-AGT-16..20 (019): the 401's three codes, the account question before a person's run, the sign-in settings route, the desktop client's tokens and limits per person across clients, the client in the run log |
 | `test/ledger-lock.test.ts` | T-LED-05: one ledger writer across processes (L2-6) |
 | `test/infra.test.ts` | T-IAC-01: the compiled `main.bicep` and `pre-deploy.bicep` keep identities, secrets and ingress per the Azure matrix, take every name from the parameter files' `names` (each one the standard name), set up the Entra apps and the deploy app's roles, and take every value from their parameter files (needs `BICEP_PATH`) |
 | `test/images.test.ts` | T-IMG-01: each image holds only its own unit's code and packages (only L2's has the signer) |
@@ -364,7 +367,7 @@ A milestone must pass its exit check before the next one starts.
 | `test/openapi.test.ts` | T-API-01..03: `docs/l2-control.openapi.yaml` matches L2's routes, tokens, statuses and response shapes; T-API-04: the Swagger UI routes are off by default, same-origin and serve fixed files only |
 | `test/seller-monetization.test.ts` | T-MON-01..03: the seller's tiers and prices, what's derived from its decorators, the free catalog while payments are down, `usdc()`, and every declaration mistake refused while the seller is built |
 | `test/openapi-seller.test.ts` | T-API-09..10: `docs/seller.openapi.yaml` matches the seller's routes, catalog prices, statuses, decoded x402 headers and bodies; T-API-11: its Swagger UI routes are off by default, never set in Azure, same-origin and serve fixed files only |
-| `test/openapi-hosted.test.ts` | T-API-05..07: `docs/l1-hosted.openapi.yaml` matches the hosted agent's routes, auth, statuses, headers and response shapes; T-API-08: its Swagger UI routes are off by default, never set in Azure, same-origin and serve fixed files only |
+| `test/openapi-hosted.test.ts` | T-API-05..07: `docs/l1-hosted.openapi.yaml` matches the hosted agent's routes, auth, statuses, headers and response shapes; T-API-08: its Swagger UI routes are off by default, never set in Azure, same-origin and serve fixed files only; T-API-18 (019): the 401's `error_code`, 409 and 503, the sign-in settings route and the scopes |
 
 Run one test with `npx vitest run test/policy.test.ts -t "<name>"`.
 

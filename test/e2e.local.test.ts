@@ -2,7 +2,7 @@
 // seller, L2 control and L3 verifier, driven through L1's HTTP ports.
 // T-E2E-01 is owned by 008 (T024, sole writer). T-E2E-02 by 004, T-E2E-03 by 003/005,
 // T-E2E-04 by 002, T-E2E-05 by 003/007.
-import { DEV_PORTAL_CLIENT, devUserId } from "../scripts/dev-issuer-lib.js";
+import { DEV_AGENT_CLIENT, DEV_DESKTOP_CLIENT, DEV_PORTAL_CLIENT, devSubject, devUserId } from "../scripts/dev-issuer-lib.js";
 import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
@@ -14,7 +14,8 @@ import {
   encodePaymentResponseHeader,
 } from "@x402/core/http";
 import { HARNESS_USER_MNEMONIC, startHarness, RegressionBaseline, type Harness } from "./helpers/harness.js";
-import { mockModel, startHostedApp, text, toolCall } from "./helpers/hosted.js";
+import { createTestIssuer } from "./helpers/caller-tokens.js";
+import { mockModel, modelCalls, startHostedApp, text, toolCall, type HostedTestApp } from "./helpers/hosted.js";
 import { HttpAuthorizationGate, HttpSettlementVerifier } from "../src/layer1-intent/ports-http.js";
 import { PaidResourceOrchestrator, type PaidFetchResult } from "../src/layer1-intent/orchestrator.js";
 import { runScriptedAgent } from "../src/layer1-intent/scripted.js";
@@ -1051,23 +1052,231 @@ describe("013 user accounts end to end", () => {
     }
   }, 120_000);
 
-  it("T-E2E-16 a person with the role and no account: the run starts, nothing is paid, and the answer says why; a session carries over, and is nobody else's", async () => {
-    const weather = () => toolCall("fetch_resource", { url: `${h.urls.seller}/api/weather?city=Lima`, purpose: "weather" });
-    const a = await startHostedApp({ harness: h, model: mockModel([weather(), text("done"), weather(), text("done"), weather(), text("done")]) });
+  // ---------------------------------------------------------------------------
+  // 019 (specs/019-loopback-pkce-sign-in): the desktop client's sign-in and the account question, end to end. Each
+  // case uses people of its own. A token is held by the test and sent with `runWith`, so the scans at the end of a
+  // case can look for it; a failing scan names where it looked, never the token.
+  // ---------------------------------------------------------------------------
+  const goal = { goal: "Get the weather for Lima" };
+  const weather = () => toolCall("fetch_resource", { url: `${h.urls.seller}/api/weather?city=Lima`, purpose: "weather" });
+  type Step = { result: { outcome: string; authorizationId: string | null; violations?: { rule: string }[] | null } };
+  const stepsOf = (body: Record<string, unknown>) => (body.steps as Step[]).map((s) => s.result);
+  const notReady = (error_code: string) => ({ error: "account not ready", error_code });
+
+  /** POST /v1/runs with a token the test holds (or none). `raw` is the answer as sent, for the scans. */
+  async function runWith(a: HostedTestApp, token: string | null, body: unknown, headers: Record<string, string> = {}) {
+    const res = await fetch(`${a.base}/v1/runs`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...(token !== null && { authorization: `Bearer ${token}` }), ...headers },
+      body: JSON.stringify(body),
+    });
+    const raw = await res.text();
+    let parsed: Record<string, unknown> = {};
     try {
-      type Step = { result: { outcome: string; violations?: { rule: string }[] | null } };
+      parsed = JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      // An event stream: only `raw` is read.
+    }
+    return { status: res.status, raw, body: parsed, headers: res.headers };
+  }
+
+  it("T-E2E-16 019 US4 a person with the role and no account: 409 account_not_onboarded before any model call, from either client, and nothing is appended; a session carries over for an onboarded person, and is nobody else's", async () => {
+    const model = mockModel([weather(), text("done"), weather(), text("done")]);
+    const a = await startHostedApp({ harness: h, model });
+    try {
       const platform0 = await h.balanceOf(h.addresses.payer);
-      // Frank holds the role and never onboarded at the portal: no account, so no payment, and never the platform's.
-      const frank = await a.run("frank", { goal: "Get the weather for Lima" });
-      expect(frank.status).toBe(200);
-      const denied = (frank.body.steps as Step[])[0]!.result;
-      expect([denied.outcome, (denied.violations ?? []).map((v) => v.rule)]).toEqual(["DENIED", ["user_not_onboarded"]]);
+      const entries0 = h.ledgerEntries().length;
+      // Frank holds the role and never onboarded at the portal. The agent asks L2 first, so his goal costs no model
+      // call and no payment request, whichever client he signed in through (FR-015..017).
+      const frank = [await a.token("frank"), await a.token("frank", { azp: DEV_DESKTOP_CLIENT })];
+      for (const token of frank) {
+        const r = await runWith(a, token, goal);
+        expect([r.status, r.body]).toEqual([409, notReady("account_not_onboarded")]);
+      }
+      // A run that asked for a stream gets the same JSON refusal: it comes before the stream opens.
+      const streamed = await runWith(a, frank[1]!, goal, { accept: "text/event-stream" });
+      expect([streamed.status, streamed.headers.get("content-type")?.split(";")[0], streamed.body]).toEqual([
+        409,
+        "application/json",
+        notReady("account_not_onboarded"),
+      ]);
+      expect(modelCalls(model)).toHaveLength(0);
+      expect(h.ledgerEntries()).toHaveLength(entries0);
       expect(await h.balanceOf(h.addresses.payer)).toBe(platform0);
-      // The same person continues their session; another person's reference is unknown to them.
-      const again = await a.run("frank", { goal: "Get the weather for Lima", sessionRef: frank.body.sessionRef });
-      expect(again.status).toBe(200);
-      expect((await a.run("erin", { goal: "Get the weather for Lima", sessionRef: frank.body.sessionRef })).status).toBe(404);
-      expect((await a.run("x402-checks-dev", { goal: "Get the weather for Lima", sessionRef: frank.body.sessionRef }, { service: true })).status).toBe(404);
+
+      // Hana onboarded: her run starts and pays, and her session carries over to her next goal.
+      const hana = h.callers!.register(devSubject("hana"));
+      const { address } = await onboard(hana, 1_000_000n);
+      const hanaToken = await a.token("hana", { azp: DEV_DESKTOP_CLIENT });
+      const first = await runWith(a, hanaToken, goal);
+      expect(first.status).toBe(200);
+      const ref = String(first.body.sessionRef);
+      const again = await runWith(a, hanaToken, { ...goal, sessionRef: ref });
+      expect([again.status, again.body.sessionRef]).toEqual([200, ref]);
+      expect([...stepsOf(first.body), ...stepsOf(again.body)].map((s) => s.outcome)).toEqual(["PAID", "PAID"]);
+      expect(await h.balanceOf(address)).toBe(1_000_000n - 2_000n);
+      // Her reference is nobody else's: the session check comes before the account question, so Frank gets 404 too.
+      expect((await runWith(a, frank[0]!, { ...goal, sessionRef: ref })).status).toBe(404);
+      expect((await a.run("x402-checks-dev", { ...goal, sessionRef: ref }, { service: true })).status).toBe(404);
+      expect(await h.balanceOf(h.addresses.payer)).toBe(platform0);
+
+      // NFR-003: no caller's token is in the ledger.
+      const ledgerText = readFileSync(h.ledgerPath, "utf8");
+      for (const token of [...frank, hanaToken]) expect(ledgerText.includes(token), "a caller's token is in the ledger").toBe(false);
+      expect((await ledgerVerify(h)).ok).toBe(true);
+    } finally {
+      await a.close();
+    }
+  }, 120_000);
+
+  it("019 US4 an account turned off at the portal gets 409 account_disabled before any model call; an account whose policies are all paused is ready, and its purchase is denied by policy", async () => {
+    const model = mockModel([weather(), text("done")]);
+    const a = await startHostedApp({ harness: h, model });
+    try {
+      const ivan = h.callers!.register(devSubject("ivan"));
+      const ivanAccount = await onboard(ivan, 1_000_000n);
+      expect((await h.portal("POST", `/v1/users/${ivan}/disable`)).status).toBe(200);
+      const off = await a.run("ivan", goal, { azp: DEV_DESKTOP_CLIENT });
+      expect([off.status, off.body]).toEqual([409, notReady("account_disabled")]);
+      expect(modelCalls(model)).toHaveLength(0);
+      expect(await h.balanceOf(ivanAccount.address)).toBe(1_000_000n);
+
+      // Paused policies don't change readiness (FR-016): the run starts, and the purchase is denied, as today.
+      const jane = h.callers!.register(devSubject("jane"));
+      const janeAccount = await onboard(jane, 1_000_000n);
+      expect((await h.portal("POST", `/v1/users/${jane}/policies/${janeAccount.policyId}/pause`, {})).status).toBe(200);
+      const paused = await a.run("jane", goal, { azp: DEV_DESKTOP_CLIENT });
+      expect(paused.status).toBe(200);
+      expect(stepsOf(paused.body).map((s) => [s.outcome, (s.violations ?? []).map((v) => v.rule)])).toEqual([["DENIED", ["host_not_allowed"]]]);
+      expect(modelCalls(model).length).toBeGreaterThan(0);
+      expect(await h.balanceOf(janeAccount.address)).toBe(1_000_000n);
+    } finally {
+      await a.close();
+    }
+  }, 120_000);
+
+  it("019 US1, US6 a desktop sign-in's token pays from the person's own account, as the docs page's does, and L2 takes the same user from both; the run log names each run's client; no token is in the log, the answers or the ledger", async () => {
+    const lines: string[] = [];
+    const model = mockModel([weather(), text("done"), weather(), text("done"), weather(), text("done")]);
+    const a = await startHostedApp({ harness: h, model, log: (line: string) => lines.push(line) });
+    try {
+      const kate = h.callers!.register(devSubject("kate"));
+      const { address, policyId } = await onboard(kate, 1_000_000n);
+      const platform0 = await h.balanceOf(h.addresses.payer);
+      const desktop = await a.token("kate", { azp: DEV_DESKTOP_CLIENT });
+      const docs = await a.token("kate");
+
+      const answers: string[] = [];
+      const paidIds: string[] = [];
+      for (const token of [desktop, docs]) {
+        const r = await runWith(a, token, goal);
+        answers.push(r.raw);
+        expect(r.status).toBe(200);
+        const [step] = stepsOf(r.body);
+        expect(step!.outcome).toBe("PAID");
+        paidIds.push(step!.authorizationId!);
+      }
+      // The same run asked as a stream (016): it pays too, and its events are scanned below.
+      const streamed = await runWith(a, desktop, goal, { accept: "text/event-stream" });
+      expect([streamed.status, streamed.headers.get("content-type")?.split(";")[0]]).toEqual([200, "text/event-stream"]);
+      answers.push(streamed.raw);
+
+      // Every payment left Kate's account, none the platform's: L2 takes the user from the token's issuer and
+      // subject, whichever client it was issued to (FR-011, FR-012).
+      expect(await h.balanceOf(address)).toBe(1_000_000n - 3_000n);
+      expect(await h.balanceOf(h.addresses.payer)).toBe(platform0);
+      for (const id of paidIds) {
+        const entry = h.ledgerEntries().find((e) => e.type === "AUTHORIZED" && e.authorizationId === id)!;
+        expect([entry.data.userId, entry.data.policyId, String(entry.data.payer).toLowerCase()]).toEqual([kate, policyId, address.toLowerCase()]);
+      }
+
+      // The run log: each step and run line names the client its run's token was issued to (FR-023).
+      const logged = lines.map((l) => JSON.parse(l) as Record<string, unknown>).filter((l) => l.event === "step" || l.event === "run");
+      expect(logged.map((l) => [l.event, l.client])).toEqual([
+        ["step", DEV_DESKTOP_CLIENT],
+        ["run", DEV_DESKTOP_CLIENT],
+        ["step", DEV_AGENT_CLIENT],
+        ["run", DEV_AGENT_CLIENT],
+        ["step", DEV_DESKTOP_CLIENT],
+        ["run", DEV_DESKTOP_CLIENT],
+      ]);
+
+      // NFR-003: a known-value scan of the run log, the JSON answers, the stream and the ledger.
+      const places = { "run log": lines.join("\n"), answers: answers.join("\n"), ledger: readFileSync(h.ledgerPath, "utf8") };
+      for (const [where, content] of Object.entries(places)) {
+        for (const token of [desktop, docs]) expect(content.includes(token), `a caller's token is in the ${where}`).toBe(false);
+      }
+      expect((await ledgerVerify(h)).ok).toBe(true);
+    } finally {
+      await a.close();
+    }
+  }, 120_000);
+
+  it("019 US5 through the whole stack: a 401 says missing, expired or invalid, with the bearer challenge; the invalid ones are identical; nothing reaches L2", async () => {
+    const model = mockModel();
+    const a = await startHostedApp({ harness: h, model });
+    try {
+      const entries0 = h.ledgerEntries().length;
+      const challenge = 'Bearer realm="x402-agent"';
+      const invalidChallenge = 'Bearer realm="x402-agent", error="invalid_token"';
+      // Another key under the same issuer's name: a signature the agent can't verify.
+      const stranger = await createTestIssuer({ issuer: h.callers!.issuer, audience: h.callers!.audience });
+      const now = Math.floor(Date.now() / 1000);
+      const cases = [
+        { name: "no token", token: null, header: challenge, code: "missing_token" },
+        { name: "expired", token: await a.token("mia", { azp: DEV_DESKTOP_CLIENT, exp: now - 120 }), header: invalidChallenge, code: "token_expired" },
+        { name: "bad signature", token: await stranger.person(devSubject("mia"), { azp: DEV_DESKTOP_CLIENT }), header: invalidChallenge, code: "invalid_token" },
+        { name: "malformed", token: "not-a-token", header: invalidChallenge, code: "invalid_token" },
+      ];
+      const invalidRaw = new Set<string>();
+      for (const c of cases) {
+        const r = await runWith(a, c.token, goal);
+        expect([c.name, r.status, r.headers.get("www-authenticate"), r.body]).toEqual([c.name, 401, c.header, { error: "unauthorized", error_code: c.code }]);
+        if (c.code === "invalid_token") invalidRaw.add(r.raw);
+      }
+      // The invalid ones say nothing about which check failed (FR-022).
+      expect(invalidRaw.size).toBe(1);
+      expect(modelCalls(model)).toHaveLength(0);
+      expect(h.ledgerEntries()).toHaveLength(entries0);
+    } finally {
+      await a.close();
+    }
+  }, 120_000);
+});
+
+// ---------------------------------------------------------------------------
+// 019 person accounts off (specs/019 US4, FR-016, FR-017): L2 verifies callers' tokens but has no user accounts, as
+// the local stack's `--sign-in` does. A person's run is refused before the model; a machine caller's still pays.
+// ---------------------------------------------------------------------------
+describe("019 person accounts off at L2, through the hosted agent", () => {
+  let h: Harness;
+  beforeAll(async () => {
+    h = await startHarness({ callers: true });
+  });
+  afterAll(async () => {
+    await h?.close();
+  });
+
+  it("019 US4 a person's run gets 409 accounts_off before any model call, from either client, and never falls back to the platform account; a machine caller's run still pays from it", async () => {
+    const goal = { goal: "Get the weather for Lima" };
+    const model = mockModel([toolCall("fetch_resource", { url: `${h.urls.seller}/api/weather?city=Lima`, purpose: "weather" }), text("done")]);
+    const a = await startHostedApp({ harness: h, model });
+    try {
+      const platform0 = await h.balanceOf(h.addresses.payer);
+      const entries0 = h.ledgerEntries().length;
+      for (const client of [{}, { azp: DEV_DESKTOP_CLIENT }]) {
+        const r = await a.run("lena", goal, client);
+        expect([r.status, r.body]).toEqual([409, { error: "account not ready", error_code: "accounts_off" }]);
+      }
+      expect(modelCalls(model)).toHaveLength(0);
+      expect(h.ledgerEntries()).toHaveLength(entries0);
+      expect(await h.balanceOf(h.addresses.payer)).toBe(platform0);
+
+      // A machine caller is never asked about an account (FR-019): the platform account pays, as before.
+      const system = await a.run("x402-checks-dev", goal, { service: true });
+      expect(system.status).toBe(200);
+      expect((system.body.steps as Array<{ result: { outcome: string } }>).map((s) => s.result.outcome)).toEqual(["PAID"]);
+      expect(platform0 - (await h.balanceOf(h.addresses.payer))).toBe(1_000n);
     } finally {
       await a.close();
     }

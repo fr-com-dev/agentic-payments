@@ -289,7 +289,7 @@ describe("T-AGT-12 a stream ends the way a JSON answer would (016 FR-036..FR-038
     for (const e of events.filter((x) => x.event === "step")) {
       expect(Object.keys(e.data).filter((k) => !["index", "tool", "url", "purpose", "result"].includes(k))).toEqual([]);
     }
-    // The token did go where it must: to L2, on the budget call of that run.
-    expect(ports.gateCalls.map((c) => c.callerToken)).toEqual([jwt]);
+    // The token did go where it must: to L2, on the account question (019) and on the budget call of that run.
+    expect(ports.gateCalls.map((c) => c.callerToken)).toEqual([jwt, jwt]);
   });
 });

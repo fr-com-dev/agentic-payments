@@ -19,7 +19,8 @@
 //   portal-admin-token, always referenced (the placeholder off while userAccounts.administration is false, when L2
 //   ignores it). PORTAL_ADMIN comes from userAccounts.administration.
 // - 016 (rule 23): L2 takes the user from the caller's token, which it verifies itself. It gets AUTH_ISSUER and
-//   AUTH_AUDIENCE from the identity parameter and AGENT_CLIENT_IDS from agent.clientId, the same values the agent
+//   AUTH_AUDIENCE from the identity parameter and AGENT_CLIENT_IDS from agent.clientId (and agent.desktopClientId when
+//   set, 019), the same values the agent
 //   gets, and PORTAL_CLIENT_ID from userAccounts.portalClientId, the client it never accepts as a caller's. Nothing
 //   of the directory, no docs switch and no machine key reaches it.
 // - Phase 3 (rule 24): the ledger's MAC key reaches only the l2 container, as LEDGER_MAC_KEY, a reference to the l2
@@ -126,10 +127,11 @@ resource control 'Microsoft.App/containerApps@2025-01-01' = {
             // 1.23: the ledger's head, outside the share, written as the head identity.
             { name: 'LEDGER_HEAD_URL', value: 'https://${names.ledgerHead}.blob.${az.environment().suffixes.storage}/ledger-head' }
             { name: 'LEDGER_HEAD_CLIENT_ID', value: idHead.properties.clientId }
-            // 016: the caller's token. A person's must come from the agent's client, never from the portal's.
+            // 016: the caller's token. A person's must come from the agent's client or (019) the desktop client, never
+            // from the portal's: the same list the agent gets.
             { name: 'AUTH_ISSUER', value: identity.issuer }
             { name: 'AUTH_AUDIENCE', value: identity.audience }
-            { name: 'AGENT_CLIENT_IDS', value: agent.clientId }
+            { name: 'AGENT_CLIENT_IDS', value: empty(agent.desktopClientId) ? agent.clientId : '${agent.clientId},${agent.desktopClientId}' }
             { name: 'PORTAL_CLIENT_ID', value: userAccounts.portalClientId }
           ]
           volumeMounts: [{ volumeName: 'ledger', mountPath: '/app/.local' }]

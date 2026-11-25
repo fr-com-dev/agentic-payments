@@ -8,7 +8,7 @@
 // first (`register`); the dev names the suites use (`alice`, `bob`, …) are registered up front for an issuer with
 // the dev issuer's name.
 import { createLocalJWKSet, exportJWK, generateKeyPair } from "jose";
-import { DEV_AGENT_CLIENT, DEV_AUDIENCE, DEV_MACHINE_CLIENT, devSubject, signDevToken, type DevTokenOptions } from "../../scripts/dev-issuer-lib.js";
+import { DEV_AGENT_CLIENT, DEV_AUDIENCE, DEV_DESKTOP_CLIENT, DEV_MACHINE_CLIENT, devSubject, signDevToken, type DevTokenOptions } from "../../scripts/dev-issuer-lib.js";
 import { DEV_ISSUER, type TokenKeys } from "../../src/shared/identity-token.js";
 import { userIdFor } from "../../src/shared/user-id.js";
 
@@ -53,7 +53,8 @@ export async function createTestIssuer(o: { issuer?: string; audience?: string; 
   return {
     issuer,
     audience,
-    deps: { issuer, audience, clientIds: o.clientIds ?? [DEV_AGENT_CLIENT], ...keys },
+    // 019: a person signs in through the agent's docs page client or the desktop client; L2 accepts both.
+    deps: { issuer, audience, clientIds: o.clientIds ?? [DEV_AGENT_CLIENT, DEV_DESKTOP_CLIENT], ...keys },
     person,
     machine: ({ client, ...mo } = {}) => signDevToken({ privateKey }, { subject: client ?? DEV_MACHINE_CLIENT, service: true, issuer, audience, ...mo }),
     register,

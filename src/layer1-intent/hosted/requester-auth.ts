@@ -5,6 +5,9 @@
 // 016: the token is kept for the run, beside the requester, because L1 forwards it to L2 with each payment request
 // and budget question. Only the run route reads it, and it goes to `gate.forCaller` and nowhere else: never to L3,
 // the model, a step, a log line or the answer (SEC-32).
+// 019 (specs/019 FR-020..022): every 401 keeps the DAST remediation's challenge and adds `error_code`, the one thing a
+// client needs to choose what to do next: `missing_token` (send one), `token_expired` (renew), `invalid_token` (sign
+// in again). Nothing tells two invalid tokens apart: no description, no claim value, no key ID.
 import type { RequestHandler, Response } from "express";
 import { AGENT_RUN_PERMISSION, bearerChallenge, bearerToken, personKeys, verifyCaller, type CallerCheckName, type TokenKeys } from "../../shared/identity-token.js";
 import { issuerHost } from "../../shared/user-id.js";
@@ -22,6 +25,8 @@ export interface Requester {
   subject: string;
   /** The key for limits and logs: `<issuer host>:<sub>`. */
   key: string;
+  /** 019: the client the token was issued to (a person's `azp`/`client_id`, a machine caller's own), for the run log only. */
+  client: string;
 }
 
 export interface RequesterAuthOptions {
@@ -34,10 +39,27 @@ export interface RequesterAuthOptions {
   skipClientCheck?: boolean;
   /** Test hook (T-AGT-09 must-fail): skip the permission. Never set by the entry point. */
   skipPermission?: boolean;
+  /**
+   * Test hook (T-AGT-16 must-fail, 019): a 401 for an invalid token describes what the token claims, so two invalid
+   * tokens get different answers. Never set by the entry point.
+   */
+  revealCheck?: boolean;
 }
 
-const unauthorized = { error: "unauthorized" };
+/** 019: the reason a 401 gives, beside `error: "unauthorized"` (FR-021). */
+export type UnauthorizedCode = "missing_token" | "token_expired" | "invalid_token";
+export const unauthorizedBody = (error_code: UnauthorizedCode) => ({ error: "unauthorized", error_code });
 const forbidden = { error: "forbidden" };
+
+/** The leak `revealCheck` stands for: the claims a refused token carries, in the answer (tests only). */
+function describeClaims(token: string): string {
+  try {
+    const claims = JSON.parse(Buffer.from(token.split(".")[1] ?? "", "base64url").toString("utf8")) as Record<string, unknown>;
+    return `issuer ${String(claims.iss)}, audience ${JSON.stringify(claims.aud)}, subject ${JSON.stringify(claims.sub)}`;
+  } catch {
+    return "not a token";
+  }
+}
 /** 017: the realm of the agent's bearer challenge. */
 export const AGENT_REALM = "x402-agent";
 
@@ -57,8 +79,8 @@ export function requesterAuth(o: RequesterAuthOptions): RequestHandler {
   return async (req, res, next) => {
     const token = bearerToken(req.headers.authorization);
     if (token === null) {
-      // 017 (FR-024): every 401 says how to authenticate.
-      res.set("WWW-Authenticate", bearerChallenge(AGENT_REALM, false)).status(401).json(unauthorized);
+      // 017 (FR-024): every 401 says how to authenticate. 019: and why, in `error_code`.
+      res.set("WWW-Authenticate", bearerChallenge(AGENT_REALM, false)).status(401).json(unauthorizedBody("missing_token"));
       return;
     }
     const checked = await verifyCaller(token, {
@@ -70,8 +92,14 @@ export function requesterAuth(o: RequesterAuthOptions): RequestHandler {
       ...(skipChecks.length > 0 && { skipChecks }),
     });
     if (!checked.ok) {
-      if (checked.status === 401) res.set("WWW-Authenticate", bearerChallenge(AGENT_REALM, true));
-      res.status(checked.status).json(checked.status === 401 ? unauthorized : forbidden);
+      if (checked.status === 403) {
+        res.status(403).json(forbidden);
+        return;
+      }
+      // 019: an expiry is reported only when signature, issuer and audience passed (jose checks them first), so
+      // `token_expired` tells a client to renew; every other failure is the same `invalid_token`.
+      const body = unauthorizedBody(checked.reason === "expired" ? "token_expired" : "invalid_token");
+      res.set("WWW-Authenticate", bearerChallenge(AGENT_REALM, true)).status(401).json(o.revealCheck ? { ...body, detail: describeClaims(token) } : body);
       return;
     }
     const { caller } = checked;
@@ -80,6 +108,7 @@ export function requesterAuth(o: RequesterAuthOptions): RequestHandler {
       authority: caller.issuer,
       subject: caller.subject,
       key: `${issuerHost(caller.issuer)}:${caller.subject}`,
+      client: caller.client,
     };
     res.locals.requester = requester;
     res.locals.callerToken = token;

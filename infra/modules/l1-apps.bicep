@@ -7,7 +7,8 @@
 // - secrets come only from the l1 vault, as Key Vault references;
 // - identity lifecycle is Main only for the agent (Foundry tokens), None for the two jobs;
 // - 016 (rule 23): the agent accepts the sign-in tenant's callers only. It gets AUTH_ISSUER and AUTH_AUDIENCE from
-//   the identity parameter and AGENT_CLIENT_IDS from agent.clientId, the same values L2 gets, and nothing of the
+//   the identity parameter and AGENT_CLIENT_IDS from agent.clientId (and agent.desktopClientId when set, 019), the
+//   same values L2 gets, AGENT_DESKTOP_CLIENT_ID from agent.desktopClientId, and nothing of the
 //   directory (no AUTH_TENANT_ID, no SERVICE_AUDIENCE). It is the only container with API_DOCS, which is
 //   agent.apiDocs and nothing else;
 // - 016 (rule 23): the two jobs call as the pipeline's machine caller. Each gets the tenant, the machine client's ID
@@ -23,7 +24,7 @@ param image string
 param acrServer string
 @description('The sign-in tenant (main.<environment>.bicepparam): its issuer and the API\'s identifier.')
 param identity object
-@description('016: the agent\'s client, the docs switch, and the machine caller\'s client and key ID (main.<environment>.bicepparam).')
+@description('016: the agent\'s client, the docs switch, the desktop client (019, empty when the tenant has none), and the machine caller\'s client and key ID (main.<environment>.bicepparam).')
 param agent object
 @description('The Foundry model deployment, named exactly the model id: the agent\'s ANTHROPIC_MODEL.')
 param modelDeployment string
@@ -91,11 +92,14 @@ resource agentApp 'Microsoft.App/containerApps@2025-01-01' = {
             { name: 'ANTHROPIC_MODEL', value: modelDeployment }
             { name: 'FOUNDRY_BASE_URL', value: 'https://${ais.properties.customSubDomainName}.services.ai.azure.com/anthropic/v1' }
             { name: 'AZURE_CLIENT_ID', value: idL1.properties.clientId }
-            // The sign-in tenant's callers only (016): a person who signed in through the agent's client, or a
-            // machine caller. L2 gets the same three values and verifies the forwarded token again.
+            // The sign-in tenant's callers only (016): a person who signed in through the agent's client or (019) the
+            // desktop client, or a machine caller. L2 gets the same three values and verifies the forwarded token again.
             { name: 'AUTH_ISSUER', value: identity.issuer }
             { name: 'AUTH_AUDIENCE', value: identity.audience }
-            { name: 'AGENT_CLIENT_IDS', value: agent.clientId }
+            { name: 'AGENT_CLIENT_IDS', value: empty(agent.desktopClientId) ? agent.clientId : '${agent.clientId},${agent.desktopClientId}' }
+            // 019: the desktop client, whose sign-in settings the agent serves (GET /.well-known/agent-auth); empty
+            // where this environment's tenant has none, and the route doesn't exist.
+            { name: 'AGENT_DESKTOP_CLIENT_ID', value: agent.desktopClientId }
             // The docs page, where this environment's parameter file turns it on: it signs people in through the
             // agent's own client.
             { name: 'API_DOCS', value: agent.apiDocs ? '1' : '0' }

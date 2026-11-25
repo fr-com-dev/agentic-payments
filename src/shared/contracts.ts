@@ -128,6 +128,12 @@ export interface BudgetStatus {
   perPaymentCapAtomic: string;
   /** 013: what the figures count. Absent means "session", as before. */
   scope?: "session" | "user_daily";
+  /**
+   * 019: whether the person can pay now. Present only on L2's user view (`scope: "user_daily"`), from `userGate` of
+   * the person in the verified token: "ready" when it gives none. The platform view has none. The hosted agent reads
+   * it before a person's run (its account question); its `check_budget` tool drops it before the model sees it.
+   */
+  account?: "ready" | "not_onboarded" | "disabled";
 }
 
 // ---------------------------------------------------------------------------
