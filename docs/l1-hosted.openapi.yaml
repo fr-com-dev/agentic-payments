@@ -578,6 +578,11 @@ components:
           description: L2's ID for the decision. For ESCALATED, the ID an operator approves or rejects.
         error:
           type: [string, "null"]
+          description: >-
+            Why the step did not end as asked, or null. v1.29.2: for a PAYMENT_FAILED whose paid retry the seller did
+            not serve, `the seller answered HTTP <status>: <code>` when the seller gave an x402 reason code (for example
+            `invalid_exact_evm_insufficient_balance`: the payer's account can't cover the price); any other seller text
+            is dropped. It never says whether money moved: `payment.settlement` does.
 
     Payment:
       type: object

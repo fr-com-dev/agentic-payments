@@ -173,6 +173,7 @@ describe("T-CDP-04..T-CDP-09 against the CDP stub", () => {
       const r = await orchestrator("sess_cdp05a").fetchPaid(`${h.urls.seller}/api/weather?city=Quito`, "decline");
       expect(r.outcome).toBe("PAYMENT_FAILED");
       expect(r.httpStatus).toBe(402);
+      expect(r.error).toBe("the seller answered HTTP 402: compliance_declined"); // 1.29.2 (L1-1 step 7)
       // 1.19 (L3-1): a decline is the seller's word; the authorization stays usable until validBefore, so L3 waits
       // to read its nonce before it says nothing settled.
       expect(r.payment?.settlement?.status).toBe("PENDING");
@@ -199,6 +200,7 @@ describe("T-CDP-04..T-CDP-09 against the CDP stub", () => {
       expect(r.outcome).toBe("PAYMENT_FAILED");
       expect(r.httpStatus).toBe(502);
       expect(r.body).toBeUndefined();
+      expect(r.error).toBeUndefined(); // 1.29.2: the seller's 502 carries no x402 reason code
       const paidRetry = rec.exchanges.find((x) => x.url.startsWith(h.urls.seller) && x.reqHeaders["payment-signature"]);
       expect(paidRetry?.status).toBe(502);
       expect(JSON.parse(paidRetry!.resBody)).toEqual({ error: "facilitator authentication" });
@@ -224,6 +226,8 @@ describe("T-CDP-04..T-CDP-09 against the CDP stub", () => {
       expect(settle.transaction).toMatch(/^0x[0-9a-fA-F]{64}$/);
 
       expect(r.outcome).toBe("PAYMENT_FAILED"); // paid but not served (EXT-9 territory)
+      // 1.29.2: the seller's code explains the error and decides nothing: L3 still says the money moved.
+      expect(r.error).toBe("the seller answered HTTP 402: settlement_pending");
       expect(r.payment?.settlement?.status).toBe("CONFIRMED");
       expect(effectiveStatus(r.authorizationId!)).toBe("CONFIRMED");
       expect((await budget("sess_cdp06")).spentOrReservedAtomic).toBe("1000");

@@ -2,7 +2,7 @@
 // policy decision. Payment headers from L2 are opaque and forwarded unchanged; settlement status
 // comes only from L3, never from the seller's PAYMENT-RESPONSE (INV-10).
 import { randomUUID } from "node:crypto";
-import { decodePaymentRequiredHeader } from "@x402/core/http";
+import { decodePaymentRequiredHeader, decodePaymentResponseHeader } from "@x402/core/http";
 import {
   PURPOSE_MAX_CHARS,
   type AuthorizationGatePort,
@@ -69,6 +69,36 @@ function callerRefusal(e: unknown): string | null {
   const code = typeof e === "object" && e !== null && "code" in e ? (e as { code?: unknown }).code : undefined;
   if (typeof code !== "string" || !code.startsWith("caller_")) return null;
   return code === "caller_token_expired" ? "the sign-in has expired: sign in again" : "the caller was refused by the control layer";
+}
+
+/** A reason code as x402 writes them (`invalid_exact_evm_insufficient_balance`, `settlement_pending`). */
+const REASON_CODE = /^[a-z][a-z0-9_]{0,99}$/;
+
+/**
+ * 1.29.2 (L1-1 step 7): why the seller did not serve the paid retry, in its own words, decoded with the SDK: a failed
+ * settlement's `errorReason` (PAYMENT-RESPONSE), else a failed verification's `error` (PAYMENT-REQUIRED). The text is
+ * the seller's and goes to the model, so only a reason code is kept; anything else is dropped. It explains the step's
+ * error and decides nothing: whether money moved is L3's word alone (INV-10).
+ */
+function sellerReason(res: Response): string | null {
+  const code = (v: unknown) => (typeof v === "string" && REASON_CODE.test(v) ? v : null);
+  const settled = res.headers.get("PAYMENT-RESPONSE");
+  if (settled !== null) {
+    try {
+      const answer = decodePaymentResponseHeader(settled);
+      const reason = answer.success === false ? code(answer.errorReason) : null;
+      if (reason !== null) return reason;
+    } catch {
+      // Not decodable: L3 judges the header; here it gives no reason.
+    }
+  }
+  const required = res.headers.get("PAYMENT-REQUIRED");
+  if (required === null) return null;
+  try {
+    return code(decodePaymentRequiredHeader(required).error);
+  } catch {
+    return null;
+  }
 }
 
 async function readBody(res: Response): Promise<unknown> {
@@ -183,9 +213,19 @@ export class PaidResourceOrchestrator {
     }
     const ok = paid.status >= 200 && paid.status < 300;
     const body = await readBody(paid);
+    // 1.29.2: a paid retry the seller didn't serve says why, when the seller gave a reason code.
+    const reason = ok ? null : sellerReason(paid);
 
     // Step 7: claim from the decision plus the raw PAYMENT-RESPONSE header.
-    return this.settle(url, decision, payment, paid.status, paid.headers.get("PAYMENT-RESPONSE"), ok ? body : undefined);
+    return this.settle(
+      url,
+      decision,
+      payment,
+      paid.status,
+      paid.headers.get("PAYMENT-RESPONSE"),
+      ok ? body : undefined,
+      reason === null ? undefined : `the seller answered HTTP ${paid.status}: ${reason}`,
+    );
   }
 
   private async settle(
@@ -212,8 +252,9 @@ export class PaidResourceOrchestrator {
     try {
       report = await this.deps.settlement.verify(claim);
     } catch (e) {
-      // Money may have moved: keep the payment details (SPEC v1.1 L1-1 step 8).
-      return { outcome: "PAYMENT_FAILED", ...base, payment, error: `settlement verification failed: ${errorMessage(e)}` };
+      // Money may have moved: keep the payment details (SPEC v1.1 L1-1 step 8), and the seller's reason before L3's error.
+      const verifyError = `settlement verification failed: ${errorMessage(e)}`;
+      return { outcome: "PAYMENT_FAILED", ...base, payment, error: priorError === undefined ? verifyError : `${priorError}; ${verifyError}` };
     }
     // Step 8. 1.19: a PENDING with `settlesBy` is no evidence of a settlement (L3 waits to read the nonce), so it is
     // not "settled" here, exactly as the NOT_SETTLED it replaces was not.
