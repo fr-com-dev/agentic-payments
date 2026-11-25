@@ -299,13 +299,13 @@ documents in `SPEC.md`, `CLAUDE.md`, `specs/` and `.specify/memory/constitution.
 - [X] T026 [US3] *Owner*, before step A's plan: do `specs/018-tenant-signup-hardening/quickstart.md` §1.1–§1.2. Create the Google Cloud OAuth client: Web application, redirect URI `https://<tenant>/login/callback` only, consent screen In production, `openid`, `email` and `profile`. Enter its client ID and secret on the tenant's `google-oauth2` connection in the Dashboard. The secret goes nowhere else.
 - [X] T027 [US3] *Owner*: do `specs/018-tenant-signup-hardening/quickstart.md` §1.3 (research R8). One existing Google person signs in again. Their `user_id`, portal user and wallet address must be unchanged, and no second user may appear with their email. If anything changed, put the old setting back and stop the rollout here (spec Assumptions). Then do §1.4: the redirect goes to `accounts.google.com` with the project's client ID and the tenant's callback, never `login.auth0.com`. Log both.
 - [X] T028 *Owner*: add the four connection scopes to the Management API application (`specs/018-tenant-signup-hardening/quickstart.md` §0, research R10). Note the `con_…` IDs of `Username-Password-Authentication` and `google-oauth2`.
-- [ ] T029 [US4] *Operator*, on the VPS after the merge: do `specs/018-tenant-signup-hardening/quickstart.md` §2 for both clients (the "before" values), then §3.1–§3.3.
+- [X] T029 [US4] *Operator*, on the VPS after the merge: do `specs/018-tenant-signup-hardening/quickstart.md` §2 for both clients (the "before" values), then §3.1–§3.3.
   - Write the three `import {}` blocks in an uncommitted `auth0/imports.tf`, and add `google_client_id` to `~/x402-tfstate/auth0.dev.tfvars`.
   - Plan. Expect three imports, a single database change (`disable_signup`), the lists trimmed to the portal and the agent, and nothing destroyed or replaced.
   - Apply exactly that plan, then delete `auth0/imports.tf`.
   - If the plan shows any other database option changing, stop before applying and do T030.
 - [X] T030 [US1] Only if T029's plan changes another option of `auth0_connection.database`: change that resource's `options` in `auth0/main.tf` to match the tenant. Use the operator's copy of that resource's plan diff, which holds no secret. Commit through a pull request, then repeat T029's plan. Never apply a plan that changes the password policy. Needed on 2026-11-24: the dev tenant uses Auth0's flexible password policy (`password_options`), which the declaration's legacy fields would have replaced. Done in the pull request that writes `password_options`, `authentication_methods` and `passkey_options` as the tenant has them; T029's plan is then repeated.
-- [ ] T031 [US1] *Operator*: do `specs/018-tenant-signup-hardening/quickstart.md` §2, §3.4 and §3.5, and log the results. Each client lists exactly the two connections, with `"showSignup":false` and `"showForgot":true`. The portal's page has no "Sign up" link, but has "Continue with Google" and "Forgot password". `POST /dbconnections/signup` with a throwaway `example.com` address gets 400, `/u/signup` is refused, and no user is created (SC-001, SC-002).
+- [X] T031 [US1] *Operator*: do `specs/018-tenant-signup-hardening/quickstart.md` §2, §3.4 and §3.5, and log the results. Each client lists exactly the two connections, with `"showSignup":false` and `"showForgot":true`. The portal's page has no "Sign up" link, but has "Continue with Google" and "Forgot password". `POST /dbconnections/signup` with a throwaway `example.com` address gets 400, `/u/signup` is refused, and no user is created (SC-001, SC-002).
 - [ ] T032 [US4] *Operator*: do `specs/018-tenant-signup-hardening/quickstart.md` §3.6. The plan shows no changes. A connection enabled by hand for L2's client shows in the plan, and apply removes it. A Google client ID changed by hand fails the precondition, and is then put back (SC-007). Log the results.
 - [ ] T033 [US3] *Operator*: do `specs/018-tenant-signup-hardening/quickstart.md` §7. `grep -c 'GOCSPX-'` gives `0` for the state and the tfvars file, and the saved plan's output names no `client_secret` (SC-005). Log the result.
 - [ ] T034 [US2] *Owner*: do `specs/018-tenant-signup-hardening/quickstart.md` §5.1–§5.3, and log the results:
@@ -331,7 +331,7 @@ documents in `SPEC.md`, `CLAUDE.md`, `specs/` and `.specify/memory/constitution.
 
 ### Tests for User Story 5
 
-- [ ] T036 [US5] In `test/auth0-iac.test.ts`, add rule 6 and remove the Action's checks.
+- [X] T036 [US5] In `test/auth0-iac.test.ts`, add rule 6 and remove the Action's checks.
   - Remove the `deny_sign_up` entry of `ACTIONS` and its `instance` special case (around line 437).
   - Remove `SIGN_UP_ACTION_FILE`, `SIGN_UP_CLOSED`, `DENY_ONLY` and `signUpActionProblems` (around line 826), and their run cases (around lines 1116, 1133, 1150–1151).
   - Remove the sign-up mutants (around lines 1084–1095).
@@ -342,17 +342,17 @@ documents in `SPEC.md`, `CLAUDE.md`, `specs/` and `.specify/memory/constitution.
 
 ### Implementation for User Story 5
 
-- [ ] T037 [US5] Complete step B in `auth0/`:
+- [X] T037 [US5] Complete step B in `auth0/`:
   - In `auth0/main.tf`, delete the section "Closed sign-ups" (`auth0_action.deny_sign_up` and `auth0_trigger_action.deny_sign_up`), and drop the header comment's step A fallback sentence (T024).
   - Delete `auth0/deny-sign-up.js`.
   - In `auth0/variables.tf`, drop the Action sentence from `allow_sign_ups`.
   - Run `terraform -chdir=auth0 fmt`. T-IAC-02 is green.
-- [ ] T038 [P] [US5] Step B's documents:
+- [X] T038 [P] [US5] Step B's documents:
   - `auth0/README.md`: the Action's resource row (around line 64) and the Actions list (around line 333). Test accounts: quickstart §4.3–§4.4. Create them in the Dashboard while sign-up stays closed, give the administrator a second factor before `x402-admin`, and delete both after the test.
   - `CLAUDE.md`: any mention of the deny Action.
   - `SPEC.md`: "Changes in 1.28", where the step B row becomes done, and T-IAC-02's row (rule 6).
   - `SPEC.md`'s version stays 1.28.
-- [ ] T039 [US5] Run `npm run check` (green, demo summary unchanged) and the secret scan, then commit with the task and requirement IDs. Open the step B pull request only when the owner says to.
+- [X] T039 [US5] Run `npm run check` (green, demo summary unchanged) and the secret scan, then commit with the task and requirement IDs. Open the step B pull request only when the owner says to.
 - [ ] T040 [US5] *Operator*, after the merge: do `specs/018-tenant-signup-hardening/quickstart.md` §4.1–§4.2, and log the results. The plan destroys `auth0_trigger_action.deny_sign_up[0]` and `auth0_action.deny_sign_up[0]` and nothing else. Apply it. `POST /dbconnections/signup` is still 400.
 - [ ] T041 [US5] *Owner*: do `specs/018-tenant-signup-hardening/quickstart.md` §4.3–§4.4, and log the results (SC-008).
   - Create a named test person in the Dashboard while someone repeats the self-service sign-up, which must be refused.
@@ -366,7 +366,7 @@ documents in `SPEC.md`, `CLAUDE.md`, `specs/` and `.specify/memory/constitution.
 
 ## Phase 10: Polish & Cross-Cutting Concerns
 
-- [ ] T042 [P] Search the repository for text that no longer holds: `deny-sign-up`, `deny_sign_up`, "Sign-ups are closed", "turn sign-ups off", "social connection's first sign-in". Leave the older change-log sections of `SPEC.md` and the earlier specs as history. Fix any live text in `README.md`, `docs/` or `auth0/`.
+- [X] T042 [P] Search the repository for text that no longer holds: `deny-sign-up`, `deny_sign_up`, "Sign-ups are closed", "turn sign-ups off", "social connection's first sign-in". Leave the older change-log sections of `SPEC.md` and the earlier specs as history. Fix any live text in `README.md`, `docs/` or `auth0/`.
 - [ ] T043 Run `specs/018-tenant-signup-hardening/quickstart.md` §6 (the offline checks) and `npm run check` on `main` after both merges, and log the results. Check that NFR-004's negative results still hold through the existing suites: T-PRT-01 and T-PRT-07, and T-IAC-02's callback and implicit-flow checks.
 - [ ] T044 *Owner*: give the report's author the two test accounts out of band, never in the repository, an issue or chat, and ask for P1's retest (SC-009). Note the outcome in `specs/018-tenant-signup-hardening/quickstart.md`'s Validation log.
 

@@ -18,8 +18,9 @@
 # And how people sign in (SPEC v1.28, specs/018), after the callers: email and password, and Google, each enabled for
 # the portal's and the agent's clients only. Google sign-up is public by design: a first Google sign-in makes a person
 # with no role, through the project's own Google application. Email-and-password sign-up follows var.allow_sign_ups,
-# through the database connection's own Disable Sign Ups (and, until step B of specs/018, the pre-user-registration
-# Action at the end). var.google_sign_in false stops Google sign-in in an emergency, for existing Google people too.
+# through the database connection's own Disable Sign Ups, the one switch: no Action refuses sign-ups (T-IAC-02 rule 6),
+# so the operator can still add a person in the Dashboard. var.google_sign_in false stops Google sign-in in an
+# emergency, for existing Google people too.
 
 locals {
   # Must equal DETAILS_TYPE in src/layer2-control/payment-details.ts (T-IAC-02): Auth0's Guardian schema, the only
@@ -553,34 +554,4 @@ resource "auth0_connection_clients" "google" {
       error_message = "The tenant's google-oauth2 connection must use the project's own Google application, google_client_id (specs/018 quickstart section 1): it still runs on Auth0's developer keys or on another Google application, or google_client_id is empty."
     }
   }
-}
-
-# ---- Closed sign-ups (Phase 3, var.allow_sign_ups) -----------------------------------------------------------------
-
-# With var.allow_sign_ups false, a pre-user-registration Action refuses every new account in the tenant's database
-# and passwordless connections: through the sign-up page, the public sign-up endpoint, the Dashboard and the
-# Management API alike (to add a person then, turn it off for that time, or create them through a connection that
-# doesn't run it). A first sign-in through a social or enterprise connection makes a user without running this
-# trigger: turn such connections off for the applications too, or block the users they make. It holds no secret
-# and uses no package. T-IAC-02 runs its code.
-resource "auth0_action" "deny_sign_up" {
-  count = var.allow_sign_ups ? 0 : 1
-
-  name    = "x402-deny-sign-up-${var.environment}"
-  runtime = "node22"
-  deploy  = true
-  code    = file("${path.module}/deny-sign-up.js")
-
-  supported_triggers {
-    id      = "pre-user-registration"
-    version = "v2"
-  }
-}
-
-# Appended to the tenant's pre-user-registration flow: an Action another configuration bound there stays.
-resource "auth0_trigger_action" "deny_sign_up" {
-  count = var.allow_sign_ups ? 0 : 1
-
-  trigger   = "pre-user-registration"
-  action_id = auth0_action.deny_sign_up[0].id
 }
