@@ -19,13 +19,13 @@
 // Phase 3 (SPEC 1.19): no approver is configured (SPEC v1.16), so no user is read either; the localhost origins only
 // where var.local_origins is on (dev); the second post-login Action, mfa-time.js, bound after sign-in-time.js, writes
 // the second factor's time, and sign-in-time.js asks an administrator for a second factor on every interactive
-// sign-in (push or a one-time code, both on in Guardian, with the tenant's setting that lets an Action choose); with
-// var.allow_sign_ups false, a pre-user-registration Action (deny-sign-up.js) refuses every new account. Each Action's
-// code is run here.
+// sign-in (push or a one-time code, both on in Guardian, with the tenant's setting that lets an Action choose). Each
+// Action's code is run here.
 // 018 (specs/018 contracts/tenant-connections.md, rules 1-8): people's connections. Email and password, imported and
-// never destroyed, whose own Disable Sign Ups follows var.allow_sign_ups (the deny Action stays bound until step B);
-// Google, read only with its secret kept out of the state; each enabled for the portal's and the agent's clients
-// alone; the operator command refuses a secret in the tfvars file.
+// never destroyed, whose own Disable Sign Ups follows var.allow_sign_ups; Google, read only with its secret kept out
+// of the state; each enabled for the portal's and the agent's clients alone; the operator command refuses a secret in
+// the tfvars file. Step B (rule 6): Phase 3's pre-user-registration Action, which refused the operator's own
+// creations too, is gone, and no Action may come back on that trigger: the connection's setting is the one switch.
 // 019 (specs/019 contracts/tenant-and-config.md): the desktop client, a fifth kind of application. Public and native,
 // authorization code and refresh token only, returning to the two loopback addresses in every environment, with
 // rotating refresh tokens (30 days, 7 days unused, leeway 0) and the marker sign-in-time.js recognizes it by; on
@@ -78,15 +78,12 @@ const AUTH_TIME_CLAIM = "https://x402.dev/auth_time";
 const MFA_TIME_CLAIM = "https://x402.dev/mfa_time";
 /** The first Action's code, a file of its own so that this suite can run it. */
 const ACTION_FILE = "sign-in-time.js";
-/** Phase 3: the second post-login Action's code, and the pre-user-registration one's. */
+/** Phase 3: the second post-login Action's code. */
 const MFA_ACTION_FILE = "mfa-time.js";
+/** 018 step B: the file of Phase 3's pre-user-registration Action, which must not come back. */
 const SIGN_UP_ACTION_FILE = "deny-sign-up.js";
-/**
- * The tenant's Actions: each one's resource (and its binding's), file, trigger, trigger version and handler.
- * deny_sign_up exists only while var.allow_sign_ups is false.
- */
+/** The tenant's Actions: each one's resource (and its binding's), file, trigger, trigger version and handler. */
 const ACTIONS: [resource: string, file: string, trigger: string, version: string, handler: string][] = [
-  ["deny_sign_up", SIGN_UP_ACTION_FILE, "pre-user-registration", "v2", "onExecutePreUserRegistration"],
   ["mfa_time", MFA_ACTION_FILE, "post-login", "v3", "onExecutePostLogin"],
   ["sign_in_time", ACTION_FILE, "post-login", "v3", "onExecutePostLogin"],
 ];
@@ -94,8 +91,6 @@ const ACTIONS: [resource: string, file: string, trigger: string, version: string
 const BROWSER_PROTOCOLS = ["oidc-basic-profile", "oidc-hybrid-profile", "oidc-implicit-profile"];
 /** The second factors sign-in-time.js asks an administrator for, each on in auth0_guardian. */
 const SECOND_FACTORS = [{ type: "push-notification" }, { type: "otp" }];
-/** Phase 3: what the deny Action answers a sign-up. */
-const SIGN_UP_CLOSED = ["sign_up_closed", "Sign-ups are closed"];
 const DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code";
 /** 016 research R10 (FR-026): the tenant's applications. A machine caller's is one resource, by for_each. 019: the desktop client. */
 const APPLICATIONS = ["agent", "desktop", "l2", "machine", "portal"];
@@ -123,12 +118,13 @@ const LOCAL_ORIGINS = "the localhost origins of the portal's and the agent's cli
 const MFA_SETTINGS = "every factor sign-in-time.js challenges with must be on in auth0_guardian (push through Guardian, and otp), and auth0_tenant.mfa_actions must turn on customize_mfa_in_postlogin_action and nothing else, with Guardian (count = var.manage_guardian)";
 /** Phase 3 (finding #6): the Action asks for the role the tenant defines. */
 const ADMIN_ROLE_IN_ACTION = `sign-in-time.js must challenge the holders of ${ADMIN_ROLE}, auth0_role.admin's name, and nobody else`;
-/** Phase 3 (finding #12). */
-const SIGN_UPS = "var.allow_sign_ups must be a bool, true by default, and the pre-user-registration Action and its binding exist only while it is false (count = var.allow_sign_ups ? 0 : 1)";
+/** Phase 3 (finding #12); since 018, the connection's own setting is what it decides (DISABLE_SIGNUP). */
+const SIGN_UPS = "var.allow_sign_ups must be a bool, true by default";
+/** 018 rule 6 (step B): the connection's Disable Sign Ups is the one switch, so no Action refuses sign-ups. */
+const NO_SIGN_UP_ACTION = `no Action may run on pre-user-registration and ${SIGN_UP_ACTION_FILE} must be gone: such an Action refused the operator's own creations too, and the email-and-password connection's Disable Sign Ups is the one switch (specs/018 FR-002, FR-004, research R1)`;
 const ONE_ACTION = `the Actions must be exactly ${ACTIONS.map(([resource, file, trigger]) => `${resource} (${file}, ${trigger})`).join(", ")}, with no secret and no package, each appended to its flow (auth0_trigger_action), never replacing it`;
 const ONE_CLAIM = `the sign-in time Action must write one namespaced claim, ${AUTH_TIME_CLAIM}, on the access token, refuse for the desktop client only (not_authorized_for_agent without ${AGENT_ROLE}, pkce_required without S256), and challenge ${ADMIN_ROLE}'s holders and the desktop client's people with ${SECOND_FACTORS.map((f) => f.type).join(" or ")}, and do nothing else`;
 const ONE_MFA_CLAIM = `the second-factor time Action must write one namespaced claim, ${MFA_TIME_CLAIM}, on the access token, and do nothing else`;
-const DENY_ONLY = `the sign-up Action must refuse every sign-up, api.access.deny("${SIGN_UP_CLOSED.join('", "')}"), and do nothing else`;
 const NO_USER_READ = "no user is read here: there is no configured approver (SPEC v1.16), each request goes to the person the payment is for";
 const NO_APPROVER_OUTPUT = "no output may give CIBA_APPROVER: L2 refuses to start with it (SPEC v1.16)";
 const ONE_ACTION_ORDER = "the second-factor time Action's binding must come after the sign-in time Action's (depends_on): Auth0 asks for the second factor the first one requests before the next Action runs";
@@ -511,12 +507,11 @@ export function auth0Problems(s: Sources): string[] {
 
   // The Actions: each one's code is the file this suite runs (actionProblems and the like), it holds no secret and no
   // package, and it is appended to its flow, never replacing it. Phase 3: two post-login Actions, the second-factor
-  // time one bound after the sign-in time one, and the pre-user-registration one only while sign-ups are closed.
+  // time one bound after the sign-in time one.
   const actionOk = ([resource, file, trigger, version]: (typeof ACTIONS)[number]) => {
     const action = block(tf, new RegExp(`resource\\s+"auth0_action"\\s+"${resource}"\\s*\\{`));
     const binding = block(tf, new RegExp(`resource\\s+"auth0_trigger_action"\\s+"${resource}"\\s*\\{`));
     const triggers = blocks(action, /\bsupported_triggers\s*\{/g);
-    const instance = resource === "deny_sign_up" ? "\\[0\\]" : "";
     return (
       has(action, new RegExp(`code\\s*=\\s*file\\("\\$\\{path\\.module\\}/${file.replace(".", "\\.")}"\\)`)) &&
       triggers.length === 1 &&
@@ -524,7 +519,7 @@ export function auth0Problems(s: Sources): string[] {
       new RegExp(`version\\s*=\\s*"${version}"`).test(triggers[0]!) &&
       !has(action, /\b(secrets|secrets_wo|dependencies|modules)\s*\{/) &&
       has(binding, new RegExp(`trigger\\s*=\\s*"${trigger}"`)) &&
-      has(binding, new RegExp(`action_id\\s*=\\s*auth0_action\\.${resource}${instance}\\.id\\b`))
+      has(binding, new RegExp(`action_id\\s*=\\s*auth0_action\\.${resource}\\.id\\b`))
     );
   };
   const resources = JSON.stringify(ACTIONS.map(([resource]) => resource));
@@ -533,8 +528,11 @@ export function auth0Problems(s: Sources): string[] {
   }
   if (!has(block(tf, /resource\s+"auth0_trigger_action"\s+"mfa_time"\s*\{/), /depends_on\s*=\s*\[auth0_trigger_action\.sign_in_time\]/)) p.push(ONE_ACTION_ORDER);
   const signUps = block(tf, /variable\s+"allow_sign_ups"\s*\{/) ?? "";
-  const whileClosed = (type: string) => has(block(tf, new RegExp(`resource\\s+"${type}"\\s+"deny_sign_up"\\s*\\{`)), /^\s*count\s*=\s*var\.allow_sign_ups \? 0 : 1$/m);
-  if (!/type\s*=\s*bool\b/.test(signUps) || !/default\s*=\s*true\b/.test(signUps) || !whileClosed("auth0_action") || !whileClosed("auth0_trigger_action")) p.push(SIGN_UPS);
+  if (!/type\s*=\s*bool\b/.test(signUps) || !/default\s*=\s*true\b/.test(signUps)) p.push(SIGN_UPS);
+  // 018 rule 6 (step B): no Action on pre-user-registration in the code (comments aside) of any .tf or .js file of the
+  // folder, and no deny file.
+  const sources = Object.entries(s.all).filter(([f]) => /\.(tf|js)$/.test(f));
+  if (SIGN_UP_ACTION_FILE in s.all || sources.some(([, text]) => /pre-user-registration/.test(code(text)))) p.push(NO_SIGN_UP_ACTION);
   const claim = /^\s*auth_time_claim\s*=\s*"([^"]+)"/m.exec(tf)?.[1];
   if (claim !== AUTH_TIME_CLAIM || claim !== DEFAULT_AUTH_TIME_CLAIM) p.push(`local.auth_time_claim must be ${AUTH_TIME_CLAIM}, the services' default AUTH_TIME_CLAIM`);
   const mfaClaim = /^\s*mfa_time_claim\s*=\s*"([^"]+)"/m.exec(tf)?.[1];
@@ -561,8 +559,6 @@ export function auth0Problems(s: Sources): string[] {
   }
   const mfaJs = jsOf(MFA_ACTION_FILE);
   if (apiUses(mfaJs) !== '["accessToken.setCustomClaim"]' || strings(mfaJs) !== JSON.stringify([MFA_TIME_CLAIM, "mfa"]) || loads(mfaJs)) p.push(ONE_MFA_CLAIM);
-  const denyJs = jsOf(SIGN_UP_ACTION_FILE);
-  if (apiUses(denyJs) !== '["access.deny"]' || strings(denyJs) !== JSON.stringify(SIGN_UP_CLOSED) || loads(denyJs)) p.push(DENY_ONLY);
   // Phase 3 (finding #6): the second factors the first Action asks for are on, and so is the tenant's setting that
   // lets an Action choose them, with Guardian; the tenant resource sets nothing else.
   const tenant = block(tf, /resource\s+"auth0_tenant"\s+"mfa_actions"\s*\{/) ?? "";
@@ -1047,19 +1043,6 @@ export async function mfaActionProblems(source: string): Promise<string[]> {
   ]);
 }
 
-/** What deny-sign-up.js does, by running it: every registration is refused, with the same reason, whatever the event. */
-export async function signUpActionProblems(source: string): Promise<string[]> {
-  const refused: ApiCall[] = [["access.deny", SIGN_UP_CLOSED]];
-  return caseProblems(
-    source,
-    [
-      ["a sign-up", { user: { email: "someone@example.com" }, connection: { strategy: "auth0", name: "Username-Password-Authentication" } }, refused],
-      ["an event with nothing in it", {}, refused],
-    ],
-    "onExecutePreUserRegistration",
-  );
-}
-
 const mutate = (s: Sources, file: string, from: string | RegExp, to: string): Sources => {
   const text = (file in s.tf ? s.tf[file] : s.all[file])!;
   expect(typeof from === "string" ? text.includes(from) : from.test(text), `${file} contains the mutation anchor`).toBe(true);
@@ -1305,18 +1288,13 @@ describe("T-IAC-02 Auth0 tenant as code (auth0/)", () => {
     ["the second-factor time Action's code written elsewhere", "main.tf", 'code    = file("${path.module}/mfa-time.js")', 'code    = "exports.onExecutePostLogin = async () => {};"', ONE_ACTION],
     ["the second-factor time Action never bound", "main.tf", /resource "auth0_trigger_action" "mfa_time" \{[\s\S]*?\n\}\n/, "", ONE_ACTION],
     ["another claim name for the second factor", "main.tf", `mfa_time_claim = "${MFA_TIME_CLAIM}"`, 'mfa_time_claim = "https://x402.dev/amr_time"', `local.mfa_time_claim must be ${MFA_TIME_CLAIM}, the services' DEFAULT_MFA_TIME_CLAIM, and mfa-time.js must write it`],
-    ["sign-ups refused whatever the switch", "main.tf", /(resource "auth0_action" "deny_sign_up" \{\n)\s+count = var\.allow_sign_ups \? 0 : 1\n/, "$1", SIGN_UPS],
-    ["the sign-up refusal bound whatever the switch", "main.tf", /(resource "auth0_trigger_action" "deny_sign_up" \{\n)\s+count = var\.allow_sign_ups \? 0 : 1\n/, "$1", SIGN_UPS],
     ["sign-ups closed by default", "variables.tf", /(variable "allow_sign_ups" \{[\s\S]*?default\s*= )true/, "$1false", SIGN_UPS],
-    ["the sign-up refusal on another trigger", "main.tf", /(supported_triggers \{\n\s+id\s*= )"pre-user-registration"/, '$1"post-user-registration"', ONE_ACTION],
-    ["the sign-up refusal replacing the flow", "main.tf", /resource "auth0_trigger_action" "deny_sign_up" \{[\s\S]*?\n\}\n/, 'resource "auth0_trigger_actions" "deny_sign_up" {\n  trigger = "pre-user-registration"\n  actions {\n    id           = auth0_action.deny_sign_up[0].id\n    display_name = "x"\n  }\n}\n', ONE_ACTION],
+    ["sign-ups an option, not a bool", "variables.tf", /(variable "allow_sign_ups" \{[\s\S]*?type\s*= )bool/, "$1string", SIGN_UPS],
     ["a challenge of another role", ACTION_FILE, `const ADMIN_ROLE = "${ADMIN_ROLE}";`, 'const ADMIN_ROLE = "x402-agent";', ADMIN_ROLE_IN_ACTION],
     ["a challenge that also denies", ACTION_FILE, "    api.authentication.challengeWithAny(SECOND_FACTORS);", '    api.authentication.challengeWithAny(SECOND_FACTORS);\n    api.access.deny("mfa");', ONE_CLAIM],
     ["a challenge by text message", ACTION_FILE, '{ type: "otp" }', '{ type: "phone" }', ONE_CLAIM],
     ["the second-factor time on the ID token too", MFA_ACTION_FILE, /(\n\s+api\.accessToken\.setCustomClaim\(CLAIM, [^\n]+)/, "$1\n    api.idToken.setCustomClaim(CLAIM, 1);", ONE_MFA_CLAIM],
     ["the second-factor time under another name", MFA_ACTION_FILE, `"${MFA_TIME_CLAIM}"`, '"mfa_time"', ONE_MFA_CLAIM],
-    ["a sign-up refusal that reads a package", SIGN_UP_ACTION_FILE, "exports.onExecutePreUserRegistration", 'const x = require("axios");\nexports.onExecutePreUserRegistration', DENY_ONLY],
-    ["a sign-up refusal that lets some through", SIGN_UP_ACTION_FILE, '  api.access.deny("sign_up_closed", "Sign-ups are closed");', '  if (event.user.email.endsWith("@example.com")) api.access.deny("sign_up_closed", "Sign-ups are closed");', DENY_ONLY],
   ])("Phase 3 must fail: %s is reported", (_label, file, from, to, message) => {
     expect(auth0Problems(mutate(load(), file, from, to))).toContain(message);
   });
@@ -1371,6 +1349,10 @@ describe("T-IAC-02 Auth0 tenant as code (auth0/)", () => {
     ["any Google application but the declared one", "main.tf", 'try(data.auth0_connection.google.options[0].client_id, "") == var.google_client_id', 'try(data.auth0_connection.google.options[0].client_id, "") != ""', GOOGLE_APP],
     ["a check only while Google is off", "main.tf", /(condition\s*= )!var\.google_sign_in \|\|/, "$1var.google_sign_in ||", GOOGLE_APP],
     ["a message that names nothing to fix", "main.tf", /(resource "auth0_connection_clients" "google" \{[\s\S]*?error_message\s*= ")[^"]*"/, '$1The Google connection is not ready."', GOOGLE_APP],
+    // Rule 6 (step B): no sign-up Action comes back, bound or replacing the flow, and the switch stays the connection's.
+    ["the deny Action and its binding put back", "main.tf", /$/, `\nresource "auth0_action" "deny_sign_up" {\n  count = var.allow_sign_ups ? 0 : 1\n\n  name    = "x402-deny-sign-up-dev"\n  runtime = "node22"\n  deploy  = true\n  code    = "exports.onExecutePreUserRegistration = async (event, api) => { api.access.deny('sign_up_closed', 'x'); };"\n\n  supported_triggers {\n    id      = "pre-user-registration"\n    version = "v2"\n  }\n}\n\nresource "auth0_trigger_action" "deny_sign_up" {\n  count = var.allow_sign_ups ? 0 : 1\n\n  trigger   = "pre-user-registration"\n  action_id = auth0_action.deny_sign_up[0].id\n}\n`, NO_SIGN_UP_ACTION],
+    ["a sign-up Action that replaces the flow", "main.tf", /$/, `\nresource "auth0_trigger_actions" "sign_up" {\n  trigger = "pre-user-registration"\n  actions {\n    id           = auth0_action.sign_in_time.id\n    display_name = "x"\n  }\n}\n`, NO_SIGN_UP_ACTION],
+    ["the post-login Action moved to pre-user-registration", "main.tf", /(resource "auth0_trigger_action" "sign_in_time" \{[\s\S]*?trigger\s*= )"post-login"/, '$1"pre-user-registration"', NO_SIGN_UP_ACTION],
   ])("018 must fail: %s is reported", (_label, file, from, to, message) => {
     expect(auth0Problems(mutate(load(), file, from, to))).toContain(message);
   });
@@ -1430,13 +1412,22 @@ describe("T-IAC-02 Auth0 tenant as code (auth0/)", () => {
     expect(auth0Problems(mutate(load(), file, from, to))).toContain(message);
   });
 
+  it("018 must fail: deny-sign-up.js put back in the folder is reported, and a comment naming the trigger is not", () => {
+    const s = load();
+    expect(auth0Problems(s)).not.toContain(NO_SIGN_UP_ACTION);
+    const restored = { ...s, all: { ...s.all, [SIGN_UP_ACTION_FILE]: 'exports.onExecutePreUserRegistration = async (event, api) => {\n  api.access.deny("sign_up_closed", "Sign-ups are closed");\n};\n' } };
+    expect(auth0Problems(restored)).toContain(NO_SIGN_UP_ACTION);
+    const commented = mutate(s, "main.tf", /$/, "\n# Step B removed the pre-user-registration Action (specs/018).\n");
+    expect(auth0Problems(commented)).not.toContain(NO_SIGN_UP_ACTION);
+  });
+
   it("013: the Action, run against a stand-in for Auth0's api, sets the one claim to the most recent sign-in time and nothing else", async () => {
     const source = load().all[ACTION_FILE]!;
     expect(await actionProblems(source)).toEqual([]);
     expect(await runAction(source, signIn(FIRST, LAST))).toEqual([["accessToken.setCustomClaim", [AUTH_TIME_CLAIM, 1794305130]]]);
   });
 
-  it("Phase 3: the Actions, run: an administrator's interactive sign-in without a fresh second factor is challenged, nobody else and nothing else is; the second factor's time is its own claim; a closed tenant refuses every sign-up", async () => {
+  it("Phase 3: the Actions, run: an administrator's interactive sign-in without a fresh second factor is challenged, nobody else and nothing else is; the second factor's time is its own claim", async () => {
     const s = load();
     expect(await actionProblems(s.all[ACTION_FILE]!)).toEqual([]);
     expect(await runAction(s.all[ACTION_FILE]!, admin([method("pwd", FIRST)]))).toEqual([
@@ -1446,7 +1437,6 @@ describe("T-IAC-02 Auth0 tenant as code (auth0/)", () => {
     expect(await runAction(s.all[ACTION_FILE]!, admin([method("pwd", FIRST)], "oauth2-refresh-token"))).toEqual([["accessToken.setCustomClaim", [AUTH_TIME_CLAIM, 1794304800]]]);
     expect(await mfaActionProblems(s.all[MFA_ACTION_FILE]!)).toEqual([]);
     expect(await runAction(s.all[MFA_ACTION_FILE]!, signIn(FIRST, LAST))).toEqual([["accessToken.setCustomClaim", [MFA_TIME_CLAIM, 1794305130]]]);
-    expect(await signUpActionProblems(s.all[SIGN_UP_ACTION_FILE]!)).toEqual([]);
   });
 
   it.each<[string, string | RegExp, string, RegExp]>([
@@ -1463,7 +1453,7 @@ describe("T-IAC-02 Auth0 tenant as code (auth0/)", () => {
     expect(problems.some((m) => message.test(m)), problems.join("\n")).toBe(true);
   });
 
-  const RUNS: Record<string, (source: string) => Promise<string[]>> = { [ACTION_FILE]: actionProblems, [MFA_ACTION_FILE]: mfaActionProblems, [SIGN_UP_ACTION_FILE]: signUpActionProblems };
+  const RUNS: Record<string, (source: string) => Promise<string[]>> = { [ACTION_FILE]: actionProblems, [MFA_ACTION_FILE]: mfaActionProblems };
   it.each<[string, string, string | RegExp, string, RegExp]>([
     ["a challenge on a refresh-token exchange", ACTION_FILE, "BROWSER_PROTOCOLS.includes(event.transaction && event.transaction.protocol)", "true", /for an administrator's token by oauth2-refresh-token, must call/],
     ["a challenge of everyone", ACTION_FILE, "Array.isArray(roles) && roles.includes(ADMIN_ROLE)", "true", /for a person without the administrator's role, must call/],
@@ -1489,8 +1479,6 @@ describe("T-IAC-02 Auth0 tenant as code (auth0/)", () => {
     ["milliseconds", MFA_ACTION_FILE, "Math.floor(latest / 1000)", "latest", /for a sign-in with a second factor, must call/],
     ["the current time without a second factor", MFA_ACTION_FILE, /if \(latest > 0\) \{\n(\s+)api\.accessToken\.setCustomClaim\(CLAIM, [^\n]+/, "{\n$1api.accessToken.setCustomClaim(CLAIM, Math.floor((latest || Date.now()) / 1000));", /for a password only, must call \[\], not/],
     ["an error without authentication details", MFA_ACTION_FILE, "(event.authentication && event.authentication.methods) || []", "event.authentication.methods", /for an event without authentication details, must not throw/],
-    ["a sign-up let through", SIGN_UP_ACTION_FILE, '  api.access.deny("sign_up_closed", "Sign-ups are closed");\n', "", /for a sign-up, must call/],
-    ["the refusal on the wrong trigger's handler", SIGN_UP_ACTION_FILE, "exports.onExecutePreUserRegistration", "exports.onExecutePostLogin", /must not throw[^:]*: the Action must export onExecutePreUserRegistration only/],
   ])("Phase 3 must fail (an Action, run): %s is reported", async (_label, file, from, to, message) => {
     const source = load().all[file]!;
     expect(typeof from === "string" ? source.includes(from) : from.test(source), `${file} contains the mutation anchor`).toBe(true);

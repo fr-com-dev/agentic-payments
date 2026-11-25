@@ -66,7 +66,6 @@ For people's sign-in:
 | `auth0_client.portal`, `auth0_client_credentials.portal` | The portal's web app: a public single-page client with no secret. It uses the authorization code with PKCE, and the `refresh_token` grant because its refresh tokens rotate. Its callbacks, web origins and logout URLs are `portal_origin` when set, and `http://localhost:4025` only where `local_origins` is on (dev). | `PORTAL_CLIENT_ID`, `userAccounts.portalClientId` |
 | `auth0_action.sign_in_time`, `auth0_trigger_action.sign_in_time` | The first post-login Action, in `sign-in-time.js`. It writes one claim on the access token, `https://x402.dev/auth_time`: the time of the person's most recent authentication, in seconds. Phase 3: on an interactive sign-in in a browser of a holder of `x402-admin` whose latest second factor is older than the rest of the sign-in, or missing, it asks Auth0 to challenge them with Guardian push or a one-time code. Never on a refresh-token exchange, never for anyone else but the desktop client's people. 019: for the desktop client only, before any challenge, it refuses a sign-in or a renewal by a person without `x402-agent` (`not_authorized_for_agent`) and a sign-in whose authorization did not use PKCE with S256 (`pkce_required`), then asks for the second factor as it does for an administrator. It is appended to the tenant's post-login flow and replaces nothing there. | `AUTH_TIME_CLAIM` |
 | `auth0_action.mfa_time`, `auth0_trigger_action.mfa_time` | Phase 3: the second post-login Action, in `mfa-time.js`, bound after the first (Auth0 challenges once an Action has run, so only a later one sees the second factor). It writes `https://x402.dev/mfa_time`: the time of the person's most recent second factor, in seconds, or nothing without one. The services require it, fresh, for an administrator's decision. | `DEFAULT_MFA_TIME_CLAIM` |
-| `auth0_action.deny_sign_up`, `auth0_trigger_action.deny_sign_up` | Phase 3, only while `allow_sign_ups` is false: the pre-user-registration Action in `deny-sign-up.js`, which refuses every new account in the database and passwordless connections (`sign_up_closed`), the Dashboard's and the Management API's included. A first sign-in through a social or enterprise connection doesn't run it. Removed in step B of `specs/018`, once the connection's own setting (next rows) has been checked live. | — |
 
 For the ways people sign in (SPEC v1.28, `specs/018`):
 
@@ -126,9 +125,13 @@ Who accepts what:
     reach their own profile, wallet, policies and cards only, never the agent (that needs `x402-agent`) or the
     administration area (that needs `x402-admin`), and never anyone else's data or the platform account.
   - **Email-and-password sign-up** is closed by `allow_sign_ups = false`, through the connection's own "Disable Sign
-    Ups": the page shows no "Sign up" link and every self-service sign-up is refused. Once step B of `specs/018` is
-    applied (the deny Action gone), you can still add a person in the Dashboard (**User Management → Users →
-    Create User**, connection `Username-Password-Authentication`), for example a test account.
+    Ups": the page shows no "Sign up" link and every self-service sign-up is refused. No Action refuses sign-ups
+    (T-IAC-02 rule 6), so you can still add a person in the Dashboard (**User Management → Users → Create User**,
+    connection `Username-Password-Authentication`), for example a test account.
+  - **Test accounts** (`specs/018` quickstart §4.3–§4.4): create them in the Dashboard while sign-up stays closed.
+    For a test administrator, enroll a second factor first, then assign `x402-admin`. Give their passwords out of
+    band, never in the repository, a file, an issue or chat, and delete both accounts after the test: their ledger
+    entries stay.
   - **To keep one person out**, block that user (**User Management → Users → the user → Block**).
   - **To stop all new Google accounts** in an emergency, set `google_sign_in = false` and apply. It also stops every
     existing Google person from signing in until you set it back.
@@ -378,8 +381,9 @@ public half of L2's key. L2's credential is held by L2 only (Constitution V), wh
   on push there. `manage_guardian` can't go from true to false while the resource exists (`prevent_destroy`):
   remove `auth0_guardian.this[0]` from the state first
   (`npm run auth0:tenant -- terraform state rm 'auth0_guardian.this[0]'`).
-- **The Actions.** Their code is in `sign-in-time.js`, `mfa-time.js` and `deny-sign-up.js`, so that T-IAC-02 can
-  run it. The first two write a claim only when the sign-in has the time it needs. They never write the current
+- **The Actions.** Their code is in `sign-in-time.js` and `mfa-time.js`, so that T-IAC-02 can run it. Both are
+  post-login Actions, and nothing here binds one to pre-user-registration (rule 6). They write a claim only when the
+  sign-in has the time it needs. They never write the current
   time, which would make a renewed token look like a new sign-in. They run after every sign-in of the tenant, so
   they must never throw. `mfa-time.js` must stay bound after `sign-in-time.js` (`depends_on`): in a tenant where
   you reorder the post-login flow by hand, keep that order, or an administrator's token after a challenge carries no

@@ -54,6 +54,9 @@ curl -s "https://<tenant>/client/<portal>.js" | grep -o '"connections":\[[^]]*\]
 
 Nothing else, and no passwordless connection (research R5).
 
+Auth0's edge caches this answer for up to about two minutes (`max-age=60`, `stale-while-revalidate=60`). Right
+after an apply, read it again until its `age` header counts from after the apply.
+
 ## 3. Step A: declare the connections (the deny Action stays)
 
 1. Put three `import {}` blocks in `auth0/imports.tf`, which is never committed (`contracts/tenant-connections.md`,
@@ -177,3 +180,11 @@ email address: name a person by their role ("an existing Google person", "the te
 | 2026-11-24 | §1.4 | implementer | The redirect goes to `accounts.google.com` with the project's client ID, `redirect_uri=https://<tenant>/login/callback` and the scopes `email profile`; no `login.auth0.com`. |
 | 2026-11-24 | §3.2, first plan | operator | Not applied. 3 imports, 4 changes, nothing destroyed, the two lists trimmed to the portal and the agent as expected; but `auth0_connection.database` also added the legacy password fields (`password_policy = "good"`, a minimum of 8, …) beside the tenant's flexible `password_options` (a minimum of 15). T030: the declaration now matches the tenant; plan again. |
 | 2026-11-24 | §6, for T030 | implementer | `terraform fmt -check` and `terraform validate` clean. T-IAC-02 298 tests pass, the 8 new `password_options` mutants included (operator command run cases with the GNU `stat` stand-in on a Mac). `npm run check`: typecheck green and 70 test files passed; the five on-chain and demo files failed only on `EADDRINUSE 127.0.0.1:8545`, a port another process held, and pass when run again with it free (83 tests). `npm run demo:local`: `spent on-chain: 0.006 USDC`, `hash chain ok=true`. Secret scan of the change: nothing found. |
+| 2026-11-24 | §2, before step A's apply | implementer | Portal and agent: exactly `Username-Password-Authentication` and `google-oauth2`, no passwordless connection; `"showSignup":true`, `"showForgot":true` (the finding). |
+| 2026-11-24 | §3.2, second plan (after T030) | operator | 3 imports, 4 changes, nothing destroyed: on `auth0_connection.database` only `disable_signup` false → true (`password_policy` stays null, `password_options` unchanged); both lists trimmed to the portal and the agent; the portal's `addons` no-op. |
+| 2026-11-24 | §3.3 apply | operator | Applied exactly that plan. |
+| 2026-11-24 | §2, after the apply | implementer | Portal and agent: the same two connections, now `"showSignup":false`, `"showForgot":true`. The first two reads, within two minutes of the apply, still showed `true` (the cached answer). |
+| 2026-11-24 | §3.4 | implementer | The hosted sign-in page (from the portal's `/authorize`) has the email and password fields, "Reset password" and "Continue with Google", and no "Sign up" link. |
+| 2026-11-24 | §3.5 | implementer | `/authorize` with `screen_hint=signup` returns to the portal with `error=invalid_request`, "signup is disabled". `POST /dbconnections/signup` with a throwaway `example.com` address, with the owner's agreement: `400 {"error":"public signup is disabled"}`, the connection's own answer, not the deny Action's. T031 passed. |
+| 2026-11-24 | §1.4, after the apply | implementer | The redirect still goes to `accounts.google.com` with the project's client ID. |
+| 2026-11-24 | §6, for step B (T036–T039) | implementer | `terraform fmt -check` and `terraform validate` clean. T-IAC-02 298 tests pass: rule 6 failed with the Action still in `auth0/` (rule 6 and the exact Actions), and passes once it is gone; its 4 mutants and the cleared comment case pass. `npm run check`: typecheck green, 74 test files passed; `test/cdp-failures.test.ts` failed only on `EADDRINUSE 127.0.0.1:8545` before its tests started and passes alone (21 tests). `npm run demo:local`: `spent on-chain: 0.006 USDC`, `hash chain ok=true`. Secret scan of the change: nothing found. |
