@@ -123,7 +123,7 @@ variable "local_origins" {
 }
 
 variable "allow_sign_ups" {
-  description = "Let anyone create an email-and-password account through self-service sign-up (specs/018). True by default, as before. It sets the database connection's own Disable Sign Ups (disable_signup = !allow_sign_ups): false refuses every self-service sign-up, at the page, the sign-up address and the public endpoint, and hides the page's Sign up link, while the operator can still create a person. It says nothing about Google, whose sign-up is public by design (google_sign_in). Until step B of specs/018, false also binds the pre-user-registration Action deny-sign-up.js, which refuses the operator's creations too."
+  description = "Let anyone create an email-and-password account through self-service sign-up (specs/018). True by default, as before. It sets the database connection's own Disable Sign Ups (disable_signup = !allow_sign_ups): false refuses every self-service sign-up, at the page, the sign-up address and the public endpoint, and hides the page's Sign up link, while the operator can still create a person. It says nothing about Google, whose sign-up is public by design (google_sign_in)."
   type        = bool
   default     = true
 }
