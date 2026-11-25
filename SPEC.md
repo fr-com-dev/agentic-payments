@@ -27,6 +27,15 @@ A person signs in to the hosted agent from a desktop client on their own compute
 
 The rollout: apply the tenant on the operator's host (`npm run auth0:tenant -- plan`, then `apply`), copy `l1_env`'s `AGENT_CLIENT_IDS` and `AGENT_DESKTOP_CLIENT_ID` to the agent's env file and `l2_env`'s `AGENT_CLIENT_IDS` to L2's, restart L2 then the agent. Enroll a person in a second factor and give them an account at the portal before giving them `x402-agent`. Rollback: take the desktop client off both lists (its tokens get 403 at once), then turn it off at the tenant and revoke refresh tokens (`specs/019` quickstart §6).
 
+### 1.29.1 (2026-11-25): the client descriptions fit Auth0's limit
+
+The dev tenant's first plan with 1.29 stopped before it planned anything of the desktop client: the provider refuses an application's description over 140 characters, and the desktop client's was 160 for `dev`. `terraform validate`, and so the pull request check, passed it, because the provider measures a description that names `var.environment` only when it plans. The machine caller's description had the same fault at the longest names the variables allow (153 characters with a 20-character caller name and a 10-character environment), though none is declared on the dev tenant. Both are shortened, and T-IAC-02 now measures every client's description itself. Nothing else of 1.29 changes, and its rollout is the same.
+
+| Area | Change |
+|---|---|
+| §3.3 | `auth0_client.desktop`'s description is "x402 hosted agent (`<environment>`): people sign in to it from a desktop client (loopback return, PKCE), to start runs for their own account." (136 characters at the longest environment name); `auth0_client.machine`'s drops "a system that" (139 at the longest names). The plan updates a declared machine caller's description in place. |
+| §12 | T-IAC-02 amended: every `auth0_client`'s description, with `var.environment` and `each.key` at the longest their validations allow, fits 140 characters and names no other value, and those validations must bound each name's length. Must-fails: each description as it was, a longer or unbounded environment name, an unbounded caller name, and a description that names another variable. |
+
 ## Changes in 1.28
 
 Pentest finding P1 (the addendum for `https://dev.fabriciorojas.com`, 2026-11-24): the sign-in tenant offered public self-registration (`specs/018`). The login page showed "Sign up", which the tenant then refused with the pre-user-registration Action's "Sign-ups are closed". A first Google sign-in made an account outside that switch. Google may have run on Auth0's shared developer keys. And without an account the signed-in API couldn't be tested. The owner decided on 2026-11-24 that Google sign-up is the public way in, that email-and-password sign-up stays closed, and that R21 stands: using the portal needs no role, starting runs needs `x402-agent`.

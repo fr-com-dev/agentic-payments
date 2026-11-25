@@ -395,7 +395,7 @@ resource "auth0_client_credentials" "agent" {
 # refresh token presented again revokes its whole family (leeway 0).
 resource "auth0_client" "desktop" {
   name            = "app-agent-desktop-${var.environment}"
-  description     = "x402 hosted agent (${var.environment}): people sign in to it from a desktop client on their own computer (browser, loopback return, PKCE), to start runs for their own account."
+  description     = "x402 hosted agent (${var.environment}): people sign in to it from a desktop client (loopback return, PKCE), to start runs for their own account."
   app_type        = "native"
   is_first_party  = true
   oidc_conformant = true
@@ -436,7 +436,7 @@ resource "auth0_client" "machine" {
   for_each = var.machine_caller_keys
 
   name            = "app-machine-${each.key}-${var.environment}"
-  description     = "x402 machine caller ${each.key} (${var.environment}): a system that starts runs at the hosted agent, for the platform account. No person signs in to it."
+  description     = "x402 machine caller ${each.key} (${var.environment}): starts runs at the hosted agent, for the platform account. No person signs in to it."
   app_type        = "non_interactive"
   is_first_party  = true
   oidc_conformant = true

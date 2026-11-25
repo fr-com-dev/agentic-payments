@@ -31,7 +31,9 @@
 // rotating refresh tokens (30 days, 7 days unused, leeway 0) and the marker sign-in-time.js recognizes it by; on
 // people's connections beside the agent's docs page client; on both services' lists in the outputs; no default
 // audience. sign-in-time.js, run here, refuses a desktop sign-in or renewal without x402-agent and one without S256,
-// before any challenge, and asks the desktop client's people for a second factor as it asks an administrator.
+// before any challenge, and asks the desktop client's people for a second factor as it asks an administrator. Every
+// client's description fits Auth0's 140 characters with var.environment and each.key at their longest: the provider
+// checks it only when it plans, so `terraform validate` let the desktop client's 160 through to the tenant's plan.
 import { spawnSync } from "node:child_process";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -103,6 +105,10 @@ const DESKTOP_URLS = `the desktop client's callbacks must be exactly local.deskt
 const DESKTOP_METADATA = `the desktop client's client_metadata must be exactly x402_client = "${DESKTOP_MARKER}", the marker sign-in-time.js looks for, and its tokens RS256`;
 const DESKTOP_REFRESH = "the desktop client's refresh tokens must rotate with no reuse interval (leeway 0) and expire: 30 days after the sign-in (token_lifetime 2592000) and 7 days unused (idle_token_lifetime 604800, no more than token_lifetime), never infinite";
 const DESKTOP_IN_ACTION = `sign-in-time.js must refuse for the desktop client by its marker, "${DESKTOP_MARKER}" (auth0_client.desktop's client_metadata), and for the holders of ${AGENT_ROLE}, auth0_role.agent's name, only`;
+/** Auth0's limit on an application's description: the provider refuses a longer one, and only when it plans. */
+const CLIENT_DESCRIPTION_MAX = 140;
+const CLIENT_DESCRIPTION = (name: string) => `auth0_client.${name}'s description must fit ${CLIENT_DESCRIPTION_MAX} characters with var.environment and each.key at their longest, and name nothing else: the provider refuses a longer one only when it plans, which terraform validate can't foresee`;
+const NAME_LENGTHS = "var.environment's and var.machine_caller_keys' validations must bound each name's length (a whole-value pattern of fixed parts, ^…$), so a client's description can be measured";
 const AGENT_URLS = `the agent client's callbacks must be exactly <origin>${DOCS_REDIRECT}, and its allowed origins and web origins <origin>, for ${LOCAL_AGENT.join(", ")} and var.agent_origin when set: no logout URL and no other address`;
 const AGENT_NO_REFRESH = "the agent's client must have no refresh tokens (no refresh_token block): a person signs in again when the token expires";
 const MACHINE = `every machine caller's client must be non_interactive with the client_credentials grant only, authenticate by private_key_jwt with its one public key (RS256), and have exactly one grant, for people's API with exactly ${AGENT_RUN_PERMISSION}: no callback, no secret, no ${ADMIN_PERMISSION}`;
@@ -244,6 +250,21 @@ const anchored = (pattern: string | undefined): RegExp | undefined => {
   } catch {
     return undefined;
   }
+};
+
+/**
+ * The longest value a whole-value pattern of fixed parts matches: `^…$` of character classes or plain characters,
+ * each once or with {n} or {m,n}. Undefined for anything else (`*`, `+`, `{m,}`, a group, an escape), whose longest
+ * value is unbounded or not read here.
+ */
+const longestMatch = (pattern: string | undefined): number | undefined => {
+  if (pattern === undefined || !pattern.startsWith("^") || !pattern.endsWith("$")) return undefined;
+  let total = 0;
+  for (const part of pattern.slice(1, -1).matchAll(/(\[[^\]\\]+\]|[A-Za-z0-9_-])(?:\{(\d+)(?:,(\d+))?\})?|(.)/g)) {
+    if (part[4] !== undefined) return undefined;
+    total += parseInt(part[3] ?? part[2] ?? "1", 10);
+  }
+  return total;
 };
 
 /** One message per problem. Empty for the real sources. */
@@ -696,6 +717,23 @@ export function auth0Problems(s: Sources): string[] {
     JSON.stringify(envLines("l2_env").filter((line) => !line.startsWith("CIBA_"))) !== JSON.stringify(signIn)
   ) {
     p.push(ENV_OUTPUTS);
+  }
+
+  // Every client's description fits Auth0's limit. The provider checks it only when it plans: `terraform validate`
+  // can't measure a description that names var.environment or each.key (019's desktop client stopped the tenant's
+  // plan at 160 characters). So each is measured here with those names at their longest, as the variables'
+  // validations allow them, and may name nothing else.
+  const envLongest = longestMatch(/regex\("([^"]+)",\s*var\.environment\)/.exec(block(tf, /variable\s+"environment"\s*\{/) ?? "")?.[1]);
+  const keyLongest = longestMatch(/regex\("([^"]+)",\s*name\)/.exec(block(tf, /variable\s+"machine_caller_keys"\s*\{/) ?? "")?.[1]);
+  if (envLongest === undefined || keyLongest === undefined) p.push(NAME_LENGTHS);
+  else {
+    for (const m of tf.matchAll(/resource\s+"auth0_client"\s+"(\w+)"\s*\{/g)) {
+      const client = block(tf.slice(m.index), /resource\s+"auth0_client"\s+"\w+"\s*\{/) ?? "";
+      const description = /^\s*description\s*=\s*"([^"]*)"/m.exec(client)?.[1];
+      if (description === undefined) continue;
+      const longest = description.replaceAll("${var.environment}", "x".repeat(envLongest)).replaceAll("${each.key}", "x".repeat(keyLongest));
+      if (longest.includes("${") || longest.length > CLIENT_DESCRIPTION_MAX) p.push(CLIENT_DESCRIPTION(m[1]!));
+    }
   }
 
   // SPEC 1.26: the state is a local file on the operator's host, outside every checkout; the operator command passes
@@ -1408,6 +1446,30 @@ describe("T-IAC-02 Auth0 tenant as code (auth0/)", () => {
     ["a refusal by another role", ACTION_FILE, `const AGENT_ROLE = "${AGENT_ROLE}";`, `const AGENT_ROLE = "${ADMIN_ROLE}";`, DESKTOP_IN_ACTION],
     ["a refusal for another client's marker", ACTION_FILE, `const DESKTOP_CLIENT = "${DESKTOP_MARKER}";`, 'const DESKTOP_CLIENT = "agent-cli";', DESKTOP_IN_ACTION],
     ["a third refusal", ACTION_FILE, '      api.access.deny("pkce_required");\n', '      api.access.deny("pkce_required");\n      api.access.deny("again");\n', ONE_CLAIM],
+  ])("019 must fail: %s is reported", (_label, file, from, to, message) => {
+    expect(auth0Problems(mutate(load(), file, from, to))).toContain(message);
+  });
+
+  // Each description as main.tf had it before it was measured: the desktop client's stopped the dev tenant's plan.
+  it.each([
+    [
+      "the desktop client's description as 019 first wrote it (160 characters for dev)",
+      "main.tf",
+      '"x402 hosted agent (${var.environment}): people sign in to it from a desktop client (loopback return, PKCE), to start runs for their own account."',
+      '"x402 hosted agent (${var.environment}): people sign in to it from a desktop client on their own computer (browser, loopback return, PKCE), to start runs for their own account."',
+      CLIENT_DESCRIPTION("desktop"),
+    ],
+    [
+      "the machine caller's description as 016 wrote it (153 characters at the longest names)",
+      "main.tf",
+      '"x402 machine caller ${each.key} (${var.environment}): starts runs at the hosted agent, for the platform account. No person signs in to it."',
+      '"x402 machine caller ${each.key} (${var.environment}): a system that starts runs at the hosted agent, for the platform account. No person signs in to it."',
+      CLIENT_DESCRIPTION("machine"),
+    ],
+    ["a longer environment name allowed", "variables.tf", '"^[a-z0-9]{2,10}$"', '"^[a-z0-9]{2,20}$"', CLIENT_DESCRIPTION("desktop")],
+    ["an environment name of any length", "variables.tf", '"^[a-z0-9]{2,10}$"', '"^[a-z0-9]+$"', NAME_LENGTHS],
+    ["a machine caller's name of any length", "variables.tf", '"^[a-z][a-z0-9-]{1,19}$"', '"^[a-z][a-z0-9-]{1,}$"', NAME_LENGTHS],
+    ["a description that names another variable", "main.tf", '"x402 portal (${var.environment}):', '"x402 portal (${var.tenant_domain}):', CLIENT_DESCRIPTION("portal")],
   ])("019 must fail: %s is reported", (_label, file, from, to, message) => {
     expect(auth0Problems(mutate(load(), file, from, to))).toContain(message);
   });
