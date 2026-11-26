@@ -14,7 +14,7 @@ beside the L2 account their agent pays from.
 
 - **The portal is Coinbase's OAuth client.** Authorization code with PKCE (S256) and a `state` bound to the person's
   verified token (its user and its sign-in time), single use, 10 minutes. The browser goes to Coinbase in the same tab and comes back to a new
-  screen, `/wallet/coinbase`, which hands the code to the portal with the person's token. The portal exchanges it
+  screen, `/wallet/return`, which hands the code to the portal with the person's token. The portal exchanges it
   with the project's client secret ([R2](research.md#r2-the-oauth-flow), [R3](research.md#r3-pkce-state-and-the-client-secret)).
 - **Read only, checked.** The portal asks for the read scopes of an allow-list and refuses, and revokes at once, a
   grant whose scopes are anything else ([R4](research.md#r4-scopes-the-read-only-allow-list)).
@@ -144,7 +144,7 @@ src/
 ├── shared/
 │   ├── contracts.ts                # + UserView.connections (UserConnectionView, ConnectedPlatform); nothing else
 │   ├── decimal.ts                  # NEW: exact decimal strings (validate, compare, add) by scaled BigInt; pure
-│   └── portal-screens.ts           # + coinbase-return (/wallet/coinbase)
+│   └── portal-screens.ts           # + coinbase-return (/wallet/return)
 ├── portal/
 │   ├── coinbase/                   # NEW: the only place that names the Coinbase credentials (rule A18)
 │   │   ├── client.ts               #   authorize URL, code exchange, renewal, revoke, accounts list; holds the client secret

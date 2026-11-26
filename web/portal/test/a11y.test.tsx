@@ -92,7 +92,7 @@ describe("T-WEB-08: an automated accessibility pass", () => {
     }
     const w = rich();
     w.wallet = { ...w.wallet, connections: [coinbaseRow("not_connected")] };
-    renderApp("/wallet/coinbase?error=access_denied", w);
+    renderApp("/wallet/return?error=access_denied", w);
     await screen.findByRole("heading", { level: 1, name: "Connect Coinbase" });
     expect(await violations()).toEqual([]);
   });

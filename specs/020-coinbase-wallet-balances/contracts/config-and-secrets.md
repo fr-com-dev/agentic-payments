@@ -11,7 +11,7 @@ L2's settings don't change: its two new routes come with user accounts (`USER_AC
 | `COINBASE_CLIENT_ID` | with `coinbase` | the project's Coinbase OAuth client's ID; public |
 | `COINBASE_CLIENT_SECRET` | with `coinbase` | its secret; read only in `src/portal/coinbase/client.ts` (rule A18). Never logged, never in a file the project keeps |
 | `COINBASE_GRANT_KEY` | with `coinbase` | 32 random bytes, base64 (44 characters): the key that seals every user's grant. Read only in `src/portal/coinbase/grants.ts` (rule A18). Never rotated in place: a new key can't open the old grants, so every user would have to reconnect (research R5) |
-| `COINBASE_REDIRECT_URI` | with `coinbase` | the portal's own `https://<portal host>/wallet/coinbase`, exactly as registered at Coinbase. `http://localhost:<port>/wallet/coinbase` is accepted only with `NETWORK=local` (research R6) |
+| `COINBASE_REDIRECT_URI` | with `coinbase` | the portal's own `https://<portal host>/wallet/return`, exactly as registered at Coinbase. `http://localhost:<port>/wallet/return` is accepted only with `NETWORK=local` (research R6) |
 | `PRIVACY_POLICY_URL` | with `coinbase` | an absolute `https` address of the deployment's privacy policy, linked before connecting (FR-030; Coinbase's terms, research R8) |
 | `SUPPORT_URL` | with `coinbase` | an absolute `https` or `mailto:` address for support, linked beside it |
 | `CONNECTION_DIR` | no | where the grant files are; default `.local/portal/connections`. Must not be inside `PROFILE_DIR` or the web root |
@@ -19,7 +19,7 @@ L2's settings don't change: its two new routes come with user accounts (`USER_AC
 Startup checks with `coinbase` (before listening; each error names the variable, never its value):
 - `COINBASE_GRANT_KEY` decodes to exactly 32 bytes, and is not `off`;
 - `COINBASE_CLIENT_SECRET` is not empty and not `off`;
-- `COINBASE_REDIRECT_URI` is an absolute `https` URL whose path is `/wallet/coinbase` and that has no query or fragment
+- `COINBASE_REDIRECT_URI` is an absolute `https` URL whose path is `/wallet/return` and that has no query or fragment
   (or the `localhost` exception);
 - `PRIVACY_POLICY_URL` and `SUPPORT_URL` are set and well formed;
 - every grant file in `CONNECTION_DIR` opens with the key, or the portal refuses to start with
@@ -72,7 +72,7 @@ Each part has a fixture that violates it in `test/fixtures/` (as A10 and A13 do)
 - `userAccounts` in `main.bicep` gains `coinbase` (a plain object, as `ciba` is):
   `{ enabled: false, clientId: '', redirectUri: '', privacyPolicyUrl: '', supportUrl: '' }`. `CONNECTED_PLATFORMS`
   is `coinbase` when `enabled` is true, else empty. `main.bicep` refuses (`fail()`) `coinbase.enabled` without
-  `userAccounts.enabled`, a `clientId`, a `redirectUri` starting with `https://` and ending with `/wallet/coinbase`,
+  `userAccounts.enabled`, a `clientId`, a `redirectUri` starting with `https://` and ending with `/wallet/return`,
   and both addresses.
 - `CONNECTION_DIR` points into the portal's existing share (where `PROFILE_DIR` is), in its own folder.
 - The portal's `maxReplicas` stays 1 (rule 26 fails on more): per-user serialization of rotating refresh tokens
@@ -83,8 +83,8 @@ Each part has a fixture that violates it in `test/fixtures/` (as A10 and A13 do)
 The portal's env file on the operator's host gains the connected-platform variables above. The two secrets go into that file only
 (mode 0600, the operator's user), never into the repository, a tfvars file or GitHub. `docs/self-hosted/README.md`
 gains the steps. The Coinbase OAuth client is registered by hand in Coinbase's developer portal once Coinbase allows
-it (research R0, R8), with the redirect `https://dev.fabriciorojas.com/wallet/coinbase` (and
-`http://localhost:4025/wallet/coinbase` for local runs).
+it (research R0, R8), with the redirect `https://dev.fabriciorojas.com/wallet/return` (and
+`http://localhost:4025/wallet/return` for local runs).
 
 ## Tests that enumerate names
 

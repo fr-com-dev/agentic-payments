@@ -106,7 +106,7 @@ OAuth client, which Coinbase isn't issuing now (`specs/020` research R0). Leave 
 - a privacy policy and a support contact published at `https` addresses (Coinbase's terms ask for both before a
   person connects; research R8);
 - the client registered by hand in Coinbase's developer portal (API Keys → OAuth) with exactly these two redirects:
-  `https://dev.fabriciorojas.com/wallet/coinbase` (this portal) and `http://localhost:4025/wallet/coinbase` (local
+  `https://dev.fabriciorojas.com/wallet/return` (this portal) and `http://localhost:4025/wallet/return` (local
   runs, accepted only with `NETWORK=local`).
 
 Then make the grant key, once, on the host:
@@ -127,7 +127,7 @@ Add these to the portal's env file (`env/portal.env` on the host):
 | `COINBASE_CLIENT_ID` | the Coinbase client's ID (public) |
 | `COINBASE_CLIENT_SECRET` | the Coinbase client's secret |
 | `COINBASE_GRANT_KEY` | the key made above (44 characters) |
-| `COINBASE_REDIRECT_URI` | `https://dev.fabriciorojas.com/wallet/coinbase`, exactly as registered at Coinbase |
+| `COINBASE_REDIRECT_URI` | `https://dev.fabriciorojas.com/wallet/return`, exactly as registered at Coinbase |
 | `PRIVACY_POLICY_URL` | the privacy policy's `https` address |
 | `SUPPORT_URL` | the support contact's `https` or `mailto:` address |
 | `CONNECTION_DIR` | optional: where the sealed grants are, default `.local/portal/connections`; never inside `PROFILE_DIR` or the web root |

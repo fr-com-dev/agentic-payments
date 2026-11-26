@@ -102,7 +102,7 @@ param userAccounts = {
   // issuing OAuth clients now (specs/020 research R0). Seed coinbase-client-secret and coinbase-grant-key in the
   // portal vault as the placeholder off before the portal's first deployment with 020, or its revision fails and the
   // pipeline rolls back. enabled needs enabled: true above, the project's Coinbase client ID, the redirect registered
-  // with it (https://<portal host>/wallet/coinbase), the privacy policy's and support's addresses, and the two real
+  // with it (https://<portal host>/wallet/return), the privacy policy's and support's addresses, and the two real
   // secrets in the vault.
   coinbase: {
     enabled: false

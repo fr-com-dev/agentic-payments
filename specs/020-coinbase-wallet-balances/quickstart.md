@@ -59,7 +59,7 @@ Prerequisites, all the owner's (research R0, R8):
    and its OAuth fees.
 2. A privacy policy and a support contact are published (Coinbase's terms §10), at `https` addresses.
 3. In Coinbase's developer portal (API Keys → OAuth), a client with the redirects
-   `https://dev.fabriciorojas.com/wallet/coinbase` and `http://localhost:4025/wallet/coinbase`.
+   `https://dev.fabriciorojas.com/wallet/return` and `http://localhost:4025/wallet/return`.
 
 Then, on the VPS (`docs/self-hosted/README.md`):
 
@@ -78,7 +78,7 @@ deploy the portal unit.
 Coinbase has no sandbox for this. Use the owner's own account; nothing moves, but the account is real. Locally, run
 the stack with user accounts (`npm run stack:local -- --users`), a portal token (`npm run -s dev-token -- --subject
 alice --portal`), `npm run build:web`, and `npm run portal` with the §4 settings and
-`COINBASE_REDIRECT_URI=http://localhost:4025/wallet/coinbase`; open `http://localhost:4025`. Or use the VPS.
+`COINBASE_REDIRECT_URI=http://localhost:4025/wallet/return`; open `http://localhost:4025`. Or use the VPS.
 
 | Check | Expect | Settles |
 |---|---|---|

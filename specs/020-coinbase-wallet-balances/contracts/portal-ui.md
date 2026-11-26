@@ -9,10 +9,10 @@ but the person's own sign-in. Tests: T-WEB-17..21 (component tests in jsdom, eac
 | Path | Screen | Shown when | Requirements |
 |---|---|---|---|
 | `/wallet` | Wallet (013), two parts | profile done | FR-012..FR-017 |
-| `/wallet/coinbase` | Coinbase return (new) | the browser comes back from Coinbase | FR-009; [portal-api.md "The return screen"](portal-api.md#the-return-screen-walletcoinbase) |
+| `/wallet/return` | Coinbase return (new) | the browser comes back from Coinbase | FR-009; [portal-api.md "The return screen"](portal-api.md#the-return-screen-walletreturn) |
 
-`/wallet/coinbase` is a new row in `src/shared/portal-screens.ts` (name `coinbase-return`, example
-`/wallet/coinbase`) and in `web/portal/src/routes.ts`; T-WEB-14 keeps them equal. Its "back" screen is `wallet`.
+`/wallet/return` is a new row in `src/shared/portal-screens.ts` (name `coinbase-return`, example
+`/wallet/return`) and in `web/portal/src/routes.ts`; T-WEB-14 keeps them equal. Its "back" screen is `wallet`.
 
 ## The wallet: two parts
 

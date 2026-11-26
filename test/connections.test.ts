@@ -123,7 +123,7 @@ describe("T-CONN-01 a registered user connects Coinbase, read only (US1, FR-001.
     expect(Object.fromEntries(u.searchParams)).toMatchObject({
       response_type: "code",
       client_id: "stub-client-id",
-      redirect_uri: "http://localhost:4025/wallet/coinbase",
+      redirect_uri: "http://localhost:4025/wallet/return",
       scope: "wallet:accounts:read offline_access",
       code_challenge_method: "S256",
     });

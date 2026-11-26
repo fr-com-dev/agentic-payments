@@ -314,7 +314,7 @@ const DEV_COINBASE = /  coinbase: \{\n[^}]*\n  \}/.exec(DEV_PARAMETERS)?.[0] ?? 
 const PORTAL_SECRET_LINES = ["portal-token", "card-vault-key", "portal-admin-token", "coinbase-client-secret", "coinbase-grant-key"]
   .map((s) => "        { name: '" + s + "', keyVaultUrl: '${vaultPortal}secrets/" + s + "', identity: idPortal.id }")
   .join("\n");
-const COINBASE_CHECK = "rule 26: main must refuse (fail()) userAccounts.coinbase.enabled without userAccounts.enabled, a clientId, a redirectUri of the form https://…/wallet/coinbase, a privacyPolicyUrl and a supportUrl";
+const COINBASE_CHECK = "rule 26: main must refuse (fail()) userAccounts.coinbase.enabled without userAccounts.enabled, a clientId, a redirectUri of the form https://…/wallet/return, a privacyPolicyUrl and a supportUrl";
 /** The compiled subject of a federated credential for the GitHub environment a parameter names. */
 const subjectFor = (envParam: string) =>
   `[format('repo:{0}@{1}/{2}@{3}:environment:{4}', split(parameters('githubRepository'), '/')[0], parameters('githubOwnerId'), split(parameters('githubRepository'), '/')[1], parameters('githubRepositoryId'), parameters('${envParam}'))]`;
@@ -1236,7 +1236,7 @@ export function violations(arms: Templates, params: Params, infraFiles: Record<s
   // never from another vault. No other app, job or container references either, or gets a Coinbase setting, and no
   // template writes either into a vault. CONNECTED_PLATFORMS is coinbase exactly when userAccounts.coinbase.enabled
   // is true, and the portal's other Coinbase values come from userAccounts.coinbase, which main refuses (fail())
-  // enabled without user accounts, the project's client, a redirect at the portal's own https://…/wallet/coinbase,
+  // enabled without user accounts, the project's client, a redirect at the portal's own https://…/wallet/return,
   // and the two addresses Coinbase's terms ask for. The portal stays one process (one replica at most, single
   // revision): each person's rotating refresh token is serialized there (research R5). The grants live in the
   // portal's share, in their own folder beside PROFILE_DIR, never inside it.
@@ -1295,7 +1295,7 @@ export function violations(arms: Templates, params: Params, infraFiles: Record<s
     for (const secret of Object.values(COINBASE_SECRETS)) if (withVars(r.name, r.vars).includes(secret)) v.push(`rule 26: no template may write ${secret} into a vault: the portal vault's Coinbase secrets are seeded by hand`);
   }
   const coinbaseChecked = String(((arms.main.variables ?? {}) as Json).coinbaseChecked ?? "");
-  const coinbaseParts = `and(and(and(and(and(${UA}.enabled, not(empty(${CB}.clientId))), startsWith(${CB}.redirectUri, 'https://')), endsWith(${CB}.redirectUri, '/wallet/coinbase')), not(empty(${CB}.privacyPolicyUrl))), not(empty(${CB}.supportUrl)))`;
+  const coinbaseParts = `and(and(and(and(and(${UA}.enabled, not(empty(${CB}.clientId))), startsWith(${CB}.redirectUri, 'https://')), endsWith(${CB}.redirectUri, '/wallet/return')), not(empty(${CB}.privacyPolicyUrl))), not(empty(${CB}.supportUrl)))`;
   if (!coinbaseChecked.startsWith(`[if(or(not(${CB}.enabled), ${coinbaseParts}), ${CB}.enabled, fail(`)) v.push(COINBASE_CHECK);
   // Each environment's parameter file: coinbase has exactly the keys the templates read, and is on only with what
   // main's fail() would ask for at deployment (found here first).
@@ -1305,8 +1305,8 @@ export function violations(arms: Templates, params: Params, infraFiles: Record<s
     const keys = Object.keys(cb).sort();
     if (JSON.stringify(keys) !== JSON.stringify(COINBASE_KEYS)) v.push(`rule 26: ${file}'s userAccounts.coinbase must have exactly the keys ${COINBASE_KEYS.join(", ")} (it has ${keys.join(", ")})`);
     else if (typeof cb.enabled !== "boolean" || COINBASE_KEYS.some((k) => k !== "enabled" && typeof cb[k] !== "string")) v.push(`rule 26: ${file}'s userAccounts.coinbase.enabled must be true or false, and its other values strings`);
-    else if (cb.enabled && !(accounts.enabled === true && cb.clientId !== "" && String(cb.redirectUri).startsWith("https://") && String(cb.redirectUri).endsWith("/wallet/coinbase") && cb.privacyPolicyUrl !== "" && cb.supportUrl !== "")) {
-      v.push(`rule 26: ${file} turns Coinbase on without userAccounts.enabled, a clientId, a redirectUri of the form https://…/wallet/coinbase, a privacyPolicyUrl and a supportUrl`);
+    else if (cb.enabled && !(accounts.enabled === true && cb.clientId !== "" && String(cb.redirectUri).startsWith("https://") && String(cb.redirectUri).endsWith("/wallet/return") && cb.privacyPolicyUrl !== "" && cb.supportUrl !== "")) {
+      v.push(`rule 26: ${file} turns Coinbase on without userAccounts.enabled, a clientId, a redirectUri of the form https://…/wallet/return, a privacyPolicyUrl and a supportUrl`);
     }
   }
 
@@ -1914,7 +1914,7 @@ resource leaked 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
   }, 600_000);
 
   it("T-IAC-01 must-fail rule 26: main without one part of its Coinbase check, or with a check that never fails, is reported", async () => {
-    for (const part of ["(userAccounts.enabled && ", " && !empty(userAccounts.coinbase.clientId)", " && startsWith(userAccounts.coinbase.redirectUri, 'https://')", " && endsWith(userAccounts.coinbase.redirectUri, '/wallet/coinbase')", " && !empty(userAccounts.coinbase.privacyPolicyUrl)", " && !empty(userAccounts.coinbase.supportUrl)"]) {
+    for (const part of ["(userAccounts.enabled && ", " && !empty(userAccounts.coinbase.clientId)", " && startsWith(userAccounts.coinbase.redirectUri, 'https://')", " && endsWith(userAccounts.coinbase.redirectUri, '/wallet/return')", " && !empty(userAccounts.coinbase.privacyPolicyUrl)", " && !empty(userAccounts.coinbase.supportUrl)"]) {
       expect(await mutant("main.bicep", part, part.startsWith("(") ? "(" : ""), part).toEqual([COINBASE_CHECK]);
     }
     expect(await mutant("main.bicep", "var coinbaseChecked = !userAccounts.coinbase.enabled || (", "var coinbaseChecked = true || (")).toEqual([COINBASE_CHECK]);
@@ -1925,9 +1925,9 @@ resource leaked 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
     expect(await mutant("main.dev.bicepparam", DEV_COINBASE, DEV_COINBASE.replace(/\n {2}\}$/, "\n    scopes: 'wallet:accounts:read'\n  }"))).toEqual([`${KEYS} (it has clientId, enabled, privacyPolicyUrl, redirectUri, scopes, supportUrl)`]);
     expect(await mutant("main.dev.bicepparam", DEV_COINBASE, DEV_COINBASE.replace(/\n {4}supportUrl: [^\n]*/, ""))).toEqual([`${KEYS} (it has clientId, enabled, privacyPolicyUrl, redirectUri)`]);
     expect(await mutant("main.dev.bicepparam", DEV_COINBASE, DEV_COINBASE.replace(/enabled: (?:true|false)/, "enabled: 'false'"))).toEqual(["rule 26: main.dev.bicepparam's userAccounts.coinbase.enabled must be true or false, and its other values strings"]);
-    const ON_WITHOUT = "rule 26: main.dev.bicepparam turns Coinbase on without userAccounts.enabled, a clientId, a redirectUri of the form https://…/wallet/coinbase, a privacyPolicyUrl and a supportUrl";
+    const ON_WITHOUT = "rule 26: main.dev.bicepparam turns Coinbase on without userAccounts.enabled, a clientId, a redirectUri of the form https://…/wallet/return, a privacyPolicyUrl and a supportUrl";
     const coinbase = (o: Partial<Record<"clientId" | "redirectUri" | "privacyPolicyUrl" | "supportUrl", string>> = {}) => {
-      const x = { clientId: "coinbase-client", redirectUri: "https://portal.example.com/wallet/coinbase", privacyPolicyUrl: "https://portal.example.com/privacy", supportUrl: "mailto:support@example.com", ...o };
+      const x = { clientId: "coinbase-client", redirectUri: "https://portal.example.com/wallet/return", privacyPolicyUrl: "https://portal.example.com/privacy", supportUrl: "mailto:support@example.com", ...o };
       return `  coinbase: {\n    enabled: true\n    clientId: '${x.clientId}'\n    redirectUri: '${x.redirectUri}'\n    privacyPolicyUrl: '${x.privacyPolicyUrl}'\n    supportUrl: '${x.supportUrl}'\n  }`;
     };
     const accountsOn: [string, string][] = [[DEV_ACCOUNTS_HEAD, DEV_ACCOUNTS_HEAD.replace(/enabled: (?:true|false)/, "enabled: true")]];
@@ -1935,7 +1935,7 @@ resource leaked 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
     expect(await mutant("main.dev.bicepparam", DEV_COINBASE, coinbase(), accountsOn)).toEqual([]);
     const accountsOff: [string, string][] = [[DEV_ACCOUNTS_HEAD, DEV_ACCOUNTS_HEAD.replace(/enabled: (?:true|false)/, "enabled: false")]];
     expect(await mutant("main.dev.bicepparam", DEV_COINBASE, coinbase(), accountsOff)).toEqual([ON_WITHOUT]);
-    for (const o of [{ clientId: "" }, { redirectUri: "http://localhost:4025/wallet/coinbase" }, { redirectUri: "https://portal.example.com/wallet" }, { privacyPolicyUrl: "" }, { supportUrl: "" }]) {
+    for (const o of [{ clientId: "" }, { redirectUri: "http://localhost:4025/wallet/return" }, { redirectUri: "https://portal.example.com/wallet" }, { privacyPolicyUrl: "" }, { supportUrl: "" }]) {
       expect(await mutant("main.dev.bicepparam", DEV_COINBASE, coinbase(o), accountsOn), JSON.stringify(o)).toEqual([ON_WITHOUT]);
     }
   }, 600_000);

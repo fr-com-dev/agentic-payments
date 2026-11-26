@@ -2,7 +2,7 @@
 // no router package. `resolveRoute` is pure, so the redirect rules are tested without a browser.
 // 014: the administration area lives under /admin (specs/014 contracts/portal-ui.md "Screens"). Its paths never go
 // through the onboarding rules: an administrator who has not onboarded can still decide.
-// 020: /wallet/coinbase is where Coinbase sends the browser back (specs/020 contracts/portal-ui.md "Screens"); its
+// 020: /wallet/return is where Coinbase sends the browser back (specs/020 contracts/portal-ui.md "Screens"); its
 // "back" screen is the wallet, and it needs what the wallet needs.
 import type { Onboarding } from "./types.js";
 
@@ -39,7 +39,7 @@ export function matchRoute(path: string): Screen {
   if (p === "/onboarding/policy") return { name: "policy-step" };
   if (p === "/profile") return { name: "profile" };
   if (p === "/wallet") return { name: "wallet" };
-  if (p === "/wallet/coinbase") return { name: "coinbase-return" };
+  if (p === "/wallet/return") return { name: "coinbase-return" };
   if (p === "/policies") return { name: "policies" };
   if (p === "/policies/new") return { name: "policy-new" };
   if (p === "/account") return { name: "account" };

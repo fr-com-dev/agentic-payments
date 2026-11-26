@@ -46,7 +46,7 @@ only the portal verifies).
 1. the web app calls `POST /api/connections/coinbase/start` with the person's token and gets Coinbase's authorize
    address with `response_type=code`, the client ID, `redirect_uri`, `scope`, `state` and the PKCE challenge;
 2. it sets `window.location` to it; the person signs in and agrees at Coinbase;
-3. Coinbase sends the browser to `COINBASE_REDIRECT_URI`, the portal's own `/wallet/coinbase` screen;
+3. Coinbase sends the browser to `COINBASE_REDIRECT_URI`, the portal's own `/wallet/return` screen;
 4. the web app (signed in again from session storage, where the Auth0 cache lives) takes `code` and `state` from the
    query, removes them from the address, and posts them to `complete` with the person's token;
 5. the portal checks the state and exchanges the code (R3).
@@ -144,10 +144,10 @@ addresses must use TLS; addresses without TLS are allowed "for development and t
 `http://localhost:8000/callback`; `127.0.0.1` isn't mentioned. Exact matching isn't stated.
 
 **Decision.**
-- `COINBASE_REDIRECT_URI` is required and compared exactly; it must be `https://…/wallet/coinbase`, except
-  `http://localhost:<port>/wallet/coinbase` with `NETWORK=local`.
-- The dev deployment (the VPS) registers `https://dev.fabriciorojas.com/wallet/coinbase`; a local run registers
-  `http://localhost:4025/wallet/coinbase` on the same client. `localhost` is a loopback name, so 017's local-only
+- `COINBASE_REDIRECT_URI` is required and compared exactly; it must be `https://…/wallet/return`, except
+  `http://localhost:<port>/wallet/return` with `NETWORK=local`.
+- The dev deployment (the VPS) registers `https://dev.fabriciorojas.com/wallet/return`; a local run registers
+  `http://localhost:4025/wallet/return` on the same client. `localhost` is a loopback name, so 017's local-only
   check accepts it.
 - Tests never need a registration: the stand-in accepts whatever the test sets.
 

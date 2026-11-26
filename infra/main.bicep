@@ -108,12 +108,12 @@ var userAccountsChecked = contains(['off', 'stripe'], userAccounts.cardVault) &&
 
 // 020: the portal's Coinbase connection needs user accounts on (the portal reaches a person's account through L2's
 // user routes), the project's Coinbase client, the redirect registered there, which is the portal's own
-// https://<portal host>/wallet/coinbase, and the privacy policy and support addresses Coinbase's terms ask for
+// https://<portal host>/wallet/return, and the privacy policy and support addresses Coinbase's terms ask for
 // (T-IAC-01 rule 26). The two secrets are the portal vault's coinbase-client-secret and coinbase-grant-key.
 #disable-next-line no-unused-vars
-var coinbaseChecked = !userAccounts.coinbase.enabled || (userAccounts.enabled && !empty(userAccounts.coinbase.clientId) && startsWith(userAccounts.coinbase.redirectUri, 'https://') && endsWith(userAccounts.coinbase.redirectUri, '/wallet/coinbase') && !empty(userAccounts.coinbase.privacyPolicyUrl) && !empty(userAccounts.coinbase.supportUrl))
+var coinbaseChecked = !userAccounts.coinbase.enabled || (userAccounts.enabled && !empty(userAccounts.coinbase.clientId) && startsWith(userAccounts.coinbase.redirectUri, 'https://') && endsWith(userAccounts.coinbase.redirectUri, '/wallet/return') && !empty(userAccounts.coinbase.privacyPolicyUrl) && !empty(userAccounts.coinbase.supportUrl))
   ? userAccounts.coinbase.enabled
-  : fail('main: userAccounts.coinbase.enabled needs userAccounts.enabled, a clientId, a redirectUri of the form https://<portal host>/wallet/coinbase, a privacyPolicyUrl and a supportUrl (specs/020 contracts/config-and-secrets.md)')
+  : fail('main: userAccounts.coinbase.enabled needs userAccounts.enabled, a clientId, a redirectUri of the form https://<portal host>/wallet/return, a privacyPolicyUrl and a supportUrl (specs/020 contracts/config-and-secrets.md)')
 
 // 013: with user accounts on, people's sign-in at the portal must be usable: an issuer of the form https://…/ and
 // an audience (T-IAC-01 rule 21). The agent's client is not part of identity: it is agent.clientId, checked below.
