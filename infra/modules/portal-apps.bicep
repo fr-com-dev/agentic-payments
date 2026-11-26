@@ -15,6 +15,12 @@
 //   reaches it, since the portal accepts no Entra token (rule 21).
 // - 014 (rule 22): one more token, PORTAL_ADMIN_TOKEN, for L2's administration routes only: a reference to this
 //   vault's portal-admin-token, always referenced. PORTAL_ADMIN comes from userAccounts.administration.
+// - 020 (rule 26; specs/020 contracts/config-and-secrets.md "Azure"): the Coinbase connection. Two more secrets of
+//   this vault, coinbase-client-secret and coinbase-grant-key, always referenced, so every environment seeds both
+//   (the placeholder off while userAccounts.coinbase.enabled is false); the arrays stay literal. CONNECTED_PLATFORMS
+//   is coinbase only when userAccounts.coinbase.enabled, and the other values come from userAccounts.coinbase. The
+//   grants live in the profiles share, in their own folder beside PROFILE_DIR (CONNECTION_DIR), and the portal stays
+//   at one replica: it serializes each person's rotating refresh token in its one process (research R5).
 param location string
 @description('Every resource name (main.<environment>.bicepparam).')
 param names object
@@ -54,6 +60,8 @@ resource portal 'Microsoft.App/containerApps@2025-01-01' = {
         { name: 'portal-token', keyVaultUrl: '${vaultPortal}secrets/portal-token', identity: idPortal.id }
         { name: 'card-vault-key', keyVaultUrl: '${vaultPortal}secrets/card-vault-key', identity: idPortal.id }
         { name: 'portal-admin-token', keyVaultUrl: '${vaultPortal}secrets/portal-admin-token', identity: idPortal.id }
+        { name: 'coinbase-client-secret', keyVaultUrl: '${vaultPortal}secrets/coinbase-client-secret', identity: idPortal.id }
+        { name: 'coinbase-grant-key', keyVaultUrl: '${vaultPortal}secrets/coinbase-grant-key', identity: idPortal.id }
       ]
       identitySettings: [{ identity: idPortal.id, lifecycle: 'None' }]
     }
@@ -75,6 +83,8 @@ resource portal 'Microsoft.App/containerApps@2025-01-01' = {
             { name: 'AUTH_AUDIENCE', value: identity.audience }
             { name: 'PORTAL_CLIENT_ID', value: userAccounts.portalClientId }
             { name: 'PROFILE_DIR', value: '/app/.local/portal/profiles' }
+            // 020: the sealed Coinbase grants, in the same share, in their own folder (never inside PROFILE_DIR).
+            { name: 'CONNECTION_DIR', value: '/app/.local/portal/connections' }
             // Empty unless stripe: the portal reads an empty CARD_VAULT as cards off, and then ignores both keys.
             { name: 'CARD_VAULT', value: userAccounts.cardVault == 'stripe' ? 'stripe' : '' }
             { name: 'CARD_VAULT_PUBLISHABLE_KEY', value: userAccounts.cardVaultPublishableKey }
@@ -82,6 +92,15 @@ resource portal 'Microsoft.App/containerApps@2025-01-01' = {
             { name: 'CARD_VAULT_KEY', secretRef: 'card-vault-key' }
             { name: 'PORTAL_ADMIN', value: userAccounts.administration ? '1' : '0' }
             { name: 'PORTAL_ADMIN_TOKEN', secretRef: 'portal-admin-token' }
+            // 020: empty unless userAccounts.coinbase.enabled: the portal reads an empty CONNECTED_PLATFORMS as off, and
+            // then ignores the Coinbase values below (the two secrets are the placeholder off).
+            { name: 'CONNECTED_PLATFORMS', value: userAccounts.coinbase.enabled ? 'coinbase' : '' }
+            { name: 'COINBASE_CLIENT_ID', value: userAccounts.coinbase.clientId }
+            { name: 'COINBASE_REDIRECT_URI', value: userAccounts.coinbase.redirectUri }
+            { name: 'PRIVACY_POLICY_URL', value: userAccounts.coinbase.privacyPolicyUrl }
+            { name: 'SUPPORT_URL', value: userAccounts.coinbase.supportUrl }
+            { name: 'COINBASE_CLIENT_SECRET', secretRef: 'coinbase-client-secret' }
+            { name: 'COINBASE_GRANT_KEY', secretRef: 'coinbase-grant-key' }
           ]
           volumeMounts: [{ volumeName: 'profiles', mountPath: '/app/.local/portal' }]
           probes: [

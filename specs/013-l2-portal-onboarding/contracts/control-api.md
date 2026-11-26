@@ -1,5 +1,11 @@
 # Contract: L2-5 delta (control API) and §7 contracts
 
+> **Since 020 (SPEC v1.30).** L2 serves two more user-account routes with `PORTAL_TOKEN` and the person's token,
+> `PUT` and `DELETE /v1/users/:userId/connections/:connectionId` (identifiers only), and the user view gains
+> `connections`. They are defined in
+> [specs/020 contracts/control-api.md](../../020-coinbase-wallet-balances/contracts/control-api.md). Nothing below
+> changes, and no payment decision reads a connection.
+
 > **1.19 (2026-11-16, SPEC v1.19 L2-5, SEC-35).** The portal now forwards the person's own access token to L2 in
 > `X-Person-Authorization` on every route below but `GET /v1/platform`, and L2 verifies it itself (the portal's
 > client, a sign-in time) and takes the user from it: a path's `userId` must be the token's user (403

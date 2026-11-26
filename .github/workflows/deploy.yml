@@ -216,7 +216,7 @@ jobs:
         if: ${{ inputs.unit != 'platform' }}
         run: |
           IMG="${{ steps.build.outputs.acr }}/x402-$IMAGE:$IMAGE_TAG"
-          if (docker history --no-trunc "$IMG"; docker run --rm "$IMG" env) | grep -E 'PRIVATE_KEY[=]|_SECRET[=]|_TOKEN[=]|_MNEMONIC[=]|CARD_VAULT_KEY[=]'; then
+          if (docker history --no-trunc "$IMG"; docker run --rm "$IMG" env) | grep -E 'PRIVATE_KEY[=]|_SECRET[=]|_TOKEN[=]|_MNEMONIC[=]|CARD_VAULT_KEY[=]|COINBASE_GRANT_KEY[=]'; then
             echo "secret assignment found in $IMG"; exit 1
           fi
 

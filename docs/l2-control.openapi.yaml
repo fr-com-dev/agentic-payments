@@ -1163,6 +1163,88 @@ paths:
         "403":
           $ref: "#/components/responses/PersonRefused"
 
+  /v1/users/{userId}/connections/{connectionId}:
+    put:
+      tags: [portal]
+      operationId: openConnection
+      summary: Record a connection to an outside platform (020)
+      description: |
+        Appends `CONNECTION_OPENED` with the portal's identifier and the platform unless this connection is already
+        active. When another connection of the same platform is active, first appends `CONNECTION_CLOSED` for it with
+        `cause: "replaced"`, in the same serialized section, and names it in `replaced`: a user has at most one
+        connection per platform (specs/020 FR-010). The ledger never holds a grant, an account identifier, a balance,
+        a name or an email (FR-023), and nothing here is read by a payment decision (FR-020).
+      security:
+        - portalToken: []
+      parameters:
+        - $ref: "#/components/parameters/PersonAuthorization"
+        - $ref: "#/components/parameters/UserId"
+        - $ref: "#/components/parameters/ConnectionId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [platform]
+              properties:
+                platform:
+                  $ref: "#/components/schemas/ConnectedPlatform"
+      responses:
+        "200":
+          description: The user's active connections, and the one this call replaced, if any.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConnectionList"
+        "400":
+          description: "`userId` is not a user identifier, `connectionId` is not a connection identifier, the platform is not `coinbase`, or the body has another key."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/PersonRefused"
+        "409":
+          description: "`not_registered`, `account_disabled`, or `connection_reused` (this identifier was closed before; one is never reused)."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      tags: [portal]
+      operationId: closeConnection
+      summary: Record a closed connection (020)
+      description: |
+        Appends `CONNECTION_CLOSED` if the connection is active; nothing otherwise. Allowed while the account is
+        disabled (specs/020 FR-019).
+      security:
+        - portalToken: []
+      parameters:
+        - $ref: "#/components/parameters/PersonAuthorization"
+        - $ref: "#/components/parameters/UserId"
+        - $ref: "#/components/parameters/ConnectionId"
+      responses:
+        "200":
+          description: The user's active connections.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConnectionList"
+        "400":
+          description: "`userId` is not a user identifier, or `connectionId` is not a connection identifier."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/PersonRefused"
+
   /docs:
     get:
       tags: [docs]
@@ -1322,6 +1404,14 @@ components:
       schema:
         type: string
         pattern: "^card_[0-9a-f-]{36}$"
+    ConnectionId:
+      name: connectionId
+      in: path
+      required: true
+      description: The portal's own identifier for one connection (020); a reconnect makes a new one.
+      schema:
+        type: string
+        pattern: "^conn_[0-9a-f-]{36}$"
 
   responses:
     Unauthorized:
@@ -2427,7 +2517,7 @@ components:
     UserView:
       type: object
       additionalProperties: false
-      required: [userId, registered, enabled, onboarding, cards, policies]
+      required: [userId, registered, enabled, onboarding, cards, connections, policies]
       properties:
         userId:
           $ref: "#/components/schemas/UserId"
@@ -2452,10 +2542,54 @@ components:
           type: array
           items:
             type: string
+        connections:
+          description: 020 the active connections to outside platforms, identifiers only.
+          type: array
+          items:
+            $ref: "#/components/schemas/UserConnection"
         policies:
           type: array
           items:
             $ref: "#/components/schemas/PolicyView"
+
+    ConnectedPlatform:
+      type: string
+      enum: [coinbase]
+
+    UserConnection:
+      type: object
+      additionalProperties: false
+      required: [connectionId, platform, connectedAt]
+      properties:
+        connectionId:
+          type: string
+          pattern: "^conn_[0-9a-f-]{36}$"
+        platform:
+          $ref: "#/components/schemas/ConnectedPlatform"
+        connectedAt:
+          type: string
+          format: date-time
+
+    ConnectionList:
+      type: object
+      additionalProperties: false
+      required: [connections]
+      properties:
+        connections:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [connectionId, platform]
+            properties:
+              connectionId:
+                type: string
+                pattern: "^conn_[0-9a-f-]{36}$"
+              platform:
+                $ref: "#/components/schemas/ConnectedPlatform"
+        replaced:
+          type: string
+          pattern: "^conn_[0-9a-f-]{36}$"
 
     CardList:
       type: object

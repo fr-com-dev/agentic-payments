@@ -149,7 +149,64 @@ export function errorMessage(e: ApiError): string {
       return "Confirm it's you to make this change.";
     case "not found":
       return "Not found.";
+    // 020 connected platforms
+    case "not_ready":
+      return "Coinbase can't be connected on this deployment yet.";
+    case "not_connected":
+      return "Coinbase isn't connected.";
     default:
       return "Something went wrong. Nothing was changed.";
   }
 }
+
+// ---------------------------------------------------------------------------
+// 020 connected platforms (specs/020 contracts/portal-ui.md). "Coinbase" is plain text everywhere: no logo and no
+// button artwork (research R8). Nothing Coinbase says (an error's description, a name) is part of a sentence here.
+// ---------------------------------------------------------------------------
+
+/** Where a person removes the portal's access in Coinbase themselves (research R8). */
+export const COINBASE_CONNECTIONS_URL = "https://accounts.coinbase.com/security/connections";
+
+export const AGENT_PAYS_TITLE = "Your agent pays from this";
+export const COINBASE_PART_TITLE = "Coinbase · View only";
+export const COINBASE_READ_ONLY_TEXT = "See your Coinbase balances here. The portal will only read them: your agent can't spend Coinbase funds.";
+export const COINBASE_RECONNECT_TEXT = "Coinbase no longer accepts this connection. Reconnect to see your balances.";
+export const COINBASE_UNAVAILABLE_TEXT = "Coinbase isn't available on this deployment.";
+export const GOING_TO_COINBASE_TEXT = "Going to Coinbase…";
+/** A start the portal answered with an address the web app won't go to. */
+export const START_FAILED_TEXT = "Something went wrong. Nothing was connected.";
+
+// The return screen, one sentence per answer (contracts/portal-ui.md "Connecting").
+export const COINBASE_CONNECTED_TEXT = "Coinbase connected.";
+export const NOTHING_CONNECTED_TEXT = "Nothing was connected.";
+export const INVALID_STATE_TEXT = "This connection wasn't started here, or took too long. Nothing was connected.";
+export const SCOPE_TOO_NARROW_TEXT = "Coinbase didn't give permission to read your balances. Nothing was connected.";
+export const SCOPE_TOO_WIDE_TEXT = "Coinbase gave more access than reading. We refused it and nothing was connected.";
+export const COINBASE_UNREACHABLE_TEXT = "Coinbase couldn't be reached. Nothing was connected. Try again later.";
+
+/** Why `complete` didn't connect, and whether starting again can help. */
+export function connectRefusal(e: ApiError): { message: string; retry: boolean } {
+  if (e.error === "invalid_state" || e.error === "invalid_request") return { message: INVALID_STATE_TEXT, retry: true };
+  if (e.error === "scope_refused" && e.reason === "too_narrow") return { message: SCOPE_TOO_NARROW_TEXT, retry: true };
+  // Starting again would bring back the same wide grant.
+  if (e.error === "scope_refused") return { message: SCOPE_TOO_WIDE_TEXT, retry: false };
+  // Coinbase (platform_unavailable), L2 (control_unavailable) or the grant store (unavailable).
+  if (e.status === 502 || e.status === 503) return { message: COINBASE_UNREACHABLE_TEXT, retry: false };
+  return { message: errorMessage(e), retry: false };
+}
+
+// The balances (contracts/portal-ui.md "The balances").
+export const NO_RATE_TEXT = "no rate from Coinbase";
+export const NO_FUNDS_TEXT = "Your Coinbase account holds no funds.";
+export const BALANCES_READING_TEXT = "Reading your Coinbase balances…";
+export const BALANCES_UNREADABLE_TEXT = "Couldn't read your Coinbase balances. Try again in a moment.";
+export const staleBalancesText = (time: string): string => `Couldn't reach Coinbase. These figures are from ${time}.`;
+export const totalLabel = (time: string): string => `Total in US dollars (at Coinbase's rates, ${time})`;
+export const notCountedText = (codes: readonly string[]): string => `Not counted: ${codes.join(", ")}`;
+export const moreAssetsText = (n: number, atLeast = false): string => `and ${atLeast ? "at least " : ""}${String(n)} more ${n === 1 && !atLeast ? "asset" : "assets"}`;
+
+// Disconnecting (contracts/portal-ui.md "Disconnecting").
+export const DISCONNECT_QUESTION = "Disconnect Coinbase?";
+export const DISCONNECT_TEXT = "The portal will forget its access and stop showing these balances.";
+export const DISCONNECTED_TEXT = "Coinbase disconnected.";
+export const NOT_REVOKED_TEXT = "Disconnected here. Coinbase didn't confirm, so also remove the access in Coinbase:";

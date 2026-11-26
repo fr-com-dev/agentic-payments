@@ -1,5 +1,10 @@
 # Data Model: L2 Web Portal: Onboarding, Profile, Wallet and Expense Policies
 
+> **Since 020 (SPEC v1.30).** Two more ledger entry types, `CONNECTION_OPENED` `{ userId, connectionId, platform }`
+> and `CONNECTION_CLOSED` `{ userId, connectionId, platform, cause? }`, and a fourth store owned by the portal: the
+> sealed grant files under `CONNECTION_DIR`. See [specs/020 data-model.md](../020-coinbase-wallet-balances/data-model.md).
+> `userState` gains `connections`; nothing else here changes.
+
 Three places hold data, each with one owner:
 
 | Store | Owner | Holds | Never holds |

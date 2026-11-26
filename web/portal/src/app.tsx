@@ -12,6 +12,7 @@ import { AppProvider, type AppContext } from "./context.js";
 import { errorMessage } from "./messages.js";
 import { ADMIN_HOME, firstStepNotDone, matchRoute, resolveRoute } from "./routes.js";
 import { Account } from "./screens/Account.js";
+import { CoinbaseReturn } from "./screens/CoinbaseReturn.js";
 import { Activity } from "./screens/admin/Activity.js";
 import { AdminNav } from "./screens/admin/AdminNav.js";
 import { LedgerCheck } from "./screens/admin/LedgerCheck.js";
@@ -97,6 +98,8 @@ function Screen({ path, cardFields, onSignOut, administrator }: { path: string; 
       return <Profile />;
     case "wallet":
       return <Wallet {...(cardFields && { cardFields })} />;
+    case "coinbase-return":
+      return <CoinbaseReturn {...(cardFields && { cardFields })} />;
     case "policies":
       return <Policies />;
     case "policy-new":

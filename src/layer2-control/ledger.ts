@@ -39,7 +39,10 @@ export type EntryType =
   | "POLICY_RESUMED"
   | "POLICY_REMOVED"
   | "USER_DISABLED"
-  | "USER_ENABLED";
+  | "USER_ENABLED"
+  // 020 connected platforms (L2-8): identifiers only (specs/020 contracts/control-api.md)
+  | "CONNECTION_OPENED"
+  | "CONNECTION_CLOSED";
 
 export interface LedgerEntry {
   seq: number;

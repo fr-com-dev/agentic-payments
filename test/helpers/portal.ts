@@ -13,16 +13,25 @@ import { AdminClient } from "../../src/portal/admin-client.js";
 import { createBalanceCache, type BalanceReader } from "../../src/portal/balance.js";
 import { CardVault } from "../../src/portal/card-vault.js";
 import { loadPortalConfig, type PortalConfig } from "../../src/portal/config.js";
+import { randomBytes } from "node:crypto";
+import { CoinbaseClient } from "../../src/portal/coinbase/client.js";
+import { GrantStore } from "../../src/portal/coinbase/grants.js";
+import { Connections, type ConnectionSwitches } from "../../src/portal/connections.js";
 import { ControlClient } from "../../src/portal/control-client.js";
+import { connectionEventLog, createPortalLog } from "../../src/portal/log.js";
 import { ProfileStore } from "../../src/portal/profile-store.js";
 import { createPortalApp, type PortalDeps } from "../../src/portal/server.js";
 import { DEV_ISSUER } from "../../src/shared/identity-token.js";
 import type { TestIssuer } from "./caller-tokens.js";
 import type { CardVaultStub } from "./card-vault-stub.js";
+import { STUB_CLIENT_ID, STUB_CLIENT_SECRET, type CoinbaseStub } from "./coinbase-stub.js";
 import { startUsersL2, TOKENS, type UsersL2, type UsersL2Options } from "./users.js";
 
 export const TEST_VAULT_KEY = "rk_test_PORTALTESTKEY0123456789";
 export const TEST_PUBLISHABLE_KEY = "pk_test_PORTALPUBLISHABLE0123";
+export const TEST_REDIRECT = "http://localhost:4025/wallet/coinbase";
+export const TEST_PRIVACY = "https://example.org/privacy";
+export const TEST_SUPPORT = "mailto:support@example.org";
 
 export interface StartPortalOptions {
   /** An L2 to use (the caller closes it), or options for a new one. */
@@ -55,6 +64,16 @@ export interface StartPortalOptions {
    * `token`, `agentToken` and `userId` take the person's whole `sub` in `o.sub` (default `dev|<subject>`).
    */
   callers?: TestIssuer;
+  /**
+   * 020: connected platforms on, against this stand-in Coinbase (its address is a dep, never env). `connections` gives
+   * the must-fail switches; `connectionsOff` keeps the feature off while still reading `connectionDir` (research R12).
+   */
+  coinbase?: CoinbaseStub;
+  connections?: ConnectionSwitches & { privacyPolicyUrl?: string; supportUrl?: string; skipGrantBinding?: boolean };
+  connectionsOff?: boolean;
+  /** 020: reuse a grant directory and key (a restart, a feature switched off). */
+  connectionDir?: string;
+  grantKey?: string;
 }
 
 export interface Reply<T = Record<string, unknown>> {
@@ -69,6 +88,10 @@ export interface PortalTestApp {
   app: Express;
   config: PortalConfig;
   l2: UsersL2;
+  /** 020: the connections object, when the feature (or its off mode) is wired. */
+  connections?: Connections;
+  connectionDir: string;
+  grantKey: string;
   profilesDir: string;
   profiles: ProfileStore;
   /** Every log line the portal wrote, parsed. */
@@ -119,6 +142,8 @@ export async function startPortal(o: StartPortalOptions = {}): Promise<PortalTes
           : (sub, po) => signDevToken(issuer, { subject: "", sub, issuer: person.issuer, audience: person.audience, ...po }),
       });
   const profilesDir = join(dir, "profiles");
+  const connectionDir = o.connectionDir ?? join(dir, "connections");
+  const grantKey = o.grantKey ?? randomBytes(32).toString("base64");
   const config = loadPortalConfig({
     NETWORK: "local",
     CONTROL_URL: o.controlDown ? "http://127.0.0.1:9" : l2.url,
@@ -131,17 +156,44 @@ export async function startPortal(o: StartPortalOptions = {}): Promise<PortalTes
     PORTAL_WEB_ROOT: o.webRoot ?? join(dir, "no-web-root"),
     ...(o.vault && { CARD_VAULT: "stripe", CARD_VAULT_KEY: TEST_VAULT_KEY, CARD_VAULT_PUBLISHABLE_KEY: TEST_PUBLISHABLE_KEY }),
     ...(o.admin && { PORTAL_ADMIN: "1", PORTAL_ADMIN_TOKEN: TOKENS.portalAdmin }),
+    CONNECTION_DIR: connectionDir,
+    ...(o.coinbase &&
+      !o.connectionsOff && {
+        CONNECTED_PLATFORMS: "coinbase",
+        COINBASE_CLIENT_ID: STUB_CLIENT_ID,
+        COINBASE_CLIENT_SECRET: STUB_CLIENT_SECRET,
+        COINBASE_GRANT_KEY: grantKey,
+        COINBASE_REDIRECT_URI: TEST_REDIRECT,
+        PRIVACY_POLICY_URL: TEST_PRIVACY,
+        SUPPORT_URL: TEST_SUPPORT,
+      }),
     ...o.env,
   });
   const callers = o.callers;
   if (callers) config.auth = { ...config.auth, issuer: callers.issuer, audience: callers.audience };
   const rawLogs: string[] = [];
   const profiles = new ProfileStore(profilesDir);
+  const control = new ControlClient(config.controlUrl, config.portalToken);
+  const cb = config.coinbase;
+  const { skipGrantBinding, privacyPolicyUrl, supportUrl, ...switches } = o.connections ?? {};
+  const connections =
+    o.coinbase || o.connectionsOff
+      ? new Connections({
+          ...(cb && o.coinbase && { client: new CoinbaseClient({ ...cb.credentials, redirectUri: cb.redirectUri, loginBase: o.coinbase.baseUrl, apiBase: o.coinbase.baseUrl }) }),
+          grants: new GrantStore(config.connectionDir, { ...(cb && { key: cb.grantKey }), ...(skipGrantBinding && { skipGrantBinding: true }) }),
+          control,
+          ...(cb && { privacyPolicyUrl: privacyPolicyUrl ?? cb.privacyPolicyUrl, supportUrl: supportUrl ?? cb.supportUrl }),
+          now: l2.clock.now,
+          onEvent: connectionEventLog(createPortalLog((line) => rawLogs.push(line)), l2.clock.now),
+          ...switches,
+        })
+      : undefined;
   const reader: BalanceReader = o.balance ?? { balanceOf: async () => 0n };
   const deps: PortalDeps = {
     config,
     keys: callers ? { keys: callers.deps.keys, algorithms: callers.deps.algorithms } : { keys: createLocalJWKSet(issuer.jwks), algorithms: ["ES256"] },
-    control: new ControlClient(config.controlUrl, config.portalToken),
+    control,
+    ...(connections && { connections }),
     profiles,
     balance: createBalanceCache(reader, { now: l2.clock.now }),
     ...(o.vault && config.cardVault && { vault: new CardVault(config.cardVault, { baseUrl: o.vault.baseUrl, timeoutMs: 400 }) }),
@@ -205,6 +257,9 @@ export async function startPortal(o: StartPortalOptions = {}): Promise<PortalTes
     app: portal.app,
     config,
     l2,
+    ...(connections && { connections }),
+    connectionDir,
+    grantKey,
     profilesDir,
     profiles,
     rawLogs,

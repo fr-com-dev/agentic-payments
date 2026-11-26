@@ -195,7 +195,7 @@ describe("T-API-01 every L2 route is documented, and every documented route is m
     const { app, base } = await startService({ apiDocs: true, users: false });
     const doc = loadDoc();
     expect(routeDiff(documentedRoutes(doc, (op) => !isUserRoute(op) && !isAdminRoute(op)), mountedRoutes(app))).toEqual({ undocumented: [], unmounted: [] });
-    expect(documentedRoutes(doc, isUserRoute)).toHaveLength(14);
+    expect(documentedRoutes(doc, isUserRoute)).toHaveLength(16);
     for (const [method, path, op] of operations(doc)) {
       if (isUserRoute(op)) expect((await send(base, method, path.replace(/\{\w+\}/g, "x"), TOKENS.portal)).status, `${method} ${path}`).toBe(404);
     }
@@ -384,6 +384,16 @@ describe("T-API-03 live responses match the documented status and schema", () =>
     await cardCall("PUT", U, "pm_not_a_card_id");
     await cardCall("PUT", CAROL, card);
     await cardCall("DELETE", U, "pm_not_a_card_id");
+    // 020 connections: identifiers only, one per platform
+    const conn = "conn_00000000-0000-4000-8000-000000000001";
+    const connCall = (method: string, userId: string, connectionId: string, body?: unknown) =>
+      call(method, "/v1/users/{userId}/connections/{connectionId}", { ...P, params: { userId, connectionId }, ...(body !== undefined && { body }) });
+    await connCall("PUT", U, conn, { platform: "coinbase" });
+    await connCall("PUT", U, "conn_bad", { platform: "coinbase" });
+    await connCall("PUT", U, conn, { platform: "kraken" });
+    await connCall("PUT", CAROL, conn, { platform: "coinbase" });
+    await connCall("DELETE", U, "conn_bad");
+    await connCall("DELETE", U, conn);
     // the account: while disabled every wallet, policy and card-add write conflicts
     await call("POST", "/v1/users/{userId}/disable", P);
     await call("POST", "/v1/users/{userId}/disable", user(CAROL));

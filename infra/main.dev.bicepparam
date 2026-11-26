@@ -98,6 +98,19 @@ param userAccounts = {
   sellerName: 'x402 demo seller'
   cardVault: 'off'
   cardVaultPublishableKey: ''
+  // 020: the portal's Coinbase connection (specs/020 contracts/config-and-secrets.md "Azure"). Off: Coinbase isn't
+  // issuing OAuth clients now (specs/020 research R0). Seed coinbase-client-secret and coinbase-grant-key in the
+  // portal vault as the placeholder off before the portal's first deployment with 020, or its revision fails and the
+  // pipeline rolls back. enabled needs enabled: true above, the project's Coinbase client ID, the redirect registered
+  // with it (https://<portal host>/wallet/coinbase), the privacy policy's and support's addresses, and the two real
+  // secrets in the vault.
+  coinbase: {
+    enabled: false
+    clientId: ''
+    redirectUri: ''
+    privacyPolicyUrl: ''
+    supportUrl: ''
+  }
 }
 
 // The sign-in tenant (specs/013 research R19; specs/016): people sign in with Auth0, at the portal and at the agent,

@@ -2,7 +2,7 @@
 // holds no key material. It refuses to start if the payer key is visible (INV-3, SEC-2).
 import { randomBytes } from "node:crypto";
 import { pathToFileURL } from "node:url";
-import { REFUSAL } from "./refusal.js";
+import { coinbaseRefusal, REFUSAL, visibleCoinbaseCredential } from "./refusal.js";
 import { loadEnv, serviceUrls, tokenFor } from "./shared/config.js";
 
 export { REFUSAL };
@@ -20,6 +20,12 @@ async function main(argv: string[]): Promise<void> {
   // INV-3: this must stay the first check, before any network or LLM activity.
   if (process.env.PAYER_PRIVATE_KEY !== undefined) {
     console.error(REFUSAL);
+    process.exit(1);
+  }
+  // 020 (A18): neither of the portal's Coinbase credentials either.
+  const coinbaseCredential = visibleCoinbaseCredential(process.env);
+  if (coinbaseCredential !== undefined) {
+    console.error(coinbaseRefusal(coinbaseCredential));
     process.exit(1);
   }
 

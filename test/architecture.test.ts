@@ -10,7 +10,7 @@ import { describe, expect, it } from "vitest";
 // Scanner core (T004–T006)
 // ---------------------------------------------------------------------------
 
-export type Rule = "A1" | "A2" | "A3" | "A4" | "A5" | "A6" | "A7" | "A8" | "A9" | "A10" | "A11" | "A12" | "A13" | "A14" | "A15" | "A16" | "A17";
+export type Rule = "A1" | "A2" | "A3" | "A4" | "A5" | "A6" | "A7" | "A8" | "A9" | "A10" | "A11" | "A12" | "A13" | "A14" | "A15" | "A16" | "A17" | "A18";
 export interface ArchViolation {
   rule: Rule;
   file: string;
@@ -299,6 +299,53 @@ export function checkCardVaultConfinement(path: string, source: string): ArchVio
   const text = template ? source : lex(source).noComments;
   const out: ArchViolation[] = matches(text, A10_NAME).map((off) => ({ rule: "A10" as const, file: path, line: lineAt(source, off), detail: "CARD_VAULT_KEY" }));
   for (const off of matches(text, A10_HOST)) out.push({ rule: "A10", file: path, line: lineAt(source, off), detail: "api.stripe.com" });
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// A18 (020, SPEC v1.30 §4.1, SEC-56): the Coinbase credentials are confined to one folder. Part 1: under src/ the
+// client secret and the two hosts the portal calls are named only in src/portal/coinbase/client.ts, the grant key only
+// in src/portal/coinbase/grants.ts (the L1 entry points may name both to refuse them, the portal's template to list
+// them), and neither file imports L2's clients or a layer. Part 2: no layer, counterparty or machine-caller code
+// names a COINBASE_ variable, and no L1 entry point imports the portal. Part 3: no payment decision, signer or ledger
+// key code names a connection (FR-020).
+// ---------------------------------------------------------------------------
+
+const A18_CLIENT = "src/portal/coinbase/client.ts";
+const A18_GRANTS = "src/portal/coinbase/grants.ts";
+// The three L1 entry points, and src/refusal.ts that holds their refusal texts (the payer key's too).
+const A18_ENTRY_POINTS = new Set(["src/main.ts", "src/hosted-main.ts", "src/smoke-main.ts", "src/refusal.ts"]);
+const A18_SECRET = /\bCOINBASE_CLIENT_SECRET\b/;
+const A18_KEY = /\bCOINBASE_GRANT_KEY\b/;
+const A18_HOSTS = /\b(?:login|api)\.coinbase\.com\b/;
+const A18_FORBIDDEN_IMPORTS = /["'][^"']*(?:control-client|admin-client|layer[123]-[a-z]+)[^"']*["']/;
+const A18_NO_COINBASE = /^src\/(?:layer1-intent|layer2-control|layer3-settlement|counterparty|machine-caller)\//;
+const A18_ANY_COINBASE = /\bCOINBASE_\w+/;
+const A18_PORTAL_IMPORT = /["']\.\/portal\/[^"']*["']/;
+const A18_DECISION_FILES = new Set(["src/layer2-control/policy.ts", "src/layer2-control/signer.ts", "src/layer2-control/ledger-key.ts"]);
+const A18_CONNECTION = /\bCONNECTION_OPENED\b|\bCONNECTION_CLOSED\b|\bconnections\b/;
+
+export function checkCoinbaseConfinement(path: string, source: string): ArchViolation[] {
+  const template = /^env\/[^/]+\.env\.example$/.test(path);
+  if (template) {
+    if (path === "env/portal.env.example") return [];
+    return [...matches(source, A18_SECRET), ...matches(source, A18_KEY)].map((off) => ({ rule: "A18" as const, file: path, line: lineAt(source, off), detail: source.slice(off).match(/^\w+/)![0] }));
+  }
+  if (!path.startsWith("src/")) return [];
+  const text = lex(source).noComments;
+  const out: ArchViolation[] = [];
+  const add = (off: number, detail: string) => out.push({ rule: "A18", file: path, line: lineAt(source, off), detail });
+  const entry = A18_ENTRY_POINTS.has(path);
+  // Part 1.
+  if (path !== A18_CLIENT && !entry) for (const off of matches(text, A18_SECRET)) add(off, "COINBASE_CLIENT_SECRET");
+  if (path !== A18_GRANTS && !entry) for (const off of matches(text, A18_KEY)) add(off, "COINBASE_GRANT_KEY");
+  if (path !== A18_CLIENT) for (const off of matches(text, A18_HOSTS)) add(off, text.slice(off).match(/^[\w.]+/)![0]);
+  if (path === A18_CLIENT || path === A18_GRANTS) for (const off of matches(text, A18_FORBIDDEN_IMPORTS)) add(off, "imports L2's client or a layer");
+  // Part 2.
+  if (A18_NO_COINBASE.test(path)) for (const off of matches(text, A18_ANY_COINBASE)) add(off, text.slice(off).match(/^\w+/)![0]);
+  if (entry) for (const off of matches(text, A18_PORTAL_IMPORT)) add(off, "an L1 entry point imports the portal");
+  // Part 3.
+  if (A18_DECISION_FILES.has(path)) for (const off of matches(text, A18_CONNECTION)) add(off, "names a connection");
   return out;
 }
 
@@ -673,6 +720,15 @@ const TEMPLATES: Record<string, TemplateSpec> = {
       // 014: the administration area, and its own role token
       "PORTAL_ADMIN",
       "PORTAL_ADMIN_TOKEN",
+      // 020: connected platforms (CFG-2). The client secret and the grant key are credentials (A18): empty here.
+      "CONNECTED_PLATFORMS",
+      "COINBASE_CLIENT_ID",
+      "COINBASE_CLIENT_SECRET",
+      "COINBASE_GRANT_KEY",
+      "COINBASE_REDIRECT_URI",
+      "PRIVACY_POLICY_URL",
+      "SUPPORT_URL",
+      "CONNECTION_DIR",
     ],
   },
 };
@@ -702,7 +758,7 @@ export function checkTemplate(name: string, entries: TemplateEntry[]): string[] 
     if (!entries.some((e) => e.key === k && !e.commented)) errors.push(`${name}: missing required key ${k}`);
   }
   for (const e of entries) {
-    if (/PRIVATE_KEY$|_SECRET$|_API_KEY$|_MNEMONIC$|^CARD_VAULT_KEY$|^LEDGER_MAC_KEY$/.test(e.key) && e.value !== "") errors.push(`${name}: ${e.key} must be empty in a template`);
+    if (/PRIVATE_KEY$|_SECRET$|_API_KEY$|_MNEMONIC$|^CARD_VAULT_KEY$|^LEDGER_MAC_KEY$|^COINBASE_GRANT_KEY$/.test(e.key) && e.value !== "") errors.push(`${name}: ${e.key} must be empty in a template`);
   }
   if (name === "facilitator" && !entries.some((e) => e.key === "NETWORK" && e.value === "local")) {
     errors.push("facilitator: NETWORK must be local");
@@ -958,6 +1014,43 @@ describe("T-ARCH-ENV per-process env templates (US4)", () => {
     expect(imports.filter((i) => i!.startsWith("."))).toEqual(["../shared/config.js", "../shared/identity-token.js"]);
   });
 
+  // ---- 020: A18, the Coinbase credentials are confined to one folder ----------------------------------------
+
+  it("T-ARCH-A18 fixture trips A18 for the secret, the key and the host, and no other rule catches it", () => {
+    const { path, source } = fixture(18);
+    expect(checkFile(path, source)).toEqual([]);
+    expect([...checkCardVaultConfinement(path, source), ...checkMnemonicConfinement(path, source), ...checkPortalIsolation(path, source)]).toEqual([]);
+    expect(checkCoinbaseConfinement(path, source).map((v) => [v.rule, v.detail])).toEqual([
+      ["A18", "COINBASE_CLIENT_SECRET"],
+      ["A18", "COINBASE_GRANT_KEY"],
+      ["A18", "api.coinbase.com"],
+    ]);
+  });
+
+  it("T-ARCH-A18 repository is clean, and not vacuously: client.ts holds the secret and the hosts, grants.ts the key", () => {
+    expect([...walk("src"), ...templates()].flatMap((f) => checkCoinbaseConfinement(f, readFileSync(f, "utf8"))).map(format)).toEqual([]);
+    const client = checkCoinbaseConfinement("src/portal/x.ts", readFileSync("src/portal/coinbase/client.ts", "utf8")).map((v) => v.detail);
+    expect(new Set(client)).toEqual(new Set(["COINBASE_CLIENT_SECRET", "login.coinbase.com", "api.coinbase.com"]));
+    expect(new Set(checkCoinbaseConfinement("src/portal/x.ts", readFileSync("src/portal/coinbase/grants.ts", "utf8")).map((v) => v.detail))).toEqual(new Set(["COINBASE_GRANT_KEY"]));
+    // The CDP facilitator's address is neither host.
+    expect(checkCoinbaseConfinement("src/portal/x.ts", 'export const u = "https://api.cdp.coinbase.com/platform/v2/x402";\n')).toEqual([]);
+  });
+
+  it("T-ARCH-A18 parts 2 and 3: a layer naming a Coinbase variable, an L1 entry point importing the portal, a decision naming a connection", () => {
+    const one = (path: string, source: string) => checkCoinbaseConfinement(path, source).map((v) => v.detail);
+    expect(one("src/layer1-intent/tools.ts", "export const x = process.env.COINBASE_CLIENT_ID;\n")).toEqual(["COINBASE_CLIENT_ID"]);
+    expect(one("src/layer2-control/service.ts", "const t = env.COINBASE_REDIRECT_URI;\n")).toEqual(["COINBASE_REDIRECT_URI"]);
+    expect(one("src/machine-caller/token.ts", "const t = env.COINBASE_CLIENT_SECRET;\n")).toEqual(["COINBASE_CLIENT_SECRET", "COINBASE_CLIENT_SECRET"]);
+    expect(one("src/hosted-main.ts", 'import { x } from "./portal/connections.js";\n')).toEqual(["an L1 entry point imports the portal"]);
+    expect(one("src/hosted-main.ts", "if (process.env.COINBASE_CLIENT_SECRET !== undefined) process.exit(1);\n")).toEqual([]);
+    expect(one("src/layer2-control/policy.ts", "if (ctx.connections.length) deny();\n")).toEqual(["names a connection"]);
+    expect(one("src/layer2-control/signer.ts", 'if (e.type === "CONNECTION_OPENED") {}\n')).toEqual(["names a connection"]);
+    expect(one("src/portal/coinbase/client.ts", 'import { ControlClient } from "../control-client.js";\n')).toEqual(["imports L2's client or a layer"]);
+    expect(one("src/portal/coinbase/grants.ts", "const s = env.COINBASE_CLIENT_SECRET;\n")).toEqual(["COINBASE_CLIENT_SECRET"]);
+    expect(one("env/l1-hosted.env.example", "# COINBASE_GRANT_KEY=\n")).toEqual(["COINBASE_GRANT_KEY"]);
+    expect(one("test/x.test.ts", 'process.env.COINBASE_CLIENT_SECRET = "x";')).toEqual([]);
+  });
+
   // ---- 1.19: A17, the person's portal token has one way to L2 -----------------------------------------------
 
   it("T-ARCH-A17 fixture trips exactly A17, and no other rule catches it", () => {
@@ -1085,7 +1178,7 @@ describe("T-ARCH-TRACE threat matrix → test titles (007 T051)", () => {
  * express-rate-limit's own two options, `skipSuccessfulRequests` and `skipFailedRequests`, which say what a limiter
  * counts (the failed-authentication limit counts 401s only) and turn no check off.
  */
-const SWITCH = String.raw`(?:skip(?!SuccessfulRequests\b|FailedRequests\b)[A-Z]\w*|bypass\w*|sharedSigner|sharedBudgets|trustIntentUser|echoCaller|fallbackToPlatform|unserialized\w*|singlePortalRole|serializeOutcomes)`;
+const SWITCH = String.raw`(?:skip(?!SuccessfulRequests\b|FailedRequests\b)[A-Z]\w*|bypass\w*|sharedSigner|sharedBudgets|trustIntentUser|echoCaller|fallbackToPlatform|unserialized\w*|singlePortalRole|serializeOutcomes|trustRevokeAnswer)`;
 /** A switch turned on with a literal: `name: true`, a list of string literals, or a set. */
 const SWITCH_ON = new RegExp(String.raw`\b(${SWITCH})\s*:\s*(?:true\b|\[\s*["'\x60]|new Set\()`, "g");
 /** Passing a caller's own switch on, `...(deps.name && { name: true })`, turns nothing on by itself. */

@@ -25,6 +25,7 @@ import {
 } from "../src/layer1-intent/agent.js";
 import { checkBaseline, runScriptedAgent, scriptedPlan } from "../src/layer1-intent/scripted.js";
 import { REFUSAL, resolveSessionId } from "../src/main.js";
+import { coinbaseRefusal } from "../src/refusal.js";
 import { formatAtomic } from "../src/shared/config.js";
 import { checkBalance } from "../scripts/payer-balance.js";
 import type {
@@ -500,6 +501,38 @@ describe("L1-5 composition root (001 T017, T019)", () => {
     expect(stderr).toContain(REFUSAL);
     expect(connections).toBe(0);
   });
+
+  it("T-AGT-KEY (020, A18): each L1 entry point exits 1 when a Coinbase credential is visible, and makes no network call", async () => {
+    let connections = 0;
+    const counter = createServer((_req, res) => res.end("{}"));
+    counter.on("connection", () => connections++);
+    servers.push(counter);
+    await new Promise<void>((r) => counter.listen(0, "127.0.0.1", () => r()));
+    const url = `http://127.0.0.1:${(counter.address() as AddressInfo).port}`;
+    for (const [entry, args] of [["src/main.ts", ["--scripted"]], ["src/hosted-main.ts", []], ["src/smoke-main.ts", []]] as const) {
+      for (const name of ["COINBASE_CLIENT_SECRET", "COINBASE_GRANT_KEY"]) {
+        const env: NodeJS.ProcessEnv = {
+          PATH: process.env.PATH,
+          HOME: process.env.HOME,
+          [name]: "a-value-that-must-not-print",
+          ENV_FILE: "/dev/null",
+          NETWORK: "local",
+          CONTROL_URL: url,
+          SETTLEMENT_URL: url,
+          SELLER_URL: url,
+          AGENT_URL: url,
+        };
+        const child = spawn(process.execPath, ["--import", "tsx", entry, ...args], { env, stdio: ["ignore", "pipe", "pipe"] });
+        let stderr = "";
+        child.stderr.on("data", (d) => (stderr += String(d)));
+        const code = await new Promise<number | null>((r) => child.on("close", r));
+        expect(code, `${entry} ${name}`).toBe(1);
+        expect(stderr, `${entry} ${name}`).toContain(coinbaseRefusal(name));
+        expect(stderr).not.toContain("a-value-that-must-not-print");
+      }
+    }
+    expect(connections).toBe(0);
+  }, 60_000);
 
   it("T019: sessionId is SESSION_ID when set, otherwise sess_<8 hex>", () => {
     expect(resolveSessionId({ SESSION_ID: "sess_fixed" })).toBe("sess_fixed");

@@ -26,3 +26,35 @@ export function createPortalLog(sink: (line: string) => void = (l) => console.lo
     sink(JSON.stringify(out));
   };
 }
+
+/**
+ * 020 (specs/020 data-model.md "Portal log events"): the fixed labels a connection event may carry, each on a line of
+ * its own (`route: "connections"`, `status: 0`), with the user and nothing else: never a connection identifier, a
+ * token, a code, a state, an amount or anything Coinbase said (FR-029).
+ */
+export const CONNECTION_EVENTS = [
+  "coinbase_connected",
+  "coinbase_disconnected",
+  "coinbase_replaced",
+  "coinbase_reconnect_needed",
+  "coinbase_scope_refused",
+  "coinbase_state_refused",
+  "coinbase_unavailable",
+  "coinbase_revoke_failed",
+  "coinbase_rate_limited",
+  "coinbase_bad_amount",
+  "coinbase_reconciled",
+  "coinbase_scope_unverified",
+  "coinbase_grant_write_failed",
+  "coinbase_client_refused",
+  "coinbase_store_unreadable",
+] as const;
+
+/** The `onEvent` of connections.ts, writing one whitelisted line per event. Unknown labels are dropped. */
+export function connectionEventLog(log: PortalLog, now: () => number): (userId: string, event: string) => void {
+  const known = new Set<string>(CONNECTION_EVENTS);
+  return (userId, event) => {
+    if (!known.has(event)) return;
+    log({ time: new Date(now()).toISOString(), route: "connections", status: 0, ms: 0, userId, event });
+  };
+}

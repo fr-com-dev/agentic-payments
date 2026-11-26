@@ -20,6 +20,10 @@
   keeps it usable without asking the user again.
 - Q: Which figures does the wallet show for Coinbase? → A: Every asset with funds in its own units, plus
   Coinbase's own value of each in the user's currency and a Coinbase total, labeled as Coinbase's valuation.
+  Planning, 2026-11-25 ([research R7](research.md#r7-balances-and-coinbases-valuation)): Coinbase's accounts no
+  longer carry a value in the person's currency, and learning that currency would need access to their Coinbase
+  profile. The value is therefore in US dollars (the option was labeled "Units + USD value"), computed from
+  Coinbase's own exchange rates at the read time and rounded to the cent.
 
 ## Reading the request against the repository
 
@@ -56,7 +60,8 @@ Terms used below:
 
 A user who has finished registering opens their wallet and sees "Connect Coinbase". They choose it and the
 portal sends them to Coinbase. They sign in there, as they always do, and Coinbase shows what the portal asks
-for: permission to read their accounts and balances, nothing else. They agree and Coinbase sends them back to
+for: permission to read their accounts and balances, and to keep that access until they disconnect; nothing
+that moves funds. They agree and Coinbase sends them back to
 the wallet, where Coinbase shows as connected, with the date. The portal never sees their Coinbase password or
 second factor.
 
@@ -74,7 +79,8 @@ neither is offered a connection, and a connection request from either is refused
    see an option to connect Coinbase, with one sentence saying that the portal will only read balances and that
    the agent can't spend Coinbase funds.
 2. **Given** that option, **When** the user chooses it, **Then** they go to Coinbase's own sign-in and consent
-   page, which lists read access to accounts and balances only.
+   page, which lists read access to accounts and balances and keeping that access, and nothing that moves
+   funds.
 3. **Given** the consent page, **When** the user agrees, **Then** they return to the wallet, Coinbase shows as
    connected with the date, and its balances follow (User Story 2).
 4. **Given** the consent page, **When** the user cancels or refuses, **Then** they return to the wallet with a
@@ -91,7 +97,7 @@ neither is offered a connection, and a connection request from either is refused
 
 The wallet now shows two parts. The first is the L2 account, as today, marked "Your agent pays from this".
 The second is Coinbase, marked "View only": every asset in the user's Coinbase account that holds funds, with
-its amount, Coinbase's value of it in the user's currency, a Coinbase total, and the time it was read. The user
+its amount, its value in US dollars at Coinbase's rate, a Coinbase total, and the time it was read. The user
 can refresh. If Coinbase can't be reached, the wallet still shows the L2 account and the last Coinbase balances,
 marked as not current.
 
@@ -109,8 +115,8 @@ Coinbase part is marked as not current with the last read time.
    network, USDC balance, committed, spent in the last 24 hours, as in feature 013) and, apart from it, the
    Coinbase balances marked view only.
 2. **Given** a Coinbase asset with funds, **When** it is shown, **Then** its amount is exactly the amount
-   Coinbase reports, with no rounding, with the asset's name, Coinbase's value of it in the user's currency and
-   the time it was read.
+   Coinbase reports, with no rounding, with the asset's name, its value in US dollars at Coinbase's rate
+   (rounded to the cent) and the time it was read.
 3. **Given** the Coinbase part, **When** it is shown, **Then** it ends with a total of those values, labeled as
    Coinbase's valuation at the read time, and never added to the L2 account.
 4. **Given** shown balances, **When** the user refreshes, **Then** the Coinbase part is read again, at most once
@@ -203,8 +209,10 @@ unchanged.
    option to connect, and a connection request is refused.
 2. **Given** the integration on but its credential missing or invalid, **When** the portal starts, **Then** it
    refuses to start and names the missing setting, never its value.
-3. **Given** user accounts off, **When** the integration is turned on, **Then** the portal refuses to start:
-   connected platforms need user accounts.
+3. **Given** user accounts off, **When** the integration is turned on, **Then** no connection is offered or
+   made: a deployment's parameters refuse the combination before anything is deployed, and a portal in front
+   of a control layer without user accounts offers nothing (planning, 2026-11-25; until then: the portal
+   refuses to start).
 4. **Given** the integration turned off after users connected, **When** a user opens the wallet, **Then**
    Coinbase shows as unavailable on this deployment, and no request reaches Coinbase.
 
@@ -263,9 +271,9 @@ unchanged.
 - **FR-006**: A connection MUST start only from an action of the user in the portal, and MUST go through
   Coinbase's own sign-in and consent pages. The portal MUST NOT ask for, receive or keep the user's Coinbase
   password, second factor or recovery details. *(SPEC: proposed L2-8)*
-- **FR-007**: The portal MUST ask Coinbase for read access to the user's accounts and balances only. It MUST
-  NOT ask for any permission to send, trade, buy, sell, convert or withdraw, nor for profile data it doesn't
-  show. *(SPEC: proposed §3.3, Constitution I and V)*
+- **FR-007**: The portal MUST ask Coinbase only for read access to the user's accounts and balances, and for
+  keeping that access until the user disconnects (a renewable grant, FR-011). It MUST NOT ask for any
+  permission to send, trade, buy, sell, convert or withdraw, nor for profile data it doesn't show. *(SPEC: proposed §3.3, Constitution I and V)*
 - **FR-008**: A grant that carries any permission beyond reading MUST be refused and revoked at once. A grant
   that can't read balances MUST be refused with that reason and revoked. *(SPEC: proposed §11)*
 - **FR-009**: A connection MUST complete only for the person and the portal sign-in that started it, only
@@ -283,15 +291,17 @@ unchanged.
   marked view only, and MUST mark the L2 account as the one the agent pays from. *(SPEC: L2-8, Constitution
   I)*
 - **FR-013**: The wallet MUST show each Coinbase asset that holds funds, with its name, its exact amount as
-  Coinbase reports it, Coinbase's value of it in the user's currency, and the time it was read. Below them the
-  wallet MUST show the total of those values, labeled as Coinbase's valuation at the read time; an asset with
-  no value from Coinbase is shown without one and named as left out of the total (clarified 2026-11-25). The
+  Coinbase reports it, its value in US dollars (the amount at Coinbase's exchange rate for that asset at the read
+  time, rounded half-to-even to the cent), and the time it was read. Below them the wallet MUST show the total of
+  those values, labeled as Coinbase's valuation at the read time; an asset Coinbase gives no rate for is shown
+  without a value and named as left out of the total (clarified 2026-11-25; USD in planning, research R7). The
   total MUST NOT include the L2 account. Assets with no funds MUST NOT be shown. At most 200 assets
   are listed; past that the wallet says how many more there are. *(SPEC: proposed L2-8)*
 - **FR-014**: Balances MUST be at most 60 seconds old when shown, or marked not current with their read time.
   The user MAY ask for a fresh read, at most once every 10 seconds. *(SPEC: proposed L2-8)*
-- **FR-015**: Amounts and values MUST be kept and shown exactly as decimal values, and the total MUST be an
-  exact decimal sum, never through floating-point arithmetic. *(SPEC: Constitution VI, hard rule 8)*
+- **FR-015**: Amounts MUST be kept and shown exactly as decimal values; each value MUST be computed by exact
+  decimal division and one stated rounding, and the total MUST be the exact sum of the values shown, never through
+  floating-point arithmetic. *(SPEC: Constitution VI, hard rule 8)*
 - **FR-016**: A failure to read Coinbase MUST NOT fail the wallet view: within 5 seconds the L2 account is shown
   as usual and the Coinbase part as not current or not readable. *(SPEC: proposed L2-8)*
 - **FR-017**: When Coinbase no longer accepts a grant, the connection MUST show as needing reconnecting, with
@@ -323,16 +333,20 @@ unchanged.
 **Credentials and data**
 
 - **FR-025**: The project's Coinbase application credential MUST be held by the portal only and confined to one
-  module, enforced by an architecture rule like A8, A9 and A10; no other process's settings MAY hold it. It
-  MUST never become payment authority. *(SPEC: §3.3, §4.1, Constitution V)*
-- **FR-026**: A user's grant MUST be held only where FR-025's credential is, protected at rest, and MUST NOT be
+  module, enforced by an architecture rule like A8, A9 and A10. No other app of a deployment MAY be given it,
+  and the agent MUST refuse to start if it can see it. It MUST never become payment authority. *(SPEC: §3.3, §4.1, Constitution V)*
+- **FR-026**: A user's grant MUST be held only by the portal, in the same confined place as FR-025's credential,
+  protected at rest, and MUST NOT be
   sent to the browser, another process, the model or a log. *(SPEC: §3.3, Constitution V)*
 - **FR-027**: Balances MUST NOT be stored beyond a short-lived cache in the portal's memory, and MUST be shown
   only to the user they belong to. *(SPEC: proposed L2-8, §11)*
 - **FR-028**: Text from Coinbase (asset names, account names) MUST be shown as text, never as markup, and the
   web app MUST NOT keep any of it in the browser's storage. *(SPEC: L2-8, T-WEB-07)*
-- **FR-029**: The portal's log lines about connections MUST name only the event and the portal's identifier
-  for the connection. *(SPEC: L2-8 log whitelist, SEC-16)*
+- **FR-029**: The portal's log lines about connections MUST name only the event and the user.
+  *(SPEC: L2-8 log whitelist, SEC-16)*
+- **FR-030**: Before a user connects, the Coinbase part of the wallet MUST link the deployment's privacy policy and
+  its support contact. The integration MUST NOT offer a connection while either is missing. *(SPEC: proposed L2-8;
+  Coinbase's developer terms, research R8)*
 
 ### Non-Functional Requirements
 
@@ -367,8 +381,9 @@ unchanged.
 
 - **SC-001**: A registered user connects Coinbase and sees their balances in under 2 minutes, from the wallet,
   on the first attempt.
-- **SC-002**: For 100% of assets shown, the amount and the value equal what Coinbase reported at the read time,
-  and the total equals the exact sum of the values shown, with 0 rounding differences.
+- **SC-002**: For 100% of assets shown, the amount equals what Coinbase reported at the read time and the value
+  equals that amount at Coinbase's rate rounded to the cent, and the total equals the exact sum of the values
+  shown, with 0 differences.
 - **SC-003**: The connection request asks for 0 permissions beyond reading accounts and balances, and 100% of
   grants with more are refused and revoked.
 - **SC-004**: A known-value scan finds 0 occurrences of a grant, a Coinbase account identifier or a balance in
@@ -404,8 +419,14 @@ unchanged.
 - **For the plan**: how the grant is protected at rest and with which key; how the portal reads Coinbase; how
   connection events reach the audit trail without any Coinbase data; the stand-in Coinbase for tests; the
   must-fail switches.
-- **Coinbase's valuation, not ours.** The value of each asset and the total are Coinbase's, in the currency
-  Coinbase reports for the user, at the read time. The system computes no exchange rate of its own.
+- **Coinbase's valuation, not ours.** Each value uses Coinbase's own exchange rate at the read time, in US
+  dollars. The system computes no exchange rate of its own; it only applies Coinbase's and rounds to the cent.
+- **Coinbase must issue the project a client first.** On 2026-11-25 Coinbase's documentation says new OAuth clients
+  are temporarily not being created and are limited to approved partners, with fees under its terms (research R0).
+  Everything can be built and tested against a stand-in, but the feature can't be turned on anywhere until
+  Coinbase approves the project. Its terms also require a privacy policy and a support contact (FR-030).
+- **No Coinbase test environment.** Coinbase has no sandbox for this kind of access, so a manual check needs a
+  real, verified Coinbase account.
 - **Out of scope**: other platforms; a self-custody wallet address (clarified 2026-11-25); moving, sending, trading or converting funds; transaction history;
   notifications; letting the agent see or use connected balances; a combined total across the L2 account and
   connected platforms; administrator or operator views of anyone's connected balances.

@@ -7,7 +7,7 @@
 // It calls the agent's public API and nothing else: no L2, no L3, no seller. It prints the target, the outcome and
 // the duration, never the token. Like every L1 entry point it refuses to start if the payer key is visible.
 import { pathToFileURL } from "node:url";
-import { REFUSAL } from "./refusal.js";
+import { coinbaseRefusal, REFUSAL, visibleCoinbaseCredential } from "./refusal.js";
 import { loadEnv } from "./shared/config.js";
 
 /** The goal of the smoke run: two purchases under the auto-approve limit, so nothing escalates. */
@@ -115,6 +115,12 @@ async function main(): Promise<number> {
   // INV-3: this must stay the first check, before any network activity.
   if (process.env.PAYER_PRIVATE_KEY !== undefined) {
     console.error(REFUSAL);
+    return 1;
+  }
+  // 020 (A18): neither of the portal's Coinbase credentials either.
+  const coinbaseCredential = visibleCoinbaseCredential(process.env);
+  if (coinbaseCredential !== undefined) {
+    console.error(coinbaseRefusal(coinbaseCredential));
     return 1;
   }
   const agentUrl = process.env.AGENT_URL;

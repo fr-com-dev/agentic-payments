@@ -178,7 +178,7 @@ const AZ_RETIRE = /^az containerapp revision deactivate\b/;
 const SMOKE_RUN = 'eval "$SIGN_IN"\neval "$RUN_JOB"\nrun_job "$CAJ_SMOKE"\n';
 const SMOKE_PROBLEM = 'the smoke step must be the sign-in, RUN_JOB and run_job "$CAJ_SMOKE", and nothing else: the smoke job gets its own token and checks the agent\'s answer itself (src/smoke-main.ts)';
 /** Step 2b's pattern: an assignment of a key, a secret, a token, or (013) a mnemonic or the card vault key, in the image. */
-const IMAGE_SCAN = "grep -E 'PRIVATE_KEY[=]|_SECRET[=]|_TOKEN[=]|_MNEMONIC[=]|CARD_VAULT_KEY[=]'";
+const IMAGE_SCAN = "grep -E 'PRIVATE_KEY[=]|_SECRET[=]|_TOKEN[=]|_MNEMONIC[=]|CARD_VAULT_KEY[=]|COINBASE_GRANT_KEY[=]'";
 /** The inputs step 0's guard reads, as environment variables: an input is never pasted into a script. */
 const TARGET_INPUTS = JSON.stringify({
   INPUT_FIRST_DEPLOYMENT: "${{ inputs.first-deployment }}",
@@ -752,14 +752,15 @@ describe("T-E2E-AZ deployment workflow gates", () => {
 
   it("T-E2E-AZ 013 must-fail: an image scan that lets a mnemonic or the card vault key through, or a portal deployment that doesn't wait for its revision, is reported", () => {
     const scan = (from: string) => withSteps(w, stepsOf(w).map((s) => (s.id === "image-scan" ? { ...s, run: s.run!.replace(from, "") } : s)));
-    for (const part of ["|_MNEMONIC[=]", "|CARD_VAULT_KEY[=]"]) {
+    // 020: and the Coinbase grant key, whose name ends in neither _SECRET nor _TOKEN.
+    for (const part of ["|_MNEMONIC[=]", "|CARD_VAULT_KEY[=]", "|COINBASE_GRANT_KEY[=]"]) {
       expect(text.includes(part)).toBe(true);
       expect(workflowProblems(scan(part))).toEqual(["the image scan must refuse an assignment of a private key, a secret, a token, a mnemonic or the card vault key"]);
     }
     // The pattern itself, as grep runs it: each assignment is caught, a plain mention isn't.
     const pattern = /grep -E '([^']+)'/.exec(IMAGE_SCAN)![1]!;
     const caught = (line: string) => spawnSync("grep", ["-E", pattern], { input: `${line}\n`, encoding: "utf8" }).status === 0;
-    for (const line of ["USER_WALLET_MNEMONIC=abandon abandon", "ENV CARD_VAULT_KEY=rk_test_x", "PAYER_PRIVATE_KEY=0x1", "PORTAL_TOKEN=x", "CIBA_CLIENT_SECRET=x"]) expect(caught(line), line).toBe(true);
+    for (const line of ["USER_WALLET_MNEMONIC=abandon abandon", "ENV CARD_VAULT_KEY=rk_test_x", "PAYER_PRIVATE_KEY=0x1", "PORTAL_TOKEN=x", "CIBA_CLIENT_SECRET=x", "COINBASE_GRANT_KEY=abc", "COINBASE_CLIENT_SECRET=x"]) expect(caught(line), line).toBe(true);
     for (const line of ["NODE_ENV=production", "CARD_VAULT_PUBLISHABLE_KEY=pk_test_x", "# USER_WALLET_MNEMONIC is seeded by hand"]) expect(caught(line), line).toBe(false);
     const noWait = withSteps(w, stepsOf(w).map((s) => (s.id === "wait" ? { ...s, run: s.run!.replace('if [[ "$UNIT" == l1 || "$UNIT" == l3 || "$UNIT" == portal ]]', 'if [[ "$UNIT" == l1 || "$UNIT" == l3 ]]') } : s)));
     expect(workflowProblems(noWait)).toEqual(["wait must wait for the new revision of L1, L3 or the portal after its own deployment"]);

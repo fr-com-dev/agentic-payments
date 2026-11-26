@@ -2,6 +2,8 @@
 // no router package. `resolveRoute` is pure, so the redirect rules are tested without a browser.
 // 014: the administration area lives under /admin (specs/014 contracts/portal-ui.md "Screens"). Its paths never go
 // through the onboarding rules: an administrator who has not onboarded can still decide.
+// 020: /wallet/coinbase is where Coinbase sends the browser back (specs/020 contracts/portal-ui.md "Screens"); its
+// "back" screen is the wallet, and it needs what the wallet needs.
 import type { Onboarding } from "./types.js";
 
 export type Screen =
@@ -11,6 +13,7 @@ export type Screen =
   | { name: "policy-step" }
   | { name: "profile" }
   | { name: "wallet" }
+  | { name: "coinbase-return" }
   | { name: "policies" }
   | { name: "policy-new" }
   | { name: "policy-edit"; policyId: string }
@@ -36,6 +39,7 @@ export function matchRoute(path: string): Screen {
   if (p === "/onboarding/policy") return { name: "policy-step" };
   if (p === "/profile") return { name: "profile" };
   if (p === "/wallet") return { name: "wallet" };
+  if (p === "/wallet/coinbase") return { name: "coinbase-return" };
   if (p === "/policies") return { name: "policies" };
   if (p === "/policies/new") return { name: "policy-new" };
   if (p === "/account") return { name: "account" };
@@ -70,6 +74,7 @@ export const SCREEN_NEEDS: Record<Screen["name"], keyof Onboarding | "all" | "no
   "policy-step": "wallet",
   profile: "all",
   wallet: "profile",
+  "coinbase-return": "profile",
   policies: "wallet",
   "policy-new": "wallet",
   "policy-edit": "wallet",

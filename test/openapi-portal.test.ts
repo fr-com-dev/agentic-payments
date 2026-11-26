@@ -2,11 +2,14 @@
 // docs/portal.openapi.yaml is a copy of specs/013 contracts/portal-api.md for tools. These tests fail when the copy
 // and the portal disagree on routes (T-API-12), the bearer scheme (T-API-13) or response statuses and shapes
 // (T-API-14). T-API-15 covers the token-free Swagger UI routes: off by default, same-origin only (SEC-13).
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { PORTAL_API_DOCS_FILE, servedPortalApiDocument } from "../src/portal/api-docs.js";
+import { chmodSync } from "node:fs";
 import { startCardVaultStub, type CardVaultStub } from "./helpers/card-vault-stub.js";
+import { startCoinbaseStub, type CoinbaseStub } from "./helpers/coinbase-stub.js";
+import { createTestIssuer } from "./helpers/caller-tokens.js";
 import {
   conformance,
   documentedRoutes,
@@ -352,7 +355,8 @@ describe("T-API-14 live responses match the documented status and schema", () =>
     expect(errors).toEqual([]);
     const documented = operations(doc).flatMap(([m, path, op]) => Object.keys(op.responses).filter((s) => !GENERIC.has(s)).map((s) => `${m} ${path} ${s}`));
     // The one status this (ready) portal can't answer; the next test reaches it on a portal that is still starting.
-    expect(documented.filter((d) => !seen.has(d))).toEqual(["GET /readyz 503"]);
+    // 020: the connection routes' statuses are reached by their own scenario below, against the stand-in Coinbase.
+    expect(documented.filter((d) => !seen.has(d) && !d.includes(" /api/connections/"))).toEqual(["GET /readyz 503"]);
   }, 60_000);
 
   it("T-API-14 the generic statuses conform too: 502 with L2 down, 429 over the limit, 413 for an oversized body, 503 while starting", async () => {
@@ -384,6 +388,101 @@ describe("T-API-14 live responses match the documented status and schema", () =>
       expect(Object.keys(op.responses), `${method} ${path}`).toEqual(expect.arrayContaining(["401", "403", "429", "502"]));
     }
   });
+
+  it("T-API-14 (020) the connection routes reach every documented status and conform, against the stand-in Coinbase", async () => {
+    const doc = loadDoc();
+    const coinbase: CoinbaseStub = await startCoinbaseStub();
+    const callers = await createTestIssuer();
+    const p = await start({ coinbase, callers, skipFailureLimit: true });
+    const notReady = await start({ l2: p.l2, callers, coinbase, connectionDir: p.connectionDir + "-nr", connections: { privacyPolicyUrl: "" } });
+    const off = await start({ l2: p.l2, callers, connectionsOff: true, connectionDir: p.connectionDir });
+    const seen = new Set<string>();
+    const errors: string[] = [];
+    const call = async (on: PortalTestApp, method: string, path: string, who: string, body?: unknown, query = "") => {
+      const res = await send(on.base, method, path + query, await on.token(who), body);
+      seen.add(`${method} ${path} ${res.status}`);
+      const schema = responseContent(doc, method, path, res.status)?.[res.type]?.schema;
+      if (!schema) errors.push(`${method} ${path}: status ${res.status} (${res.type}) not documented`);
+      else errors.push(...conformance(doc, schema, res.type === "application/json" ? res.body : res.text).map((e) => `${method} ${path} ${res.status} ${e}`));
+      return res.body as Record<string, unknown>;
+    };
+    const START = "/api/connections/coinbase/start";
+    const COMPLETE = "/api/connections/coinbase/complete";
+    const BALANCES = "/api/connections/coinbase/balances";
+    const DISCONNECT = "/api/connections/coinbase";
+    try {
+      coinbase.setAccounts([{ code: "BTC", name: "Bitcoin", amount: "0.5" }, { code: "XYZ", name: "No rate", amount: "1" }]);
+      coinbase.setRates({ USD: "1", BTC: "0.00001" });
+      // No profile yet: 409 everywhere it applies; nothing connected: 404.
+      await call(p, "POST", START, "alice");
+      await call(p, "POST", COMPLETE, "alice", { code: "c", state: "s" });
+      await call(p, "GET", BALANCES, "alice");
+      await call(p, "PUT", "/api/profile", "alice", PROFILE);
+      await call(p, "GET", BALANCES, "alice");
+      await call(p, "DELETE", DISCONNECT, "alice");
+      // Not ready: no privacy policy.
+      await call(notReady, "POST", START, "alice");
+      // Off: 404 not found.
+      await call(off, "POST", START, "alice");
+      await call(off, "POST", COMPLETE, "alice", { code: "c", state: "s" });
+      await call(off, "DELETE", DISCONNECT, "alice");
+      // A bad body, a bad state, a refused scope.
+      await call(p, "POST", COMPLETE, "alice", { code: "c" });
+      await call(p, "POST", COMPLETE, "alice", { code: "c", state: "unknown" });
+      coinbase.grantScope("all");
+      const s1 = await call(p, "POST", START, "alice");
+      const a1 = coinbase.authorize(String(s1.authorizeUrl));
+      await call(p, "POST", COMPLETE, "alice", { code: a1.code, state: a1.state });
+      // Connected, read, read fresh, then disconnected.
+      const s2 = await call(p, "POST", START, "alice");
+      const a2 = coinbase.authorize(String(s2.authorizeUrl));
+      await call(p, "POST", COMPLETE, "alice", { code: a2.code, state: a2.state });
+      await call(p, "GET", BALANCES, "alice");
+      await call(p, "GET", BALANCES, "alice", undefined, "?fresh=1");
+      await call(p, "DELETE", DISCONNECT, "alice");
+      // A stored connection that can't be read: 503 unavailable on balances and disconnect (review 2).
+      const s6 = await call(p, "POST", START, "alice");
+      const a6 = coinbase.authorize(String(s6.authorizeUrl));
+      await call(p, "POST", COMPLETE, "alice", { code: a6.code, state: a6.state });
+      const file = `${p.connectionDir}/${p.userId("alice")}.json`;
+      const good = readFileSync(file, "utf8");
+      writeFileSync(file, "{");
+      await call(p, "GET", BALANCES, "alice");
+      await call(p, "DELETE", DISCONNECT, "alice");
+      writeFileSync(file, good);
+      await call(p, "DELETE", DISCONNECT, "alice");
+      // The grant can't be stored: 503 unavailable.
+      chmodSync(p.connectionDir, 0o500);
+      try {
+        const s3 = await call(p, "POST", START, "alice");
+        const a3 = coinbase.authorize(String(s3.authorizeUrl));
+        await call(p, "POST", COMPLETE, "alice", { code: a3.code, state: a3.state });
+      } finally {
+        chmodSync(p.connectionDir, 0o700);
+      }
+      // A reconnect answer, and a disabled account (409).
+      const s4 = await call(p, "POST", START, "alice");
+      const a4 = coinbase.authorize(String(s4.authorizeUrl));
+      await call(p, "POST", COMPLETE, "alice", { code: a4.code, state: a4.state });
+      coinbase.revokeAllOutside();
+      p.l2.clock.advance(3_600_000);
+      await call(p, "GET", BALANCES, "alice");
+      // A start made before the account is disabled, completed after: 409 (the state is checked first).
+      const s5 = await call(p, "POST", START, "alice");
+      const a5 = coinbase.authorize(String(s5.authorizeUrl));
+      await call(p, "POST", "/api/account/disable", "alice", { confirm: true });
+      await call(p, "POST", START, "alice");
+      await call(p, "POST", COMPLETE, "alice", { code: a5.code, state: a5.state });
+      await call(p, "GET", BALANCES, "alice");
+    } finally {
+      await coinbase.close();
+    }
+    expect(errors).toEqual([]);
+    const documented = operations(doc)
+      .filter(([, path]) => path.startsWith("/api/connections/"))
+      .flatMap(([m, path, op]) => Object.keys(op.responses).filter((s) => !GENERIC.has(s) && s !== "401" && s !== "403").map((s) => `${m} ${path} ${s}`));
+    expect(documented.filter((d) => !seen.has(d))).toEqual([]);
+  }, 60_000);
 
   it("T-API-14 must-fail: an undocumented field, a missing field and a wrong type are reported", () => {
     const doc = loadDoc();

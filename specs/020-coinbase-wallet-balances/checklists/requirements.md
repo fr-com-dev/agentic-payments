@@ -42,3 +42,17 @@
   reach the audit trail.
 - Interpretation recorded under "Reading the request against the repository": the portal already shows the L2
   account's balance (013 FR-015), so this feature adds connected platforms beside it, view only.
+- Planning, 2026-11-25, changed the spec in four places, each recorded in the spec and in research.md: values are in
+  US dollars at Coinbase's own rates, rounded to the cent (R7; the clarification's "user's currency" refined);
+  FR-015 and SC-002 follow; FR-030 is new (Coinbase's terms require a privacy policy and a support contact, R8); and
+  the Assumptions record that Coinbase isn't issuing OAuth clients now and has no sandbox (R0, R13). Every item
+  still passes.
+- Analysis, 2026-11-25 (`/speckit-analyze`), fixed the critical, high and medium findings. In the spec: US1 and
+  FR-007 name the renewable grant (`offline_access`) beside read access; US5 scenario 3 no longer says the portal
+  refuses to start with user accounts off (a deployment's parameters refuse it, and a portal in front of a control
+  layer without user accounts offers nothing); FR-025 says what is enforced (no other app of a deployment, and the
+  agent refuses it). Elsewhere: three more must-fail switches (`skipPkce`, `unserializedRenewals`,
+  `trustRevokeAnswer`), the entry types renamed `CONNECTION_OPENED` and `CONNECTION_CLOSED`, the wallet's reconcile
+  never waiting for Coinbase, a check that the portal makes only the six calls of contracts/coinbase.md, and [P] only
+  on tasks that touch a file of their own. Seven low findings are left as they are. Every item still passes.
+

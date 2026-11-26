@@ -1,16 +1,36 @@
 // 013 portal configuration (SPEC.md §9 CFG-2 `portal.env`; specs/013 contracts/config-and-secrets.md).
 // Errors name the variable and never echo its value. The card vault credential is read in ./card-vault.ts only
-// (rule A10); this file just asks it for the result.
+// (rule A10); this file just asks it for the result. 020: likewise the Coinbase client secret (./coinbase/client.ts)
+// and the grant key (./coinbase/grants.ts), rule A18.
 import { trustedProxyHops } from "../shared/address-limit.js";
 import { isLoopbackBind } from "../shared/local-only.js";
 import { apiDocsEnabled, ConfigError, networkProfile, PORTAL_BIND_HOST_DEFAULT, portalPort, serviceUrls, tokenFor } from "../shared/config.js";
 import { DEFAULT_AUTH_TIME_CLAIM, DEV_ISSUER, PERSON_ISSUER_RE } from "../shared/identity-token.js";
+import { relative, resolve, isAbsolute } from "node:path";
 import { cardVaultFromEnv, type CardVaultConfig } from "./card-vault.js";
+import { CoinbaseConfigError, coinbaseCredentialsFromEnv, type CoinbaseCredentials } from "./coinbase/client.js";
+import { checkGrantFiles, GrantKeyError, grantKeyFromEnv } from "./coinbase/grants.js";
 
 type Env = Record<string, string | undefined>;
 
 export const DEFAULT_PROFILE_DIR = ".local/portal/profiles";
 export const DEFAULT_WEB_ROOT = "dist/portal-web";
+/** 020: where the sealed grant files are (one per user). */
+export const DEFAULT_CONNECTION_DIR = ".local/portal/connections";
+/**
+ * 020: the public names read only with CONNECTED_PLATFORMS=coinbase; with it off they are ignored. The two credentials'
+ * names are coinbase/client.ts's and coinbase/grants.ts's to say (rule A18).
+ */
+export const COINBASE_SETTING_NAMES = ["COINBASE_CLIENT_ID", "COINBASE_REDIRECT_URI", "PRIVACY_POLICY_URL", "SUPPORT_URL"] as const;
+
+/** 020: the Coinbase connection's settings, present only with CONNECTED_PLATFORMS=coinbase (FR-001). */
+export interface CoinbaseSettings {
+  credentials: CoinbaseCredentials;
+  grantKey: Buffer;
+  redirectUri: string;
+  privacyPolicyUrl: string;
+  supportUrl: string;
+}
 
 export interface PortalConfig {
   network: string;
@@ -40,6 +60,70 @@ export interface PortalConfig {
   cardVault?: CardVaultConfig;
   /** 014: the administration area. Absent: off (`PORTAL_ADMIN` is not `1`). The token is the `portal-admin` role's. */
   admin?: { token: string };
+  /** 020: where grant files are, read also with the feature off (stored connections then show as unavailable). */
+  connectionDir: string;
+  /** 020: absent: connected platforms are off. */
+  coinbase?: CoinbaseSettings;
+}
+
+const inside = (dir: string, parent: string) => {
+  const rel = relative(resolve(parent), resolve(dir));
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+};
+
+/** 020 (contracts/config-and-secrets.md): the redirect is the portal's own return screen, exactly as registered. */
+function validRedirect(v: string, local: boolean): boolean {
+  let u: URL;
+  try {
+    u = new URL(v);
+  } catch {
+    return false;
+  }
+  if (u.pathname !== "/wallet/coinbase" || u.search !== "" || u.hash !== "" || u.username !== "" || u.password !== "") return false;
+  if (u.protocol === "https:") return true;
+  return local && u.protocol === "http:" && u.hostname === "localhost";
+}
+
+function validHttps(v: string | undefined, o: { mailto?: boolean } = {}): boolean {
+  if (v === undefined || v === "") return false;
+  try {
+    const u = new URL(v);
+    return u.protocol === "https:" || (o.mailto === true && u.protocol === "mailto:");
+  } catch {
+    return false;
+  }
+}
+
+/** 020: CONNECTED_PLATFORMS and, with `coinbase`, every setting the connection needs (T-PRT-21). */
+function coinbaseSettings(env: Env, local: boolean, dirs: { connectionDir: string; profileDir: string; webRoot: string }): CoinbaseSettings | undefined {
+  const mode = env.CONNECTED_PLATFORMS ?? "";
+  if (mode === "") return undefined;
+  if (mode !== "coinbase") throw new ConfigError('CONNECTED_PLATFORMS must be "coinbase" or unset');
+  let credentials: CoinbaseCredentials;
+  let grantKey: Buffer;
+  try {
+    credentials = coinbaseCredentialsFromEnv(env);
+    grantKey = grantKeyFromEnv(env);
+  } catch (err) {
+    if (err instanceof CoinbaseConfigError || err instanceof GrantKeyError) throw new ConfigError(err.message);
+    throw err;
+  }
+  const redirectUri = env.COINBASE_REDIRECT_URI ?? "";
+  if (!validRedirect(redirectUri, local)) {
+    throw new ConfigError("COINBASE_REDIRECT_URI must be https://<portal host>/wallet/coinbase (http://localhost:<port>/wallet/coinbase only with NETWORK=local)");
+  }
+  if (!validHttps(env.PRIVACY_POLICY_URL)) throw new ConfigError("PRIVACY_POLICY_URL must be an https address with CONNECTED_PLATFORMS=coinbase");
+  if (!validHttps(env.SUPPORT_URL, { mailto: true })) throw new ConfigError("SUPPORT_URL must be an https or mailto: address with CONNECTED_PLATFORMS=coinbase");
+  if (inside(dirs.connectionDir, dirs.profileDir) || inside(dirs.connectionDir, dirs.webRoot)) {
+    throw new ConfigError("CONNECTION_DIR must not be inside PROFILE_DIR or PORTAL_WEB_ROOT");
+  }
+  try {
+    checkGrantFiles(dirs.connectionDir, grantKey);
+  } catch (err) {
+    if (err instanceof GrantKeyError) throw new ConfigError(err.message);
+    throw err;
+  }
+  return { credentials, grantKey, redirectUri, privacyPolicyUrl: env.PRIVACY_POLICY_URL!, supportUrl: env.SUPPORT_URL! };
 }
 
 const present = (v: string | undefined): v is string => v !== undefined && v !== "";
@@ -89,19 +173,25 @@ export function loadPortalConfig(env: Env = process.env): PortalConfig {
   // no proxy in front. Each request is checked too (localOnly in server.ts).
   if (dev && !isLoopbackBind(bindHost)) throw new ConfigError("PORTAL_BIND_HOST must be a loopback address with AUTH_JWKS_FILE (the local dev issuer)");
   if (dev && hops > 0) throw new ConfigError("TRUSTED_PROXY_HOPS must be 0 with AUTH_JWKS_FILE (the local dev issuer)");
+  const profileDir = present(env.PROFILE_DIR) ? env.PROFILE_DIR : DEFAULT_PROFILE_DIR;
+  const webRoot = present(env.PORTAL_WEB_ROOT) ? env.PORTAL_WEB_ROOT : DEFAULT_WEB_ROOT;
+  const connectionDir = present(env.CONNECTION_DIR) ? env.CONNECTION_DIR : DEFAULT_CONNECTION_DIR;
+  const coinbase = coinbaseSettings(env, local, { connectionDir, profileDir, webRoot });
   return {
     network,
     rpcUrl: networkProfile(network, { env }).rpcUrl,
     controlUrl: serviceUrls(env).control,
     portalToken: tokenFor("portal-control", env),
     auth: { issuer, audience, ...(jwksFile !== undefined && { jwksFile }), clientId, authTimeClaim, mode: dev ? "dev" : "auth0" },
-    profileDir: present(env.PROFILE_DIR) ? env.PROFILE_DIR : DEFAULT_PROFILE_DIR,
-    webRoot: present(env.PORTAL_WEB_ROOT) ? env.PORTAL_WEB_ROOT : DEFAULT_WEB_ROOT,
+    profileDir,
+    webRoot,
     port: portalPort(env),
     bindHost,
     trustedProxyHops: hops,
     apiDocs: apiDocsEnabled(env),
     ...(cardVault && { cardVault }),
     ...(admin && { admin }),
+    connectionDir,
+    ...(coinbase && { coinbase }),
   };
 }
