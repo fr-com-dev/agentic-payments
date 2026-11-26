@@ -83,7 +83,7 @@ security guidance says to always send it. `redirect_uri` is required at the toke
 - The client secret goes only in the body of the three token-endpoint calls, from `client.ts`.
 
 **Rationale.** PKCE ties the code to the start even if the code leaks (the address bar, a log on a proxy); the
-state ties it to the person and their sign-in; the secret ties it to the portal. Each covers a different capture (SEC-54). PKCE is
+state ties it to the person and their sign-in; the secret ties it to the portal. Each covers a different capture (SEC-55). PKCE is
 proven by a code-injection test with the must-fail switch `skipPkce` (T-CONN-03).
 
 ## R4. Scopes: the read-only allow-list

@@ -192,7 +192,7 @@ helper in `src/shared/`. No new process, image, unit or pipeline.
 
 One pull request per slice, each green on `npm run check` ([R14](research.md#r14-delivery-in-slices)):
 
-1. **SPEC and constitution**: L2-8, L2-4, L2-5, §1.3, §3.3, §4.1 (A18), CFG-2, §11 (SEC-54..58), §12 (the test IDs);
+1. **SPEC and constitution**: L2-8, L2-4, L2-5, §1.3, §3.3, §4.1 (A18), CFG-2, §11 (SEC-55..58), §12 (the test IDs);
    constitution 3.2.0; `specs/README.md` row 020. No code.
 2. **L2**: the two routes, the entry types, `userState`, `UserView.connections`, T-USR-15..16, T-API-01..04.
 3. **Portal core**: `decimal.ts`, `coinbase/`, `connections.ts`, the routes, the stand-in, A18, T-CONN-*, T-DEC-*,

@@ -194,7 +194,7 @@ describe("T-CONN-02 a cancelled or abandoned connection keeps nothing (US1 scena
   });
 });
 
-describe("T-CONN-03 a return from Coinbase connects only for the person and sign-in that started it, once (FR-009, SEC-54)", () => {
+describe("T-CONN-03 a return from Coinbase connects only for the person and sign-in that started it, once (FR-009, SEC-55)", () => {
   it("T-CONN-03 unknown, used, another person's or another sign-in's state, and a refused code, are 400 invalid_state", async () => {
     const { p, cb } = await setup();
     await register(p, "alice");
@@ -263,7 +263,7 @@ describe("T-CONN-03 a return from Coinbase connects only for the person and sign
   });
 });
 
-describe("T-CONN-04 only a read-only grant is kept (FR-007, FR-008, SEC-55)", () => {
+describe("T-CONN-04 only a read-only grant is kept (FR-007, FR-008, SEC-56)", () => {
   const refusedFor = async (o: { scope?: string; noRefresh?: boolean; skipScopeCheck?: boolean }) => {
     const { p, cb } = await setup({ connections: { ...(o.skipScopeCheck && { skipScopeCheck: true }) } });
     await register(p, "alice");
@@ -417,7 +417,7 @@ describe("T-CONN-08 balances: exact amounts, USD values at Coinbase's rates, a t
   });
 });
 
-describe("T-CONN-09 balances when Coinbase fails, refuses or rotates (FR-016, FR-017, research R5, SEC-58)", () => {
+describe("T-CONN-09 balances when Coinbase fails, refuses or rotates (FR-016, FR-017, research R5, SEC-59)", () => {
   it("T-CONN-09 a timeout: the last figures marked stale, or unreadable if never read; the answer within 5 s", { timeout: 20_000 }, async () => {
     const { p, cb } = await setup();
     await register(p, "alice");
@@ -576,7 +576,7 @@ describe("T-CONN-09 balances when Coinbase fails, refuses or rotates (FR-016, FR
 // US3: privacy and separation
 // ---------------------------------------------------------------------------
 
-describe("T-CONN-06 a grant moved to another user doesn't read (FR-026, SEC-57)", () => {
+describe("T-CONN-06 a grant moved to another user doesn't read (FR-026, SEC-58)", () => {
   const moveGrant = async (o: StartPortalOptions["connections"]) => {
     const { p, cb } = await setup({ connections: o });
     await register(p, "alice");
@@ -598,7 +598,7 @@ describe("T-CONN-06 a grant moved to another user doesn't read (FR-026, SEC-57)"
   });
 });
 
-describe("T-CONN-07 one user never reaches another's connection (FR-005, SEC-57)", () => {
+describe("T-CONN-07 one user never reaches another's connection (FR-005, SEC-58)", () => {
   const bobReads = async (o: StartPortalOptions["connections"]) => {
     const { p, cb } = await setup({ connections: o });
     await register(p, "alice");
@@ -621,7 +621,7 @@ describe("T-CONN-07 one user never reaches another's connection (FR-005, SEC-57)
   });
 });
 
-describe("T-CONN-10 nothing of a connection leaves the portal's sealed file (FR-021, FR-023, FR-027, FR-029, SEC-56)", () => {
+describe("T-CONN-10 nothing of a connection leaves the portal's sealed file (FR-021, FR-023, FR-027, FR-029, SEC-57)", () => {
   it("T-CONN-10 two users connect, read and one disconnects: known values appear nowhere else, and only the six calls were made", async () => {
     const { p, cb } = await setup();
     cb.setAccounts(ACCOUNTS);

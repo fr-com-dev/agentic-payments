@@ -16,7 +16,7 @@ Sync Impact Report
 - Added sections: none. Removed sections: none.
 - Templates reviewed: plan-template.md, spec-template.md, tasks-template.md (no change)
 - Source: SPEC.md v1.30 (Changes in 1.30, §1.2, §1.3, §3.3, §4.1 A18, §7, L2-4, L2-5, L2-8, CFG-2, §11
-  SEC-54..58 and the residual risks, §12)
+  SEC-55..58 and the residual risks, §12)
 - Documents changed with it: SPEC.md, specs/README.md. To follow in the feature's last slice (specs/020 task
   T073): CLAUDE.md.
 - Deferred TODOs: Coinbase isn't issuing OAuth clients at the moment (specs/020 research R0), so the feature can't

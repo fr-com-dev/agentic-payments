@@ -303,7 +303,7 @@ export function checkCardVaultConfinement(path: string, source: string): ArchVio
 }
 
 // ---------------------------------------------------------------------------
-// A18 (020, SPEC v1.30 §4.1, SEC-56): the Coinbase credentials are confined to one folder. Part 1: under src/ the
+// A18 (020, SPEC v1.30 §4.1, SEC-57): the Coinbase credentials are confined to one folder. Part 1: under src/ the
 // client secret and the two hosts the portal calls are named only in src/portal/coinbase/client.ts, the grant key only
 // in src/portal/coinbase/grants.ts (the L1 entry points may name both to refuse them, the portal's template to list
 // them), and neither file imports L2's clients or a layer. Part 2: no layer, counterparty or machine-caller code

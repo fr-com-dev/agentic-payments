@@ -1,4 +1,4 @@
-// 020 the read-only allow-list (SPEC.md §8.2 L2-8, §11 SEC-55; specs/020 research R4). Pure. The portal asks Coinbase
+// 020 the read-only allow-list (SPEC.md §8.2 L2-8, §11 SEC-56; specs/020 research R4). Pure. The portal asks Coinbase
 // for exactly these scopes and keeps a grant only when Coinbase reports exactly these back: an allow-list, never a
 // deny-list, because even a "read" scope of Coinbase's can act on an account (research R4). `all` or any name not
 // listed here is too wide; a missing read scope, or no refresh token (no `offline_access`), is too narrow.
