@@ -26,8 +26,23 @@ const CLIENT_ID_RE = /^[A-Za-z0-9._~-]{1,128}$/;
 
 export type ModelProvider = "anthropic" | "foundry";
 
+/**
+ * 021 (SPEC L1-6, FR-001): how the agent finds what a goal needs. `search` (the default): it may search the public x402
+ * discovery index first. `test` (`AGENT_TEST_MODE=1`): exactly the agent of before 021, straight to the configured
+ * seller's catalog. The operator's setting only: never a request field, and no caller or model ever sees it (FR-002,
+ * FR-003).
+ */
+export type AgentMode = "search" | "test";
+
 export interface HostedConfig {
   network: string;
+  /** 021: the mode every run of this process takes when it starts. */
+  mode: AgentMode;
+  /**
+   * 021: `DISCOVERY_URL`, the index's search address, read in search mode only. Absent: the network's default
+   * (the public index on base-sepolia; on local the setting is required).
+   */
+  discoveryUrl?: string;
   urls: { seller: string; control: string; settlement: string };
   tokens: { control: string; verifier: string };
   provider: ModelProvider;
@@ -76,6 +91,39 @@ function decodeSecret(raw: string): Buffer | null {
   if (/^[0-9a-fA-F]+$/.test(raw) && raw.length % 2 === 0) return Buffer.from(raw, "hex");
   if (/^[A-Za-z0-9+/_-]+={0,2}$/.test(raw)) return Buffer.from(raw, raw.includes("-") || raw.includes("_") ? "base64url" : "base64");
   return null;
+}
+
+/** 021: `AGENT_TEST_MODE` `1` is test mode; `0`, empty or absent is search mode; anything else stops the agent. */
+function agentMode(env: Env): AgentMode {
+  const raw = env.AGENT_TEST_MODE;
+  if (raw === undefined || raw === "" || raw === "0") return "search";
+  if (raw === "1") return "test";
+  throw new ConfigError("AGENT_TEST_MODE must be 1 or 0");
+}
+
+const LOOPBACK_HOSTNAMES = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+/**
+ * 021: `DISCOVERY_URL`, in search mode only: an absolute URL with no user name or password, `https:` outside the local
+ * network, and on it `http:` only to a loopback host. Required on the local network, which has no public index. The
+ * errors name the variables, never the value; they reach the operator only, at startup (FR-003, FR-019).
+ */
+function discoveryUrl(env: Env, local: boolean): string | undefined {
+  const raw = env.DISCOVERY_URL;
+  if (!present(raw)) {
+    if (local) throw new ConfigError("DISCOVERY_URL is required on the local network unless AGENT_TEST_MODE=1");
+    return undefined;
+  }
+  let u: URL;
+  try {
+    u = new URL(raw);
+  } catch {
+    throw new ConfigError("DISCOVERY_URL must be an absolute URL");
+  }
+  if (u.username !== "" || u.password !== "") throw new ConfigError("DISCOVERY_URL must not carry a user name or password");
+  if (u.protocol === "https:") return u.href;
+  if (local && u.protocol === "http:" && LOOPBACK_HOSTNAMES.has(u.hostname)) return u.href;
+  throw new ConfigError(local ? "DISCOVERY_URL must be https, or http to a loopback host on the local network" : "DISCOVERY_URL must be https");
 }
 
 function agentPort(env: Env): number {
@@ -162,8 +210,14 @@ export function loadHostedConfig(env: Env = process.env): HostedConfig {
     throw new ConfigError(`SESSION_REF_SECRET must decode (hex or base64) to at least ${MIN_SECRET_BYTES} bytes`);
   }
 
+  // 021: last, so every earlier refusal keeps its place in the order.
+  const mode = agentMode(env);
+  const discovery = mode === "search" ? discoveryUrl(env, local) : undefined;
+
   return {
     network,
+    mode,
+    ...(discovery !== undefined && { discoveryUrl: discovery }),
     urls: serviceUrls(env),
     tokens: { control: tokenFor("agent-control", env), verifier: tokenFor("agent-verifier", env) },
     provider,

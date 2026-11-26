@@ -325,6 +325,9 @@ describe("T-API-03 live responses match the documented status and schema", () =>
     const noGrant = await callers!.machine({ scope: null });
     await call("POST", "/v1/authorize", { ...C, body: intent("sess_a", "/api/weather", "1000"), caller: noGrant });
     await call("GET", "/v1/budget/{sessionId}", { ...C, params: { sessionId: "sess_a" }, caller: noGrant });
+    // v1.31 (021): the seller hosts, with the agent's role token (200) and another role's (401). No caller's token.
+    await call("GET", "/v1/sellers", C);
+    await call("GET", "/v1/sellers", O);
     await call("POST", "/v1/authorize", { ...C, body: { ...intent("sess_a", "/api/weather", "1000"), userId: devUserId("alice") }, caller: machine });
 
     // v1.10 user accounts: the agent's calls for a user, then every portal operation and each of its statuses

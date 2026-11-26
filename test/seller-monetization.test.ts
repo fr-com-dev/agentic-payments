@@ -1,15 +1,18 @@
-// The seller's monetization model and endpoint decorators (SPEC.md CP-1, v1.7; T-MON-01..03).
+// The seller's monetization model and endpoint decorators (SPEC.md CP-1, v1.7; T-MON-01..04).
 // T-MON-01: the tiers the seller declares, what the seller derives from them, and freemium's guarantee that free
 // endpoints answer while payments can't be taken. T-MON-02: usdc() prices. T-MON-03: every declaration mistake
-// is refused while the seller is built, never while it serves.
+// is refused while the seller is built, never while it serves (021: a paid route's about and its typed inputs too).
+// T-MON-04 (021): each priced route describes itself for the discovery index, and the catalog says what each item is.
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
+import { decodePaymentRequiredHeader } from "@x402/core/http";
 import type { FacilitatorClient } from "@x402/core/server";
+import { validateDiscoveryExtension, type DiscoveryExtension } from "@x402/extensions/bazaar";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { declaredEndpoints, EndpointDeclarationError, Get } from "../src/counterparty/endpoints.js";
 import { Enterprise, Free, PayPerUse, Premium, TIERS, usdc } from "../src/counterparty/monetization.js";
-import { createSellerApp, sellerRoutes } from "../src/counterparty/seller.js";
-import { CATALOG, FREE_ENDPOINTS, PAID_ENDPOINTS, SELLER_ENDPOINTS } from "../src/counterparty/seller-api.js";
+import { createSellerApp, sellerRoutes, SERVICE_NAME } from "../src/counterparty/seller.js";
+import { CATALOG, FREE_ENDPOINTS, PAID_ENDPOINTS, SELLER_ENDPOINTS, weatherBody, type CatalogBody } from "../src/counterparty/seller-api.js";
 import { localTestNet } from "./helpers/local-net.js";
 
 const NET = localTestNet();
@@ -44,7 +47,8 @@ describe("T-MON-01 the seller's monetization model: freemium discovery, pay-per-
     for (const e of FREE_ENDPOINTS) expect(routes[`GET ${e.route.path}`]).toBeUndefined();
     for (const e of PAID_ENDPOINTS) {
       const accepts = routes[`GET ${e.route.path}`]!.accepts as { price: { amount: string } };
-      expect([accepts.price.amount, routes[`GET ${e.route.path}`]!.description]).toEqual([e.monetization.price!.atomic, e.monetization.description]);
+      // 021: the challenge's description is what the route returns (`about`); the short label stays the catalog's.
+      expect([accepts.price.amount, routes[`GET ${e.route.path}`]!.description]).toEqual([e.monetization.price!.atomic, (e.monetization as { about: string }).about]);
     }
     expect(CATALOG.map((c) => [c.path, c.route, c.tier])).toEqual([
       ["/api/weather?city=", "/api/weather", "pay-per-use"],
@@ -102,6 +106,7 @@ describe("T-MON-02 usdc() prices with BigInt math", () => {
 
 describe("T-MON-03 a declaration mistake is refused while the seller is built, never while it serves", () => {
   const price = usdc("0.001");
+  const about = "what the route returns";
 
   it("T-MON-03 must-fail: an endpoint without a tier, or without a route", () => {
     class NoTier {
@@ -112,7 +117,7 @@ describe("T-MON-03 a declaration mistake is refused while the seller is built, n
     }
     expect(() => declaredEndpoints(NoTier)).toThrow(new EndpointDeclarationError("a: GET /a has no monetization tier (@Free, @PayPerUse, @Premium or @Enterprise)"));
     class NoRoute {
-      @Premium({ price, description: "p" })
+      @Premium({ price, description: "p", about })
       b() {
         return {};
       }
@@ -125,7 +130,7 @@ describe("T-MON-03 a declaration mistake is refused while the seller is built, n
       class TwoTiers {
         @Get("/a")
         @Free("free")
-        @PayPerUse({ price, description: "paid" })
+        @PayPerUse({ price, description: "paid", about })
         a() {
           return {};
         }
@@ -151,7 +156,7 @@ describe("T-MON-03 a declaration mistake is refused while the seller is built, n
       }
 
       @Get("/a")
-      @Enterprise({ price, description: "bulk" })
+      @Enterprise({ price, description: "bulk", about })
       b() {
         return {};
       }
@@ -177,6 +182,35 @@ describe("T-MON-03 a declaration mistake is refused while the seller is built, n
     expect(() => createSellerApp({ net: { ...NET, decimals: 18 }, payTo: PAY_TO })).toThrow(/the seller prices in USDC \(6 decimals\); local's asset has 18/);
   });
 
+  it("T-MON-03 must-fail (021): a paid route without about, or an about over 500 characters or with control characters", () => {
+    for (const bad of [undefined, "", "  ", "x".repeat(501), "line one\nline two"]) {
+      expect(() => PayPerUse({ price, description: "paid", about: bad as never }), JSON.stringify(bad)).toThrow(EndpointDeclarationError);
+    }
+    expect(() => Premium({ price, description: "p", about: "x".repeat(500) })).not.toThrow();
+    // @Free takes no about.
+    expect(() => Free("free")).not.toThrow();
+  });
+
+  it("T-MON-03 must-fail (021): an input with a bad name or type, no about, or an example of the wrong type", () => {
+    const ok = { type: "string", about: "a city", example: "Lima" } as const;
+    expect(() => Get("/a", { query: { city: ok } })).not.toThrow();
+    for (const [name, d] of [
+      ["City!", ok],
+      ["City", ok],
+      ["1city", ok],
+      ["a".repeat(41), ok],
+      ["day", { type: "date", about: "a day", example: "2026-11-26" }],
+      ["city", { type: "string", about: "a city", example: 5 }],
+      ["n", { type: "integer", about: "n", example: 1.5 }],
+      ["n", { type: "number", about: "n", example: "1" }],
+      ["b", { type: "boolean", about: "b", example: "true" }],
+      ["city", { type: "string", about: "", example: "Lima" }],
+      ["city", { type: "string", about: "x".repeat(201), example: "Lima" }],
+    ] as const) {
+      expect(() => Get("/a", { query: { [name]: d as never } }), `${name} ${JSON.stringify(d)}`).toThrow(EndpointDeclarationError);
+    }
+  });
+
   it("T-MON-03 undecorated methods are helpers, not endpoints", () => {
     class WithHelper {
       @Get("/a")
@@ -190,5 +224,76 @@ describe("T-MON-03 a declaration mistake is refused while the seller is built, n
       }
     }
     expect(declaredEndpoints(WithHelper).map((e) => e.name)).toEqual(["a"]);
+  });
+});
+
+describe("T-MON-04 each priced route describes itself for the discovery index, and the catalog says what each item is (021)", () => {
+  const up: FacilitatorClient = {
+    getSupported: async () => ({ kinds: [{ x402Version: 2, scheme: "exact", network: NET.caip2 }], extensions: [], signers: {} }) as never,
+    verify: async () => ({ isValid: false }) as never,
+    settle: async () => ({ success: false, transaction: "", network: NET.caip2 }) as never,
+  };
+
+  async function seller(): Promise<string> {
+    const app = createSellerApp({ net: NET, payTo: PAY_TO, facilitator: up });
+    const server = await new Promise<Server>((r) => {
+      const s = app.listen(0, "127.0.0.1", () => r(s));
+    });
+    servers.push(server);
+    return `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  }
+
+  it("T-MON-04 each priced route's challenge carries extensions.bazaar that the SDK accepts, its examples and the handler's own answer", async () => {
+    const base = await seller();
+    const answers: Record<string, unknown> = {
+      "/api/weather": weatherBody("Lima"),
+      "/api/market-brief": { headline: "Stablecoin settlement volumes steady", bullets: ["USDC supply unchanged week on week", "Base L2 fees remain sub-cent", "Agentic commerce pilots expand"], source: "mock-seller (deterministic)" },
+      "/api/premium-report": { title: "Agentic payments: three-layer control", pages: 42, source: "mock-seller (deterministic)" },
+      "/api/dataset-export": { rows: 1_000_000, source: "mock-seller (deterministic)" },
+    };
+    for (const e of PAID_ENDPOINTS) {
+      const res = await fetch(`${base}${e.route.path}${e.route.path === "/api/weather" ? "?city=Lima" : ""}`);
+      expect(res.status, e.route.path).toBe(402);
+      const pr = decodePaymentRequiredHeader(res.headers.get("PAYMENT-REQUIRED")!);
+      const bazaar = pr.extensions?.bazaar as DiscoveryExtension | undefined;
+      expect(bazaar, e.route.path).toBeDefined();
+      expect(validateDiscoveryExtension(bazaar!), e.route.path).toEqual({ valid: true });
+      const info = bazaar!.info as { input: { method?: string; queryParams?: Record<string, unknown> }; output?: { example?: unknown } };
+      expect(info.input.method).toBe("GET");
+      expect(info.input.queryParams ?? {}).toEqual(e.route.path === "/api/weather" ? { city: "Lima" } : {});
+      expect(info.output?.example).toEqual(answers[e.route.path]);
+      expect(pr.resource.description).toBe((e.monetization as { about: string }).about);
+      expect(pr.resource.serviceName).toBe(SERVICE_NAME);
+    }
+    expect(SERVICE_NAME).toBe("x402 PoC demo seller");
+  });
+
+  it("T-MON-04 the weather route's schema: city is a required string with its description", () => {
+    const routes = sellerRoutes(NET, PAY_TO);
+    const bazaar = routes["GET /api/weather"]!.extensions!.bazaar as { schema: { properties: { input: { properties: { queryParams?: Record<string, unknown> } } } } };
+    expect(bazaar.schema.properties.input.properties.queryParams).toMatchObject({
+      properties: { city: { type: "string", description: "A city name, such as Lima or Trujillo." } },
+      required: ["city"],
+    });
+  });
+
+  it("T-MON-04 the catalog's about and inputs equal the declarations; only the weather route takes an input", async () => {
+    const base = await seller();
+    const body = (await (await fetch(`${base}/api/catalog`)).json()) as CatalogBody;
+    expect(body.items.map((i) => [i.path, i.inputs])).toEqual([
+      ["/api/weather?city=", [{ name: "city", type: "string", required: true }]],
+      ["/api/market-brief", []],
+      ["/api/premium-report", []],
+      ["/api/dataset-export", []],
+    ]);
+    for (const [i, e] of PAID_ENDPOINTS.entries()) expect(body.items[i]!.about).toBe((e.monetization as { about: string }).about);
+    expect(body.items[2]!.about).toMatch(/not about any place or date, and takes no input/);
+    // T-MON-01 unchanged: prices, tiers, paths and the short labels.
+    expect(body.items.map((i) => [i.path, i.priceAtomic, i.tier, i.description])).toEqual([
+      ["/api/weather?city=", "1000", "pay-per-use", "current weather for a city"],
+      ["/api/market-brief", "5000", "pay-per-use", "daily market brief"],
+      ["/api/premium-report", "50000", "premium", "premium research report"],
+      ["/api/dataset-export", "500000", "enterprise", "full dataset export"],
+    ]);
   });
 });

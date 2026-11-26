@@ -10,7 +10,7 @@ import { describe, expect, it } from "vitest";
 // Scanner core (T004–T006)
 // ---------------------------------------------------------------------------
 
-export type Rule = "A1" | "A2" | "A3" | "A4" | "A5" | "A6" | "A7" | "A8" | "A9" | "A10" | "A11" | "A12" | "A13" | "A14" | "A15" | "A16" | "A17" | "A18";
+export type Rule = "A1" | "A2" | "A3" | "A4" | "A5" | "A6" | "A7" | "A8" | "A9" | "A10" | "A11" | "A12" | "A13" | "A14" | "A15" | "A16" | "A17" | "A18" | "A19";
 export interface ArchViolation {
   rule: Rule;
   file: string;
@@ -350,6 +350,37 @@ export function checkCoinbaseConfinement(path: string, source: string): ArchViol
 }
 
 // ---------------------------------------------------------------------------
+// A19 (021, SPEC v1.31 §4.1, SEC-60): the public x402 discovery index has one client. Part 1: under src/ the index's
+// path (`/discovery/search`) is written only in src/layer1-intent/hosted/discovery.ts, and only
+// src/layer1-intent/hosted/agent.ts imports that file. Part 2: only the seller (src/counterparty/) imports the x402
+// SDK's extensions package. Part 3: no payment decision, signer or ledger key code names the discovery index or the
+// search tool (FR-013).
+// ---------------------------------------------------------------------------
+
+const A19_CLIENT = "src/layer1-intent/hosted/discovery.ts";
+const A19_IMPORTER = "src/layer1-intent/hosted/agent.ts";
+const A19_PATH = /\/discovery\/search\b/;
+const A19_CLIENT_IMPORT = /["'][^"']*\/discovery\.js["']/;
+const A19_EXTENSIONS = /["']@x402\/extensions(?:\/[^"']*)?["']/;
+const A19_DECISION_FILES = new Set(["src/layer2-control/policy.ts", "src/layer2-control/signer.ts", "src/layer2-control/ledger-key.ts"]);
+const A19_SEARCH = /\bdiscovery\b|\bsearch_resources\b/i;
+
+export function checkDiscoveryConfinement(path: string, source: string): ArchViolation[] {
+  if (!path.startsWith("src/")) return [];
+  const text = lex(source).noComments;
+  const out: ArchViolation[] = [];
+  const add = (off: number, detail: string) => out.push({ rule: "A19", file: path, line: lineAt(source, off), detail });
+  // Part 1.
+  if (path !== A19_CLIENT) for (const off of matches(text, A19_PATH)) add(off, "names the discovery index's path");
+  if (path !== A19_IMPORTER) for (const off of matches(text, A19_CLIENT_IMPORT)) add(off, "imports the discovery client");
+  // Part 2.
+  if (!path.startsWith("src/counterparty/")) for (const off of matches(text, A19_EXTENSIONS)) add(off, "imports @x402/extensions");
+  // Part 3.
+  if (A19_DECISION_FILES.has(path)) for (const off of matches(text, A19_SEARCH)) add(off, "names the discovery index or the search tool");
+  return out;
+}
+
+// ---------------------------------------------------------------------------
 // A11 (013, SPEC v1.10 §4.1, INV-2): the user wallets' mnemonic is payment key material. Its name appears only where
 // it is read (the signer), where it is refused (the portal's entry point), where the local development value is set
 // (scripts/demo-lib.ts) and in L2's template. Same scope as A8.
@@ -653,6 +684,9 @@ const TEMPLATES: Record<string, TemplateSpec> = {
       // 019 (CFG-2): the desktop client whose sign-in settings the agent serves; a public client ID.
       "AGENT_DESKTOP_CLIENT_ID",
       "PORTAL_CLIENT_ID",
+      // 021 (CFG-2): the agent's mode, and in search mode the discovery index's address. Neither is a secret.
+      "AGENT_TEST_MODE",
+      "DISCOVERY_URL",
     ],
   },
   "l2-control": {
@@ -1051,6 +1085,40 @@ describe("T-ARCH-ENV per-process env templates (US4)", () => {
     expect(one("test/x.test.ts", 'process.env.COINBASE_CLIENT_SECRET = "x";')).toEqual([]);
   });
 
+  // ---- 021: A19, the discovery index has one client -----------------------------------------------------------
+
+  it("T-ARCH-A19 fixture trips A19 for the path, the client's import and the extensions package, and no other rule catches it", () => {
+    const { path, source } = fixture(19);
+    expect(checkFile(path, source)).toEqual([]);
+    expect([...checkCoinbaseConfinement(path, source), ...checkCallerTokenPath(path, source), ...checkPersonTokenPath(path, source)]).toEqual([]);
+    expect(checkDiscoveryConfinement(path, source).map((v) => [v.rule, v.detail])).toEqual([
+      ["A19", "names the discovery index's path"],
+      ["A19", "imports the discovery client"],
+      ["A19", "imports @x402/extensions"],
+    ]);
+  });
+
+  it("T-ARCH-A19 repository is clean, and not vacuously: discovery.ts holds the path, agent.ts imports it, the seller imports the extensions", () => {
+    expect(walk("src").flatMap((f) => checkDiscoveryConfinement(f, readFileSync(f, "utf8"))).map(format)).toEqual([]);
+    const as = (path: string, file: string) => checkDiscoveryConfinement(path, readFileSync(file, "utf8")).map((v) => v.detail);
+    expect(as("src/layer1-intent/hosted/x.ts", A19_CLIENT)).toContain("names the discovery index's path");
+    expect(as("src/layer1-intent/hosted/x.ts", A19_IMPORTER)).toContain("imports the discovery client");
+    expect(as("src/layer1-intent/hosted/x.ts", "src/counterparty/seller.ts")).toContain("imports @x402/extensions");
+  });
+
+  it("T-ARCH-A19 parts 1 to 3: the path elsewhere, another importer, the extensions in a layer, a decision naming the search", () => {
+    const one = (path: string, source: string) => checkDiscoveryConfinement(path, source).map((v) => v.detail);
+    expect(one("src/shared/config.ts", 'export const D = "https://api.cdp.coinbase.com/platform/v2/x402/discovery/search";\n')).toEqual(["names the discovery index's path"]);
+    expect(one("src/layer1-intent/hosted/server.ts", 'import { searchIndex } from "./discovery.js";\n')).toEqual(["imports the discovery client"]);
+    expect(one("src/layer1-intent/hosted/server.ts", 'import type { SearchNetwork } from "./discovery.js";\n')).toEqual(["imports the discovery client"]);
+    expect(one("src/layer2-control/service.ts", 'import { withBazaar } from "@x402/extensions/bazaar";\n')).toEqual(["imports @x402/extensions"]);
+    expect(one("src/counterparty/seller.ts", 'import { declareDiscoveryExtension } from "@x402/extensions/bazaar";\n')).toEqual([]);
+    expect(one("src/layer2-control/policy.ts", "if (ctx.discovery) deny();\n")).toEqual(["names the discovery index or the search tool"]);
+    expect(one("src/layer2-control/signer.ts", 'if (tool === "search_resources") {}\n')).toEqual(["names the discovery index or the search tool"]);
+    expect(one("src/layer2-control/ledger-key.ts", "// the discovery index is never a key\nexport {};\n")).toEqual([]);
+    expect(one("test/x.test.ts", 'const u = "http://127.0.0.1/discovery/search";')).toEqual([]);
+  });
+
   // ---- 1.19: A17, the person's portal token has one way to L2 -----------------------------------------------
 
   it("T-ARCH-A17 fixture trips exactly A17, and no other rule catches it", () => {
@@ -1178,7 +1246,7 @@ describe("T-ARCH-TRACE threat matrix → test titles (007 T051)", () => {
  * express-rate-limit's own two options, `skipSuccessfulRequests` and `skipFailedRequests`, which say what a limiter
  * counts (the failed-authentication limit counts 401s only) and turn no check off.
  */
-const SWITCH = String.raw`(?:skip(?!SuccessfulRequests\b|FailedRequests\b)[A-Z]\w*|bypass\w*|sharedSigner|sharedBudgets|trustIntentUser|echoCaller|fallbackToPlatform|unserialized\w*|singlePortalRole|serializeOutcomes|trustRevokeAnswer)`;
+const SWITCH = String.raw`(?:skip(?!SuccessfulRequests\b|FailedRequests\b)[A-Z]\w*|bypass\w*|sharedSigner|sharedBudgets|trustIntentUser|echoCaller|fallbackToPlatform|unserialized\w*|singlePortalRole|serializeOutcomes|trustRevokeAnswer|rawListings|modeFromHeader)`;
 /** A switch turned on with a literal: `name: true`, a list of string literals, or a set. */
 const SWITCH_ON = new RegExp(String.raw`\b(${SWITCH})\s*:\s*(?:true\b|\[\s*["'\x60]|new Set\()`, "g");
 /** Passing a caller's own switch on, `...(deps.name && { name: true })`, turns nothing on by itself. */

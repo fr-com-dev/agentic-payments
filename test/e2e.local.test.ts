@@ -16,6 +16,8 @@ import {
 import { HARNESS_USER_MNEMONIC, startHarness, RegressionBaseline, type Harness } from "./helpers/harness.js";
 import { createTestIssuer } from "./helpers/caller-tokens.js";
 import { mockModel, modelCalls, startHostedApp, text, toolCall, type HostedTestApp } from "./helpers/hosted.js";
+import { listing, startDiscoveryStub, startRecorder } from "./helpers/discovery-stub.js";
+import { facilitatorClientFor } from "../src/counterparty/facilitator-client.js";
 import { HttpAuthorizationGate, HttpSettlementVerifier } from "../src/layer1-intent/ports-http.js";
 import { PaidResourceOrchestrator, type PaidFetchResult } from "../src/layer1-intent/orchestrator.js";
 import { runScriptedAgent } from "../src/layer1-intent/scripted.js";
@@ -1453,4 +1455,98 @@ describe("014 portal administration end to end", () => {
     }
     expect((await ledgerVerify(h)).ok).toBe(true);
   });
+});
+
+// ---------------------------------------------------------------------------
+// T-E2E-18 (021, SPEC L1-6 EXT-10): a hosted run in search mode on the local chain. The stand-in index lists the
+// same weather route twice, first on a second loopback seller that is not on L2's list, then on the harness's seller.
+// The agent never requests the unlisted one and L2 is never asked to pay it; the listed one is PAID and CONFIRMED,
+// once. US4: the payment the seller's facilitator receives carries the route's discovery declaration.
+// ---------------------------------------------------------------------------
+
+describe("T-E2E-18 search mode on the local chain: only what L2 would pay is fetched", () => {
+  let h: Harness;
+  const verified: Record<string, unknown>[] = [];
+  const settled: Record<string, unknown>[] = [];
+  beforeAll(async () => {
+    h = await startHarness({
+      callers: true,
+      sellerFacilitator: async (inner) => {
+        const client = facilitatorClientFor({ kind: "local", url: inner, authenticated: false });
+        return {
+          getSupported: () => client.getSupported(),
+          verify: (payload, requirements) => {
+            verified.push(payload as unknown as Record<string, unknown>);
+            return client.verify(payload, requirements);
+          },
+          settle: (payload, requirements) => {
+            settled.push(payload as unknown as Record<string, unknown>);
+            return client.settle(payload, requirements);
+          },
+        };
+      },
+    });
+  }, 120_000);
+  afterAll(async () => {
+    await h?.close();
+  });
+
+  type Step = { tool: string; url?: string; result: { outcome: string; error?: string; payment?: { settlement: { status: string | null } } | null; results?: { host: string; onSellerList: boolean }[] } };
+
+  async function run(o: { skipSellerList?: boolean } = {}) {
+    const unlisted = await startRecorder();
+    const network = { name: "local", caip2: h.net.caip2, asset: h.addresses.asset, decimals: 6 };
+    const index = await startDiscoveryStub({
+      listings: [listing(`${unlisted.origin}/api/weather`, { network }), listing(`${h.urls.seller}/api/weather`, { network })],
+    });
+    const model = mockModel([
+      toolCall("search_resources", { query: "current weather for a city" }),
+      toolCall("fetch_resource", { url: `${unlisted.origin}/api/weather?city=Lima`, purpose: "weather for Lima" }),
+      toolCall("fetch_resource", { url: `${h.urls.seller}/api/weather?city=Lima`, purpose: "weather for Lima" }),
+      text("Receipts: weather 0.001"),
+    ]);
+    const a = await startHostedApp({ harness: h, model, discovery: { url: index.url }, network, ...(o.skipSellerList && { skipSellerList: true }) });
+    try {
+      const r = await a.run("x402-checks-dev", { goal: "Get today's weather for Lima" }, { service: true });
+      return { r, unlisted: unlisted.requests.length, unlistedHost: new URL(unlisted.origin).host };
+    } finally {
+      await a.close();
+      await index.close();
+      await unlisted.close();
+    }
+  }
+
+  it("T-E2E-18 the unlisted seller gets no request and no payment; the listed one is PAID and CONFIRMED, once", async () => {
+    const before = h.ledgerEntries().filter((e) => e.type === "AUTHORIZED").length;
+    const { r, unlisted, unlistedHost } = await run();
+    expect(r.status).toBe(200);
+    const steps = r.body.steps as Step[];
+    expect(steps[0]!.result.results!.map((x) => x.onSellerList)).toEqual([true, false]);
+    expect(steps[1]!.result).toMatchObject({ outcome: "ERROR" });
+    expect(steps[2]!.result.outcome).toBe("PAID");
+    expect(steps[2]!.result.payment?.settlement.status).toBe("CONFIRMED");
+    expect(unlisted).toBe(0);
+    const authorized = h.ledgerEntries().filter((e) => e.type === "AUTHORIZED");
+    expect(authorized.length - before).toBe(1);
+    // Nothing of the unlisted host reached L2: no ledger entry names it.
+    expect(JSON.stringify(h.ledgerEntries())).not.toContain(unlistedHost);
+  }, 120_000);
+
+  it("T-E2E-18 US4: the payment the seller's facilitator verifies and settles carries the route's extensions.bazaar", async () => {
+    verified.length = 0;
+    settled.length = 0;
+    const { r } = await run();
+    expect((r.body.steps as Step[])[2]!.result.outcome).toBe("PAID");
+    for (const payload of [...verified, ...settled]) {
+      const bazaar = (payload.extensions as { bazaar?: { info?: { input?: { queryParams?: unknown } } } } | undefined)?.bazaar;
+      expect(bazaar?.info?.input?.queryParams).toEqual({ city: "Lima" });
+    }
+    expect(verified.length).toBeGreaterThan(0);
+    expect(settled.length).toBeGreaterThan(0);
+  }, 120_000);
+
+  it("T-E2E-18 must-fail: with skipSellerList on, the unlisted seller records a request", async () => {
+    const { unlisted } = await run({ skipSellerList: true });
+    expect(unlisted).toBe(1);
+  }, 120_000);
 });

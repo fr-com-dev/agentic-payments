@@ -59,6 +59,7 @@ describe("T-EDGE-02 with the dev sign-in a service binds loopback only and trust
   const portalTenant = { ...portalDev, AUTH_ISSUER: SIGN_IN_ISSUER, AUTH_JWKS_FILE: "" };
   const agentDev = {
     NETWORK: "local",
+    AGENT_TEST_MODE: "1", // 021: the agent of before 021 (NFR-006)
     MODEL_PROVIDER: "anthropic",
     ANTHROPIC_API_KEY: "test-key-not-used",
     AUTH_ISSUER: DEV_ISSUER,

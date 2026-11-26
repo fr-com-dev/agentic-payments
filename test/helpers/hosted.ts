@@ -21,10 +21,12 @@ import type {
   BudgetStatus,
   CallerGates,
   PaymentIntent,
+  SellerHosts,
   SettlementClaim,
   SettlementReport,
   SettlementVerifierPort,
 } from "../../src/shared/contracts.js";
+import { STUB_LOCAL } from "./discovery-stub.js";
 import type { Harness } from "./harness.js";
 
 // ---------------------------------------------------------------------------
@@ -105,6 +107,8 @@ export interface FakePortsOptions {
   authorize?: (intent: PaymentIntent) => Promise<AuthorizationDecision>;
   budget?: (sessionId: string) => Promise<BudgetStatus>;
   verify?: (claim: SettlementClaim) => Promise<SettlementReport>;
+  /** 021: L2's seller hosts (`GET /v1/sellers`). Default `{ hosts: [] }`: the run keeps the configured seller's host. */
+  sellers?: () => Promise<SellerHosts>;
 }
 
 export function fakePorts(o: FakePortsOptions = {}) {
@@ -114,7 +118,8 @@ export function fakePorts(o: FakePortsOptions = {}) {
    */
   // 019: `gate` numbers the gate the call came through: 0 the plain gate, then 1, 2, … one per run (`forCaller`), so a
   // test can tell a person's account question (the first budget call of a run) from the check_budget tool's.
-  const gateCalls: { op: "authorize" | "budget"; sessionId: string; callerToken: string; gate: number; intent?: PaymentIntent }[] = [];
+  // 021: a `sellers` call has no session; `callerToken` is the token of the gate it came through (the real adapter sends none).
+  const gateCalls: { op: "authorize" | "budget" | "sellers"; sessionId: string; callerToken: string; gate: number; intent?: PaymentIntent }[] = [];
   const settlementCalls: SettlementClaim[] = [];
   const gateOf = (callerToken: string, gate: number): AuthorizationGatePort => ({
     authorize: async (intent) => {
@@ -129,6 +134,10 @@ export function fakePorts(o: FakePortsOptions = {}) {
         ? o.budget(sessionId)
         : // 019: as L2's user view, the person can pay, so the agent's account question lets the run start.
           { sessionId, asset: "0xasset", decimals: 6, sessionCapAtomic: "100000", spentOrReservedAtomic: "0", remainingAtomic: "100000", perPaymentCapAtomic: "20000", account: "ready" };
+    },
+    sellers: async () => {
+      gateCalls.push({ op: "sellers", sessionId: "", callerToken, gate });
+      return o.sellers ? o.sellers() : { hosts: [] };
     },
   });
   /**
@@ -165,6 +174,12 @@ export interface StartHostedOptions extends Partial<Omit<HostedDeps, "config" | 
   tenant?: true;
   /** Extra or overriding env for loadHostedConfig. */
   env?: Record<string, string>;
+  /**
+   * 021: start the agent in search mode against a stand-in discovery index (test/helpers/discovery-stub.ts), on the
+   * stub's test network unless `network` is given. Without it the agent is in test mode (`AGENT_TEST_MODE=1`), the agent
+   * of before 021, so every older test sees what it saw (NFR-006).
+   */
+  discovery?: { url: string };
   /** Call markReady() after listen (default true). */
   ready?: boolean;
 }
@@ -185,7 +200,7 @@ export interface HostedTestApp {
 const devKeys = (jwks: Parameters<typeof createLocalJWKSet>[0]) => ({ keys: createLocalJWKSet(jwks), algorithms: ["ES256"] });
 
 export async function startHostedApp(opts: StartHostedOptions = {}): Promise<HostedTestApp> {
-  const { env: envOver, ready, harness, tenant, ...deps } = opts;
+  const { env: envOver, ready, harness, tenant, discovery, ...deps } = opts;
   const dir = mkdtempSync(join(tmpdir(), "hosted-"));
   const issuer = await loadOrCreateDevIssuer(join(dir, "issuer"), { NETWORK: "local" });
   // 016: with a harness whose L2 verifies callers' tokens, the agent verifies the same issuer's tokens with the
@@ -200,6 +215,9 @@ export async function startHostedApp(opts: StartHostedOptions = {}): Promise<Hos
     AGENT_CLIENT_IDS: `${DEV_AGENT_CLIENT},${DEV_DESKTOP_CLIENT}`, // 019: the docs page client and the desktop client
     AUTH_JWKS_FILE: issuer.jwksPath,
     SESSION_REF_SECRET: randomBytes(32).toString("hex"),
+    // 021: test mode unless a test asks for search mode; before envOver, so a test can still set either.
+    AGENT_TEST_MODE: discovery ? "0" : "1",
+    ...(discovery && { DISCOVERY_URL: discovery.url }),
     ...(tenant && { AUTH_ISSUER: TENANT_TEST_ISSUER, AUTH_JWKS_FILE: "" }),
     ...(harness && {
       SELLER_URL: harness.urls.seller,
@@ -224,6 +242,8 @@ export async function startHostedApp(opts: StartHostedOptions = {}): Promise<Hos
         keys: callers ? { keys: callers.deps.keys, algorithms: callers.deps.algorithms } : devKeys(issuer.jwks),
         model: mockModel(),
         log: () => undefined,
+        // 021: search mode searches the stub's test network unless the test names another.
+        ...(discovery && { network: STUB_LOCAL }),
       },
       ports,
       deps,

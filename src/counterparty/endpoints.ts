@@ -6,11 +6,34 @@
 import type { Express, Request } from "express";
 import type { Monetization } from "./monetization.js";
 
+/** 021: the type of a query input, as JSON Schema names it. */
+export type InputType = "string" | "number" | "integer" | "boolean";
+export const INPUT_TYPES: readonly InputType[] = ["string", "number", "integer", "boolean"];
+
+/**
+ * 021 (CP-1): one query input an endpoint reads, declared with its route. The catalog shows its name, type and whether
+ * it is required; the payment challenge's discovery declaration also carries `about` and `example`.
+ */
+export interface QueryInput {
+  name: string;
+  type: InputType;
+  required: boolean;
+  /** Plain text, 1–200 characters. */
+  about: string;
+  /** A value of `type`. The seller's own answer to the examples is the declaration's example output. */
+  example: string | number | boolean;
+}
+
+/** How `@Get` takes an input: everything but the name, which is its key. */
+export type QueryInputDeclaration = Omit<QueryInput, "name" | "required"> & { required?: boolean };
+
 /** Where an endpoint answers. `query` names the query parameters it reads; the catalog shows them. */
 export interface Route {
   method: "GET";
   path: string;
   query: readonly string[];
+  /** 021: the same inputs, typed, in declaration order. */
+  inputs: readonly QueryInput[];
 }
 
 /** A declared endpoint: the handler returns the JSON body. */
@@ -45,11 +68,32 @@ export function declarePart(method: Method, context: ClassMethodDecoratorContext
   declarations.set(method, { ...declaration, ...part });
 }
 
-/** `@Get("/api/weather", { query: ["city"] })`: the endpoint answers GET on `path`. */
-export function Get(path: string, options: { query?: readonly string[] } = {}) {
+const INPUT_NAME_RE = /^[a-z][a-zA-Z0-9]{0,39}$/;
+const INPUT_ABOUT_MAX = 200;
+
+const exampleFits = (type: InputType, v: unknown): boolean =>
+  type === "string" ? typeof v === "string" : type === "boolean" ? typeof v === "boolean" : type === "integer" ? Number.isInteger(v) : typeof v === "number" && Number.isFinite(v);
+
+/** 021: checks one declared input; a mistake is refused while the seller is built. */
+function queryInput(at: string, name: string, d: QueryInputDeclaration): QueryInput {
+  if (!INPUT_NAME_RE.test(name)) throw new EndpointDeclarationError(`${at}: the input name "${name}" must match ${INPUT_NAME_RE.source}`);
+  if (!INPUT_TYPES.includes(d.type)) throw new EndpointDeclarationError(`${at}: input ${name} has type "${String(d.type)}"; one of ${INPUT_TYPES.join(", ")}`);
+  if (typeof d.about !== "string" || d.about.trim() === "" || d.about.length > INPUT_ABOUT_MAX) {
+    throw new EndpointDeclarationError(`${at}: input ${name} needs an about of 1–${INPUT_ABOUT_MAX} characters`);
+  }
+  if (!exampleFits(d.type, d.example)) throw new EndpointDeclarationError(`${at}: input ${name}'s example is not a ${d.type}`);
+  return { name, type: d.type, required: d.required === true, about: d.about, example: d.example };
+}
+
+/**
+ * `@Get("/api/weather", { query: { city: { type: "string", required: true, about: "…", example: "Lima" } } })`: the
+ * endpoint answers GET on `path` and reads those query inputs (021: typed, each with a description and an example).
+ */
+export function Get(path: string, options: { query?: Readonly<Record<string, QueryInputDeclaration>> } = {}) {
   if (!/^\/[A-Za-z0-9/_-]*$/.test(path)) throw new EndpointDeclarationError(`@Get("${path}"): a path starts with / and has no query or pattern`);
+  const inputs = Object.entries(options.query ?? {}).map(([name, d]) => queryInput(`@Get("${path}")`, name, d));
   return <T extends Method>(method: T, context: ClassMethodDecoratorContext): T => {
-    declarePart(method, context, { route: { method: "GET", path, query: options.query ?? [] } });
+    declarePart(method, context, { route: { method: "GET", path, query: inputs.map((i) => i.name), inputs } });
     return method;
   };
 }
