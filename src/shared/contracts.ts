@@ -212,7 +212,20 @@ export interface UserView {
   onboarding: { profile: boolean; wallet: boolean; policy: boolean };
   wallet?: UserWalletView;
   cards: string[];
+  /** 020: the active connections to outside platforms, identifiers only (specs/020 contracts/control-api.md). */
+  connections: UserConnectionView[];
   policies: PolicyView[];
+}
+
+/** 020: the one connected platform in this version. */
+export type ConnectedPlatform = "coinbase";
+
+/** 020: one active connection, as L2 records it: never a grant, an account identifier or a balance (FR-023). */
+export interface UserConnectionView {
+  connectionId: string;
+  platform: ConnectedPlatform;
+  /** ISO time of the CONNECTION_OPENED entry. */
+  connectedAt: string;
 }
 
 export interface PlatformLimits {

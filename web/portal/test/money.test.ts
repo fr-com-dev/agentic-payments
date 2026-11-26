@@ -1,10 +1,12 @@
 // T-WEB-03 (specs/013 FR-025, Constitution VI): amounts in the browser are atomic-unit strings; a seventh decimal is
 // refused, never rounded; nothing in the web app does floating-point arithmetic on an amount.
+// 020 T-WEB-18 (specs/020 FR-015): Coinbase's amounts and US dollar values are decimal strings, shown by inserting
+// group separators and a currency sign into the string, never through a number.
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parseUsdc } from "../../../src/shared/config.js";
-import { formatUsdc, formatUsdcFixed, lessThan, parseUsdcInput } from "../src/money.js";
+import { formatDecimal, formatUsdc, formatUsdcFixed, lessThan, parseUsdcInput } from "../src/money.js";
 
 const SRC = resolve(import.meta.dirname, "../src");
 const files = (dir: string): string[] => readdirSync(dir).flatMap((f) => (statSync(join(dir, f)).isDirectory() ? files(join(dir, f)) : [join(dir, f)]));
@@ -65,6 +67,45 @@ describe("T-WEB-03: money in the browser", () => {
     for (const file of files(SRC)) {
       const code = readFileSync(file, "utf8");
       expect(/parseFloat\(|\.toFixed\(|[^.\w]Number\(|Math\.round\(/.test(code), file).toBe(false);
+    }
+  });
+});
+
+describe("T-WEB-18: formatDecimal, Coinbase's figures as text (020 FR-013, FR-015)", () => {
+  it("T-WEB-18 inserts group separators into the whole part, and leaves the fraction as it is", () => {
+    expect(formatDecimal("0")).toBe("0");
+    expect(formatDecimal("5")).toBe("5");
+    expect(formatDecimal("999")).toBe("999");
+    expect(formatDecimal("1000")).toBe("1,000");
+    expect(formatDecimal("1000.5")).toBe("1,000.5");
+    expect(formatDecimal("123456")).toBe("123,456");
+    expect(formatDecimal("1234567.891")).toBe("1,234,567.891");
+    expect(formatDecimal("0.00012345")).toBe("0.00012345");
+    // Trailing zeros are Coinbase's: kept, never trimmed or padded.
+    expect(formatDecimal("12.50000")).toBe("12.50000");
+    expect(formatDecimal("-1234.5")).toBe("-1,234.5");
+  });
+
+  it("T-WEB-18 a dollar sign for US dollars, before the digits and after a minus", () => {
+    expect(formatDecimal("12.34", "USD")).toBe("$12.34");
+    expect(formatDecimal("0.00", "USD")).toBe("$0.00");
+    expect(formatDecimal("4323000.49", "USD")).toBe("$4,323,000.49");
+    expect(formatDecimal("-1234.56", "USD")).toBe("-$1,234.56");
+  });
+
+  it("T-WEB-18 exact for any length: 18 decimals and 30 digits, past what a double holds", () => {
+    expect(formatDecimal("1234.123456789012345678")).toBe("1,234.123456789012345678");
+    expect(formatDecimal("0.000000000000000001")).toBe("0.000000000000000001");
+    expect(formatDecimal("123456789012345678901234567890.123456789012345678901234567890")).toBe(
+      "123,456,789,012,345,678,901,234,567,890.123456789012345678901234567890",
+    );
+    expect(formatDecimal("9007199254740993", "USD")).toBe("$9,007,199,254,740,993");
+  });
+
+  it("T-WEB-18 anything that is not a plain decimal is shown as it came, with no sign added", () => {
+    for (const text of ["", "abc", "1e3", "1,000", ".5", "5.", "+1", "NaN", "Infinity", " 12", "0x10"]) {
+      expect(formatDecimal(text), text).toBe(text);
+      expect(formatDecimal(text, "USD"), text).toBe(text);
     }
   });
 });

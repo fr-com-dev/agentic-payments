@@ -96,6 +96,58 @@ Run these from a network that doesn't intercept TLS (a phone's mobile data, not 
 | TLS: `testssl.sh <host>`, or SSL Labs | TLS 1.2 and 1.3 only; a valid chain |
 | Ports: `nmap -Pn -p 1-65535 <host>` from outside | only 80 and 443 open; not 2019, 4025 or any other port of the stack |
 
+## 5. Optional: Coinbase balances (`specs/020`)
+
+The portal can show a person's Coinbase balances beside their wallet (SPEC CFG-2, `specs/020`
+contracts/config-and-secrets.md "The VPS"). It is off unless `CONNECTED_PLATFORMS=coinbase`, and it needs a Coinbase
+OAuth client, which Coinbase isn't issuing now (`specs/020` research R0). Leave it off until the owner has:
+
+- the project approved for OAuth by Coinbase, with its terms and its OAuth fees accepted;
+- a privacy policy and a support contact published at `https` addresses (Coinbase's terms ask for both before a
+  person connects; research R8);
+- the client registered by hand in Coinbase's developer portal (API Keys → OAuth) with exactly these two redirects:
+  `https://dev.fabriciorojas.com/wallet/coinbase` (this portal) and `http://localhost:4025/wallet/coinbase` (local
+  runs, accepted only with `NETWORK=local`).
+
+Then make the grant key, once, on the host:
+
+```bash
+node -e "console.log(require('node:crypto').randomBytes(32).toString('base64'))"
+```
+
+It seals every person's Coinbase grant. Back it up where the payer key is backed up. Never rotate it in place: the
+old grants don't open with a new key, so the portal refuses to start (`connection grants don't open with
+COINBASE_GRANT_KEY`) and every person would have to connect again. If it leaks, follow `specs/020` quickstart §6.
+
+Add these to the portal's env file (`env/portal.env` on the host):
+
+| Setting | Value |
+|---|---|
+| `CONNECTED_PLATFORMS` | `coinbase` (unset or empty: off, and the others are ignored) |
+| `COINBASE_CLIENT_ID` | the Coinbase client's ID (public) |
+| `COINBASE_CLIENT_SECRET` | the Coinbase client's secret |
+| `COINBASE_GRANT_KEY` | the key made above (44 characters) |
+| `COINBASE_REDIRECT_URI` | `https://dev.fabriciorojas.com/wallet/coinbase`, exactly as registered at Coinbase |
+| `PRIVACY_POLICY_URL` | the privacy policy's `https` address |
+| `SUPPORT_URL` | the support contact's `https` or `mailto:` address |
+| `CONNECTION_DIR` | optional: where the sealed grants are, default `.local/portal/connections`; never inside `PROFILE_DIR` or the web root |
+
+The two secrets go into that file only: never into this repository, a tfvars file or GitHub. Keep the file readable
+by the operator's user alone:
+
+```bash
+chmod 600 env/portal.env
+```
+
+```bash
+ls -l env/portal.env
+```
+
+The second command shows `-rw-------` and the operator's user as the owner. Restart the portal
+(`ENV_FILE=env/portal.env npm run portal`). With a variable missing or malformed it refuses to start and names the
+variable, never its value. To turn the feature off, empty `CONNECTED_PLATFORMS` and restart: the grants stay sealed
+in `CONNECTION_DIR`, and people see their Coinbase row as unavailable until it is on again.
+
 ## If a check fails
 
 - **`server` or `via` still present**: the answer didn't come through this Caddyfile's sites. Check that no other

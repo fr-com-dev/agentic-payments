@@ -7,7 +7,23 @@ import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import axe from "axe-core";
 import { describe, expect, it } from "vitest";
-import { EXAMPLE_VALUES, SELLER, SELLER_2, account, card, fakeApi, fakeAuth, platform, policy, refuse, renderApp, world, type World } from "./helpers.js";
+import {
+  EXAMPLE_VALUES,
+  SELLER,
+  SELLER_2,
+  account,
+  card,
+  coinbaseBalances,
+  coinbaseRow,
+  fakeApi,
+  fakeAuth,
+  platform,
+  policy,
+  refuse,
+  renderApp,
+  world,
+  type World,
+} from "./helpers.js";
 
 /** Runs axe on the whole document. Contrast is checked separately below: jsdom lays nothing out, so axe can't. */
 async function violations(): Promise<string[]> {
@@ -61,6 +77,25 @@ describe("T-WEB-08: an automated accessibility pass", () => {
       expect(await violations()).toEqual([]);
     });
   }
+
+  it("T-WEB-08 the wallet's Coinbase part in each status (020), and the return screen, have no violation", async () => {
+    const rows = [coinbaseRow("not_connected"), coinbaseRow("connected"), coinbaseRow("reconnect"), coinbaseRow("unavailable")];
+    for (const row of rows) {
+      const w = rich();
+      w.wallet = { ...w.wallet, connections: [row] };
+      w.balances = coinbaseBalances({ stale: true, more: 2 });
+      const view = renderApp("/wallet", w);
+      await screen.findByRole("region", { name: "Coinbase · View only" });
+      if (row.status === "connected") await screen.findByRole("table", { name: "Your Coinbase balances" });
+      expect(await violations(), row.status).toEqual([]);
+      view.unmount();
+    }
+    const w = rich();
+    w.wallet = { ...w.wallet, connections: [coinbaseRow("not_connected")] };
+    renderApp("/wallet/coinbase?error=access_denied", w);
+    await screen.findByRole("heading", { level: 1, name: "Connect Coinbase" });
+    expect(await violations()).toEqual([]);
+  });
 
   it("the pass is real: a field without a label is reported", async () => {
     renderApp("/profile", rich());

@@ -1,5 +1,30 @@
 <!--
 Sync Impact Report
+- Version change: 3.1.0 → 3.2.0 (MINOR, 2026-11-25, SPEC 1.30, feature 020-coinbase-wallet-balances). MINOR because
+  guidance is materially expanded and nothing is removed or redefined (Governance: "MINOR when a principle or
+  section is added or materially expanded"): a person may connect their own Coinbase account to the portal, read
+  only, and Principle V gains the three Coinbase credentials. No MUST is loosened: none of them is payment
+  authority, the agent gets nothing of a connection, and no decision reads one.
+- Modified principles: V. Least-Privilege Credentials (a new bullet: the Coinbase client secret, each person's
+  read-only grant and the sealing key are held by the portal only, confined to one folder by rule A18, and never
+  sent to another process, the model, a log or the browser; a grant with any scope beyond reading is refused and
+  revoked; none of them is payment authority).
+- Modified sections: Technology & Scope Constraints (scope: a person's own Coinbase account, read only, through
+  the portal as Coinbase's OAuth client; moving funds to or from a connected account, and any other platform, stay
+  out; residual risks for 3.2.0). No new package: Coinbase is reached with the global `fetch`, as the card vault
+  reaches Stripe.
+- Added sections: none. Removed sections: none.
+- Templates reviewed: plan-template.md, spec-template.md, tasks-template.md (no change)
+- Source: SPEC.md v1.30 (Changes in 1.30, §1.2, §1.3, §3.3, §4.1 A18, §7, L2-4, L2-5, L2-8, CFG-2, §11
+  SEC-55..58 and the residual risks, §12)
+- Documents changed with it: SPEC.md, specs/README.md. To follow in the feature's last slice (specs/020 task
+  T073): CLAUDE.md.
+- Deferred TODOs: Coinbase isn't issuing OAuth clients at the moment (specs/020 research R0), so the feature can't
+  be turned on anywhere until Coinbase issues one to the project; two facts about Coinbase's scopes (the separator
+  on the authorize address, `all` on a renewal) are from its documentation and are checked by hand once a client
+  exists (specs/020 quickstart §5).
+
+Previous report (3.1.0)
 - Version change: 3.0.1 → 3.1.0 (MINOR, 2026-11-24, SPEC 1.29, feature 019-loopback-pkce-sign-in). MINOR because
   guidance is materially expanded and nothing is removed or redefined (Governance: "MINOR when a principle or
   section is added or materially expanded"): the tenant gains a fourth fixed application, the desktop client, and
@@ -324,6 +349,11 @@ Rationale: authorization must be reproducible, auditable and race-free.
 - The card vault credential is held by the portal only and confined to one module by an architecture rule
   (A10). It can save, list and remove cards; it MUST NOT be able to charge one. Card numbers and security
   codes never reach any process of this system.
+- The Coinbase client secret, each person's read-only Coinbase grant and the key that seals the grants (since
+  3.2.0) are held by the portal only and confined to one folder by an architecture rule (A18). They MUST NEVER
+  be sent to another process, the model, a log or the browser. A grant with any scope beyond reading MUST be
+  refused and revoked. None of them is payment authority: they read one person's balances and can't sign,
+  approve or move funds.
 - Internal control and verifier services listen only on the loopback interface. In the Azure
   profile they keep that bind and are reached only through a proxy sidecar in the same app, on an
   internal-only ingress inside one private environment. The sidecar holds no secrets and no
@@ -393,7 +423,10 @@ Rationale: authorization must be reproducible, auditable and race-free.
   and deleting a user stay out. Since 1.7.0 administrators decide escalated payments in the portal. Since 1.8.0 a
   user approves their own agent's escalated payments by phone; approving them in the portal stays out. Since 2.0.0
   people who hold the agent role, and machine callers, start runs of the hosted agent in a deployed environment;
-  forwarding a person's token from the portal to the control layer stays out. Each extension (EXT-1..EXT-9) is delivered one per change and MUST
+  forwarding a person's token from the portal to the control layer stays out. Since 3.2.0 a person may connect
+  their own Coinbase account to the portal, read only: the portal reads its balances and Coinbase's valuation of
+  them over HTTPS, as Coinbase's OAuth client. Moving funds to or from a connected account, and any other
+  platform, stay out. Each extension (EXT-1..EXT-9) is delivered one per change and MUST
   preserve every invariant.
 - Cross-layer types live only in the shared contract module. Changing them is a contract
   change: update every producer, consumer and test together.
@@ -438,6 +471,14 @@ Rationale: authorization must be reproducible, auditable and race-free.
   Added in 3.0.1:
   - anyone with a Google account can create a portal user, with no cap on how many; each reaches only their own
     account and runs nothing, and stopping new Google accounts also stops every existing Google person.
+  Added in 3.2.0:
+  - a stolen portal sign-in can see that person's connected balances;
+  - a compromised portal can read the connected accounts of every user who connected (balances only, until each
+    disconnects);
+  - Coinbase learns that the project's application reads the account;
+  - the single portal replica is what keeps a rotating refresh token from being used twice;
+  - a lost grant key makes every user reconnect;
+  - a renewal that reports its scope as `all` can't be checked against the allow-list.
 
 ## Development Workflow & Quality Gates
 
@@ -466,4 +507,4 @@ New policy rules get a snake_case rule ID, a row in the SPEC rule table and a po
   design and again before implementation. Every review verifies the quality gates above.
 - Runtime guidance for agents lives in `CLAUDE.md`.
 
-**Version**: 3.1.0 | **Ratified**: 2026-10-16 | **Last Amended**: 2026-11-24
+**Version**: 3.2.0 | **Ratified**: 2026-10-16 | **Last Amended**: 2026-11-25

@@ -31,12 +31,34 @@ async function main(): Promise<void> {
   const { createBalanceCache, rpcBalanceReader } = await import("./portal/balance.js");
   const { CardVault } = await import("./portal/card-vault.js");
   const { createPortalApp } = await import("./portal/server.js");
+  const { CoinbaseClient } = await import("./portal/coinbase/client.js");
+  const { GrantStore } = await import("./portal/coinbase/grants.js");
+  const { Connections } = await import("./portal/connections.js");
+  const { connectionEventLog, createPortalLog } = await import("./portal/log.js");
+  const { COINBASE_SETTING_NAMES } = await import("./portal/config.js");
 
   const config = loadPortalConfig();
+  const control = new ControlClient(config.controlUrl, config.portalToken);
+  // 020: connected platforms. Off (CONNECTED_PLATFORMS unset): no Coinbase client and no key; a connection stored
+  // before shows as unavailable and can only be forgotten (research R12).
+  const cb = config.coinbase;
+  if (!cb) {
+    const ignored = COINBASE_SETTING_NAMES.filter((n) => process.env[n] !== undefined && process.env[n] !== "");
+    if (ignored.length > 0) console.log(`portal: connected platforms are off; ignoring ${ignored.join(", ")}`);
+  }
+  const connections = new Connections({
+    ...(cb && { client: new CoinbaseClient({ ...cb.credentials, redirectUri: cb.redirectUri }) }),
+    grants: new GrantStore(config.connectionDir, cb ? { key: cb.grantKey } : {}),
+    control,
+    ...(cb && { privacyPolicyUrl: cb.privacyPolicyUrl, supportUrl: cb.supportUrl }),
+    now: Date.now,
+    onEvent: connectionEventLog(createPortalLog(), Date.now),
+  });
   const { app, markReady } = createPortalApp({
     config,
     keys: personKeys(config.auth),
-    control: new ControlClient(config.controlUrl, config.portalToken),
+    control,
+    connections,
     profiles: new ProfileStore(config.profileDir),
     balance: createBalanceCache(rpcBalanceReader(config.rpcUrl)),
     ...(config.cardVault && { vault: new CardVault(config.cardVault) }),
@@ -45,7 +67,7 @@ async function main(): Promise<void> {
   });
   const server: Server = app.listen(config.port, config.bindHost, () => {
     console.log(
-      `portal listening on http://${config.bindHost}:${config.port} (network ${config.network}, sign-in ${config.auth.mode}, cards ${config.cardVault ? "on (test mode)" : "off"}, administration ${config.admin ? "on" : "off"})`,
+      `portal listening on http://${config.bindHost}:${config.port} (network ${config.network}, sign-in ${config.auth.mode}, cards ${config.cardVault ? "on (test mode)" : "off"}, administration ${config.admin ? "on" : "off"}, connected platforms ${cb ? "coinbase" : "off"})`,
     );
     if (config.apiDocs) console.log(`portal API docs on http://${config.bindHost}:${config.port}/docs (API_DOCS=1, no token)`);
     markReady();

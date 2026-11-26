@@ -2,7 +2,7 @@
 // The only file in src/portal/ that knows L2's paths, and the only user of the portal's role token. That token
 // reaches the user-account routes and nothing else: there is deliberately no method here for authorize, budget,
 // approvals, rejections, reconcile or ledger verification (INV-13, FR-049).
-import type { PlatformView, PolicyValues, PolicyView, UserView } from "../shared/contracts.js";
+import type { ConnectedPlatform, PlatformView, PolicyValues, PolicyView, UserView } from "../shared/contracts.js";
 import { ControlError, ControlUnavailable } from "./control-errors.js";
 import { personHeader } from "./person-context.js";
 
@@ -27,6 +27,15 @@ export interface ControlPort {
   enable(userId: string): Promise<UserView>;
   addCard(userId: string, cardId: string): Promise<{ cards: string[] }>;
   removeCard(userId: string, cardId: string): Promise<{ cards: string[] }>;
+  // 020: connection events, identifiers only (specs/020 contracts/control-api.md).
+  openConnection(userId: string, connectionId: string, platform: ConnectedPlatform): Promise<ConnectionEvents>;
+  closeConnection(userId: string, connectionId: string): Promise<ConnectionEvents>;
+}
+
+/** 020: L2's answer to a connection event: the active connections, and the one a new connection replaced. */
+export interface ConnectionEvents {
+  connections: Array<{ connectionId: string; platform: ConnectedPlatform }>;
+  replaced?: string;
 }
 
 export class ControlClient implements ControlPort {
@@ -87,4 +96,8 @@ export class ControlClient implements ControlPort {
   enable = (userId: string) => this.call<UserView>("POST", this.u(userId, "/enable"), {});
   addCard = (userId: string, cardId: string) => this.call<{ cards: string[] }>("PUT", this.u(userId, `/cards/${encodeURIComponent(cardId)}`));
   removeCard = (userId: string, cardId: string) => this.call<{ cards: string[] }>("DELETE", this.u(userId, `/cards/${encodeURIComponent(cardId)}`));
+  openConnection = (userId: string, connectionId: string, platform: ConnectedPlatform) =>
+    this.call<ConnectionEvents>("PUT", this.u(userId, `/connections/${encodeURIComponent(connectionId)}`), { platform });
+  closeConnection = (userId: string, connectionId: string) =>
+    this.call<ConnectionEvents>("DELETE", this.u(userId, `/connections/${encodeURIComponent(connectionId)}`));
 }

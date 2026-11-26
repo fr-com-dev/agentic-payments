@@ -2,18 +2,59 @@
 // small world in memory and answers like the portal does; every method is a spy, so a test can count calls or make
 // one call fail.
 import { cleanup, render, type RenderResult } from "@testing-library/react";
+import { StrictMode } from "react";
 import { afterEach, vi, type Mock } from "vitest";
 import type { Api, ApiError, ApiResult } from "../src/api.js";
 import { App } from "../src/app.js";
 import type { Auth } from "../src/auth/types.js";
 import type { CardFieldsFactory } from "../src/components/AddCard.js";
 import { parseUsdcInput } from "../src/money.js";
-import type { Account, Card, Config, Me, Platform, Policy, PolicyInput, PolicyValues, Wallet } from "../src/types.js";
+import type {
+  Account,
+  BalancesAnswer,
+  Card,
+  Config,
+  Connection,
+  ConnectionStatus,
+  Me,
+  Platform,
+  PlatformBalances,
+  Policy,
+  PolicyInput,
+  PolicyValues,
+  Wallet,
+} from "../src/types.js";
+
+let realLocation: PropertyDescriptor | undefined;
 
 afterEach(() => {
   cleanup();
+  if (realLocation !== undefined) {
+    Object.defineProperty(window, "location", realLocation);
+    realLocation = undefined;
+  }
   window.history.replaceState(null, "", "/");
 });
+
+/**
+ * 020: stands in for leaving the portal (`window.location.assign`), which jsdom can't do. Everything else about the
+ * address is the real one; the stand-in is taken away after the test.
+ */
+export function stubLeaving(): Mock<(url: string) => void> {
+  const assign = vi.fn<(url: string) => void>();
+  const real = window.location;
+  realLocation ??= Object.getOwnPropertyDescriptor(window, "location");
+  // An empty target: Location's own properties can't be redefined, and a proxy may not answer differently for them.
+  const proxy = new Proxy({} as Location, {
+    get(_target, key) {
+      if (key === "assign") return assign;
+      const value: unknown = Reflect.get(real, key);
+      return typeof value === "function" ? (value as (...a: unknown[]) => unknown).bind(real) : value;
+    },
+  });
+  Object.defineProperty(window, "location", { configurable: true, value: proxy });
+  return assign;
+}
 
 export const SELLER = { host: "127.0.0.1:4021", name: "Local demo seller" };
 export const SELLER_2 = { host: "api.example.test", name: "Example data" };
@@ -84,11 +125,47 @@ export const policy = (id: string, over: Partial<Policy> = {}): Policy => ({
   ...over,
 });
 
+// 020 connected platforms (specs/020 contracts/portal-api.md, data-model.md "Balances").
+export const AUTHORIZE_URL = "https://login.coinbase.com/oauth2/auth?response_type=code&client_id=c&state=st4te&code_challenge=x&code_challenge_method=S256";
+export const PRIVACY_URL = "https://portal.example/privacy";
+export const SUPPORT_URL = "mailto:support@portal.example";
+export const CONNECTED_AT = "2026-11-20T09:30:00.000Z";
+
+/** The wallet's Coinbase row in a given status. */
+export const coinbaseRow = (status: ConnectionStatus, over: Partial<Connection> = {}): Connection => ({
+  platform: "coinbase",
+  status,
+  ...((status === "connected" || status === "reconnect") && { connectedAt: CONNECTED_AT }),
+  privacyPolicyUrl: PRIVACY_URL,
+  supportUrl: SUPPORT_URL,
+  ...over,
+});
+
+/** Balances as the portal answers them: one asset beyond a double's precision, a US dollar account, one with no rate. */
+export const coinbaseBalances = (over: Partial<PlatformBalances> = {}): PlatformBalances => ({
+  readAt: "2026-11-25T14:02:11.000Z",
+  stale: false,
+  assets: [
+    { code: "ETH", name: "Ethereum", amount: "1234.123456789012345678", value: { amount: "4321987.65", currency: "USD" } },
+    { code: "USD", name: "US Dollar", amount: "1000.5", value: { amount: "1000.50", currency: "USD" } },
+    { code: "BTC", name: "Bitcoin", amount: "0.00012345", value: { amount: "12.34", currency: "USD" } },
+    { code: "XYZ", name: "Some token", amount: "5" },
+  ],
+  more: 0,
+  total: { amount: "4323000.49", currency: "USD" },
+  leftOutOfTotal: ["XYZ"],
+  ...over,
+});
+
 export interface World {
   me: Me;
   wallet: Wallet;
   policies: Policy[];
   platform: Platform;
+  /** 020: what the balances route answers while Coinbase is connected. */
+  balances?: BalancesAnswer;
+  /** 020: whether Coinbase confirms a disconnection's revocation (default true). */
+  revokedAtPlatform?: boolean;
 }
 
 const ME_NEW: Me = { userId: "usr_deeee4478bc01dab1b0afa3fbe31f010", admin: false, enabled: true, onboarding: { profile: false, wallet: false, policy: false } };
@@ -98,7 +175,7 @@ export function world(stage: "new" | "profile" | "wallet" | "done" = "done", ove
   const reached = { profile: stage !== "new", wallet: stage === "wallet" || stage === "done", policy: stage === "done" };
   return {
     me: { ...ME_NEW, onboarding: reached, ...(reached.profile && { profile: { displayName: "Alice", contactEmail: "alice@example.test" } }) },
-    wallet: { ...(reached.wallet && { account: account() }), cards: [], cardsAvailable: true, disabled: false },
+    wallet: { ...(reached.wallet && { account: account() }), cards: [], cardsAvailable: true, disabled: false, connections: [] },
     policies: reached.policy ? [policy("pol_1", { name: "Daily data" })] : [],
     platform: platform(),
     ...over,
@@ -132,6 +209,9 @@ export function fakeApi(w: World): FakeApi {
     const next = { ...p, state, displayState: state, version: p.version };
     w.policies = w.policies.map((x) => (x.policyId === id ? next : x));
     return ok(next);
+  };
+  const setCoinbase = (row: Connection) => {
+    w.wallet = { ...w.wallet, connections: [...(w.wallet.connections ?? []).filter((c) => c.platform !== "coinbase"), row] };
   };
   const api: Api = {
     config: async () => ok(CONFIG),
@@ -190,6 +270,23 @@ export function fakeApi(w: World): FakeApi {
       w.policies = w.policies.map((p) => (p.state === "removed" ? p : { ...p, state: "paused", displayState: "paused" }));
       return ok(w.me);
     },
+    // 020: Coinbase, as the wallet's row says. Connecting needs a start; disconnecting answers with the world's revocation.
+    startCoinbase: async () => ok({ authorizeUrl: AUTHORIZE_URL }),
+    completeCoinbase: async () => {
+      const connectedAt = "2026-11-25T14:02:11.000Z";
+      setCoinbase(coinbaseRow("connected", { connectedAt }));
+      return ok({ platform: "coinbase", status: "connected", connectedAt });
+    },
+    coinbaseBalances: async () => {
+      const row = w.wallet.connections?.find((c) => c.platform === "coinbase");
+      if (row === undefined || row.status === "not_connected") return refuse(404, "not_connected");
+      if (row.status === "reconnect") return ok({ status: "reconnect" });
+      return ok(w.balances ?? coinbaseBalances());
+    },
+    deleteCoinbase: async () => {
+      setCoinbase(coinbaseRow("not_connected"));
+      return ok({ revokedAtPlatform: w.revokedAtPlatform ?? true });
+    },
     // 014: the administration area has its own fake (web/portal/test/admin.test.tsx); here nobody is an administrator.
     adminEscalations: async () => refuse(403, "forbidden"),
     adminEscalation: async () => refuse(403, "forbidden"),
@@ -237,11 +334,15 @@ export interface Rendered extends RenderResult {
   world: World;
 }
 
-/** Renders the whole app at a path, as a signed-in person in the given world. */
-export function renderApp(path: string, w: World = world(), o: { auth?: FakeAuth; api?: FakeApi } = {}): Rendered {
+/**
+ * Renders the whole app at a path, as a signed-in person in the given world. `strict` renders it as main.tsx does,
+ * in React's StrictMode, where every effect runs twice on mount.
+ */
+export function renderApp(path: string, w: World = world(), o: { auth?: FakeAuth; api?: FakeApi; strict?: boolean } = {}): Rendered {
   window.history.replaceState(null, "", path);
   const api = o.api ?? fakeApi(w);
   const auth = o.auth ?? fakeAuth();
-  const view = render(<App api={api} auth={auth} config={CONFIG} cardFields={fakeCardFields} />);
+  const app = <App api={api} auth={auth} config={CONFIG} cardFields={fakeCardFields} />;
+  const view = render(o.strict ? <StrictMode>{app}</StrictMode> : app);
   return Object.assign(view, { api, auth, world: w });
 }

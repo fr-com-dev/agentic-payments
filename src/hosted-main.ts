@@ -4,7 +4,7 @@
 // environment or from that file, before anything else happens.
 import type { Server } from "node:http";
 import { pathToFileURL } from "node:url";
-import { REFUSAL } from "./refusal.js";
+import { coinbaseRefusal, REFUSAL, visibleCoinbaseCredential } from "./refusal.js";
 import { loadEnv } from "./shared/config.js";
 
 async function main(): Promise<void> {
@@ -12,6 +12,12 @@ async function main(): Promise<void> {
   // INV-3: this must stay right after loadEnv, before any network or model activity.
   if (process.env.PAYER_PRIVATE_KEY !== undefined) {
     console.error(REFUSAL);
+    process.exit(1);
+  }
+  // 020 (A18): neither of the portal's Coinbase credentials either.
+  const coinbaseCredential = visibleCoinbaseCredential(process.env);
+  if (coinbaseCredential !== undefined) {
+    console.error(coinbaseRefusal(coinbaseCredential));
     process.exit(1);
   }
 

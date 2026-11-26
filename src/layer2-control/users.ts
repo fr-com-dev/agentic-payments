@@ -5,6 +5,7 @@
 // amount (specs/013 research R6).
 import type { NetworkProfile } from "../shared/config.js";
 import type {
+  ConnectedPlatform,
   PlatformView,
   PolicyDisplayState,
   PolicyEventKind,
@@ -13,6 +14,7 @@ import type {
   PolicyValues,
   PolicyVersion,
   PolicyView,
+  UserConnectionView,
   UserView,
 } from "../shared/contracts.js";
 import type { LedgerEntry } from "./ledger.js";
@@ -30,6 +32,10 @@ export const STEP_UP_TOLERANCE_MS = 60_000;
 export const TERMS_VERSION = "test-funds-v1";
 export const CARD_ID_RE = /^card_[0-9a-f-]{36}$/;
 export const POLICY_ID_RE = /^pol_[0-9a-f-]{36}$/;
+/** 020: the portal's own identifier for one connection (specs/020 contracts/control-api.md). */
+export const CONNECTION_ID_RE = /^conn_[0-9a-f-]{36}$/;
+/** 020: the platforms a person may connect; a fixed list, never configuration (FR-004). */
+export const CONNECTED_PLATFORMS: readonly ConnectedPlatform[] = ["coinbase"];
 
 const DAY_MS = 86_400_000;
 const ATOMIC = /^\d+$/;
@@ -85,6 +91,8 @@ export interface UserState {
   wallet?: WalletRecord;
   /** Card identifiers, added minus removed, in the order added. */
   cards: string[];
+  /** 020: active connections, opened minus closed, in the order opened; at most one per platform. */
+  connections: UserConnectionView[];
   policies: PolicyRecord[];
   /** FR-011: a profile, a crypto account and a first policy saved. Stays true when policies are paused or removed. */
   onboarded: boolean;
@@ -145,6 +153,7 @@ export function userState(entries: Entries, userId: string): UserState {
   let enabled = true;
   let wallet: WalletRecord | undefined;
   const cards: string[] = [];
+  const connections: UserConnectionView[] = [];
   const policies = new Map<string, PolicyRecord>();
   for (const e of entries) {
     const d = e.data;
@@ -168,6 +177,18 @@ export function userState(entries: Entries, userId: string): UserState {
       case "CARD_REMOVED": {
         const at = cards.indexOf(String(d.cardId));
         if (at >= 0) cards.splice(at, 1);
+        break;
+      }
+      case "CONNECTION_OPENED": {
+        const platform = CONNECTED_PLATFORMS.find((p) => p === d.platform);
+        if (platform && !connections.some((c) => c.connectionId === d.connectionId)) {
+          connections.push({ connectionId: String(d.connectionId), platform, connectedAt: e.ts });
+        }
+        break;
+      }
+      case "CONNECTION_CLOSED": {
+        const at = connections.findIndex((c) => c.connectionId === d.connectionId);
+        if (at >= 0) connections.splice(at, 1);
         break;
       }
       case "POLICY_CREATED":
@@ -211,6 +232,7 @@ export function userState(entries: Entries, userId: string): UserState {
     enabled,
     ...(wallet && { wallet }),
     cards,
+    connections,
     policies: list,
     onboarded: registered && wallet !== undefined && list.length > 0,
   };
@@ -220,6 +242,11 @@ export function userState(entries: Entries, userId: string): UserState {
 export function policyOwner(entries: Entries, policyId: string): string | undefined {
   const created = entries.find((e) => e.type === "POLICY_CREATED" && e.data.policyId === policyId);
   return typeof created?.data.userId === "string" ? created.data.userId : undefined;
+}
+
+/** 020: whether a connection identifier was ever opened, by anyone: a closed one is never reused (409). */
+export function connectionSeen(entries: Entries, connectionId: string): boolean {
+  return entries.some((e) => e.type === "CONNECTION_OPENED" && e.data.connectionId === connectionId);
 }
 
 /** Number of WALLET_CREATED entries so far: the next wallet index (specs/013 research R3). */
@@ -520,6 +547,7 @@ export function userView(
       },
     }),
     cards: state.cards,
+    connections: state.connections.map((c) => ({ ...c })),
     policies: state.policies
       .map((p) => policyView(p, { platform: o.platform, nowMs: o.nowMs, enabled: state.enabled }))
       .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt)),

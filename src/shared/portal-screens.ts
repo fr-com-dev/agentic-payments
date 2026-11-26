@@ -19,6 +19,8 @@ export const PORTAL_SCREENS: readonly PortalScreen[] = [
   { name: "policy-step", pattern: /^\/onboarding\/policy$/, example: "/onboarding/policy" },
   { name: "profile", pattern: /^\/profile$/, example: "/profile" },
   { name: "wallet", pattern: /^\/wallet$/, example: "/wallet" },
+  // 020: where Coinbase sends the browser back (specs/020 contracts/portal-ui.md "Screens").
+  { name: "coinbase-return", pattern: /^\/wallet\/coinbase$/, example: "/wallet/coinbase" },
   { name: "policies", pattern: /^\/policies$/, example: "/policies" },
   { name: "policy-new", pattern: /^\/policies\/new$/, example: "/policies/new" },
   { name: "policy-edit", pattern: /^\/policies\/[^/]+$/, example: "/policies/p-1" },

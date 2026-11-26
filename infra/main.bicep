@@ -11,7 +11,8 @@
 // the registry's and storage's without hyphens; T-IAC-01 rule 15): no template names a resource itself. T-IAC-01
 // (test/infra.test.ts) asserts the identity, secret and exposure rules. No secret value appears here: vaults are
 // seeded by hand (quickstart §4), never by a template. Every secret an app references must exist before its unit's
-// deployment, as the placeholder off where a feature is off: in the l2 vault, ledger-mac-key too (Phase 3, rule 24).
+// deployment, as the placeholder off where a feature is off: in the l2 vault, ledger-mac-key too (Phase 3, rule 24);
+// in the portal vault, coinbase-client-secret and coinbase-grant-key too (020, rule 26).
 targetScope = 'resourceGroup'
 
 // Every value comes from main.<environment>.bicepparam, the target and every name included: the pipelines sign in to
@@ -53,9 +54,11 @@ param agentStableRevision string = ''
 @description('012: L2\'s backchannel approval. The credential is the l2 vault\'s ciba-client-credential, seeded by hand in every environment (the placeholder off while enabled is false).')
 param ciba object
 // 013 user accounts (SPEC L2-8; specs/013 contracts/config-and-secrets.md "Azure"): non-secret values only,
-// { enabled, portalClientId, sellerName, cardVault: 'off' | 'stripe', cardVaultPublishableKey }. A plain object, not a
+// { enabled, portalClientId, administration (014), sellerName, cardVault: 'off' | 'stripe', cardVaultPublishableKey,
+// coinbase (020) }. coinbase is the portal's Coinbase connection (specs/020 contracts/config-and-secrets.md "Azure"),
+// { enabled, clientId, redirectUri, privacyPolicyUrl, supportUrl }, also a plain object. A plain object, not a
 // user-defined type, as for ciba.
-@description('013: user accounts and the portal. The secrets are the l2 vault\'s portal-token and user-wallet-mnemonic and the portal vault\'s portal-token and card-vault-key, seeded by hand in every environment (the placeholder off while enabled is false).')
+@description('013: user accounts and the portal. The secrets are the l2 vault\'s portal-token and user-wallet-mnemonic and the portal vault\'s portal-token and card-vault-key, and (020) the portal vault\'s coinbase-client-secret and coinbase-grant-key, seeded by hand in every environment (the placeholder off while the feature is off).')
 param userAccounts object
 // The sign-in tenant (SPEC L2-8; specs/013 research R19; specs/016 research R11): the Auth0 tenant's values, from
 // Terraform's output bicepparam_identity (auth0/), { issuer, audience }. None is a secret. A plain object, not a
@@ -102,6 +105,15 @@ var cibaChecked = contains(['key', 'secret'], ciba.credential) && (!ciba.enabled
 var userAccountsChecked = contains(['off', 'stripe'], userAccounts.cardVault) && ((!userAccounts.enabled && unit != 'portal') || !empty(userAccounts.portalClientId)) && (userAccounts.cardVault != 'stripe' || startsWith(userAccounts.cardVaultPublishableKey, 'pk_test_')) && (!userAccounts.administration || userAccounts.enabled)
   ? userAccounts.enabled
   : fail('main: userAccounts.cardVault must be off or stripe, userAccounts.enabled and the portal unit each need a portalClientId, cardVault stripe needs a cardVaultPublishableKey that starts with pk_test_, and userAccounts.administration needs userAccounts.enabled (specs/013 and specs/014 contracts/config-and-secrets.md)')
+
+// 020: the portal's Coinbase connection needs user accounts on (the portal reaches a person's account through L2's
+// user routes), the project's Coinbase client, the redirect registered there, which is the portal's own
+// https://<portal host>/wallet/coinbase, and the privacy policy and support addresses Coinbase's terms ask for
+// (T-IAC-01 rule 26). The two secrets are the portal vault's coinbase-client-secret and coinbase-grant-key.
+#disable-next-line no-unused-vars
+var coinbaseChecked = !userAccounts.coinbase.enabled || (userAccounts.enabled && !empty(userAccounts.coinbase.clientId) && startsWith(userAccounts.coinbase.redirectUri, 'https://') && endsWith(userAccounts.coinbase.redirectUri, '/wallet/coinbase') && !empty(userAccounts.coinbase.privacyPolicyUrl) && !empty(userAccounts.coinbase.supportUrl))
+  ? userAccounts.coinbase.enabled
+  : fail('main: userAccounts.coinbase.enabled needs userAccounts.enabled, a clientId, a redirectUri of the form https://<portal host>/wallet/coinbase, a privacyPolicyUrl and a supportUrl (specs/020 contracts/config-and-secrets.md)')
 
 // 013: with user accounts on, people's sign-in at the portal must be usable: an issuer of the form https://…/ and
 // an audience (T-IAC-01 rule 21). The agent's client is not part of identity: it is agent.clientId, checked below.

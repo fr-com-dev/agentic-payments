@@ -88,7 +88,74 @@ export interface Wallet {
   cards: Card[];
   cardsAvailable: boolean;
   disabled: boolean;
+  /**
+   * 020: one row per platform the deployment offers (only Coinbase). Empty when connected platforms are off, and
+   * absent from a portal older than this web app: both show nothing of them.
+   */
+  connections?: Connection[];
 }
+
+// ---------------------------------------------------------------------------
+// 020 connected platforms (specs/020 contracts/portal-api.md, data-model.md "Balances"). View only: nothing here ever
+// pays, and every amount is a decimal string, never a floating-point number.
+// ---------------------------------------------------------------------------
+
+export type ConnectionStatus = "not_connected" | "connected" | "reconnect" | "unavailable";
+
+/** A connected platform as the wallet lists it. No grant, token or Coinbase identifier ever reaches the browser. */
+export interface Connection {
+  platform: "coinbase";
+  status: ConnectionStatus;
+  /** With `connected` and `reconnect`. */
+  connectedAt?: string;
+  /** The deployment's own pages, linked before a person connects (FR-030). */
+  privacyPolicyUrl: string;
+  supportUrl: string;
+}
+
+/** What `complete` answers when the connection is made. */
+export interface ConnectionMade {
+  platform: "coinbase";
+  status: "connected";
+  connectedAt: string;
+}
+
+/** A US dollar value: a decimal string with exactly two places, e.g. "1234.56". */
+export interface Money {
+  amount: string;
+  currency: "USD";
+}
+
+export interface PlatformAsset {
+  /** Coinbase's currency code, e.g. "BTC". Text from outside: shown as text only. */
+  code: string;
+  /** Coinbase's name for it. Text from outside: shown as text only. */
+  name: string;
+  /** The exact decimal string Coinbase reports, e.g. "0.00012345". */
+  amount: string;
+  /** Absent when Coinbase gives no rate for `code`. */
+  value?: Money;
+}
+
+export interface PlatformBalances {
+  /** When the figures were read from Coinbase. */
+  readAt: string;
+  /** The last read failed: these are older figures. */
+  stale: boolean;
+  /** Funded assets only, largest value first, at most 200. */
+  assets: PlatformAsset[];
+  /** How many funded assets were not listed. */
+  more: number;
+  /** 020: `more` is a lower bound (Coinbase had more accounts than the portal reads). */
+  moreIsAtLeast?: true;
+  /** The exact sum of the listed values; absent when none has one. */
+  total?: Money;
+  /** Codes of listed assets with no value from Coinbase. */
+  leftOutOfTotal: string[];
+}
+
+/** The balances route: figures, or why there are none. */
+export type BalancesAnswer = PlatformBalances | { status: "reconnect" } | { status: "unreadable" };
 
 export type DisplayState = "active" | "paused" | "removed" | "expired" | "disabled";
 

@@ -14,6 +14,7 @@ import { mountPortalApiDocs } from "./api-docs.js";
 import type { BalanceCache } from "./balance.js";
 import { CARD_VAULT_CSP, type CardVault } from "./card-vault.js";
 import { Cards } from "./cards.js";
+import type { Connections } from "./connections.js";
 import { addressLimit, failedAuthLimit, MAX_FAILED_AUTH_PER_ADDRESS, onceInWindow, proxyWarning, trustProxies } from "../shared/address-limit.js";
 import { isLoopbackHost, localOnly } from "../shared/local-only.js";
 import { isScreenPath } from "../shared/portal-screens.js";
@@ -34,6 +35,8 @@ export interface PortalDeps {
   balance: BalanceCache;
   /** The card vault client. Absent: cards are off. */
   vault?: CardVault;
+  /** 020: connected platforms (built by the entry point, or a test, with the Coinbase client and the grant store). */
+  connections?: Connections;
   /** 014: the administration client. Absent: the administration area is off and /api/admin is not mounted. */
   admin?: AdminPort;
   /** 014 test hook (T-PRT-10 must-fail): see requireAdmin. Never set by the entry point. */
@@ -248,7 +251,14 @@ export function createPortalApp(deps: PortalDeps): PortalApp {
     app.use("/api/admin", requireAdmin({ ...(deps.skipAdminCheck && { skip: true }) }));
     mountPortalAdminRoutes(app, { admin: deps.admin, now });
   }
-  mountPortalRoutes(app, { control: deps.control, profiles: deps.profiles, balance: deps.balance, ...(cards && { cards }), now });
+  mountPortalRoutes(app, {
+    control: deps.control,
+    profiles: deps.profiles,
+    balance: deps.balance,
+    ...(cards && { cards }),
+    ...(deps.connections && { connections: deps.connections }),
+    now,
+  });
   app.use("/api", (_req, res) => {
     res.status(404).json({ error: "not found" });
   });

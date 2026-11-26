@@ -16,6 +16,9 @@ import type { Serialize } from "./ledger-routes.js";
 import { MAX_PERSON_CHECKS_PER_MINUTE, personAuth, verifiedPersonOf, type PersonDeps } from "./person.js";
 import {
   CARD_ID_RE,
+  CONNECTED_PLATFORMS,
+  CONNECTION_ID_RE,
+  connectionSeen,
   isLoosening,
   MAX_CARDS,
   nextWalletIndex,
@@ -442,4 +445,77 @@ export function mountUserRoutes(app: Express, deps: UserRoutesDeps): void {
     });
   app.put("/v1/users/:userId/cards/:cardId", role, personLimit, person, card(false));
   app.delete("/v1/users/:userId/cards/:cardId", role, personLimit, person, card(true));
+
+  // ---- connections (020 FR-010, FR-024): identifiers only; nothing here pays or decides (FR-020) -----------
+
+  const activeConnections = (state: UserState) => state.connections.map((c) => ({ connectionId: c.connectionId, platform: c.platform }));
+
+  app.put(
+    "/v1/users/:userId/connections/:connectionId",
+    role,
+    personLimit,
+    person,
+    json,
+    route(async (req, res, userId) => {
+      const connectionId = String(req.params.connectionId);
+      if (!CONNECTION_ID_RE.test(connectionId)) {
+        refuse(res, 400, "invalid connectionId");
+        return;
+      }
+      const body = req.body as unknown;
+      const platform = isObject(body) ? CONNECTED_PLATFORMS.find((x) => x === body.platform) : undefined;
+      if (!isObject(body) || !onlyKeys(body, ["platform"])) {
+        refuse(res, 400, "unknown key");
+        return;
+      }
+      if (platform === undefined) {
+        refuse(res, 400, "invalid platform");
+        return;
+      }
+      send(
+        res,
+        await write((): Outcome => {
+          const t = deps.now();
+          const state = userState(ledger.entries(), userId);
+          if (state.connections.some((c) => c.connectionId === connectionId)) {
+            return { status: 200, body: { connections: activeConnections(state) } };
+          }
+          if (!state.registered) return fail(409, "not_registered");
+          if (!state.enabled) return fail(409, "account_disabled");
+          if (connectionSeen(ledger.entries(), connectionId)) return fail(409, "connection_reused");
+          // One connection per platform: a new one replaces the old in this same serialized section, so two tabs
+          // can never leave two (FR-010).
+          const old = state.connections.find((c) => c.platform === platform);
+          if (old) ledger.append({ type: "CONNECTION_CLOSED", data: { userId, connectionId: old.connectionId, platform, cause: "replaced" } }, t);
+          ledger.append({ type: "CONNECTION_OPENED", data: { userId, connectionId, platform } }, t);
+          const after = activeConnections(userState(ledger.entries(), userId));
+          return { status: 200, body: { connections: after, ...(old && { replaced: old.connectionId }) } };
+        }),
+      );
+    }),
+  );
+
+  app.delete(
+    "/v1/users/:userId/connections/:connectionId",
+    role,
+    personLimit,
+    person,
+    route(async (req, res, userId) => {
+      const connectionId = String(req.params.connectionId);
+      if (!CONNECTION_ID_RE.test(connectionId)) {
+        refuse(res, 400, "invalid connectionId");
+        return;
+      }
+      send(
+        res,
+        await write((): Outcome => {
+          const t = deps.now();
+          // Closing only takes away; it stays possible while the account is disabled (FR-019).
+          const open = userState(ledger.entries(), userId).connections.find((c) => c.connectionId === connectionId);
+          if (open) ledger.append({ type: "CONNECTION_CLOSED", data: { userId, connectionId, platform: open.platform } }, t);
+          return { status: 200, body: { connections: activeConnections(userState(ledger.entries(), userId)) } };
+        }),
+      );
+    }),
+  );
 }

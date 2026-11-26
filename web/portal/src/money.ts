@@ -36,3 +36,16 @@ export function formatUsdcFixed(atomic: string, decimals: number): string {
 
 /** True when `a` is less than `b`; both atomic strings. */
 export const lessThan = (a: string, b: string): boolean => BigInt(a) < BigInt(b);
+
+/**
+ * 020 (specs/020 FR-013, FR-015): a decimal string from Coinbase, as it is shown: group separators inserted into the
+ * whole part and, for US dollars, a dollar sign. String operations only: the digits are Coinbase's (or the portal's
+ * exact sum), never rounded, trimmed or padded, so an 18-decimal amount stays exact. Anything that is not a plain
+ * decimal is shown as it came.
+ */
+export function formatDecimal(amount: string, currency?: "USD"): string {
+  const m = /^(-?)(\d+)(\.\d+)?$/.exec(amount);
+  if (!m) return amount;
+  const whole = m[2]!.replace(/\B(?=(\d{3})+$)/g, ",");
+  return `${m[1]}${currency === "USD" ? "$" : ""}${whole}${m[3] ?? ""}`;
+}

@@ -11,6 +11,7 @@ import type { Person } from "./access.js";
 import type { BalanceCache } from "./balance.js";
 import { CardVaultError } from "./card-vault.js";
 import { CardRefusal, validNickname, type Card, type Cards } from "./cards.js";
+import { ConnectionRefusal, type Connections } from "./connections.js";
 import { ControlError, ControlUnavailable, type ControlPort } from "./control-client.js";
 import { UNTITLED_POLICY, validDisplayName, validEmail, validPolicyName, type ProfileIssue, type ProfileStore } from "./profile-store.js";
 
@@ -20,6 +21,8 @@ export interface RoutesDeps {
   balance: BalanceCache;
   /** Absent: cards are off (503 `cards_unavailable`). */
   cards?: Cards;
+  /** 020: connected platforms. Absent, or present but off: the connection routes answer 404 (FR-001). */
+  connections?: Connections;
   now: () => number;
 }
 
@@ -132,6 +135,11 @@ export function mountPortalRoutes(r: Express, d: RoutesDeps): void {
           } else {
             res.status(err.status).json({ error: code });
           }
+        } else if (err instanceof ConnectionRefusal) {
+          // 020: the codes of contracts/portal-api.md, and nothing Coinbase said.
+          if (typeof err.extra.retryAfterSec === "number") res.set("Retry-After", String(err.extra.retryAfterSec));
+          const { retryAfterSec: _r, ...extra } = err.extra;
+          res.status(err.status).json({ error: err.code, ...extra });
         } else if (err instanceof CardRefusal) {
           res.status(err.status).json({ error: err.code, ...(err.vaultCode !== undefined && { vaultCode: err.vaultCode }) });
         } else if (err instanceof CardVaultError) {
@@ -229,7 +237,9 @@ export function mountPortalRoutes(r: Express, d: RoutesDeps): void {
         note(res, "card_vault_unavailable");
       }
     }
-    const base = { cards, cardsAvailable: d.cards !== undefined && !cardsFailed, disabled: !user.enabled };
+    // 020: the connected platforms' rows, from the grant store after a reconcile with L2; never a Coinbase call (FR-016).
+    const connections = d.connections ? await d.connections.walletRows(userId, user) : [];
+    const base = { cards, cardsAvailable: d.cards !== undefined && !cardsFailed, disabled: !user.enabled, connections };
     const w = user.wallet;
     if (!w) return base;
     const balance = await d.balance.get(w.asset, w.address);
@@ -424,7 +434,72 @@ export function mountPortalRoutes(r: Express, d: RoutesDeps): void {
         res.status(400).json({ error: "confirm must be true" });
         return;
       }
-      res.json(me(res, await d.control.disable(userId)));
+      const view = await d.control.disable(userId);
+      // 020 FR-019: a disabled account keeps no connection. Never fails the disabling: the reconcile finishes it.
+      await d.connections?.disconnectAll(userId).catch(() => undefined);
+      res.json(me(res, view));
+    }),
+  );
+
+  // ---- connected platforms (020) ---------------------------------------------------------------------------
+
+  const COMPLETE_KEYS = ["code", "state"];
+  const on = (res: Response): Connections | undefined => {
+    if (!d.connections?.on) res.status(404).json({ error: "not found" });
+    return d.connections?.on ? d.connections : undefined;
+  };
+
+  r.post(
+    "/api/connections/coinbase/start",
+    handle(async (_req, res) => {
+      const c = on(res);
+      if (!c) return;
+      const { userId, identityConfirmedAtMs } = person(res);
+      res.json(c.start(userId, identityConfirmedAtMs, await d.control.user(userId)));
+    }),
+  );
+
+  r.post(
+    "/api/connections/coinbase/complete",
+    json,
+    handle(async (req, res) => {
+      const c = on(res);
+      if (!c) return;
+      const body = req.body as unknown;
+      const ok =
+        isObject(body) &&
+        onlyKeys(body, COMPLETE_KEYS) &&
+        COMPLETE_KEYS.every((k) => typeof body[k] === "string" && (body[k] as string).length >= 1 && (body[k] as string).length <= 512);
+      if (!ok) {
+        res.status(400).json({ error: "invalid_request" });
+        return;
+      }
+      const { userId, identityConfirmedAtMs } = person(res);
+      const b = body as { code: string; state: string };
+      res.json(await c.complete(userId, identityConfirmedAtMs, await d.control.user(userId), b.code, b.state));
+    }),
+  );
+
+  r.get(
+    "/api/connections/coinbase/balances",
+    handle(async (req, res) => {
+      const c = on(res);
+      if (!c) return;
+      const { userId } = person(res);
+      res.json(await c.balances(userId, await d.control.user(userId), req.query.fresh === "1"));
+    }),
+  );
+
+  r.delete(
+    "/api/connections/coinbase",
+    handle(async (_req, res) => {
+      // Also with the feature switched off, for a connection stored before (research R12): forgotten, recorded.
+      if (!d.connections) {
+        res.status(404).json({ error: "not found" });
+        return;
+      }
+      const { userId } = person(res);
+      res.json(await d.connections.disconnect(userId));
     }),
   );
 

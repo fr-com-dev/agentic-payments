@@ -1,9 +1,9 @@
 # Specs index: x402 three-layer agent payments
 
 These spec-kit feature specs decompose `SPEC.md` (v1.0 for 001–008, amended through v1.17 by 009, 010,
-011, 012, 013, 014, 015 (v1.16, in progress) and 016, through v1.27 by 017, in v1.28 by 018 and in v1.29 by 019 (v1.18–v1.26 have no
+011, 012, 013, 014, 015 (v1.16, in progress) and 016, through v1.27 by 017, in v1.28 by 018, in v1.29 by 019 and in v1.30 by 020 (v1.18–v1.26 have no
 feature spec); v1.4 added the L2 API docs without a feature spec), which
-remains normative. Project principles live in `.specify/memory/constitution.md` (v3.1.0).
+remains normative. Project principles live in `.specify/memory/constitution.md` (v3.2.0).
 It covers INV-1..13, the definition of done and the governance rules.
 
 | # | Feature | Layer | Functional scope | Main non-functional scope |
@@ -26,6 +26,7 @@ It covers INV-1..13, the definition of done and the governance rules.
 | 017 | [dast-findings-remediation](017-dast-findings-remediation/spec.md) | Portal + L1 edge | L2-8 limits and headers (HSTS by host name, Permissions-Policy, CORP, COOP, the failed-authentication limit, the bearer challenge), the portal's static files and real 404s, the public configuration and the deployment web build; L1-6 the dev sign-in kept on the machine, the failed-authentication limit and the challenge; the self-hosted front-proxy reference (`docs/self-hosted/`) | SEC-43..SEC-48, the v1.27 residual risks (PKCE `plain` among them), must-fail switches `skipLocalOnly`, `skipFailureLimit`, `skipNotFoundRules` |
 | 018 | [tenant-signup-hardening](018-tenant-signup-hardening/spec.md) | Tenant (+ portal, L1-6 tests) | Pentest finding P1: the people's connections declared in `auth0/` (email and password, Google), email-and-password sign-up closed by the connection's own setting so the page stops offering it, Google sign-up public by design on the project's own Google application, connections enabled for the portal's and the agent's clients only; CFG-2 the tenant's variables `google_client_id` and `google_sign_in`; rollout in two steps | SEC-26 rewritten (a role-less Google person reaches only their own account; no Google secret in anything the project keeps; drift shows in the next plan), Constitution 3.0.1. In SPEC v1.28 |
 | 019 | [loopback-pkce-sign-in](019-loopback-pkce-sign-in/spec.md) | L1 + L2 + tenant (+ cloud parameters) | A desktop client for the hosted agent: a person signs in from their own computer (browser, loopback return to `127.0.0.1:53682`, PKCE S256, rotating refresh tokens 30 d / 7 d / leeway 0); the tenant's first post-login rule refuses a desktop sign-in or renewal without `x402-agent` or S256; the agent and L2 accept the desktop client's tokens (`AGENT_CLIENT_IDS`); the account question before a person's run (409 `account_not_onboarded` / `account_disabled` / `accounts_off`, 503 `control_unavailable`; L2's `user_accounts_off` and `BudgetStatus.account`); the 401's `error_code`; `client` in the run log; `GET /.well-known/agent-auth` (`AGENT_DESKTOP_CLIENT_ID`) | SEC-49..52 (a captured loopback code, a stolen refresh token, a desktop sign-in without the role, a PKCE downgrade), SEC-45's one exception (the expiry), a refresh token never reaches a service, Constitution 3.1.0, NFR-005 (the question adds at most 1 s). In SPEC v1.29 |
+| 020 | [coinbase-wallet-balances](020-coinbase-wallet-balances/spec.md) | Portal + L2 | L2-8 connected platforms: a user with a profile connects their own Coinbase account, read only (OAuth authorization code with PKCE S256 and a `state` bound to the person and their sign-in; the scopes `wallet:accounts:read offline_access`, checked against an allow-list), and the wallet shows its funded assets in their own units, their value in US dollars at Coinbase's rates (half-to-even to the cent) and a Coinbase total, view only, beside the L2 account the agent pays from; four portal routes, the return screen `/wallet/coinbase`, disconnecting, disabling and the reconcile with L2; the grant sealed in the portal's grant store; L2-4 `CONNECTION_OPENED` and `CONNECTION_CLOSED`, L2-5 `PUT` and `DELETE /v1/users/:userId/connections/:connectionId` and the user view's `connections`; CFG-2 `CONNECTED_PLATFORMS`, the Coinbase settings, `PRIVACY_POLICY_URL`, `SUPPORT_URL`, `CONNECTION_DIR` | Off by default; no connection, grant or balance reaches a payment decision, L2 beyond identifiers, the agent, a log or browser storage; SEC-55..58 (a captured or forged return, a grant wider than read, a grant or Coinbase data exposed, one user reading another's connection, a rotating refresh token used twice); the three Coinbase credentials confined to `src/portal/coinbase/` (rule A18); the single portal replica (T-IAC-01 rule 26); eight must-fail switches; Constitution 3.2.0. Coinbase isn't issuing OAuth clients at the moment, so turning it on waits for one. In SPEC v1.30 |
 
 ## Traceability (SPEC.md ID → feature)
 
@@ -42,17 +43,17 @@ It covers INV-1..13, the definition of done and the governance rules.
 | L1-4 | 001, 008 (seller alias and `--check-baseline` by 011) |
 | L1-6 | 011 (the client allow-list by 013; since v1.17 by 016: one issuer for people and machine callers, the caller's token forwarded to L2, the run stream, the docs page's sign-in; since v1.27 by 017: the dev sign-in on the machine only, the failed-authentication limit, the bearer challenge) |
 | L2-1, L2-2, L2-3 | 002 (R14 also in 004; R15 in 010; the effective mandate, R16, R17, the user daily ceiling and the keyring in 013) |
-| L2-4, L2-4.1 | 003 (entry types added by 010, 012 and 013; owner filters by 013; the `portal` channel by 014) |
+| L2-4, L2-4.1 | 003 (entry types added by 010, 012, 013 and 020; owner filters by 013; the `portal` channel by 014) |
 | L2-4.2 | 004 (amended by 010) |
 | L2-4.3 | 010 (three decision paths over one decision core by 014) |
 | L2-6 | 011 |
 | L2-7 | 012 (amends 010 NFR-005 and L2-4.3 notifications), 015 (the person the run is for is asked), 016 (owner and subject come from the caller's token) |
-| L2-8 | 013 (the administration area by 014; the user of a run from the caller's token, and sign-in required with user accounts, by 016; the portal's edge, its 404s, its public configuration and the deployment build by 017) |
-| L2-5 | 002 (authorize, budget), 003 (reconcile, ledger/verify), 004 (approvals), 010 (rejections, escalation reads; approve made state-aware), 013 (`userId` on authorize and budget, the portal routes), 014 (the administration routes), 016 (the caller's token on authorize and budget; no user in a request) |
+| L2-8 | 013 (the administration area by 014; the user of a run from the caller's token, and sign-in required with user accounts, by 016; the portal's edge, its 404s, its public configuration and the deployment build by 017; connected platforms by 020) |
+| L2-5 | 002 (authorize, budget), 003 (reconcile, ledger/verify), 004 (approvals), 010 (rejections, escalation reads; approve made state-aware), 013 (`userId` on authorize and budget, the portal routes), 014 (the administration routes), 016 (the caller's token on authorize and budget; no user in a request), 020 (the two connection routes) |
 | L3-1, L3-2 | 005 (L3-1 step 2 amended by 009) |
 | CP-1..CP-5 | 006 (CP-3/CP-5 also in 008; CP-1 failure categories and CP-3 amended by 009) |
 | CFG-1 | 006, 009 (facilitator selection) |
-| CFG-2 | 007 (`USER_ACCOUNTS`, the user-account variables and `portal.env` by 013; `PORTAL_ADMIN` and `PORTAL_ADMIN_TOKEN`, for L2 and for the portal, by 014); the sign-in settings of L2 and of the agent, the machine caller's settings and `API_DOCS_CLIENT_ID` by 016) |
+| CFG-2 | 007 (`USER_ACCOUNTS`, the user-account variables and `portal.env` by 013; `PORTAL_ADMIN` and `PORTAL_ADMIN_TOKEN`, for L2 and for the portal, by 014); the sign-in settings of L2 and of the agent, the machine caller's settings and `API_DOCS_CLIENT_ID` by 016; the connected-platform variables of `portal.env` by 020) |
 | CFG-3 | 002 |
 | CFG-4 | 013 |
 | SEC-1..SEC-9 | 007 (consolidated), with detail in 001 (1, 2), 002 (3, 6), 003 (5, 7, 9), 004 (8), 005 (4) |
@@ -71,6 +72,8 @@ It covers INV-1..13, the definition of done and the governance rules.
 | T-PRT-19, T-AGT-15, T-CTK-01 row 5 (a Google person), T-IAC-02 rules 1-8 of `specs/018` contracts/tenant-connections.md | 018 |
 | §3.3 the desktop client and refresh tokens, L1-6 the account question, the 401 codes, the client in the run log and the sign-in settings route, L2-5 row 6 `user_accounts_off` and the budget user view's `account`, §7 `BudgetStatus.account`, CFG-2 `AGENT_DESKTOP_CLIENT_ID` and the two-client `AGENT_CLIENT_IDS`, SEC-49..SEC-52, SEC-45's exception | 019 |
 | T-AGT-16..20, T-CTK-10..11, T-API-18; T-IAC-01 rule 23, T-IAC-02, T-E2E-16 and T-E2E-17 as amended | 019 |
+| §1.2 and §1.3 connected platforms, §3.3 the Coinbase client secret, grant, access token and `COINBASE_GRANT_KEY`, §4.1 A18, §7 `UserView.connections` and `ConnectedPlatform`, L2-4 `CONNECTION_OPENED` and `CONNECTION_CLOSED`, L2-5 the two connection routes, L2-8 connected platforms, CFG-2 `CONNECTED_PLATFORMS` and the connected-platform variables, SEC-55..SEC-59 | 020 (with 013 for the portal and L2-8, 007 for the threat matrix) |
+| T-CONN-01..12, T-USR-15..16, T-DEC-01..03, T-WEB-17..21, T-PRT-20..21, T-ARCH-A18, T-IAC-01 rule 26; T-API-01..04, T-API-12..15, T-WEB-14, T-AGT-KEY, T-ARCH-SWITCH and T-ARCH-ENV as amended | 020 |
 | §3.1 Azure profile, §3.3 requester and Foundry rows, CFG-2 `l1-hosted.env` | 011 |
 | CFG-2 seller.env, §3.3 CDP row, §4.1 A8 | 009, 007 |
 | T-CDP-01..09, T-E2E-06 | 009 |

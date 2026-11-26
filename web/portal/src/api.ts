@@ -6,8 +6,10 @@ import type {
   AdminEscalationDetail,
   AdminEventPage,
   AdminLedgerCheck,
+  BalancesAnswer,
   Card,
   Config,
+  ConnectionMade,
   DecisionOutcome,
   Issue,
   Me,
@@ -31,6 +33,8 @@ export interface ApiError {
   state?: string;
   channel?: string;
   decidedBy?: string;
+  /** 020: on 400 `scope_refused`: `too_wide` or `too_narrow`. */
+  reason?: string;
 }
 export type ApiResult<T> = { ok: true; data: T } | ApiError;
 
@@ -60,6 +64,12 @@ export interface Api {
   rejectEscalation(authorizationId: string, reasonCode: RejectionReasonCode): Promise<ApiResult<DecisionOutcome>>;
   adminEvents(q?: { after?: number; before?: number; limit?: number }): Promise<ApiResult<AdminEventPage>>;
   adminLedgerCheck(): Promise<ApiResult<AdminLedgerCheck>>;
+  // 020 connected platforms (specs/020 contracts/portal-api.md). No call names a user, a connection or a grant: the
+  // portal takes the user from the token. Coinbase's code and state go to `complete` and nowhere else.
+  startCoinbase(): Promise<ApiResult<{ authorizeUrl: string }>>;
+  completeCoinbase(code: string, state: string): Promise<ApiResult<ConnectionMade>>;
+  coinbaseBalances(fresh?: boolean): Promise<ApiResult<BalancesAnswer>>;
+  deleteCoinbase(): Promise<ApiResult<{ revokedAtPlatform: boolean }>>;
 }
 
 /** 014: /api/me as the app uses it. An answer without `admin` (a portal older than this web app) is not an administrator's. */
@@ -98,6 +108,7 @@ export function createApi(token: () => Promise<string | null>, fetchImpl: typeof
       ...(typeof json.state === "string" && { state: json.state }),
       ...(typeof json.channel === "string" && { channel: json.channel }),
       ...(typeof json.decidedBy === "string" && { decidedBy: json.decidedBy }),
+      ...(typeof json.reason === "string" && { reason: json.reason }),
     };
   }
   const asMe = async (r: Promise<ApiResult<Me>>): Promise<ApiResult<Me>> => {
@@ -134,5 +145,9 @@ export function createApi(token: () => Promise<string | null>, fetchImpl: typeof
     rejectEscalation: (authorizationId, reasonCode) => call("POST", `/api/admin/escalations/${id(authorizationId)}/reject`, { reasonCode }),
     adminEvents: (q = {}) => call("GET", `/api/admin/escalations/events${query({ after: q.after, before: q.before, limit: q.limit })}`),
     adminLedgerCheck: () => call("GET", "/api/admin/ledger/verify"),
+    startCoinbase: () => call("POST", "/api/connections/coinbase/start"),
+    completeCoinbase: (code, state) => call("POST", "/api/connections/coinbase/complete", { code, state }),
+    coinbaseBalances: (fresh = false) => call("GET", `/api/connections/coinbase/balances${fresh ? "?fresh=1" : ""}`),
+    deleteCoinbase: () => call("DELETE", "/api/connections/coinbase"),
   };
 }

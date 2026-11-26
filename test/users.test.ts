@@ -54,6 +54,7 @@ import {
 const NET = { caip2: CAIP2, asset: ASSET } as const;
 const DAY = 86_400_000;
 const CARD = (n: number) => `card_00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+const CONN = (n: number) => `conn_00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 
 let open: UsersL2[] = [];
 const start = async (o: Parameters<typeof startUsersL2>[0] = {}) => {
@@ -252,7 +253,7 @@ const created = (userId: string, policyId: string, over: Partial<PolicyValues> =
 
 describe("T-USR-09 user state (pure)", () => {
   it("T-USR-09 an unknown user is all-false with empty lists", () => {
-    expect(userState([], ALICE)).toEqual({ userId: ALICE, registered: false, enabled: true, cards: [], policies: [], onboarded: false });
+    expect(userState([], ALICE)).toEqual({ userId: ALICE, registered: false, enabled: true, cards: [], connections: [], policies: [], onboarded: false });
     expect(userGate(userState([], ALICE))).toBe("not_onboarded");
   });
 
@@ -301,7 +302,7 @@ describe("T-USR-09 user state (pure)", () => {
       entry("CARD_ADDED", { userId: ALICE, cardId: CARD(1) }),
       entry("USER_DISABLED", { userId: ALICE }),
     ];
-    expect(userState(e, BOB)).toEqual({ userId: BOB, registered: false, enabled: true, cards: [], policies: [], onboarded: false });
+    expect(userState(e, BOB)).toEqual({ userId: BOB, registered: false, enabled: true, cards: [], connections: [], policies: [], onboarded: false });
   });
 
   it("T-USR-09 lifecycle: versions, states and history follow the state diagram", () => {
@@ -543,6 +544,9 @@ const PORTAL_ROUTES: Array<[string, string]> = [
   ["POST", `/v1/users/${ALICE}/enable`],
   ["PUT", `/v1/users/${ALICE}/cards/${CARD(1)}`],
   ["DELETE", `/v1/users/${ALICE}/cards/${CARD(1)}`],
+  // 020: connection events take the portal token too.
+  ["PUT", `/v1/users/${ALICE}/connections/${CONN(1)}`],
+  ["DELETE", `/v1/users/${ALICE}/connections/${CONN(1)}`],
 ];
 const OTHER_ROUTES: Array<[string, string]> = [
   ["POST", "/v1/authorize"],
@@ -671,7 +675,7 @@ describe("T-USR-01 reads", () => {
     const l2 = await start();
     const res = await l2.portal<UserView>("GET", `/v1/users/${ALICE}`);
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ userId: ALICE, registered: false, enabled: true, onboarding: { profile: false, wallet: false, policy: false }, cards: [], policies: [] });
+    expect(res.body).toEqual({ userId: ALICE, registered: false, enabled: true, onboarding: { profile: false, wallet: false, policy: false }, cards: [], connections: [], policies: [] });
   });
 });
 
@@ -1316,6 +1320,101 @@ describe("T-USR-01 cards, T-USR-04 idempotency (US6, FR-019..FR-021)", () => {
 // ---------------------------------------------------------------------------
 // US7: disable and enable (T-USR-01, T-USR-11)
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// 020: connection events (T-USR-15, T-USR-16; specs/020 contracts/control-api.md)
+// ---------------------------------------------------------------------------
+
+type Connections = { connections: Array<{ connectionId: string; platform: string }>; replaced?: string };
+
+describe("T-USR-15 connection events: identifiers only, one per platform (020 FR-010, FR-024)", () => {
+  it("T-USR-15 PUT records CONNECTION_OPENED once; a second connection replaces the first in one section; DELETE records CONNECTION_CLOSED once", async () => {
+    const l2 = await start();
+    await l2.withWallet(ALICE);
+    const put = (id: string) => l2.portal<Connections>("PUT", `/v1/users/${ALICE}/connections/${id}`, { platform: "coinbase" });
+    const del = (id: string) => l2.portal<Connections>("DELETE", `/v1/users/${ALICE}/connections/${id}`);
+    expect((await put(CONN(1))).body).toEqual({ connections: [{ connectionId: CONN(1), platform: "coinbase" }] });
+    // Idempotent for the same active connection.
+    expect((await put(CONN(1))).body).toEqual({ connections: [{ connectionId: CONN(1), platform: "coinbase" }] });
+    expect(l2.entries("CONNECTION_OPENED").map((e) => e.data)).toEqual([{ userId: ALICE, connectionId: CONN(1), platform: "coinbase" }]);
+    // A second connection of the same platform replaces the first, both entries in one serialized section.
+    const second = await put(CONN(2));
+    expect(second.body).toEqual({ connections: [{ connectionId: CONN(2), platform: "coinbase" }], replaced: CONN(1) });
+    const closed = l2.entries("CONNECTION_CLOSED");
+    expect(closed.map((e) => e.data)).toEqual([{ userId: ALICE, connectionId: CONN(1), platform: "coinbase", cause: "replaced" }]);
+    const opened = l2.entries("CONNECTION_OPENED");
+    expect(opened[1]!.seq).toBe(closed[0]!.seq + 1);
+    // DELETE closes once, and nothing when not active.
+    expect((await del(CONN(2))).body).toEqual({ connections: [] });
+    expect((await del(CONN(2))).body).toEqual({ connections: [] });
+    expect((await del(CONN(3))).body).toEqual({ connections: [] });
+    expect(l2.entries("CONNECTION_CLOSED").map((e) => e.data)).toEqual([
+      { userId: ALICE, connectionId: CONN(1), platform: "coinbase", cause: "replaced" },
+      { userId: ALICE, connectionId: CONN(2), platform: "coinbase" },
+    ]);
+  });
+
+  it("T-USR-15 the user view lists the active connections with their time; nothing about Coinbase is stored", async () => {
+    const l2 = await start();
+    await l2.withWallet(ALICE);
+    await l2.portal("PUT", `/v1/users/${ALICE}/connections/${CONN(1)}`, { platform: "coinbase" });
+    const view = (await l2.portal<UserView>("GET", `/v1/users/${ALICE}`)).body;
+    expect(view.connections).toEqual([{ connectionId: CONN(1), platform: "coinbase", connectedAt: new Date(l2.clock.now()).toISOString() }]);
+    expect(userState(l2.ledger.entries(), ALICE).connections).toEqual(view.connections);
+    // Bob's view is his own.
+    expect((await l2.portal<UserView>("GET", `/v1/users/${BOB}`)).body.connections).toEqual([]);
+    // The ledger's connection entries carry the four keys and nothing else.
+    for (const e of [...l2.entries("CONNECTION_OPENED"), ...l2.entries("CONNECTION_CLOSED")]) {
+      for (const k of Object.keys(e.data)) expect(["userId", "connectionId", "platform", "cause"]).toContain(k);
+    }
+  });
+});
+
+describe("T-USR-16 connection event refusals (020 FR-002, FR-005, FR-019)", () => {
+  it("T-USR-16 malformed identifiers, an unknown platform, an extra key, an unregistered user and a reused identifier are refused", async () => {
+    const l2 = await start();
+    const put = (id: string, body: unknown = { platform: "coinbase" }) => l2.portal("PUT", `/v1/users/${ALICE}/connections/${id}`, body);
+    expect((await put(CONN(1))).body).toEqual({ error: "not_registered" });
+    await l2.withWallet(ALICE);
+    expect((await put("conn_1")).body).toEqual({ error: "invalid connectionId" });
+    expect((await put("card_00000000-0000-4000-8000-000000000001")).status).toBe(400);
+    expect((await l2.portal("DELETE", `/v1/users/${ALICE}/connections/not-a-connection`)).body).toEqual({ error: "invalid connectionId" });
+    expect((await put(CONN(1), { platform: "kraken" })).body).toEqual({ error: "invalid platform" });
+    expect((await put(CONN(1), {})).body).toEqual({ error: "invalid platform" });
+    expect((await put(CONN(1), { platform: "coinbase", accountId: "x" })).status).toBe(400);
+    expect(l2.entries("CONNECTION_OPENED")).toEqual([]);
+    // An identifier is never reused once closed.
+    expect((await put(CONN(1))).status).toBe(200);
+    expect((await l2.portal("DELETE", `/v1/users/${ALICE}/connections/${CONN(1)}`)).status).toBe(200);
+    expect((await put(CONN(1))).body).toEqual({ error: "connection_reused" });
+  });
+
+  it("T-USR-16 another person's path is 403; a disabled account can close but not open", async () => {
+    const l2 = await start();
+    await l2.withWallet(ALICE);
+    await l2.withWallet(BOB);
+    await l2.portal("PUT", `/v1/users/${ALICE}/connections/${CONN(1)}`, { platform: "coinbase" });
+    // Bob's token on Alice's path: person_mismatch, and Alice's connection is untouched.
+    const bobToken = await l2.portalToken(BOB);
+    expect((await l2.call("DELETE", `/v1/users/${ALICE}/connections/${CONN(1)}`, { person: bobToken })).body).toEqual({ error: "person_mismatch" });
+    expect(userState(l2.ledger.entries(), ALICE).connections).toHaveLength(1);
+    await l2.portal("POST", `/v1/users/${ALICE}/disable`);
+    expect((await l2.portal("PUT", `/v1/users/${ALICE}/connections/${CONN(2)}`, { platform: "coinbase" })).body).toEqual({ error: "account_disabled" });
+    expect((await l2.portal<Connections>("DELETE", `/v1/users/${ALICE}/connections/${CONN(1)}`)).body).toEqual({ connections: [] });
+  });
+
+  it("T-USR-16 the administration routes never return connections, and the ledger still verifies", async () => {
+    const l2 = await start({ admin: true });
+    await l2.withWallet(ALICE);
+    await l2.portal("PUT", `/v1/users/${ALICE}/connections/${CONN(1)}`, { platform: "coinbase" });
+    await l2.portal("DELETE", `/v1/users/${ALICE}/connections/${CONN(1)}`);
+    for (const path of ["/v1/admin/escalations", "/v1/admin/escalations/events", "/v1/admin/ledger/verify"]) {
+      const res = await l2.admin("GET", path);
+      expect(JSON.stringify(res.body), path).not.toContain("conn_");
+    }
+    expect(l2.ledger.verifyChain().ok).toBe(true);
+  });
+});
 
 describe("T-USR-01 the account, T-USR-11 a disabled user (US7, FR-037..FR-040)", () => {
   it("T-USR-11 disabling denies the next payment with user_disabled, and deletes nothing", async () => {

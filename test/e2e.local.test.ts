@@ -943,12 +943,24 @@ describe("013 user accounts end to end", () => {
     expect(confirmedSettlements(h)).toHaveLength(2);
     expect((await ledgerVerify(h)).ok).toBe(true);
 
+    // 020 (§7 UserView.connections): none until a connection is recorded; then one, by identifier only. Alice's next
+    // payment, with a Coinbase connection recorded, is decided and settled from her own account exactly as before (FR-020).
+    expect((await h.portal<{ connections: unknown[] }>("GET", `/v1/users/${ALICE}`)).body.connections).toEqual([]);
+    const conn = "conn_00000000-0000-4000-8000-000000000e12";
+    expect((await h.portal("PUT", `/v1/users/${ALICE}/connections/${conn}`, { platform: "coinbase" })).status).toBe(200);
+    const view = (await h.portal<{ connections: Array<Record<string, unknown>> }>("GET", `/v1/users/${ALICE}`)).body;
+    expect(view.connections).toEqual([{ connectionId: conn, platform: "coinbase", connectedAt: expect.any(String) }]);
+    const again = await l1For("sess_alice_2", ALICE).fetchPaid(`${h.urls.seller}/api/weather?city=Lima`, "weather again");
+    expect(again.outcome).toBe("PAID");
+    expect(again.payment!.settlement!.verified.payer.toLowerCase()).toBe(alice.address.toLowerCase());
+    expect((await h.portal("DELETE", `/v1/users/${ALICE}/connections/${conn}`)).status).toBe(200);
+
     // A run with no user is the platform account, exactly as before (FR-002).
     const plain = await l1(h, "sess_platform").orchestrator.fetchPaid(`${h.urls.seller}/api/weather?city=Lima`, "platform run");
     expect(plain.outcome).toBe("PAID");
     expect(plain.payment!.settlement!.verified.payer.toLowerCase()).toBe(h.addresses.payer.toLowerCase());
     expect(platform0 - (await h.balanceOf(h.addresses.payer))).toBe(1_000n);
-    expect(await h.balanceOf(alice.address)).toBe(999_000n);
+    expect(await h.balanceOf(alice.address)).toBe(998_000n);
 
     // A person who never onboarded is denied, and nothing moves (FR-012).
     const nobody = await l1For("sess_nobody", devUserId("nobody")).fetchPaid(`${h.urls.seller}/api/weather?city=Lima`, "no setup");

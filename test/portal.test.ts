@@ -21,6 +21,11 @@ import { startPortal, type PortalTestApp, type StartPortalOptions } from "./help
 import { rawRequest, type RawReply } from "./helpers/raw-request.js";
 import { PORTAL_SCREENS } from "../src/shared/portal-screens.js";
 import { startCardVaultStub, type CardVaultStub } from "./helpers/card-vault-stub.js";
+import { startCoinbaseStub } from "./helpers/coinbase-stub.js";
+import { GrantStore } from "../src/portal/coinbase/grants.js";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { randomBytes } from "node:crypto";
 
 let open: PortalTestApp[] = [];
 const start = async (o: StartPortalOptions = {}) => {
@@ -494,7 +499,7 @@ describe("T-PRT-04 wallet (US2, FR-013..FR-016)", () => {
     expect((await me("GET", "/api/wallet")).body).toEqual({ error: "profile_required" });
     expect((await me("PUT", "/api/wallet/account")).body).toEqual({ error: "profile_required" });
     await me("PUT", "/api/profile", PROFILE);
-    expect((await me("GET", "/api/wallet")).body).toEqual({ cards: [], cardsAvailable: false, disabled: false });
+    expect((await me("GET", "/api/wallet")).body).toEqual({ cards: [], cardsAvailable: false, disabled: false, connections: [] });
     const first = await me<{ account: { address: string } }>("PUT", "/api/wallet/account");
     const second = await me<{ account: { address: string } }>("PUT", "/api/wallet/account");
     expect(first.status).toBe(200);
@@ -1293,6 +1298,115 @@ describe("T-PRT-08 the log holds route templates and identifiers only (NFR-003, 
     for (const text of ["Ana", "ana.perez", "example.com", "Research APIs"]) expect(ledger.includes(text), text).toBe(false);
     // The profile store holds them, in one file named after the user.
     expect(readdirSync(p.profilesDir)).toEqual([`${p.userId("alice")}.json`]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 020: connected platforms, off by default (T-PRT-20) and their startup refusals (T-PRT-21)
+// ---------------------------------------------------------------------------
+
+describe("T-PRT-20 connected platforms are off by default (020 FR-001, US5)", () => {
+  it("T-PRT-20 unset: every connection route is 404, the wallet has connections [], /api/config is unchanged, Coinbase is never called", async () => {
+    const cb = await startCoinbaseStub();
+    try {
+      const p = await start();
+      const me = p.as("alice");
+      await me("PUT", "/api/profile", PROFILE);
+      expect(p.config.coinbase).toBeUndefined();
+      for (const [method, path, body] of [
+        ["POST", "/api/connections/coinbase/start", undefined],
+        ["POST", "/api/connections/coinbase/complete", { code: "c", state: "s" }],
+        ["GET", "/api/connections/coinbase/balances", undefined],
+        ["DELETE", "/api/connections/coinbase", undefined],
+      ] as const) {
+        const res = await me(method, path, body);
+        expect([res.status, res.body], `${method} ${path}`).toEqual([404, { error: "not found" }]);
+      }
+      expect((await me("GET", "/api/wallet")).body).toMatchObject({ connections: [] });
+      expect(Object.keys((await p.call("GET", "/api/config")).body).sort()).toEqual(["auth", "cards"]);
+      expect(cb.requests).toEqual([]);
+    } finally {
+      await cb.close();
+    }
+  });
+
+  it("T-PRT-20 on, in front of an L2 without user accounts: no connection is offered or made, and Coinbase is never called", async () => {
+    const cb = await startCoinbaseStub();
+    try {
+      const p = await start({ coinbase: cb, l2: { off: true } });
+      const res = await p.as("alice")("POST", "/api/connections/coinbase/start");
+      expect(res.status).not.toBe(200);
+      expect(cb.requests).toEqual([]);
+      expect(p.l2.entries("CONNECTION_OPENED")).toEqual([]);
+    } finally {
+      await cb.close();
+    }
+  });
+});
+
+describe("T-PRT-21 with CONNECTED_PLATFORMS=coinbase the portal refuses to start on any missing or wrong setting (020 CFG-2, US5)", () => {
+  const dev = { NETWORK: "local", AUTH_ISSUER: "urn:x402:dev-issuer", AUTH_AUDIENCE: "api://x402-l1-agent", PORTAL_CLIENT_ID: "x402-portal-dev", AUTH_JWKS_FILE: "jwks.json" };
+  const KEY = Buffer.alloc(32, 7).toString("base64");
+  const on = (dir: string) => ({
+    ...dev,
+    CONNECTED_PLATFORMS: "coinbase",
+    COINBASE_CLIENT_ID: "client-id",
+    COINBASE_CLIENT_SECRET: "SECRET-VALUE-must-not-show",
+    COINBASE_GRANT_KEY: KEY,
+    COINBASE_REDIRECT_URI: "http://localhost:4025/wallet/coinbase",
+    PRIVACY_POLICY_URL: "https://example.org/privacy",
+    SUPPORT_URL: "mailto:support@example.org",
+    CONNECTION_DIR: dir,
+    PROFILE_DIR: join(dir, "..", "profiles-x"),
+  });
+
+  it("T-PRT-21 a valid set loads; each wrong one is refused, naming the variable and never the value", () => {
+    const dir = join(mkdtempSync(join(tmpdir(), "x402-conn-")), "connections");
+    const ok = loadPortalConfig(on(dir));
+    expect(ok.coinbase).toMatchObject({ redirectUri: "http://localhost:4025/wallet/coinbase", privacyPolicyUrl: "https://example.org/privacy" });
+    expect(ok.connectionDir).toBe(dir);
+    const bad: Array<[Record<string, string | undefined>, RegExp]> = [
+      [{ CONNECTED_PLATFORMS: "kraken" }, /CONNECTED_PLATFORMS must be "coinbase" or unset/],
+      [{ COINBASE_CLIENT_ID: undefined }, /COINBASE_CLIENT_ID is required/],
+      [{ COINBASE_CLIENT_SECRET: "" }, /COINBASE_CLIENT_SECRET is required/],
+      [{ COINBASE_CLIENT_SECRET: "off" }, /COINBASE_CLIENT_SECRET is required/],
+      [{ COINBASE_GRANT_KEY: "off" }, /COINBASE_GRANT_KEY is required/],
+      [{ COINBASE_GRANT_KEY: Buffer.alloc(16).toString("base64") }, /COINBASE_GRANT_KEY must be 32 random bytes/],
+      [{ COINBASE_REDIRECT_URI: "https://portal.example.org/callback" }, /COINBASE_REDIRECT_URI must be/],
+      [{ COINBASE_REDIRECT_URI: "https://portal.example.org/wallet/coinbase?x=1" }, /COINBASE_REDIRECT_URI must be/],
+      [{ COINBASE_REDIRECT_URI: "http://portal.example.org/wallet/coinbase" }, /COINBASE_REDIRECT_URI must be/],
+      [{ NETWORK: "base-sepolia", PORTAL_TOKEN: "t", AUTH_JWKS_FILE: undefined, AUTH_ISSUER: SIGN_IN_ISSUER }, /COINBASE_REDIRECT_URI must be/],
+      [{ PRIVACY_POLICY_URL: "http://example.org/privacy" }, /PRIVACY_POLICY_URL must be an https address/],
+      [{ PRIVACY_POLICY_URL: undefined }, /PRIVACY_POLICY_URL must be an https address/],
+      [{ SUPPORT_URL: "javascript:alert(1)" }, /SUPPORT_URL must be an https or mailto: address/],
+      [{ CONNECTION_DIR: join(dir, "..", "profiles-x", "connections") }, /CONNECTION_DIR must not be inside PROFILE_DIR or PORTAL_WEB_ROOT/],
+    ];
+    for (const [change, message] of bad) {
+      let caught: unknown;
+      try {
+        loadPortalConfig({ ...on(dir), ...change });
+      } catch (err) {
+        caught = err;
+      }
+      expect(String(caught), String(message)).toMatch(message);
+      expect(String(caught)).not.toContain("SECRET-VALUE-must-not-show");
+      expect(String(caught)).not.toContain(KEY);
+    }
+  });
+
+  it("T-PRT-21 a grant file that doesn't open with COINBASE_GRANT_KEY stops the portal (a rotated key is noticed at once)", () => {
+    const dir = join(mkdtempSync(join(tmpdir(), "x402-conn-")), "connections");
+    const store = new GrantStore(dir, { key: randomBytes(32) });
+    const userId = "usr_" + "a".repeat(32);
+    const connectionId = "conn_00000000-0000-4000-8000-000000000001";
+    const grant = store.seal(userId, connectionId, "coinbase", { refreshToken: "r", scopes: [], refreshedAt: "2026-11-25T00:00:00.000Z" });
+    store.update(userId, () => [{ connectionId, platform: "coinbase", status: "connected", connectedAt: "2026-11-25T00:00:00.000Z", grant }]);
+    expect(() => loadPortalConfig(on(dir))).toThrow(/connection grants don't open with COINBASE_GRANT_KEY/);
+  });
+
+  it("T-PRT-21 with it off, the Coinbase names are ignored and the portal loads", () => {
+    const c = loadPortalConfig({ ...dev, COINBASE_CLIENT_SECRET: "x", COINBASE_GRANT_KEY: "nonsense" });
+    expect(c.coinbase).toBeUndefined();
   });
 });
 

@@ -1,5 +1,12 @@
 # Contract: the portal API (browser → portal)
 
+> **Since 020 (SPEC v1.30).** With connected platforms on (`CONNECTED_PLATFORMS=coinbase`), the portal serves four more
+> routes, `POST /api/connections/coinbase/start`, `POST /api/connections/coinbase/complete`,
+> `GET /api/connections/coinbase/balances` and `DELETE /api/connections/coinbase`, and `GET /api/wallet` gains
+> `connections`; `POST /api/account/disable` also disconnects. They are defined in
+> [specs/020 contracts/portal-api.md](../../020-coinbase-wallet-balances/contracts/portal-api.md). Off (the default),
+> the four answer 404 and everything below is unchanged.
+
 > **Since 014 (SPEC v1.15).** With the administration area on, the `roles` row of the access table accepts
 > `Agent.Run` or `Portal.Admin`, each route requires one of them, and `/api/me` and `/api/config` gain additive
 > fields. The administration routes are defined in

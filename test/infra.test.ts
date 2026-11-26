@@ -22,9 +22,13 @@
 // SPEC 1.23 (finding #7, the rest): rule 25 is new: the ledger's head lives in a storage account of its own, which only
 // the head identity may write, and only L2's control app has that identity (at lifecycle Main, the one exception to
 // rule 6 besides the agent). Rule 1 knows its role, and rules 15 and 18 its names and module.
+// 020 (specs/020 contracts/config-and-secrets.md "Azure"): rule 26 is new: the portal's Coinbase connection. Its two
+// secrets come from the portal vault only, always referenced; its settings from userAccounts.coinbase, which main
+// checks; the portal stays one process, with the grants in their own folder of its share. Rule 21 lets the portal
+// hold those two secrets, and rule 8 knows the grant key's name.
 import { cpSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, posix, resolve } from "node:path";
 import { Bicep } from "@azure/bicep-rpc-client";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { IMAGES, type ImageName } from "../scripts/image-closure.js";
@@ -301,6 +305,16 @@ const FIC_POLICY = "tenantResourceId('Microsoft.Authorization/policyDefinitions'
 const NO_FIC = "rule 16: pre-deploy must assign, on the resource group, the built-in policy that denies every federated credential on its identities (allowFederatedCredentials false, effect Deny), and no template may make one";
 /** Rule 24 (Phase 3): the ledger's MAC key, in L2's control container only. */
 const MAC_SECRET: Record<string, string> = { LEDGER_MAC_KEY: "ledger-mac-key" };
+/** Rule 26 (020): the portal vault's two Coinbase secrets, by the portal's variable for each. */
+const COINBASE_SECRETS: Record<string, string> = { COINBASE_CLIENT_SECRET: "coinbase-client-secret", COINBASE_GRANT_KEY: "coinbase-grant-key" };
+/** Rule 26: the keys of a parameter file's userAccounts.coinbase, and the dev file's object as written (the parameter-file mutants replace it whole). */
+const COINBASE_KEYS = ["clientId", "enabled", "privacyPolicyUrl", "redirectUri", "supportUrl"];
+const DEV_COINBASE = /  coinbase: \{\n[^}]*\n  \}/.exec(DEV_PARAMETERS)?.[0] ?? "  coinbase: {}";
+/** The portal's secret lines in portal-apps.bicep, as written, in order: the rule 21 and rule 26 mutants replace the block. */
+const PORTAL_SECRET_LINES = ["portal-token", "card-vault-key", "portal-admin-token", "coinbase-client-secret", "coinbase-grant-key"]
+  .map((s) => "        { name: '" + s + "', keyVaultUrl: '${vaultPortal}secrets/" + s + "', identity: idPortal.id }")
+  .join("\n");
+const COINBASE_CHECK = "rule 26: main must refuse (fail()) userAccounts.coinbase.enabled without userAccounts.enabled, a clientId, a redirectUri of the form https://…/wallet/coinbase, a privacyPolicyUrl and a supportUrl";
 /** The compiled subject of a federated credential for the GitHub environment a parameter names. */
 const subjectFor = (envParam: string) =>
   `[format('repo:{0}@{1}/{2}@{3}:environment:{4}', split(parameters('githubRepository'), '/')[0], parameters('githubOwnerId'), split(parameters('githubRepository'), '/')[1], parameters('githubRepositoryId'), parameters('${envParam}'))]`;
@@ -347,8 +361,9 @@ const vaultKeysOf = (r: Res, url: string | undefined) => [...withVars(url ?? "",
 const paramLines = (text: string) => new Map([...text.matchAll(/^param (\w+) = (.+)$/gm)].map((m) => [m[1]!, m[2]!.trim()]));
 
 /**
- * Rules 1–24 of contracts/cloud-topology.md (21: specs/013 contracts/config-and-secrets.md; 22: specs/014; 23: specs/016
- * contracts/tenant-and-config.md; there is no rule 11 since 016), on the compiled templates, the compiled parameter
+ * Rules 1–26 of contracts/cloud-topology.md (21: specs/013 contracts/config-and-secrets.md; 22: specs/014; 23: specs/016
+ * contracts/tenant-and-config.md; 24: SPEC 1.19; 25: SPEC 1.23; 26: specs/020 contracts/config-and-secrets.md; there
+ * is no rule 11 since 016), on the compiled templates, the compiled parameter
  * files (`params`, by file name) and the infra sources. Returns one message per violation, prefixed `rule N:`.
  */
 export function violations(arms: Templates, params: Params, infraFiles: Record<string, string>): string[] {
@@ -528,7 +543,7 @@ export function violations(arms: Templates, params: Params, infraFiles: Record<s
   for (const a of apps(main)) {
     for (const c of containersOf(a)) {
       for (const e of c.env ?? []) {
-        if (/PRIVATE_KEY|SECRET|TOKEN|MNEMONIC|CARD_VAULT_KEY|^MACHINE_CLIENT_KEY$|^LEDGER_MAC_KEY$/.test(e.name) && e.value !== undefined) v.push(`rule 8: ${label(a)}/${c.name} ${e.name} is a literal`);
+        if (/PRIVATE_KEY|SECRET|TOKEN|MNEMONIC|CARD_VAULT_KEY|^MACHINE_CLIENT_KEY$|^LEDGER_MAC_KEY$|^COINBASE_GRANT_KEY$/.test(e.name) && e.value !== undefined) v.push(`rule 8: ${label(a)}/${c.name} ${e.name} is a literal`);
       }
     }
   }
@@ -940,7 +955,8 @@ export function violations(arms: Templates, params: Params, infraFiles: Record<s
     }
   }
   if (portal) {
-    if (!alwaysReferenced(portal, "portal", PORTAL_SECRETS, "portal") || secretsOf(portal).some((s) => !Object.values({ ...PORTAL_SECRETS, ...ADMIN_SECRET }).includes(String(s.name)))) {
+    // 014 and 020: beside its own two, the portal holds the administration token (rule 22) and the two Coinbase secrets (rule 26).
+    if (!alwaysReferenced(portal, "portal", PORTAL_SECRETS, "portal") || secretsOf(portal).some((s) => !Object.values({ ...PORTAL_SECRETS, ...ADMIN_SECRET, ...COINBASE_SECRETS }).includes(String(s.name)))) {
       v.push(`rule 21: ${MN.apps.portal}/portal must always reference the portal vault's ${Object.values(PORTAL_SECRETS).join(" and ")}, as ${Object.keys(PORTAL_SECRETS).join(" and ")}, and hold no other secret`);
     }
     const env = containersOf(portal).find((c) => c.name === "portal")?.env ?? [];
@@ -1213,6 +1229,87 @@ export function violations(arms: Templates, params: Params, infraFiles: Record<s
     if (!JSON.stringify(deployment(main, "l2-apps")?.raw.dependsOn ?? []).includes("'ledger-head'")) v.push("rule 25: L2's apps must be deployed after the ledger's head");
   }
 
+  // Rule 26 (020, SPEC CFG-2 and §3.3; specs/020 contracts/config-and-secrets.md "Azure"): the portal's Coinbase
+  // connection. The portal always references the portal vault's coinbase-client-secret and coinbase-grant-key, as
+  // COINBASE_CLIENT_SECRET and COINBASE_GRANT_KEY, in arrays no flag can empty, so every environment seeds both (the
+  // placeholder off while userAccounts.coinbase.enabled is false); each secret arrives under its one name only, and
+  // never from another vault. No other app, job or container references either, or gets a Coinbase setting, and no
+  // template writes either into a vault. CONNECTED_PLATFORMS is coinbase exactly when userAccounts.coinbase.enabled
+  // is true, and the portal's other Coinbase values come from userAccounts.coinbase, which main refuses (fail())
+  // enabled without user accounts, the project's client, a redirect at the portal's own https://…/wallet/coinbase,
+  // and the two addresses Coinbase's terms ask for. The portal stays one process (one replica at most, single
+  // revision): each person's rotating refresh token is serialized there (research R5). The grants live in the
+  // portal's share, in their own folder beside PROFILE_DIR, never inside it.
+  const CB = `${UA}.coinbase`;
+  const isCoinbaseSecret = (s: { name: string; keyVaultUrl?: string }) => Object.values(COINBASE_SECRETS).some((x) => s.name === x || String(s.keyVaultUrl ?? "").includes(`secrets/${x}`));
+  /** An app's secrets as a list: an expression (a flag's concat) is reported by alwaysReferenced, not read here. */
+  const secretList = (a: Res) => (Array.isArray(configOf(a).secrets) ? secretsOf(a) : []);
+  if (portal) {
+    if (!alwaysReferenced(portal, "portal", COINBASE_SECRETS, "portal")) {
+      v.push(`rule 26: ${MN.apps.portal}/portal must always reference the portal vault's ${Object.values(COINBASE_SECRETS).join(" and ")}, as ${Object.keys(COINBASE_SECRETS).join(" and ")}`);
+    }
+    for (const s of secretList(portal).filter(isCoinbaseSecret)) {
+      if (s.value !== undefined || JSON.stringify(vaultKeysOf(portal, s.keyVaultUrl)) !== '["portal"]') v.push(`rule 26: ${label(portal)}'s ${s.name} must be a reference to the portal vault`);
+    }
+    const env = containersOf(portal).find((c) => c.name === "portal")?.env ?? [];
+    for (const e of env) {
+      // One secret, one variable: a Coinbase secret never arrives under another name, nor another secret under its name.
+      for (const [name, secret] of Object.entries(COINBASE_SECRETS)) {
+        if ((e.name === name) !== (e.secretRef === secret)) v.push(`rule 26: ${e.name} in ${label(portal)}/portal must be the ${secret} secret and nothing else`);
+      }
+    }
+    if (!fromParam(env, "CONNECTED_PLATFORMS", `[if(${CB}.enabled, 'coinbase', '')]`)) v.push("rule 26: the portal's CONNECTED_PLATFORMS must be coinbase exactly when userAccounts.coinbase.enabled is true, and empty otherwise");
+    const FROM_COINBASE: Record<string, string> = { COINBASE_CLIENT_ID: "clientId", COINBASE_REDIRECT_URI: "redirectUri", PRIVACY_POLICY_URL: "privacyPolicyUrl", SUPPORT_URL: "supportUrl" };
+    for (const [name, key] of Object.entries(FROM_COINBASE)) if (!fromParam(env, name, `[${CB}.${key}]`)) v.push(`rule 26: the portal's ${name} must come from userAccounts.coinbase`);
+    const scale = ((portal.properties.template as Json)?.scale ?? {}) as Json;
+    if (scale.maxReplicas !== 1 || configOf(portal).activeRevisionsMode !== "Single") {
+      v.push(`rule 26: ${MN.apps.portal} must run one replica at most, in single revision mode: one process serializes each person's rotating Coinbase refresh token`);
+    }
+    // The grants' folder: an absolute, normalized literal in the profiles share's mount, a sibling of PROFILE_DIR.
+    const nfs = volumesOf(portal).find((x) => x.storageType === "NfsAzureFile" && storageOf(portal, x) === "profiles");
+    const share = containersOf(portal).find((c) => c.name === "portal")?.volumeMounts?.find((m) => m.volumeName === nfs?.name)?.mountPath;
+    const literalPath = (name: string) => {
+      const e = env.find((x) => x.name === name);
+      const p = e?.secretRef === undefined && typeof e?.value === "string" && !e.value.startsWith("[") ? e.value : undefined;
+      return p !== undefined && posix.isAbsolute(p) && posix.normalize(p) === p ? p : undefined;
+    };
+    const grants = literalPath("CONNECTION_DIR");
+    const profiles = literalPath("PROFILE_DIR");
+    if (share === undefined || grants === undefined || profiles === undefined || !grants.startsWith(`${share}/`) || posix.dirname(grants) !== posix.dirname(profiles) || grants === profiles) {
+      v.push("rule 26: the portal's CONNECTION_DIR must be a folder of its own beside PROFILE_DIR, in the portal's share");
+    }
+  }
+  for (const a of apps(main)) {
+    const isPortal = namesOf(a).includes(MN.apps.portal);
+    // Read as text, so a secret inside an expression (a flag's concat) is found too.
+    const secretText = JSON.stringify(configOf(a).secrets ?? []);
+    for (const secret of Object.values(COINBASE_SECRETS)) if (secretText.includes(secret) && !isPortal) v.push(`rule 26: ${label(a)} has a Coinbase secret (${secret})`);
+    for (const c of containersOf(a)) {
+      const mine = isPortal && c.name === "portal";
+      for (const e of c.env ?? []) {
+        if ((/^(COINBASE_\w+|CONNECTED_PLATFORMS|CONNECTION_DIR)$/.test(e.name) || Object.values(COINBASE_SECRETS).includes(String(e.secretRef))) && !mine) v.push(`rule 26: ${e.name} in ${label(a)}/${c.name}: only the portal connects platforms`);
+      }
+    }
+  }
+  for (const r of all.filter((x) => x.type === "Microsoft.KeyVault/vaults/secrets")) {
+    for (const secret of Object.values(COINBASE_SECRETS)) if (withVars(r.name, r.vars).includes(secret)) v.push(`rule 26: no template may write ${secret} into a vault: the portal vault's Coinbase secrets are seeded by hand`);
+  }
+  const coinbaseChecked = String(((arms.main.variables ?? {}) as Json).coinbaseChecked ?? "");
+  const coinbaseParts = `and(and(and(and(and(${UA}.enabled, not(empty(${CB}.clientId))), startsWith(${CB}.redirectUri, 'https://')), endsWith(${CB}.redirectUri, '/wallet/coinbase')), not(empty(${CB}.privacyPolicyUrl))), not(empty(${CB}.supportUrl)))`;
+  if (!coinbaseChecked.startsWith(`[if(or(not(${CB}.enabled), ${coinbaseParts}), ${CB}.enabled, fail(`)) v.push(COINBASE_CHECK);
+  // Each environment's parameter file: coinbase has exactly the keys the templates read, and is on only with what
+  // main's fail() would ask for at deployment (found here first).
+  for (const [file, p] of Object.entries(params).filter(([f]) => /^main\.[a-z0-9]+\.bicepparam$/.test(f))) {
+    const accounts = (p.userAccounts ?? {}) as Json;
+    const cb = (accounts.coinbase ?? {}) as Json;
+    const keys = Object.keys(cb).sort();
+    if (JSON.stringify(keys) !== JSON.stringify(COINBASE_KEYS)) v.push(`rule 26: ${file}'s userAccounts.coinbase must have exactly the keys ${COINBASE_KEYS.join(", ")} (it has ${keys.join(", ")})`);
+    else if (typeof cb.enabled !== "boolean" || COINBASE_KEYS.some((k) => k !== "enabled" && typeof cb[k] !== "string")) v.push(`rule 26: ${file}'s userAccounts.coinbase.enabled must be true or false, and its other values strings`);
+    else if (cb.enabled && !(accounts.enabled === true && cb.clientId !== "" && String(cb.redirectUri).startsWith("https://") && String(cb.redirectUri).endsWith("/wallet/coinbase") && cb.privacyPolicyUrl !== "" && cb.supportUrl !== "")) {
+      v.push(`rule 26: ${file} turns Coinbase on without userAccounts.enabled, a clientId, a redirectUri of the form https://…/wallet/coinbase, a privacyPolicyUrl and a supportUrl`);
+    }
+  }
+
   // Rule 18: each module is deployed by exactly one unit's runs: the platform's modules by the platform's
   // (deploy-infra.yml), each unit's apps by that unit's (deploy-<unit>.yml), so a pipeline changes nothing of another
   // unit's. `unit` is required and names one of them.
@@ -1297,7 +1394,7 @@ describe.skipIf(!BICEP_PATH)("T-IAC-01 Azure identity, secret, exposure and nami
     return violations(arms, params, infraSources(dir));
   }
 
-  it("T-IAC-01 the real templates and parameter files pass rules 1–25", async () => {
+  it("T-IAC-01 the real templates and parameter files pass rules 1–26", async () => {
     const { arms, params } = await compile("infra");
     expect(violations(arms, params, infraSources("infra"))).toEqual([]);
   }, 60_000);
@@ -1749,6 +1846,112 @@ resource extraRead 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
     expect(early).toEqual(["rule 25: L2's apps must be deployed after the ledger's head"]);
   }, 180_000);
 
+  // ---- Rule 26 (020): the portal's Coinbase connection -----------------------------------------------------------
+  const PORTAL_APPS = "modules/portal-apps.bicep";
+  it("T-IAC-01 must-fail rule 26: a Coinbase secret missing, a literal, from another vault, behind a flag, under another name, on another app, or written into a vault by a template, is reported", async () => {
+    const P = N.main.apps.portal;
+    const always = `rule 26: ${P}/portal must always reference the portal vault's coinbase-client-secret and coinbase-grant-key, as COINBASE_CLIENT_SECRET and COINBASE_GRANT_KEY`;
+    const KEY = "            { name: 'COINBASE_GRANT_KEY', secretRef: 'coinbase-grant-key' }";
+    const SECRET = "            { name: 'COINBASE_CLIENT_SECRET', secretRef: 'coinbase-client-secret' }";
+    expect(await mutant(PORTAL_APPS, `${KEY}\n`, "")).toEqual([always]);
+    const literal = await mutant(PORTAL_APPS, KEY, "            { name: 'COINBASE_GRANT_KEY', value: 'off' }");
+    expect(literal).toEqual(expect.arrayContaining([always, `rule 8: ${P}/portal COINBASE_GRANT_KEY is a literal`, `rule 26: COINBASE_GRANT_KEY in ${P}/portal must be the coinbase-grant-key secret and nothing else`]));
+    const literalSecret = await mutant(
+      PORTAL_APPS,
+      "        { name: 'coinbase-client-secret', keyVaultUrl: '${vaultPortal}secrets/coinbase-client-secret', identity: idPortal.id }",
+      "        #disable-next-line use-secure-value-for-secure-inputs\n        { name: 'coinbase-client-secret', value: 'off' }",
+    );
+    expect(literalSecret).toEqual(expect.arrayContaining([always, `rule 26: ${P}'s coinbase-client-secret must be a reference to the portal vault`]));
+    // From L2's vault: not the portal's own (and rule 2 sees the vault).
+    const fromL2 = await mutant(PORTAL_APPS, "keyVaultUrl: '${vaultPortal}secrets/coinbase-grant-key'", "keyVaultUrl: 'https://${names.vaults.l2}${az.environment().suffixes.keyvaultDns}/secrets/coinbase-grant-key'");
+    expect(fromL2).toEqual(expect.arrayContaining([always, `rule 26: ${P}'s coinbase-grant-key must be a reference to the portal vault`, `rule 2: ${P} reads the l2 vault`]));
+    // Behind the feature's flag, in the secrets array or in the variable's reference: an environment with it off would seed nothing.
+    const flagged = await mutant(
+      PORTAL_APPS,
+      `      secrets: [\n${PORTAL_SECRET_LINES}\n      ]`,
+      "      secrets: concat([{ name: 'portal-token', keyVaultUrl: '${vaultPortal}secrets/portal-token', identity: idPortal.id }, { name: 'card-vault-key', keyVaultUrl: '${vaultPortal}secrets/card-vault-key', identity: idPortal.id }, { name: 'portal-admin-token', keyVaultUrl: '${vaultPortal}secrets/portal-admin-token', identity: idPortal.id }], userAccounts.coinbase.enabled ? [{ name: 'coinbase-client-secret', keyVaultUrl: '${vaultPortal}secrets/coinbase-client-secret', identity: idPortal.id }, { name: 'coinbase-grant-key', keyVaultUrl: '${vaultPortal}secrets/coinbase-grant-key', identity: idPortal.id }] : [])",
+    );
+    expect(flagged).toContain(always);
+    const flaggedRef = await mutant(PORTAL_APPS, KEY, "            { name: 'COINBASE_GRANT_KEY', secretRef: userAccounts.coinbase.enabled ? 'coinbase-grant-key' : 'portal-token' }");
+    expect(flaggedRef).toEqual(expect.arrayContaining([always, `rule 26: COINBASE_GRANT_KEY in ${P}/portal must be the coinbase-grant-key secret and nothing else`]));
+    // One secret, one variable.
+    const otherSecret = await mutant(PORTAL_APPS, SECRET, "            { name: 'COINBASE_CLIENT_SECRET', secretRef: 'card-vault-key' }");
+    expect(otherSecret).toEqual(expect.arrayContaining([always, `rule 26: COINBASE_CLIENT_SECRET in ${P}/portal must be the coinbase-client-secret secret and nothing else`]));
+    const otherName = await mutant(PORTAL_APPS, KEY, "            { name: 'GRANT_KEY', secretRef: 'coinbase-grant-key' }");
+    expect(otherName).toEqual(expect.arrayContaining([always, `rule 26: GRANT_KEY in ${P}/portal must be the coinbase-grant-key secret and nothing else`]));
+    // Another app: a secret of its own vault, or a variable under the secret's name.
+    const onL3 = await mutant("modules/l3-apps.bicep", "      secrets: [\n", "      secrets: [\n        { name: 'coinbase-grant-key', keyVaultUrl: '${vaultL3}secrets/coinbase-grant-key', identity: idL3.id }\n");
+    expect(onL3).toContain(`rule 26: ${N.main.apps.l3} has a Coinbase secret (coinbase-grant-key)`);
+    const onAgent = await mutant("modules/l1-apps.bicep", "            { name: 'CONTROL_TOKEN', secretRef: 'control-token' }\n            { name: 'VERIFIER_TOKEN'", "            { name: 'COINBASE_CLIENT_SECRET', secretRef: 'control-token' }\n            { name: 'CONTROL_TOKEN', secretRef: 'control-token' }\n            { name: 'VERIFIER_TOKEN'");
+    expect(onAgent).toContain(`rule 26: COINBASE_CLIENT_SECRET in ${N.main.apps.l1}/agent: only the portal connects platforms`);
+    // No template puts them in a vault, the portal's or another: they are seeded by hand.
+    const written = `
+resource kvL2 'Microsoft.KeyVault/vaults@2023-07-01' existing = { name: names.vaults.l2 }
+resource leaked 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
+  parent: kvL2
+  name: 'coinbase-grant-key'
+  #disable-next-line use-secure-value-for-secure-inputs
+  properties: { value: 'off' }
+}
+`;
+    const inVault = await mutant("main.bicep", "// ---- The platform (", `${written}\n// ---- The platform (`);
+    expect(inVault).toContain("rule 26: no template may write coinbase-grant-key into a vault: the portal vault's Coinbase secrets are seeded by hand");
+  }, 600_000);
+
+  it("T-IAC-01 must-fail rule 26: CONNECTED_PLATFORMS on without userAccounts.coinbase.enabled, a Coinbase setting written in a template or taken from another value, or one on another app, is reported", async () => {
+    const PLATFORMS = "rule 26: the portal's CONNECTED_PLATFORMS must be coinbase exactly when userAccounts.coinbase.enabled is true, and empty otherwise";
+    const ON = "{ name: 'CONNECTED_PLATFORMS', value: userAccounts.coinbase.enabled ? 'coinbase' : '' }";
+    expect(await mutant(PORTAL_APPS, ON, "{ name: 'CONNECTED_PLATFORMS', value: 'coinbase' }")).toEqual([PLATFORMS]);
+    expect(await mutant(PORTAL_APPS, ON, "{ name: 'CONNECTED_PLATFORMS', value: userAccounts.enabled ? 'coinbase' : '' }")).toEqual([PLATFORMS]);
+    expect(await mutant(PORTAL_APPS, `            ${ON}\n`, "")).toEqual([PLATFORMS]);
+    const from = (name: string) => `rule 26: the portal's ${name} must come from userAccounts.coinbase`;
+    expect(await mutant(PORTAL_APPS, "{ name: 'COINBASE_CLIENT_ID', value: userAccounts.coinbase.clientId }", "{ name: 'COINBASE_CLIENT_ID', value: 'coinbase-client' }")).toEqual([from("COINBASE_CLIENT_ID")]);
+    expect(await mutant(PORTAL_APPS, "{ name: 'COINBASE_REDIRECT_URI', value: userAccounts.coinbase.redirectUri }", "{ name: 'COINBASE_REDIRECT_URI', value: userAccounts.coinbase.supportUrl }")).toEqual([from("COINBASE_REDIRECT_URI")]);
+    expect(await mutant(PORTAL_APPS, "            { name: 'PRIVACY_POLICY_URL', value: userAccounts.coinbase.privacyPolicyUrl }\n", "")).toEqual([from("PRIVACY_POLICY_URL")]);
+    expect(await mutant(PORTAL_APPS, "{ name: 'SUPPORT_URL', value: userAccounts.coinbase.supportUrl }", "{ name: 'SUPPORT_URL', value: 'https://support.example.com/' }")).toEqual([from("SUPPORT_URL")]);
+    const onL2 = await mutant("modules/l2-apps.bicep", "            { name: 'USER_ACCOUNTS', value: userAccounts.enabled ? '1' : '0' }\n", "            { name: 'USER_ACCOUNTS', value: userAccounts.enabled ? '1' : '0' }\n            { name: 'CONNECTED_PLATFORMS', value: userAccounts.coinbase.enabled ? 'coinbase' : '' }\n");
+    expect(onL2).toEqual([`rule 26: CONNECTED_PLATFORMS in ${N.main.apps.l2}/l2: only the portal connects platforms`]);
+  }, 600_000);
+
+  it("T-IAC-01 must-fail rule 26: main without one part of its Coinbase check, or with a check that never fails, is reported", async () => {
+    for (const part of ["(userAccounts.enabled && ", " && !empty(userAccounts.coinbase.clientId)", " && startsWith(userAccounts.coinbase.redirectUri, 'https://')", " && endsWith(userAccounts.coinbase.redirectUri, '/wallet/coinbase')", " && !empty(userAccounts.coinbase.privacyPolicyUrl)", " && !empty(userAccounts.coinbase.supportUrl)"]) {
+      expect(await mutant("main.bicep", part, part.startsWith("(") ? "(" : ""), part).toEqual([COINBASE_CHECK]);
+    }
+    expect(await mutant("main.bicep", "var coinbaseChecked = !userAccounts.coinbase.enabled || (", "var coinbaseChecked = true || (")).toEqual([COINBASE_CHECK]);
+  }, 600_000);
+
+  it("T-IAC-01 must-fail rule 26: a parameter file whose coinbase has other keys or a switch that isn't true or false, or that turns Coinbase on without what main asks for, is reported", async () => {
+    const KEYS = `rule 26: main.dev.bicepparam's userAccounts.coinbase must have exactly the keys ${COINBASE_KEYS.join(", ")}`;
+    expect(await mutant("main.dev.bicepparam", DEV_COINBASE, DEV_COINBASE.replace(/\n {2}\}$/, "\n    scopes: 'wallet:accounts:read'\n  }"))).toEqual([`${KEYS} (it has clientId, enabled, privacyPolicyUrl, redirectUri, scopes, supportUrl)`]);
+    expect(await mutant("main.dev.bicepparam", DEV_COINBASE, DEV_COINBASE.replace(/\n {4}supportUrl: [^\n]*/, ""))).toEqual([`${KEYS} (it has clientId, enabled, privacyPolicyUrl, redirectUri)`]);
+    expect(await mutant("main.dev.bicepparam", DEV_COINBASE, DEV_COINBASE.replace(/enabled: (?:true|false)/, "enabled: 'false'"))).toEqual(["rule 26: main.dev.bicepparam's userAccounts.coinbase.enabled must be true or false, and its other values strings"]);
+    const ON_WITHOUT = "rule 26: main.dev.bicepparam turns Coinbase on without userAccounts.enabled, a clientId, a redirectUri of the form https://…/wallet/coinbase, a privacyPolicyUrl and a supportUrl";
+    const coinbase = (o: Partial<Record<"clientId" | "redirectUri" | "privacyPolicyUrl" | "supportUrl", string>> = {}) => {
+      const x = { clientId: "coinbase-client", redirectUri: "https://portal.example.com/wallet/coinbase", privacyPolicyUrl: "https://portal.example.com/privacy", supportUrl: "mailto:support@example.com", ...o };
+      return `  coinbase: {\n    enabled: true\n    clientId: '${x.clientId}'\n    redirectUri: '${x.redirectUri}'\n    privacyPolicyUrl: '${x.privacyPolicyUrl}'\n    supportUrl: '${x.supportUrl}'\n  }`;
+    };
+    const accountsOn: [string, string][] = [[DEV_ACCOUNTS_HEAD, DEV_ACCOUNTS_HEAD.replace(/enabled: (?:true|false)/, "enabled: true")]];
+    // Not vacuous: with user accounts on and every value, Coinbase may be on.
+    expect(await mutant("main.dev.bicepparam", DEV_COINBASE, coinbase(), accountsOn)).toEqual([]);
+    const accountsOff: [string, string][] = [[DEV_ACCOUNTS_HEAD, DEV_ACCOUNTS_HEAD.replace(/enabled: (?:true|false)/, "enabled: false")]];
+    expect(await mutant("main.dev.bicepparam", DEV_COINBASE, coinbase(), accountsOff)).toEqual([ON_WITHOUT]);
+    for (const o of [{ clientId: "" }, { redirectUri: "http://localhost:4025/wallet/coinbase" }, { redirectUri: "https://portal.example.com/wallet" }, { privacyPolicyUrl: "" }, { supportUrl: "" }]) {
+      expect(await mutant("main.dev.bicepparam", DEV_COINBASE, coinbase(o), accountsOn), JSON.stringify(o)).toEqual([ON_WITHOUT]);
+    }
+  }, 600_000);
+
+  it("T-IAC-01 must-fail rule 26: a portal with two replicas or several revisions, or with its grants inside its profiles, outside its share, at a relative path or nowhere, is reported", async () => {
+    const ONE = `rule 26: ${N.main.apps.portal} must run one replica at most, in single revision mode: one process serializes each person's rotating Coinbase refresh token`;
+    expect(await mutant(PORTAL_APPS, "scale: { minReplicas: 0, maxReplicas: 1 }", "scale: { minReplicas: 0, maxReplicas: 2 }")).toEqual(expect.arrayContaining([ONE, expect.stringMatching(/^rule 4: .* must run one replica at most/)]));
+    expect(await mutant(PORTAL_APPS, "activeRevisionsMode: 'Single'", "activeRevisionsMode: 'Multiple'")).toEqual(expect.arrayContaining([ONE, `rule 4: ${N.main.apps.portal} must use single revision mode`]));
+    const DIR = "rule 26: the portal's CONNECTION_DIR must be a folder of its own beside PROFILE_DIR, in the portal's share";
+    const AT = "{ name: 'CONNECTION_DIR', value: '/app/.local/portal/connections' }";
+    for (const to of ["/app/.local/portal/profiles/connections", "/app/.local/portal/profiles", "/app/.local/connections", "/app/.local/portal/../connections", ".local/portal/connections"]) {
+      expect(await mutant(PORTAL_APPS, AT, `{ name: 'CONNECTION_DIR', value: '${to}' }`), to).toEqual([DIR]);
+    }
+    expect(await mutant(PORTAL_APPS, `            ${AT}\n`, "")).toEqual([DIR]);
+  }, 600_000);
+
   it("T-IAC-01 must-fail rule 21: L2 without one of its always-referenced secrets, with one behind the flag's value, or with a literal USER_ACCOUNTS, is reported", async () => {
     const always = `rule 21: ${N.main.apps.l2}/l2 must always reference the l2 vault's portal-token and user-wallet-mnemonic, as PORTAL_TOKEN and USER_WALLET_MNEMONIC`;
     const missing = await mutant("modules/l2-apps.bicep", "            { name: 'PORTAL_TOKEN', secretRef: 'portal-token' }\n", "");
@@ -1796,9 +1999,10 @@ resource extraRead 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
     expect(written).toContain("rule 21: the portal's PORTAL_CLIENT_ID must come from its parameter");
     const flagged = await mutant(
       "modules/portal-apps.bicep",
-      // 014: the block has a third secret, the administration token (rule 22); the mutation is the same one.
-      "      secrets: [\n        { name: 'portal-token', keyVaultUrl: '${vaultPortal}secrets/portal-token', identity: idPortal.id }\n        { name: 'card-vault-key', keyVaultUrl: '${vaultPortal}secrets/card-vault-key', identity: idPortal.id }\n        { name: 'portal-admin-token', keyVaultUrl: '${vaultPortal}secrets/portal-admin-token', identity: idPortal.id }\n      ]",
-      "      secrets: concat([{ name: 'portal-token', keyVaultUrl: '${vaultPortal}secrets/portal-token', identity: idPortal.id }, { name: 'portal-admin-token', keyVaultUrl: '${vaultPortal}secrets/portal-admin-token', identity: idPortal.id }], userAccounts.cardVault == 'stripe' ? [{ name: 'card-vault-key', keyVaultUrl: '${vaultPortal}secrets/card-vault-key', identity: idPortal.id }] : [])",
+      // 014: the block has a third secret, the administration token (rule 22); 020: and the two Coinbase secrets
+      // (rule 26). The mutation is the same one.
+      `      secrets: [\n${PORTAL_SECRET_LINES}\n      ]`,
+      "      secrets: concat([{ name: 'portal-token', keyVaultUrl: '${vaultPortal}secrets/portal-token', identity: idPortal.id }, { name: 'portal-admin-token', keyVaultUrl: '${vaultPortal}secrets/portal-admin-token', identity: idPortal.id }, { name: 'coinbase-client-secret', keyVaultUrl: '${vaultPortal}secrets/coinbase-client-secret', identity: idPortal.id }, { name: 'coinbase-grant-key', keyVaultUrl: '${vaultPortal}secrets/coinbase-grant-key', identity: idPortal.id }], userAccounts.cardVault == 'stripe' ? [{ name: 'card-vault-key', keyVaultUrl: '${vaultPortal}secrets/card-vault-key', identity: idPortal.id }] : [])",
     );
     expect(flagged.some((m) => m.startsWith(`rule 21: ${N.main.apps.portal}/portal must always reference the portal vault's portal-token and card-vault-key`))).toBe(true);
     const part = await mutant("main.bicep", "    ciba: ciba\n    userAccounts: userAccounts\n", "    ciba: ciba\n    userAccounts: { enabled: userAccounts.enabled, sellerName: userAccounts.sellerName }\n");
