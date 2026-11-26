@@ -4,7 +4,9 @@
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
-import { BASE_SEPOLIA_USDC, formatAtomic } from "../src/shared/config.js";
+import { BASE_SEPOLIA_USDC, formatAtomic, networkProfile } from "../src/shared/config.js";
+import { sellerRoutes } from "../src/counterparty/seller.js";
+import { PAID_ENDPOINTS } from "../src/counterparty/seller-api.js";
 import {
   cutQuery,
   defaultDiscoveryUrl,
@@ -264,5 +266,187 @@ describe("T-DISC-03 a failed, slow, oversized or malformed answer is the fixed U
   it("T-DISC-03 a 200 with no listing passing the view: OK with no results", async () => {
     const s = await stub({ listings: [bs("http://seller.example/w"), { nonsense: true }] });
     expect(await search(s)).toEqual({ outcome: "OK", results: [] });
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// More cases of the Bazaar's answers, the request and the bounds (the same IDs)
+// ---------------------------------------------------------------------------------------------------------------
+
+describe("T-DISC-01 the request, more cases", () => {
+  it("T-DISC-01 a query with &, =, #, + and non-ASCII text arrives as written and adds no parameter", async () => {
+    const s = await stub();
+    const query = "weather & network=eip155:1#frag + scheme=upto ñandú 東京";
+    await searchIndex({ url: s.url, query, network: BASE_SEPOLIA });
+    const r = s.requests[0]!;
+    expect(r.params.get("query")).toBe(query);
+    expect(r.params.getAll("network")).toEqual(["eip155:84532"]);
+    expect(r.params.getAll("scheme")).toEqual(["exact"]);
+    expect([...r.params.keys()].sort()).toEqual(["limit", "network", "query", "scheme"]);
+  });
+
+  it("T-DISC-01 parameters already in DISCOVERY_URL are replaced, never sent twice: the network filter can't be widened", async () => {
+    const s = await stub();
+    await searchIndex({ url: `${s.url}?network=eip155:1&scheme=upto&limit=999&query=planted`, query: "weather", network: BASE_SEPOLIA });
+    const r = s.requests[0]!;
+    expect([r.params.getAll("network"), r.params.getAll("scheme"), r.params.getAll("limit"), r.params.getAll("query")]).toEqual([["eip155:84532"], ["exact"], ["20"], ["weather"]]);
+  });
+
+  it("T-DISC-01 an empty query is sent as an empty query, and only the cut part of a long one leaves", async () => {
+    const s = await stub();
+    await searchIndex({ url: s.url, query: "", network: BASE_SEPOLIA });
+    await searchIndex({ url: s.url, query: `${"a".repeat(200)}SECRET-TAIL`, network: BASE_SEPOLIA });
+    expect(s.requests[0]!.params.get("query")).toBe("");
+    expect(s.requests[1]!.query).not.toContain("SECRET-TAIL");
+  });
+});
+
+describe("T-DISC-02 the view, more of the Bazaar's answers", () => {
+  it("T-DISC-02 an answer in the shape the public index gave (research R1): partial results, a search token, other parties' weather APIs", async () => {
+    const theirs = (host: string, amount: string) => ({
+      resource: `https://${host}/weather`,
+      type: "http",
+      x402Version: 2,
+      lastUpdated: "2026-11-26T00:00:00.000Z",
+      description: "Real-time weather for any location",
+      serviceName: PLANTED.serviceName,
+      tags: ["weather"],
+      quality: { l30DaysTotalCalls: 12, l30DaysUniquePayers: 3, lastCalledAt: "2026-11-25T00:00:00.000Z" },
+      accepts: [{ scheme: "exact", network: "eip155:84532", amount, asset: BASE_SEPOLIA_USDC, payTo: PLANTED.payTo, maxTimeoutSeconds: 60, extra: { name: "USDC", version: "2" } }],
+      extensions: {
+        bazaar: {
+          info: { input: { type: "http", method: "GET", queryParams: { location: "San Francisco" } } },
+          schema: { properties: { input: { properties: { queryParams: { type: "object", properties: { location: { type: "string", description: PLANTED.inputAbout, minLength: 1 } }, required: ["location"] } } } } },
+        },
+      },
+    });
+    const s = await stub({ json: { x402Version: 2, searchMethod: "hybrid", partialResults: true, meta: { searchToken: "tok" }, resources: [theirs("a.example", "1000"), theirs("b.example", "2000")] } });
+    const out = await searchResources({ url: s.url, query: "weather", network: BASE_SEPOLIA, sellerHosts: [SELLER] });
+    expect(out.outcome).toBe("OK");
+    expect(out.results.map((r) => [r.host, r.priceAtomic, r.priceUsd, r.onSellerList, r.inputs])).toEqual([
+      ["a.example", "1000", "0.001", false, [{ name: "location", type: "string", required: true }]],
+      ["b.example", "2000", "0.002", false, [{ name: "location", type: "string", required: true }]],
+    ]);
+  });
+
+  it("T-DISC-02 (FR-006) a listing of another x402 version or of another kind (an MCP tool) is dropped; one that says neither is judged by its fields", () => {
+    const listings = [
+      { ...bs(https("/v1")), x402Version: 1 },
+      { ...bs(https("/v3")), x402Version: 3 },
+      { ...bs(https("/str")), x402Version: "2" },
+      { ...bs(https("/mcp")), type: "mcp" },
+      { ...bs(https("/unsaid")), x402Version: undefined, type: undefined },
+      bs(https("/v2")),
+    ];
+    expect(toResults(listings, BASE_SEPOLIA, [SELLER]).map((r) => r.url)).toEqual([https("/unsaid"), https("/v2")]);
+  });
+
+  it("T-DISC-02 v1's maxAmountRequired is not a price: a listing without v2's amount is dropped", () => {
+    const v1 = { ...bs(https("/v1shape")), accepts: [{ scheme: "exact", network: "eip155:84532", asset: BASE_SEPOLIA_USDC, maxAmountRequired: "1000", payTo: PLANTED.payTo }] };
+    expect(toResults([v1], BASE_SEPOLIA, [SELLER])).toEqual([]);
+  });
+
+  it("T-DISC-02 the first option in the deployment's network gives the price, wherever it is among the options", () => {
+    const l = { ...bs(https("/w")), accepts: ["not an option", null, option({ caip2: "eip155:8453", asset: BASE_SEPOLIA_USDC }, "9"), option(BASE_SEPOLIA, "0"), option(BASE_SEPOLIA, "4000"), option(BASE_SEPOLIA, "5000")] };
+    expect(toResults([l], BASE_SEPOLIA, [SELLER])[0]!.priceAtomic).toBe("4000");
+    expect(toResults([{ ...l, accepts: "nope" }], BASE_SEPOLIA, [SELLER])).toEqual([]);
+  });
+
+  it("T-DISC-02 inputs from path parameters alone, and from a schema with no required list", () => {
+    const l = bs(https("/items"), { queryParams: null });
+    (l.extensions as { bazaar: { schema: { properties: { input: { properties: Record<string, unknown> } } } } }).bazaar.schema.properties.input.properties.pathParams = {
+      properties: { itemId: { type: "integer" }, kind: { type: "string" } },
+    };
+    expect(toResults([l], BASE_SEPOLIA, [SELLER])[0]!.inputs).toEqual([
+      { name: "itemId", type: "integer", required: false },
+      { name: "kind", type: "string", required: false },
+    ]);
+    expect(toResults([bs(https("/none"), { queryParams: null })], BASE_SEPOLIA, [SELLER])[0]!.inputs).toEqual([]);
+  });
+
+  it("T-DISC-02 the cap comes after the ordering: one result on the list behind twelve others still reaches the model, first", () => {
+    const listings = [...Array.from({ length: 12 }, (_, i) => bs(https(`/o${i}`, `other${i}.example`))), bs(https("/ours"))];
+    const out = toResults(listings, BASE_SEPOLIA, [SELLER]);
+    expect(out).toHaveLength(10);
+    expect(out[0]).toMatchObject({ url: https("/ours"), onSellerList: true });
+    expect(out.slice(1).every((r) => !r.onSellerList)).toBe(true);
+  });
+
+  it("T-DISC-02 at most 50 listings of an answer are read: a 51st is never considered", async () => {
+    const off = Array.from({ length: 50 }, (_, i) => bs(https(`/o${i}`, `other${i}.example`)));
+    const s = await stub({ listings: [...off, bs(https("/ours"))] });
+    const out = await searchResources({ url: s.url, query: "weather", network: BASE_SEPOLIA, sellerHosts: [SELLER] });
+    expect(out.results.some((r) => r.host === SELLER)).toBe(false);
+    expect(out.results).toHaveLength(10);
+  });
+
+  it("T-DISC-02 about keeps letters of any script and never splits a character at the cut", () => {
+    const description = `${"😀".repeat(299)}é東京 שלום`;
+    const [r] = toResults([bs(https("/u"), { description })], BASE_SEPOLIA, [SELLER]);
+    expect(Array.from(r!.about)).toHaveLength(300);
+    expect(r!.about.endsWith("😀é")).toBe(true);
+    expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(r!.about)).toBe(false);
+  });
+
+  it("T-DISC-02 round trip: the listing the index would build from the seller's own challenge reads back as the seller declared it", () => {
+    const net = networkProfile("base-sepolia", { env: {} });
+    const routes = sellerRoutes(net, "0x00000000000000000000000000000000000000c1");
+    const listings = PAID_ENDPOINTS.map((e) => {
+      const route = routes[`GET ${e.route.path}`]!;
+      const accepts = route.accepts as { price: { amount: string; asset: string } };
+      return {
+        resource: `https://${SELLER}${e.route.path}`,
+        type: "http",
+        x402Version: 2,
+        description: route.description,
+        accepts: [{ scheme: "exact", network: net.caip2, asset: accepts.price.asset, amount: accepts.price.amount, payTo: "0x00000000000000000000000000000000000000c1", maxTimeoutSeconds: 120 }],
+        extensions: route.extensions,
+      };
+    });
+    const out = toResults(listings, BASE_SEPOLIA, [SELLER]);
+    expect(out.map((r) => [r.url, r.priceAtomic, r.inputs])).toEqual([
+      [https("/api/weather"), "1000", [{ name: "city", type: "string", required: true }]],
+      [https("/api/market-brief"), "5000", []],
+      [https("/api/premium-report"), "50000", []],
+      [https("/api/dataset-export"), "500000", []],
+    ]);
+    for (const [i, e] of PAID_ENDPOINTS.entries()) expect(out[i]!.about).toBe((e.monetization as { about: string }).about);
+    expect(out.every((r) => r.onSellerList)).toBe(true);
+  });
+});
+
+describe("T-DISC-03 the bounds, more cases", () => {
+  const search = (s: DiscoveryStub, o: { timeoutMs?: number } = {}) => searchResources({ url: s.url, query: "weather", network: BASE_SEPOLIA, sellerHosts: [SELLER], ...o });
+
+  it("T-DISC-03 an oversized answer sent in chunks, with no Content-Length, is refused while it is read", async () => {
+    const s = await stub({ streamedTo: 300 * 1024, listings: [bs(https("/w"))] });
+    expect(await search(s)).toEqual({ outcome: "UNAVAILABLE", results: [] });
+    s.setDefault({ streamedTo: 100 * 1024, listings: [bs(https("/w"))] });
+    expect((await search(s)).results).toHaveLength(1);
+  });
+
+  it("T-DISC-03 a call gives up after the time it is given (the run's search time left), never more than 5 s", async () => {
+    const s = await stub({ delayMs: 2_000, listings: [bs(https("/w"))] });
+    let t = performance.now();
+    expect(await search(s, { timeoutMs: 400 })).toEqual({ outcome: "UNAVAILABLE", results: [] });
+    expect(performance.now() - t).toBeLessThan(1_000);
+    // Nothing left: no request at all.
+    const before = s.requests.length;
+    t = performance.now();
+    expect(await search(s, { timeoutMs: 0 })).toEqual({ outcome: "UNAVAILABLE", results: [] });
+    expect(s.requests.length).toBe(before);
+    expect(performance.now() - t).toBeLessThan(50);
+    // More than 5 s asked for is still 5 s.
+    s.setDefault({ delayMs: 6_000, listings: [bs(https("/w"))] });
+    t = performance.now();
+    expect(await search(s, { timeoutMs: 60_000 })).toEqual({ outcome: "UNAVAILABLE", results: [] });
+    expect(performance.now() - t).toBeLessThan(5_500);
+  }, 15_000);
+
+  it("T-DISC-03 an answer with an unexpected content type but a JSON body is read; a 200 whose body ends early is UNAVAILABLE", async () => {
+    const s = await stub();
+    s.script({ body: JSON.stringify({ resources: [bs(https("/w"))] }), contentType: "text/plain" }, { body: '{"resources": [', contentType: "application/json" });
+    expect((await search(s)).results).toHaveLength(1);
+    expect(await search(s)).toEqual({ outcome: "UNAVAILABLE", results: [] });
   });
 });

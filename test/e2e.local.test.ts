@@ -18,6 +18,7 @@ import { createTestIssuer } from "./helpers/caller-tokens.js";
 import { mockModel, modelCalls, startHostedApp, text, toolCall, type HostedTestApp } from "./helpers/hosted.js";
 import { listing, startDiscoveryStub, startRecorder } from "./helpers/discovery-stub.js";
 import { facilitatorClientFor } from "../src/counterparty/facilitator-client.js";
+import { SMOKE_GOAL, smokeFailure } from "../src/smoke-main.js";
 import { HttpAuthorizationGate, HttpSettlementVerifier } from "../src/layer1-intent/ports-http.js";
 import { PaidResourceOrchestrator, type PaidFetchResult } from "../src/layer1-intent/orchestrator.js";
 import { runScriptedAgent } from "../src/layer1-intent/scripted.js";
@@ -1543,6 +1544,31 @@ describe("T-E2E-18 search mode on the local chain: only what L2 would pay is fet
     }
     expect(verified.length).toBeGreaterThan(0);
     expect(settled.length).toBeGreaterThan(0);
+  }, 120_000);
+
+  it("T-E2E-18 the deployment's smoke goal in search mode with the index down: the smoke client's checks pass, through the catalog", async () => {
+    const network = { name: "local", caip2: h.net.caip2, asset: h.addresses.asset, decimals: 6 };
+    const index = await startDiscoveryStub({ status: 503 });
+    const s = h.urls.seller;
+    const model = mockModel([
+      toolCall("search_resources", { query: "current weather for a city" }),
+      toolCall("fetch_resource", { url: `${s}/api/catalog`, purpose: "read the catalog" }),
+      toolCall("fetch_resource", { url: `${s}/api/weather?city=Lima`, purpose: "weather for Lima" }),
+      toolCall("fetch_resource", { url: `${s}/api/market-brief`, purpose: "market brief" }),
+      text("Receipts: weather 0.001, market brief 0.005"),
+    ]);
+    const a = await startHostedApp({ harness: h, model, discovery: { url: index.url }, network });
+    try {
+      const started = Date.now();
+      const r = await a.run("x402-checks-dev", { goal: SMOKE_GOAL }, { service: true });
+      expect((r.body.steps as Step[])[0]!.result.outcome).toBe("UNAVAILABLE");
+      expect(smokeFailure(r.status, r.body)).toBeUndefined();
+      expect(Date.now() - started).toBeLessThan(120_000);
+      expect(index.requests).toHaveLength(1);
+    } finally {
+      await a.close();
+      await index.close();
+    }
   }, 120_000);
 
   it("T-E2E-18 must-fail: with skipSellerList on, the unlisted seller records a request", async () => {

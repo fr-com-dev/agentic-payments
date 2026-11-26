@@ -7,7 +7,10 @@
 import { z } from "zod";
 import { CDP_FACILITATOR_URL, formatAtomic } from "../../shared/config.js";
 
-/** A search gives up after this long (FR-009, NFR-004). */
+/**
+ * A search gives up after this long (FR-009). It is also what all the searches of one run may take together (NFR-004):
+ * the run hands each search what is left (./agent.ts), so a slow or unreachable index adds at most 5 s to a run.
+ */
 export const SEARCH_TIMEOUT_MS = 5_000;
 /** The largest answer read; a longer body is a failed search. */
 export const MAX_ANSWER_BYTES = 256 * 1024;
@@ -98,6 +101,8 @@ export interface SearchIndexOptions {
   query: string;
   network: SearchNetwork;
   fetchImpl?: typeof fetch;
+  /** How long this call may take, at most SEARCH_TIMEOUT_MS: the run's search time that is left. Default: 5 s. */
+  timeoutMs?: number;
   /** Test hook (T-AGT-23 must-fail): no 5 s bound on the call. Never set by the entry point. */
   skipSearchTimeout?: boolean;
 }
@@ -108,6 +113,8 @@ export interface SearchIndexOptions {
  * UNAVAILABLE, and no text of the index's leaves this function.
  */
 export async function searchIndex(o: SearchIndexOptions): Promise<unknown[] | null> {
+  const timeoutMs = Math.min(o.timeoutMs ?? SEARCH_TIMEOUT_MS, SEARCH_TIMEOUT_MS);
+  if (!o.skipSearchTimeout && !(timeoutMs > 0)) return null;
   try {
     const u = new URL(o.url);
     u.searchParams.set("query", cutQuery(o.query));
@@ -118,7 +125,7 @@ export async function searchIndex(o: SearchIndexOptions): Promise<unknown[] | nu
       method: "GET",
       headers: { accept: "application/json" },
       redirect: "error",
-      ...(!o.skipSearchTimeout && { signal: AbortSignal.timeout(SEARCH_TIMEOUT_MS) }),
+      ...(!o.skipSearchTimeout && { signal: AbortSignal.timeout(Math.ceil(timeoutMs)) }),
     });
     if (res.status !== 200) {
       await res.body?.cancel().catch(() => undefined);
@@ -223,6 +230,10 @@ export function toResults(listings: readonly unknown[], network: SearchNetwork, 
   const seen = new Set<string>();
   for (const l of listings) {
     if (!isRecord(l)) continue;
+    // FR-006: x402 v2 HTTP resources only. A listing that says it is another version, or another kind (an MCP tool),
+    // is dropped; one that says neither is judged by its address and payment options alone.
+    if (l.x402Version !== undefined && l.x402Version !== 2) continue;
+    if (l.type !== undefined && l.type !== "http") continue;
     const u = resourceUrl(l.resource, network);
     if (u === null) continue;
     const priceAtomic = priceOf(l.accepts, network);

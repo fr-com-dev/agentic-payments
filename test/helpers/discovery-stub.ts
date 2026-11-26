@@ -104,7 +104,9 @@ export type StubBehavior =
   | { delayMs: number; listings?: unknown[] }
   | { body: string; contentType?: string }
   /** A well-formed answer with one passing listing, padded with an unread field to `bytes` (the size cap's proof). */
-  | { paddedTo: number; listings: unknown[] };
+  | { paddedTo: number; listings: unknown[] }
+  /** The same, sent in 16 KB chunks with no Content-Length, so only reading the stream can find the size. */
+  | { streamedTo: number; listings: unknown[] };
 
 export interface RecordedRequest {
   path: string;
@@ -161,11 +163,18 @@ export async function startDiscoveryStub(initial: StubBehavior = { listings: [] 
 
   const answer = (b: StubBehavior, res: import("node:http").ServerResponse) => {
     const json = (status: number, body: unknown) => res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
-    if ("listings" in b && !("delayMs" in b) && !("paddedTo" in b)) return json(200, indexAnswer(b.listings));
+    if ("listings" in b && !("delayMs" in b) && !("paddedTo" in b) && !("streamedTo" in b)) return json(200, indexAnswer(b.listings));
     if ("json" in b) return json(200, b.json);
     if ("status" in b) return res.writeHead(b.status, { "content-type": "text/plain" }).end(`${STUB_ERROR_TEXT} (${b.status})`);
     if ("redirectTo" in b) return res.writeHead(302, { location: b.redirectTo, "content-type": "text/plain" }).end(STUB_ERROR_TEXT);
     if ("body" in b) return res.writeHead(200, { "content-type": b.contentType ?? "application/json" }).end(b.body);
+    if ("streamedTo" in b) {
+      const base = JSON.stringify(indexAnswer(b.listings, { pad: "" }));
+      const body = JSON.stringify(indexAnswer(b.listings, { pad: "x".repeat(Math.max(0, b.streamedTo - base.length)) }));
+      res.writeHead(200, { "content-type": "application/json", "transfer-encoding": "chunked" });
+      for (let i = 0; i < body.length; i += 16 * 1024) res.write(body.slice(i, i + 16 * 1024));
+      return res.end();
+    }
     if ("paddedTo" in b) {
       const base = JSON.stringify(indexAnswer(b.listings, { pad: "" }));
       const padded = JSON.stringify(indexAnswer(b.listings, { pad: "x".repeat(Math.max(0, b.paddedTo - base.length)) }));

@@ -31,7 +31,8 @@ index, so the agent can find a resource that fits the goal before it buys.
   in every Azure parameter file (dev: `true`). It is never a request field, and no answer, prompt or tool description
   names it; the run log line records `mode` ([R5](research.md#r5-the-flag-agent-test-mode),
   [R8](research.md#r8-logs-steps-and-the-stream)).
-- **Bounds.** 3 searches per run, 5 s each, query cut to 200 characters and never logged; any failure is a fixed
+- **Bounds.** 3 searches per run, sharing 5 s (each gets what is left; once it is spent a search sends nothing), query
+  cut to 200 characters and never logged; any failure is a fixed
   `UNAVAILABLE` and the prompt sends the model to the catalog ([R7](research.md#r7-bounds-and-failures-of-a-search)).
 - **The seller describes itself.** Typed inputs with an example (`@Get`), an `about` text (the tier decorators), and
   the handler's own answer as the example. From that one declaration: the catalog's new `about` and `inputs`, and the

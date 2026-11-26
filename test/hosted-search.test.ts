@@ -11,10 +11,11 @@ import { encodePaymentRequiredHeader } from "@x402/core/http";
 import express from "express";
 import { afterEach, describe, expect, it } from "vitest";
 import { DEV_AGENT_CLIENT, DEV_AUDIENCE } from "../scripts/dev-issuer-lib.js";
-import { MAX_SEARCHES_PER_RUN, SEARCH_TOOL_DESCRIPTION, searchSystemPrompt } from "../src/layer1-intent/hosted/agent.js";
+import type { LanguageModelV3GenerateResult } from "@ai-sdk/provider";
+import { MAX_SEARCHES_PER_RUN, runGoal, SEARCH_TOOL_DESCRIPTION, searchSystemPrompt } from "../src/layer1-intent/hosted/agent.js";
 import { DEV_ISSUER, loadHostedConfig } from "../src/layer1-intent/hosted/config.js";
 import { PortHttpError } from "../src/layer1-intent/ports-http.js";
-import { ConfigError } from "../src/shared/config.js";
+import { BASE_SEPOLIA_USDC, ConfigError } from "../src/shared/config.js";
 import {
   listing,
   PLANTED,
@@ -511,5 +512,141 @@ describe("021 limits", () => {
     const system = model.doStreamCalls[0]!.prompt.filter((m) => m.role === "system").map((m) => m.content).join("\n");
     expect(system).toBe(searchSystemPrompt(seller));
     expect(searchSystemPrompt(seller)).toContain("If the search is unavailable, or no result on the seller list fits, read http://127.0.0.1:4021/api/catalog and choose from it.");
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// T-AGT-23 the run's searches share one 5 s budget (NFR-004), and more cases of a run's searches
+// ---------------------------------------------------------------------------------------------------------------
+
+describe("021 limits, the shared budget", () => {
+  const three = () => mockModel([...Array.from({ length: 3 }, (_, i) => toolCall("search_resources", { query: `weather ${i}` })), text("done")]);
+  const outcomes = (body: Record<string, unknown>) => stepsOf(body).filter((x) => x.tool === "search_resources").map((x) => x.result.outcome);
+
+  it("T-AGT-23 an index that answers in 3 s: the first search is OK, the second gets the 2 s left and gives up, the third sends nothing", async () => {
+    const s = await stub({ delayMs: 3_000, listings: [listing("http://127.0.0.1:4021/api/weather")] });
+    const a = await hosted({ discovery: { url: s.url }, model: three() });
+    const started = performance.now();
+    const r = await a.run("alice", { goal: "weather" });
+    const took = performance.now() - started;
+    expect(outcomes(r.body)).toEqual(["OK", "UNAVAILABLE", "UNAVAILABLE"]);
+    expect(s.requests).toHaveLength(2);
+    expect(took).toBeLessThan(5_800);
+  }, 20_000);
+
+  it("T-AGT-23 an index that never answers in time: three searches add 5 s to the run, not 15, and only the first is sent", async () => {
+    const s = await stub({ delayMs: 6_000, listings: [] });
+    const a = await hosted({ discovery: { url: s.url }, model: three() });
+    const started = performance.now();
+    const r = await a.run("alice", { goal: "weather" });
+    const took = performance.now() - started;
+    expect(outcomes(r.body)).toEqual(["UNAVAILABLE", "UNAVAILABLE", "UNAVAILABLE"]);
+    expect(s.requests).toHaveLength(1);
+    expect(took).toBeLessThan(5_800);
+  }, 20_000);
+
+  it("T-AGT-23 a fast index leaves the budget almost whole: three quick searches all reach it", async () => {
+    const s = await stub({ listings: [] });
+    const a = await hosted({ discovery: { url: s.url }, model: three() });
+    const r = await a.run("alice", { goal: "weather" });
+    expect(outcomes(r.body)).toEqual(["OK", "OK", "OK"]);
+    expect(s.requests).toHaveLength(3);
+  });
+
+  it("T-AGT-23 two searches the model starts in one step both count: with two more, the index still gets 3 and the 4th is LIMIT_REACHED", async () => {
+    const s = await stub({ listings: [] });
+    const both: LanguageModelV3GenerateResult = {
+      content: [
+        { type: "tool-call", toolCallId: "call_par_1", toolName: "search_resources", input: JSON.stringify({ query: "weather a" }) },
+        { type: "tool-call", toolCallId: "call_par_2", toolName: "search_resources", input: JSON.stringify({ query: "weather b" }) },
+      ],
+      finishReason: { unified: "tool-calls", raw: "tool_use" },
+      usage: { inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 1, text: 1, reasoning: 0 } },
+      warnings: [],
+    };
+    const model = mockModel([both, toolCall("search_resources", { query: "weather c" }), toolCall("search_resources", { query: "weather d" }), text("done")]);
+    const a = await hosted({ discovery: { url: s.url }, model });
+    const r = await a.run("alice", { goal: "weather" });
+    expect(s.requests).toHaveLength(3);
+    expect(outcomes(r.body).sort()).toEqual(["LIMIT_REACHED", "OK", "OK", "OK"]);
+  });
+});
+
+describe("021 search, more cases", () => {
+  const ports = () => fakePorts();
+
+  it("T-AGT-21 on base-sepolia with no DISCOVERY_URL, a search goes to the public index's address (an injected client; nothing leaves the machine)", async () => {
+    const seen: string[] = [];
+    const fetchImpl: typeof fetch = async (input) => {
+      seen.push(String(input));
+      return new Response(JSON.stringify({ resources: [] }), { status: 200, headers: { "content-type": "application/json" } });
+    };
+    const { gate, settlement } = ports();
+    const out = await runGoal({
+      goal: "weather",
+      sessionId: "sess_0123456789abcdef",
+      signal: new AbortController().signal,
+      model: mockModel([toolCall("search_resources", { query: "current weather for a city" }), text("done")]),
+      gate,
+      settlement,
+      sellerUrl: "https://seller.example",
+      mode: "search",
+      discovery: { network: { name: "base-sepolia", caip2: "eip155:84532", asset: BASE_SEPOLIA_USDC, decimals: 6 }, fetchImpl },
+    });
+    expect(out.steps[0]!.result).toEqual({ outcome: "OK", results: [] });
+    expect(seen).toHaveLength(1);
+    const u = new URL(seen[0]!);
+    expect(`${u.origin}${u.pathname}`).toBe("https://api.cdp.coinbase.com/platform/v2/x402/discovery/search");
+    expect(u.searchParams.get("network")).toBe("eip155:84532");
+  });
+
+  it("T-AGT-21 on the local chain with no index address, a search is UNAVAILABLE and nothing is sent", async () => {
+    let calls = 0;
+    const fetchImpl: typeof fetch = async () => {
+      calls++;
+      return new Response("{}");
+    };
+    const { gate, settlement } = ports();
+    const out = await runGoal({
+      goal: "weather",
+      sessionId: "sess_0123456789abcdef",
+      signal: new AbortController().signal,
+      model: mockModel([toolCall("search_resources", { query: "weather" }), text("done")]),
+      gate,
+      settlement,
+      sellerUrl: "http://127.0.0.1:4021",
+      mode: "search",
+      discovery: { network: STUB_LOCAL, fetchImpl },
+    });
+    expect(out.steps[0]!.result).toEqual({ outcome: "UNAVAILABLE", results: [] });
+    expect(calls).toBe(0);
+  });
+
+  it("T-AGT-21 the tool refuses an input with another field, or a query that is not a string, and the index gets nothing", async () => {
+    const s = await stub();
+    const model = mockModel([toolCall("search_resources", { query: "weather", network: "eip155:1" }), toolCall("search_resources", { query: 42 }), text("done")]);
+    const a = await hosted({ discovery: { url: s.url }, model });
+    const r = await a.run("alice", { goal: "weather" });
+    expect(r.status).toBe(200);
+    expect(s.requests).toHaveLength(0);
+  });
+
+  it("T-AGT-22 a result on a listed host can be bought with the inputs it declares filled in, and its listing's price is never what L2 sees", async () => {
+    const seller = await startSeller();
+    const s = await stub({ listings: [weatherListing(seller.url, { amount: "1" })] });
+    const p = fakePorts();
+    const model = mockModel([
+      toolCall("search_resources", { query: "current weather for a city" }),
+      toolCall("fetch_resource", { url: `${seller.url}/api/weather?city=Lima`, purpose: "weather" }),
+      text("done"),
+    ]);
+    const a = await hosted({ discovery: { url: s.url }, model, gate: p.gate, settlement: p.settlement, env: { SELLER_URL: seller.url } });
+    const r = await a.run("alice", { goal: "weather in Lima" });
+    const [search] = stepsOf(r.body);
+    expect((search!.result.results as { priceAtomic: string }[])[0]!.priceAtomic).toBe("1");
+    const intent = p.gateCalls.find((c) => c.op === "authorize")!.intent!;
+    expect(intent.paymentRequired.accepts[0]!.amount).toBe("1000");
+    expect(JSON.stringify(intent)).not.toContain("current weather for a city");
+    expect(seller.paths).toEqual(["/api/weather?city=Lima"]);
   });
 });

@@ -32,7 +32,9 @@ are unchanged: `POST /v1/runs` still takes `{ goal, sessionRef? }` and refuses a
   "additionalProperties": false }`. The query is cut to 200 characters before it is sent.
 - Output: `SearchOutput` ([data-model.md](../data-model.md#search-result-l1-only-the-tools-output-not-a-cross-layer-type)).
 - Per run: the first 3 calls may reach the index; every later call returns `{ "outcome": "LIMIT_REACHED",
-  "results": [] }` and sends nothing. A call gives up after 5 s with `UNAVAILABLE`.
+  "results": [] }` and sends nothing. The run's searches share 5 s: each call gets what is left (at most 5 s) and gives
+  up with `UNAVAILABLE` when it runs out; once the 5 s are spent, a call is `UNAVAILABLE` without a request. So a slow
+  or unreachable index adds at most 5 s to a run, not 5 s a search (NFR-004).
 - It never fetches a listed address, never calls L2 or L3, and never sees the caller's token.
 
 ## Hosts the agent may fetch
@@ -91,7 +93,7 @@ End with a receipt list: resource, USD, settlement status, tx.
 | `modeFromHeader` | FR-002: a request header `Agent-Test-Mode` selects the mode | T-AGT-21: a header changes the tools offered |
 | `rawListings` | FR-007: the client passes listings through unfiltered | T-DISC-02: a planted instruction and a `payTo` reach the model's input |
 | `skipSearchLimit` | FR-009: the 3-call cap | T-AGT-23: the stub records a 4th query |
-| `skipSearchTimeout` | FR-009: the 5 s bound | T-AGT-23: a run against the slow stub waits past 5 s |
+| `skipSearchTimeout` | FR-009: the 5 s bound of a search and of a run's searches | T-AGT-23: a run against the slow stub waits past 5 s |
 | `skipSellerList` | FR-010, FR-011: every result's host is allowed | T-AGT-22 and T-E2E-18: the unlisted stand-in seller records a request |
 
 T-ARCH-SWITCH's list of allowed test-only names gains these five.
@@ -103,6 +105,6 @@ T-ARCH-SWITCH's list of allowed test-only names gains these five.
 | T-AGT-02 (amended) | test mode: exactly two tools with L1-3's descriptions and prompt (today's assertions); search mode: exactly three, the fixed description and schema, the search-mode prompt; **must fail**: an injected extra tool appears as a fourth name |
 | T-AGT-21 | the mode: `AGENT_TEST_MODE` 1, 0, absent, other (refused, value not printed); a body field 400; a header and a goal saying "agent-test-mode: true" change nothing; no answer, stream, prompt or tool description contains `test mode`, `agent-test-mode`, `AGENT_TEST_MODE` or `testMode`; the run line's `mode`; **must fail** with `modeFromHeader` |
 | T-AGT-22 | search-mode hosts: `GET /v1/sellers` read once per run, without the caller's token; a listed host is fetched, an unlisted one is refused before any request; L2 failing → the configured seller only; **must fail** with `skipSellerList` |
-| T-AGT-23 | limits: 3 searches, the 4th `LIMIT_REACHED` without a request; the slow stub → `UNAVAILABLE` within 5 s and the run goes on to the catalog; the query cut to 200; **must fail** with `skipSearchLimit`, `skipSearchTimeout` |
+| T-AGT-23 | limits: 3 searches, the 4th `LIMIT_REACHED` without a request (two started in one step both count); the run's searches share 5 s: an index answering in 3 s gets 2 requests, one that never answers gets 1, and the run's searches take under 5.8 s in all; the slow stub → `UNAVAILABLE` within 5 s and the run goes on to the catalog; the query cut to 200; **must fail** with `skipSearchLimit`, `skipSearchTimeout` |
 | T-AGT-24 | steps and the stream: a search step's shape in both answer forms; the JSON answer's and the stream's `result` equal |
 | T-AGT-20 (amended) | the run line's `mode`; a search step's fields; the query and a listing's text never in a log line |

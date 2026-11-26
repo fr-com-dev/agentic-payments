@@ -45,6 +45,12 @@ describe("T-AGT-13 the smoke client: the pipeline's hosted smoke run as a machin
     expect(a.requests).toEqual([{ authorization: `Bearer ${TOKEN}`, accept: "application/json", body: { goal: SMOKE_GOAL } }]);
   });
 
+  it("T-AGT-13 021: a search-mode answer passes too: search steps, which carry no address, are neither purchases nor failures", () => {
+    const search = (index: number, outcome: string) => ({ index, tool: "search_resources", query: "current weather for a city", result: { outcome, results: [] } });
+    expect(smokeFailure(200, { ...GOOD, steps: [search(1, "UNAVAILABLE"), search(2, "LIMIT_REACHED"), ...GOOD.steps] })).toBeUndefined();
+    expect(smokeFailure(200, { ...GOOD, steps: [search(1, "OK"), paid("/api/market-brief")] })).toBe("/api/weather was not paid and confirmed");
+  });
+
   it.each<[string, number, unknown, string]>([
     ["the agent refuses the caller", 403, { error: "forbidden" }, "the agent answered HTTP 403"],
     ["the run stopped", 200, { ...GOOD, status: "stopped" }, "the run ended as stopped"],

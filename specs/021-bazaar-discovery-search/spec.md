@@ -232,7 +232,8 @@ says that no item fits.
   the search tool MUST NOT fetch any resource, start a payment or reach L2 or L3. *(SPEC: proposed L1-3/L1-6,
   Constitution I)*
 - **FR-006**: The search MUST return only resources that take x402 v2 with the `exact` scheme and the deployment's
-  asset on the deployment's network, at most 10 per search, deduplicated by address. *(SPEC: proposed L1-6, Constitution VII)*
+  asset on the deployment's network, at most 10 per search, deduplicated by address. A listing that says it is another
+  x402 version, or another kind of resource than an HTTP one (an MCP tool), MUST be dropped. *(SPEC: proposed L1-6, Constitution VII)*
 - **FR-007**: Each result the model sees MUST have only these fields: address, host, price in atomic units (a decimal
   string), the same price in USD for display, network, a plain-text description of at most 300 characters, the
   declared inputs (name, type, required), and whether its host is on the seller list. No other text from a listing MAY
@@ -240,7 +241,9 @@ says that no item fits.
 - **FR-008**: The query MUST be cut to 200 characters, sent to the discovery index only, and never logged. The prompt
   MUST tell the model to search for the kind of resource it needs, without names, addresses or other personal details
   from the goal. *(SPEC: proposed SEC-61, L1-6 Logs)*
-- **FR-009**: A run MUST make at most 3 searches; each MUST give up after 5 seconds. A failed, slow or malformed answer
+- **FR-009**: A run MUST make at most 3 searches, and its searches together MUST take at most 5 seconds: each gets what
+  is left of that time, and once it is spent a search MUST answer "search unavailable" without a request. A failed, slow
+  or malformed answer
   MUST give the model a fixed "search unavailable" result without the index's own text. *(SPEC: proposed L1-6, SEC-64)*
 
 **Fetching and paying**
@@ -289,7 +292,8 @@ says that no item fits.
   No token, user, session or goal goes there. *(SPEC: proposed SEC-61, Constitution V)*
 - **NFR-003 (Availability)**: Payments, the portal and every run in test mode MUST work the same with the discovery
   index down. A run in search mode with it down MUST still complete through the catalog.
-- **NFR-004 (Performance)**: A search MUST add at most 5 seconds to a run; the deployment's smoke run MUST still finish
+- **NFR-004 (Performance)**: A run's searches MUST add at most 5 seconds to it in all, however many it makes (FR-009);
+  the deployment's smoke run MUST still finish
   within its 120 seconds in either mode.
 - **NFR-005 (Testability)**: Every test MUST use a stand-in discovery index; no test reaches the real one.
 - **NFR-006 (Regression)**: The local demo summary MUST stay unchanged (`spent on-chain: 0.006 USDC`,
@@ -319,7 +323,7 @@ says that no item fits.
   in the dev environment's logs.
 - **SC-005**: In test mode every existing hosted-agent test and the deployment's smoke run pass unchanged.
 - **SC-006**: With the discovery index down, 100% of runs that a catalog item fits still complete through the catalog,
-  and the search adds at most 5 seconds.
+  and the searches add at most 5 seconds to a run in all.
 - **SC-007**: The demo seller's paid routes appear in the public index within 15 minutes of their first payment through
   the hosted facilitator.
 - **SC-008**: No answer, stream or model input in any run names the mode, and every run log line names it.

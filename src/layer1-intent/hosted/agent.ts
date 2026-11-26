@@ -18,7 +18,7 @@ import type { AuthorizationGatePort, SettlementVerifierPort } from "../../shared
 import { AGENT_TOOLS, systemPrompt, toToolResult } from "../agent.js";
 import { PaidResourceOrchestrator } from "../orchestrator.js";
 import type { AgentMode } from "./config.js";
-import { cutQuery, defaultDiscoveryUrl, LIMIT_REACHED, searchResources, UNAVAILABLE, type SearchNetwork, type SearchOutput } from "./discovery.js";
+import { cutQuery, defaultDiscoveryUrl, LIMIT_REACHED, SEARCH_TIMEOUT_MS, searchResources, UNAVAILABLE, type SearchNetwork, type SearchOutput } from "./discovery.js";
 
 // Rule A19: only this file imports the discovery client; the server names its network type through here.
 export type { SearchNetwork, SearchOutput } from "./discovery.js";
@@ -188,7 +188,7 @@ export interface RunGoalOptions {
   rawListings?: boolean;
   /** 021 test hook (T-AGT-23 must-fail): no cap on the searches of a run. Never set by the entry point. */
   skipSearchLimit?: boolean;
-  /** 021 test hook (T-AGT-23 must-fail): no 5 s bound on a search. Never set by the entry point. */
+  /** 021 test hook (T-AGT-23 must-fail): no 5 s bound on a search or on a run's searches. Never set by the entry point. */
   skipSearchTimeout?: boolean;
   /** 021 test hook (T-AGT-22, T-E2E-18 must-fail): the run fetches any host, and every result is on the list. Never set by the entry point. */
   skipSellerList?: boolean;
@@ -270,21 +270,28 @@ export async function runGoal(o: RunGoalOptions): Promise<RunOutcome> {
     ...(!(search && o.skipSellerList) && { allowedHosts: hosts }),
   });
 
-  // 021 (FR-009): at most 3 searches reach the index in a run; each is bounded in ./discovery.ts. Any failure, the
-  // network's asset included, is the fixed UNAVAILABLE.
+  // 021 (FR-009, NFR-004): at most 3 searches reach the index in a run, and together they take at most 5 s: each call
+  // gets what is left of the run's search time, and once it is spent a search is UNAVAILABLE without a request. So a
+  // slow or unreachable index adds at most 5 s to a run, not 5 s a search. Any failure, the network's asset included,
+  // is the fixed UNAVAILABLE.
   let searches = 0;
+  let searchMs = 0;
   const searchOnce = async (query: string): Promise<SearchOutput> => {
     if (!o.skipSearchLimit && searches >= MAX_SEARCHES_PER_RUN) return { ...LIMIT_REACHED, results: [] };
     searches++;
     const d = o.discovery;
     const url = d === undefined ? undefined : (d.url ?? defaultDiscoveryUrl(d.network.name));
     if (d === undefined || url === undefined) return { ...UNAVAILABLE, results: [] };
+    const left = SEARCH_TIMEOUT_MS - searchMs;
+    if (!o.skipSearchTimeout && left <= 0) return { ...UNAVAILABLE, results: [] };
+    const started = performance.now();
     try {
       return await searchResources({
         url,
         query,
         network: d.network,
         sellerHosts: hosts,
+        timeoutMs: left,
         ...(d.fetchImpl && { fetchImpl: d.fetchImpl }),
         ...(o.rawListings && { rawListings: true }),
         ...(o.skipSearchTimeout && { skipSearchTimeout: true }),
@@ -292,6 +299,9 @@ export async function runGoal(o: RunGoalOptions): Promise<RunOutcome> {
       });
     } catch {
       return { ...UNAVAILABLE, results: [] };
+    } finally {
+      // Searches the model starts together each count in full, so the bound only gets stricter.
+      searchMs += performance.now() - started;
     }
   };
 
