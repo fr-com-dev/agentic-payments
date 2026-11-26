@@ -8,6 +8,8 @@ runs it: copy both files to the host and adapt them there.
 Since SPEC 1.26 this is the portal's only deployment: the Azure environment was deleted, and the Azure profile in
 `infra/` (Container Apps behind its ingress, where none of this would apply) is kept as code only.
 
+To move the VPS's stack from the local chain to Base Sepolia, and back, see [base-sepolia.md](base-sepolia.md).
+
 ## What you need
 
 - Caddy 2 on the host, and a DNS name for the portal that points at it (Caddy gets the certificate).
