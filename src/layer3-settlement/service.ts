@@ -23,6 +23,7 @@ import type {
   SettlementReport,
   SettlementVerifierPort,
 } from "../shared/contracts.js";
+import { redactUrls, rpcLabel } from "../shared/rpc-url.js";
 import { ChainSettlementVerifier, type ReadOnlyChainClient } from "./verifier.js";
 
 export const DEFAULT_RECHECK_ATTEMPTS = 5;
@@ -142,7 +143,7 @@ export function createSettlementService(deps: SettlementServiceDeps): Settlement
       try {
         report = await deps.verifier.verify(claim);
       } catch (err) {
-        log(`re-check failed for ${claim.authorizationId}: ${(err as Error).message}`);
+        log(`re-check failed for ${claim.authorizationId}: ${redactUrls((err as Error).message)}`);
         schedule(claim, attemptsLeft - 1);
         return;
       }
@@ -195,6 +196,11 @@ export function listenSettlement(app: Express, port: number = settlementPort(), 
   return app.listen(port, SETTLEMENT_BIND_HOST, onListen);
 }
 
+/** L3's startup line. 1.29.3 (SEC-54): the RPC endpoint as its origin only, never a provider's key in its path or query. */
+export function listeningLine(net: Pick<NetworkProfile, "name" | "rpcUrl">, port: number): string {
+  return `l3-verifier listening on http://${SETTLEMENT_BIND_HOST}:${port} (network ${net.name}, rpc ${rpcLabel(net.rpcUrl)})`;
+}
+
 /** Entry point (`npm run l3:verifier`). */
 export function main(): void {
   loadEnv("l3-verifier");
@@ -204,7 +210,7 @@ export function main(): void {
   const { app } = createSettlementService({ verifier, reconciler, token: tokenFor("agent-verifier") });
   const port = settlementPort();
   const server = listenSettlement(app, port, () => {
-    console.log(`l3-verifier listening on http://${SETTLEMENT_BIND_HOST}:${port} (network ${net.name}, rpc ${net.rpcUrl})`);
+    console.log(listeningLine(net, port));
   });
   server.on("error", (err) => {
     console.error(`l3-verifier: ${err.message}`);
@@ -216,7 +222,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   try {
     main();
   } catch (err) {
-    console.error(`l3-verifier: ${err instanceof Error ? err.message : String(err)}`);
+    console.error(`l3-verifier: ${redactUrls(err instanceof Error ? err.message : String(err))}`);
     process.exit(1);
   }
 }

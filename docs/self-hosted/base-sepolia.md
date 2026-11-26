@@ -42,15 +42,16 @@ ledger stays as it is, for a rollback.
 - **A pay-to address**, where the seller is paid: an address of a test wallet whose key you keep elsewhere, never
   the payer's. It needs no funds.
 - **An RPC endpoint for Base Sepolia (optional).** The public `https://sepolia.base.org` is rate-limited, and a
-  throttled read ends in `PENDING`. Choose an endpoint whose URL holds no key, such as one locked to the VPS's
-  address instead. A key in the URL would leak in two places. L3 prints the URL in its first line. An RPC error's
-  text also carries the URL (viem hides only a user name and password), and L3 copies that text into its report, so
-  the URL would stay in L2's append-only ledger.
+  throttled read ends in `PENDING`. Since SPEC 1.29.3, L3 shows and reports an endpoint as its origin only, so a key
+  in the URL's path or query stays out of L3's log and L2's ledger. A key in the host name itself is still shown, so
+  don't use an endpoint like that. Before 1.29.3, L3 printed the whole URL at startup and copied it, inside RPC errors,
+  into L2's append-only ledger: run 1.29.3 or later with a keyed endpoint.
 
 ### 1.2 The VPS
 
-Bring the checkout to the current `main` (SPEC 1.29.2 or later: a payment refused because the wallet is empty then
-says so) and run `npm install`, as for any update.
+Bring the checkout to the current `main` and run `npm install`, as for any update. It must be SPEC 1.29.3 or later:
+from 1.29.2, a payment refused because the wallet is empty says so, and from 1.29.3, an RPC key stays out of L3's log
+and L2's ledger.
 
 The clock must be synchronized, because CDP's tokens expire after 120 s:
 
@@ -323,7 +324,7 @@ Start each process as its own long-running service, under whatever supervises th
 |---|---|---|
 | 1 | `ENV_FILE=env/seller.env npm run seller` | `seller listening on 0.0.0.0:4021 (eip155:84532, facilitator=cdp host=api.cdp.coinbase.com…)` |
 | 2 | `ENV_FILE=env/l2-control.env npm run l2:control` | `user accounts on (platform platform-poc-001, 1 sellers)`, `callers' tokens verified (issuer https://…/)`, `ledger keyed (from entry 0)`, `portal administration on`, then `l2-control listening on http://127.0.0.1:4020 (network base-sepolia, payer 0x…)` with the payer you funded |
-| 3 | `ENV_FILE=env/l3-verifier.env npm run l3:verifier` | `l3-verifier listening on http://127.0.0.1:4023 (network base-sepolia, rpc …)` |
+| 3 | `ENV_FILE=env/l3-verifier.env npm run l3:verifier` | `l3-verifier listening on http://127.0.0.1:4023 (network base-sepolia, rpc https://sepolia.base.org)`, or your endpoint's origin followed by `/…` |
 | 4 | `ENV_FILE=env/l1-hosted.env npm run agent:hosted` | `l1-hosted listening on http://127.0.0.1:4024 (provider …, model …)` |
 | 5 | `ENV_FILE=env/portal.env npm run portal` | `portal listening on http://127.0.0.1:4025 (network base-sepolia, sign-in …, cards …, administration on)` |
 
@@ -439,7 +440,7 @@ NETWORK=base-sepolia
 CONTROL_URL=http://127.0.0.1:4020
 VERIFIER_TOKEN=<random, shared with l1-hosted>
 SETTLEMENT_TOKEN=<random, shared with l2-control>
-# optional: BASE_SEPOLIA_RPC_URL=<an endpoint whose URL holds no key>
+# optional: BASE_SEPOLIA_RPC_URL=<your endpoint; a key in its path or query is fine since 1.29.3, never in its host>
 ```
 
 `env/l1-hosted.env`:

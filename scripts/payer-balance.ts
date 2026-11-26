@@ -5,6 +5,7 @@
 import { pathToFileURL } from "node:url";
 import { createPublicClient, erc20Abi, http, isAddress, type Address } from "viem";
 import { networkProfile } from "../src/shared/config.js";
+import { redactUrls } from "../src/shared/rpc-url.js";
 
 export const DEFAULT_MIN_ATOMIC = 50_000n; // 0.05 test USDC: one regression and one smoke run, with margin
 
@@ -33,7 +34,8 @@ async function main(argv: string[]): Promise<number> {
     (r.code === 0 ? console.log : console.error)(r.line);
     return r.code;
   } catch (err) {
-    console.error(`payer-balance: RPC error: ${err instanceof Error ? err.message : String(err)}`);
+    // 1.29.3 (SEC-54): viem's error names the endpoint in full, a provider's key included.
+    console.error(`payer-balance: RPC error: ${redactUrls(err instanceof Error ? err.message : String(err))}`);
     return 1;
   }
 }

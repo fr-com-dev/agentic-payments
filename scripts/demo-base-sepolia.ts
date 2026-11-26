@@ -10,6 +10,7 @@ import { resolve } from "node:path";
 import { createPublicClient, erc20Abi, http, parseEventLogs, type Address, type Hex } from "viem";
 import { cdpCredentialStatus, containsCdpSecret } from "../src/counterparty/cdp-facilitator.js";
 import { BASE_SEPOLIA_USDC, DEFAULT_PORTS, facilitatorChoice, networkProfile } from "../src/shared/config.js";
+import { redactUrls } from "../src/shared/rpc-url.js";
 import {
   OUTCOME_LINE,
   ProcessGroup,
@@ -219,7 +220,8 @@ run()
     process.exit(code);
   })
   .catch(async (err: unknown) => {
-    console.error(`demo: ${err instanceof Error ? err.message : String(err)}`);
+    // 1.29.3 (SEC-54): an RPC error from the demo's own chain reads names the endpoint in full.
+    console.error(`demo: ${redactUrls(err instanceof Error ? err.message : String(err))}`);
     await group?.shutdown();
     process.exit(1);
   });
