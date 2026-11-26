@@ -12,7 +12,7 @@ import express from "express";
 import { afterEach, describe, expect, it } from "vitest";
 import { DEV_AGENT_CLIENT, DEV_AUDIENCE } from "../scripts/dev-issuer-lib.js";
 import type { LanguageModelV3GenerateResult } from "@ai-sdk/provider";
-import { MAX_SEARCHES_PER_RUN, runGoal, SEARCH_TOOL_DESCRIPTION, searchSystemPrompt } from "../src/layer1-intent/hosted/agent.js";
+import { MAX_SEARCHES_PER_RUN, MIN_SEARCH_MS, runGoal, SEARCH_TOOL_DESCRIPTION, searchSystemPrompt } from "../src/layer1-intent/hosted/agent.js";
 import { DEV_ISSUER, loadHostedConfig } from "../src/layer1-intent/hosted/config.js";
 import { PortHttpError } from "../src/layer1-intent/ports-http.js";
 import { BASE_SEPOLIA_USDC, ConfigError } from "../src/shared/config.js";
@@ -543,6 +543,16 @@ describe("021 limits, the shared budget", () => {
     expect(outcomes(r.body)).toEqual(["UNAVAILABLE", "UNAVAILABLE", "UNAVAILABLE"]);
     expect(s.requests).toHaveLength(1);
     expect(took).toBeLessThan(5_800);
+  }, 20_000);
+
+  it("T-AGT-23 with less than 250 ms of the run's search time left, a search sends nothing (a timer that fires early buys no call)", async () => {
+    // An index that answers just inside what the first two searches are given: 2.4 s, then 2.4 s, leaves ~0.2 s.
+    const s = await stub({ delayMs: 2_380, listings: [] });
+    const a = await hosted({ discovery: { url: s.url }, model: three() });
+    const r = await a.run("alice", { goal: "weather" });
+    expect(outcomes(r.body)).toEqual(["OK", "OK", "UNAVAILABLE"]);
+    expect(s.requests).toHaveLength(2);
+    expect(MIN_SEARCH_MS).toBe(250);
   }, 20_000);
 
   it("T-AGT-23 a fast index leaves the budget almost whole: three quick searches all reach it", async () => {

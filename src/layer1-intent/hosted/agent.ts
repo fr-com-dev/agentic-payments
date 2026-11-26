@@ -30,6 +30,11 @@ export const MODEL_MAX_RETRIES = 2;
 const ERROR_DETAIL_MAX = 300;
 /** 021 (FR-009): searches one run may send to the index; later ones answer LIMIT_REACHED and send nothing. */
 export const MAX_SEARCHES_PER_RUN = 3;
+/**
+ * 021 (NFR-004): the least search time worth a request. With less left the run's search time counts as spent: no
+ * request could finish in it, and a timer that fired a fraction of a millisecond early must not buy another call.
+ */
+export const MIN_SEARCH_MS = 250;
 /** 021 (FR-010): how long a run waits for L2's seller hosts before it goes on with the configured seller's only. */
 export const SELLERS_TIMEOUT_MS = 2_000;
 /** 021: `host[:port]`, as `new URL(...).host` gives it. */
@@ -271,7 +276,8 @@ export async function runGoal(o: RunGoalOptions): Promise<RunOutcome> {
   });
 
   // 021 (FR-009, NFR-004): at most 3 searches reach the index in a run, and together they take at most 5 s: each call
-  // gets what is left of the run's search time, and once it is spent a search is UNAVAILABLE without a request. So a
+  // gets what is left of the run's search time, and once it is spent (less than MIN_SEARCH_MS left) a search is
+  // UNAVAILABLE without a request. So a
   // slow or unreachable index adds at most 5 s to a run, not 5 s a search. Any failure, the network's asset included,
   // is the fixed UNAVAILABLE.
   let searches = 0;
@@ -283,7 +289,7 @@ export async function runGoal(o: RunGoalOptions): Promise<RunOutcome> {
     const url = d === undefined ? undefined : (d.url ?? defaultDiscoveryUrl(d.network.name));
     if (d === undefined || url === undefined) return { ...UNAVAILABLE, results: [] };
     const left = SEARCH_TIMEOUT_MS - searchMs;
-    if (!o.skipSearchTimeout && left <= 0) return { ...UNAVAILABLE, results: [] };
+    if (!o.skipSearchTimeout && left < MIN_SEARCH_MS) return { ...UNAVAILABLE, results: [] };
     const started = performance.now();
     try {
       return await searchResources({

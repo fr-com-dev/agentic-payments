@@ -33,7 +33,8 @@ are unchanged: `POST /v1/runs` still takes `{ goal, sessionRef? }` and refuses a
 - Output: `SearchOutput` ([data-model.md](../data-model.md#search-result-l1-only-the-tools-output-not-a-cross-layer-type)).
 - Per run: the first 3 calls may reach the index; every later call returns `{ "outcome": "LIMIT_REACHED",
   "results": [] }` and sends nothing. The run's searches share 5 s: each call gets what is left (at most 5 s) and gives
-  up with `UNAVAILABLE` when it runs out; once the 5 s are spent, a call is `UNAVAILABLE` without a request. So a slow
+  up with `UNAVAILABLE` when it runs out; once the 5 s are spent (less than 250 ms left counts as spent), a call is
+  `UNAVAILABLE` without a request. So a slow
   or unreachable index adds at most 5 s to a run, not 5 s a search (NFR-004).
 - It never fetches a listed address, never calls L2 or L3, and never sees the caller's token.
 
