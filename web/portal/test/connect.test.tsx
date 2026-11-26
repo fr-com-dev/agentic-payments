@@ -47,7 +47,8 @@ describe("T-WEB-19: the Coinbase return screen", () => {
     renderApp(`${RETURN}?code=c0de-from-coinbase&state=st4te-from-portal&scope=wallet%3Aaccounts%3Aread`, w, { api, strict: true });
     expect(await screen.findByText(COINBASE_CONNECTED_TEXT)).toBeTruthy();
     expect(await screen.findByRole("heading", { level: 1, name: "Wallet" })).toBeTruthy();
-    const part = within(screen.getByRole("region", { name: COINBASE_PART_TITLE }));
+    // The Coinbase part renders once the wallet's own data has loaded, after the heading: wait for it.
+    const part = within(await screen.findByRole("region", { name: COINBASE_PART_TITLE }));
     expect(await part.findByText("Connected on 25 Nov 2026")).toBeTruthy();
     // Once: a single-use state handed over twice would be refused the second time.
     expect(api.completeCoinbase.mock.calls).toEqual([["c0de-from-coinbase", "st4te-from-portal"]]);
