@@ -5,6 +5,7 @@
 import { decodePaymentResponseHeader } from "@x402/core/http";
 import { erc20Abi, parseAbi, parseEventLogs, type Hex, type Log } from "viem";
 import type { NetworkProfile } from "../shared/config.js";
+import { redactUrls } from "../shared/rpc-url.js";
 import type {
   FinalityClass,
   SettlementClaim,
@@ -44,6 +45,8 @@ export interface VerifierDeps {
   verifyFailedClaims?: boolean;
   /** Test-only (1.19 must-fail): NOT_SETTLED on the seller's word, as before 1.19, even for a claim with a nonce. */
   skipNonceCheck?: boolean;
+  /** Test-only (1.29.3 must-fail): a report's `detail` keeps every URL whole, as before 1.29.3 (SEC-54). */
+  skipRpcRedaction?: boolean;
 }
 
 const TX_HASH = /^0x[0-9a-fA-F]{64}$/;
@@ -80,6 +83,7 @@ export class ChainSettlementVerifier implements SettlementVerifierPort {
   readonly #pollMs: number;
   readonly #verifyFailedClaims: boolean;
   readonly #skipNonceCheck: boolean;
+  readonly #skipRpcRedaction: boolean;
 
   constructor(deps: VerifierDeps) {
     this.#client = deps.publicClient;
@@ -88,6 +92,7 @@ export class ChainSettlementVerifier implements SettlementVerifierPort {
     this.#pollMs = deps.pollMs ?? DEFAULT_POLL_MS;
     this.#verifyFailedClaims = deps.verifyFailedClaims ?? true;
     this.#skipNonceCheck = deps.skipNonceCheck === true;
+    this.#skipRpcRedaction = deps.skipRpcRedaction === true;
   }
 
   async verify(claim: SettlementClaim): Promise<SettlementReport> {
@@ -107,10 +112,13 @@ export class ChainSettlementVerifier implements SettlementVerifierPort {
     };
     // Set in step 2 when the facilitator reported failure but named a transaction (v1.2).
     let prefix = "";
+    // 1.29.3 (SEC-54): an RPC error names the endpoint in full, a provider's key included, and the detail goes to L2's
+    // append-only ledger and to L1. Every URL in it is cut to its origin, here, where every report is made.
+    const shown = (text: string) => (this.#skipRpcRedaction ? text : redactUrls(text));
     const report = (status: SettlementStatus, detail: string, extra: Partial<SettlementReport> = {}): SettlementReport => ({
       ...base,
       status,
-      detail: prefix + detail,
+      detail: shown(prefix + detail),
       ...extra,
       observedAt: new Date().toISOString(),
     });
