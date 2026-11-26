@@ -79,7 +79,7 @@ function validRedirect(v: string, local: boolean): boolean {
   } catch {
     return false;
   }
-  if (u.pathname !== "/wallet/coinbase" || u.search !== "" || u.hash !== "" || u.username !== "" || u.password !== "") return false;
+  if (u.pathname !== "/wallet/return" || u.search !== "" || u.hash !== "" || u.username !== "" || u.password !== "") return false;
   if (u.protocol === "https:") return true;
   return local && u.protocol === "http:" && u.hostname === "localhost";
 }
@@ -110,7 +110,7 @@ function coinbaseSettings(env: Env, local: boolean, dirs: { connectionDir: strin
   }
   const redirectUri = env.COINBASE_REDIRECT_URI ?? "";
   if (!validRedirect(redirectUri, local)) {
-    throw new ConfigError("COINBASE_REDIRECT_URI must be https://<portal host>/wallet/coinbase (http://localhost:<port>/wallet/coinbase only with NETWORK=local)");
+    throw new ConfigError("COINBASE_REDIRECT_URI must be https://<portal host>/wallet/return (http://localhost:<port>/wallet/return only with NETWORK=local)");
   }
   if (!validHttps(env.PRIVACY_POLICY_URL)) throw new ConfigError("PRIVACY_POLICY_URL must be an https address with CONNECTED_PLATFORMS=coinbase");
   if (!validHttps(env.SUPPORT_URL, { mailto: true })) throw new ConfigError("SUPPORT_URL must be an https or mailto: address with CONNECTED_PLATFORMS=coinbase");

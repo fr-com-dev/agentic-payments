@@ -1353,7 +1353,7 @@ describe("T-PRT-21 with CONNECTED_PLATFORMS=coinbase the portal refuses to start
     COINBASE_CLIENT_ID: "client-id",
     COINBASE_CLIENT_SECRET: "SECRET-VALUE-must-not-show",
     COINBASE_GRANT_KEY: KEY,
-    COINBASE_REDIRECT_URI: "http://localhost:4025/wallet/coinbase",
+    COINBASE_REDIRECT_URI: "http://localhost:4025/wallet/return",
     PRIVACY_POLICY_URL: "https://example.org/privacy",
     SUPPORT_URL: "mailto:support@example.org",
     CONNECTION_DIR: dir,
@@ -1363,7 +1363,7 @@ describe("T-PRT-21 with CONNECTED_PLATFORMS=coinbase the portal refuses to start
   it("T-PRT-21 a valid set loads; each wrong one is refused, naming the variable and never the value", () => {
     const dir = join(mkdtempSync(join(tmpdir(), "x402-conn-")), "connections");
     const ok = loadPortalConfig(on(dir));
-    expect(ok.coinbase).toMatchObject({ redirectUri: "http://localhost:4025/wallet/coinbase", privacyPolicyUrl: "https://example.org/privacy" });
+    expect(ok.coinbase).toMatchObject({ redirectUri: "http://localhost:4025/wallet/return", privacyPolicyUrl: "https://example.org/privacy" });
     expect(ok.connectionDir).toBe(dir);
     const bad: Array<[Record<string, string | undefined>, RegExp]> = [
       [{ CONNECTED_PLATFORMS: "kraken" }, /CONNECTED_PLATFORMS must be "coinbase" or unset/],
@@ -1373,8 +1373,8 @@ describe("T-PRT-21 with CONNECTED_PLATFORMS=coinbase the portal refuses to start
       [{ COINBASE_GRANT_KEY: "off" }, /COINBASE_GRANT_KEY is required/],
       [{ COINBASE_GRANT_KEY: Buffer.alloc(16).toString("base64") }, /COINBASE_GRANT_KEY must be 32 random bytes/],
       [{ COINBASE_REDIRECT_URI: "https://portal.example.org/callback" }, /COINBASE_REDIRECT_URI must be/],
-      [{ COINBASE_REDIRECT_URI: "https://portal.example.org/wallet/coinbase?x=1" }, /COINBASE_REDIRECT_URI must be/],
-      [{ COINBASE_REDIRECT_URI: "http://portal.example.org/wallet/coinbase" }, /COINBASE_REDIRECT_URI must be/],
+      [{ COINBASE_REDIRECT_URI: "https://portal.example.org/wallet/return?x=1" }, /COINBASE_REDIRECT_URI must be/],
+      [{ COINBASE_REDIRECT_URI: "http://portal.example.org/wallet/return" }, /COINBASE_REDIRECT_URI must be/],
       [{ NETWORK: "base-sepolia", PORTAL_TOKEN: "t", AUTH_JWKS_FILE: undefined, AUTH_ISSUER: SIGN_IN_ISSUER }, /COINBASE_REDIRECT_URI must be/],
       [{ PRIVACY_POLICY_URL: "http://example.org/privacy" }, /PRIVACY_POLICY_URL must be an https address/],
       [{ PRIVACY_POLICY_URL: undefined }, /PRIVACY_POLICY_URL must be an https address/],

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 // T-WEB-19 (specs/020 FR-009; contracts/portal-ui.md "Connecting", contracts/portal-api.md "The return screen"):
-// Coinbase sends the browser back to /wallet/coinbase. The screen reads `code`, `state` and `error` once, takes them
+// Coinbase sends the browser back to /wallet/return. The screen reads `code`, `state` and `error` once, takes them
 // out of the address and the history before anything else, and only then hands them to the portal with the person's
 // own token. Each answer has its sentence; nothing of the trip is kept in the browser's storage.
 import { cleanup, screen, waitFor, within } from "@testing-library/react";
@@ -24,7 +24,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-const RETURN = "/wallet/coinbase";
+const RETURN = "/wallet/return";
 const notConnected = (): World => world("done", { wallet: { account: account(), cards: [], cardsAvailable: true, disabled: false, connections: [coinbaseRow("not_connected")] } });
 const main = () => within(screen.getByRole("main"));
 /** The return screen's buttons, by their text. */

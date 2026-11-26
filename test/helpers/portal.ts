@@ -29,7 +29,7 @@ import { startUsersL2, TOKENS, type UsersL2, type UsersL2Options } from "./users
 
 export const TEST_VAULT_KEY = "rk_test_PORTALTESTKEY0123456789";
 export const TEST_PUBLISHABLE_KEY = "pk_test_PORTALPUBLISHABLE0123";
-export const TEST_REDIRECT = "http://localhost:4025/wallet/coinbase";
+export const TEST_REDIRECT = "http://localhost:4025/wallet/return";
 export const TEST_PRIVACY = "https://example.org/privacy";
 export const TEST_SUPPORT = "mailto:support@example.org";
 

@@ -55,12 +55,12 @@ The web app sets `window.location` to it (a same-tab navigation; the sign-in sur
 R2). The address and the scope list are constants of `src/portal/coinbase/client.ts`, never configuration, except
 the client ID and the redirect address ([config-and-secrets.md](config-and-secrets.md)).
 
-## The return screen: `/wallet/coinbase`
+## The return screen: `/wallet/return`
 
-Coinbase sends the browser to `COINBASE_REDIRECT_URI`, which is the portal's own `/wallet/coinbase` screen (a new row
+Coinbase sends the browser to `COINBASE_REDIRECT_URI`, which is the portal's own `/wallet/return` screen (a new row
 in `src/shared/portal-screens.ts` and `web/portal/src/routes.ts`, T-WEB-14). The page is the web app; the portal reads
 no query there. The web app:
-1. reads `code`, `state` and `error` from the query once, then replaces the address with `/wallet/coinbase`
+1. reads `code`, `state` and `error` from the query once, then replaces the address with `/wallet/return`
    (`history.replaceState`), so the code leaves the address bar and the history (`Referrer-Policy: no-referrer` is
    already sent);
 2. with `error` (the person cancelled or refused at Coinbase), shows "Nothing was connected" and a link back to the

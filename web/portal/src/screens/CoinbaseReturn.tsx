@@ -1,4 +1,4 @@
-// 020 the Coinbase return screen, /wallet/coinbase (specs/020 FR-009; contracts/portal-ui.md "Connecting",
+// 020 the Coinbase return screen, /wallet/return (specs/020 FR-009; contracts/portal-ui.md "Connecting",
 // contracts/portal-api.md "The return screen"). Coinbase sends the browser back here with `code` and `state`, or with
 // `error` when the person cancelled or refused. The screen reads them once, takes them out of the address and the
 // history before anything else (history.replaceState), and only then hands them to the portal with the person's own
@@ -11,7 +11,7 @@ import { useApp } from "../context.js";
 import { COINBASE_CONNECTED_TEXT, NOTHING_CONNECTED_TEXT, connectRefusal } from "../messages.js";
 import { ConnectCoinbase, Wallet } from "./Wallet.js";
 
-export const COINBASE_RETURN_PATH = "/wallet/coinbase";
+export const COINBASE_RETURN_PATH = "/wallet/return";
 
 interface Returned {
   code: string | null;
