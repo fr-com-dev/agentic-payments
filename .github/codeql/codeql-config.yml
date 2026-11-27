@@ -1,0 +1,8 @@
+name: "CodeQL config"
+
+# Exclude static documentation and standalone offline Archify HTML diagram viewers under docs/.
+# Nothing in the runtime services serves docs/diagrams/*.html; CodeQL continues scanning src/, web/,
+# scripts/, test/, and .github/workflows/.
+paths-ignore:
+  - "docs"
+  - "docs/**"
