@@ -13,12 +13,13 @@ import express, { type Express, type NextFunction, type Request, type Response }
 import type { MastraModelConfig } from "@mastra/core/llm";
 import { addressLimit, failedAuthLimit, MAX_FAILED_AUTH_PER_ADDRESS, onceInWindow, proxyWarning, trustProxies } from "../../shared/address-limit.js";
 import { localOnly } from "../../shared/local-only.js";
+import { networkProfile } from "../../shared/config.js";
 import type { CallerGates, SettlementVerifierPort } from "../../shared/contracts.js";
 import { bearerChallenge, type TokenKeys } from "../../shared/identity-token.js";
 import { checkAccount } from "./account-check.js";
-import { runGoal } from "./agent.js";
+import { runGoal, type SearchNetwork } from "./agent.js";
 import { docsSignIn, mountHostedApiDocs } from "./api-docs.js";
-import type { HostedConfig } from "./config.js";
+import type { AgentMode, HostedConfig } from "./config.js";
 import { AGENT_REALM, callerTokenOf, REQUIRED_PERMISSION, requesterAuth, type Requester } from "./requester-auth.js";
 import { createRunLimiter } from "./run-limits.js";
 import { createRunLog, stepOutcome } from "./run-log.js";
@@ -73,6 +74,23 @@ export interface HostedDeps {
   limitKey?: (requester: Requester) => string;
   /** 019 test hook (T-AGT-16 must-fail): a 401 describes the refused token. Never set by the entry point. */
   revealCheck?: boolean;
+  /**
+   * 021 test hook: the network a search filters by (CAIP-2, asset, decimals). Default: the profile of
+   * `config.network`. Never set by the entry point.
+   */
+  network?: SearchNetwork;
+  /** 021 test hook: the HTTP client the discovery index is called with. Never set by the entry point. */
+  discoveryFetch?: typeof fetch;
+  /** 021 test hook (T-AGT-21 must-fail): a request header `Agent-Test-Mode` picks the run's mode. Never set by the entry point. */
+  modeFromHeader?: boolean;
+  /** 021 test hook (T-DISC-02 must-fail): listings reach the model unfiltered. Never set by the entry point. */
+  rawListings?: boolean;
+  /** 021 test hook (T-AGT-23 must-fail): no cap on a run's searches. Never set by the entry point. */
+  skipSearchLimit?: boolean;
+  /** 021 test hook (T-AGT-23 must-fail): no 5 s bound on a search. Never set by the entry point. */
+  skipSearchTimeout?: boolean;
+  /** 021 test hook (T-AGT-22, T-E2E-18 must-fail): a search-mode run fetches any host. Never set by the entry point. */
+  skipSellerList?: boolean;
 }
 
 /** 019: the desktop client's return address, on the person's own computer (specs/019 FR-002). */
@@ -122,6 +140,27 @@ export function createHostedApp(deps: HostedDeps): HostedApp {
   const runLog = createRunLog(deps.log);
   const requesterOf = (res: Response) => (res.locals.requester as Requester | undefined) ?? BYPASS_REQUESTER;
   const limitKey = deps.limitKey ?? ((r: Requester) => r.key);
+  // 021: the network a search filters by, read once, when a search-mode run first needs it. On the local chain its
+  // asset comes from the deployment record; a search that can't read it is UNAVAILABLE.
+  let profile: SearchNetwork | undefined = deps.network;
+  const searchNetwork = (): SearchNetwork => {
+    try {
+      return (profile ??= networkProfile(deps.config.network));
+    } catch {
+      // An unknown network: every search reads a field that throws, and so is UNAVAILABLE.
+      const unknown = (): never => {
+        throw new Error("no network profile");
+      };
+      return { name: deps.config.network, decimals: 6, get caip2() { return unknown(); }, get asset() { return unknown(); } };
+    }
+  };
+  // 021 (FR-002): the run's mode is the operator's setting, read when the run starts. Only the test-only switch lets a
+  // header choose it; no body field, session, goal or model output ever does.
+  const modeOf = (req: Request): AgentMode => {
+    const asked = req.headers["agent-test-mode"];
+    if (deps.modeFromHeader && typeof asked === "string") return asked === "1" ? "test" : "search";
+    return deps.config.mode;
+  };
 
   // 017 (SEC-44): the dev issuer's tokens are accepted from this machine only. First, before health and every route.
   if (deps.config.auth.jwksFile !== undefined && !deps.skipLocalOnly) app.use(localOnly());
@@ -220,6 +259,7 @@ export function createHostedApp(deps: HostedDeps): HostedApp {
       }
     }
     const release = limiter.start(limitKey(requester));
+    const mode = modeOf(req);
     const runId = `run_${randomUUID()}`;
     const startedMs = Date.now();
     const startedAt = new Date(startedMs).toISOString();
@@ -241,8 +281,16 @@ export function createHostedApp(deps: HostedDeps): HostedApp {
         gate,
         settlement: deps.settlement,
         sellerUrl: deps.config.urls.seller,
+        mode,
+        ...(mode === "search" && {
+          discovery: { ...(deps.config.discoveryUrl !== undefined && { url: deps.config.discoveryUrl }), network: searchNetwork(), ...(deps.discoveryFetch && { fetchImpl: deps.discoveryFetch }) },
+        }),
+        ...(deps.rawListings && { rawListings: true }),
+        ...(deps.skipSearchLimit && { skipSearchLimit: true }),
+        ...(deps.skipSearchTimeout && { skipSearchTimeout: true }),
+        ...(deps.skipSellerList && { skipSellerList: true }),
         onStep: (step, ms) => {
-          runLog.step({ runId, requester: requester.key, client: requester.client, sessionId, index: step.index, tool: step.tool, ...stepOutcome(step.result), ms });
+          runLog.step({ runId, requester: requester.key, client: requester.client, sessionId, index: step.index, tool: step.tool, ...stepOutcome(step.result, step.tool), ms });
           stream?.send("step", step);
         },
         ...(stream && { onText: (delta: string) => stream.send("text", { delta }) }),
@@ -252,6 +300,7 @@ export function createHostedApp(deps: HostedDeps): HostedApp {
         requester: requester.key,
         client: requester.client,
         sessionId,
+        mode,
         status: outcome.status,
         stopReason: outcome.stopReason,
         steps: outcome.steps.length,

@@ -1,12 +1,15 @@
 // 019 — T-AGT-20 the client in the run log (SPEC L1-6 logs, SEC-16; specs/019 FR-023, NFR-003). Each step and run line
 // names the client the caller's token was issued to, beside the requester, the run, the session and, for a payment,
-// the authorization. A known-value scan finds no token in the log, the JSON answer or a stream.
+// the authorization. A known-value scan finds no token in the log, the JSON answer or a stream. 021: the run line says
+// which mode the run used, and a search step's line has its outcome and the number of results, never the query, a
+// listing's text or an address.
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import express from "express";
 import { encodePaymentRequiredHeader } from "@x402/core/http";
 import { afterEach, describe, expect, it } from "vitest";
 import { DEV_AGENT_CLIENT, DEV_DESKTOP_CLIENT, DEV_MACHINE_CLIENT } from "../scripts/dev-issuer-lib.js";
+import { listing, startDiscoveryStub } from "./helpers/discovery-stub.js";
 import { fakePorts, mockModel, startHostedApp, text, toolCall, type HostedTestApp } from "./helpers/hosted.js";
 
 const closers: Array<() => Promise<void>> = [];
@@ -76,6 +79,8 @@ describe("T-AGT-20 the run log names each run's client, and no token is written 
       ]),
     );
     for (const p of parsed) expect(Object.keys(p)).toEqual(expect.arrayContaining(["runId", "requester", "client", "sessionId"]));
+    // 021: these runs are in test mode, and the run line says so.
+    for (const p of parsed.filter((x) => x.event === "run")) expect(p.mode).toBe("test");
     // The payment step names its authorization; the run lines tie each run to its requester.
     for (const p of parsed.filter((x) => x.tool === "fetch_resource")) expect(p).toMatchObject({ outcome: "DENIED", authorizationId: "auth_fake" });
     const runs = parsed.filter((p) => p.event === "run");
@@ -89,5 +94,33 @@ describe("T-AGT-20 the run log names each run's client, and no token is written 
       for (const token of Object.values(tokens)) expect(content.includes(token), `a token is in the ${where}`).toBe(false);
       expect(/eyJ[A-Za-z0-9_-]+\.eyJ/.test(content), `a JWT-shaped value is in the ${where}`).toBe(false);
     }
+  });
+});
+
+describe("T-AGT-20 021: the run line's mode, and a search step's line", () => {
+  it("T-AGT-20 a search-mode run: the run line says search; the search step has its outcome and count; the query, a listing's text and its address are in no line", async () => {
+    const description = "planted-listing-description-31f0 for the log scan";
+    const address = "https://planted-listing-host.example/api/weather";
+    const index = await startDiscoveryStub({ listings: [listing("http://127.0.0.1:4021/api/weather"), listing(address, { description })] });
+    closers.push(() => index.close());
+    index.script({ listings: [listing("http://127.0.0.1:4021/api/weather"), listing(address, { description })] }, { status: 500 });
+    const query = "planted-query-8c2e current weather for a city";
+    const model = mockModel([toolCall("search_resources", { query }), toolCall("search_resources", { query: "again" }), text("done")]);
+    const lines: string[] = [];
+    const a = await startHostedApp(Object.assign({ model, discovery: { url: index.url }, log: (line: string) => lines.push(line) }));
+    closers.push(() => a.close());
+    expect(await post(a, await a.token("alice"))).toContain(description);
+
+    const parsed = lines.map((l) => JSON.parse(l) as Record<string, unknown>);
+    const run = parsed.find((p) => p.event === "run")!;
+    expect(run.mode).toBe("search");
+    const steps = parsed.filter((p) => p.event === "step");
+    expect(steps.map((p) => [p.tool, p.outcome, p.results])).toEqual([
+      ["search_resources", "ok", 2],
+      ["search_resources", "unavailable", 0],
+    ]);
+    for (const p of steps) expect(Object.keys(p).sort()).toEqual(["client", "event", "index", "ms", "outcome", "requester", "results", "runId", "sessionId", "tool"]);
+    const log = lines.join("\n");
+    for (const planted of [query, "planted-query-8c2e", description, "planted-listing-description-31f0", address, "planted-listing-host.example", "again"]) expect(log, planted).not.toContain(planted);
   });
 });

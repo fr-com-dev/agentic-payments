@@ -954,7 +954,12 @@ describe("T-L1-FETCH-01 no redirects, http(s) only, the seller's host only for t
   });
 
   it("T-L1-FETCH-01 the hosted agent and the command-line agent set allowedHosts to the seller's host; the scripted plan doesn't", () => {
-    expect(readFileSync("src/layer1-intent/hosted/agent.ts", "utf8")).toMatch(/allowedHosts: \[new URL\(o\.sellerUrl\)\.host\]/);
+    // 021: the hosted agent's hosts are the seller's in test mode, and the seller's plus L2's seller hosts in search
+    // mode (T-AGT-22 runs both); only the test-only skipSellerList leaves the list off.
+    const hosted = readFileSync("src/layer1-intent/hosted/agent.ts", "utf8");
+    expect(hosted).toMatch(/const hosts = search \? \[\.\.\.new Set\(\[sellerHost, \.\.\.\(await listedSellerHosts\(o\.gate\)\)\]\)\] : \[sellerHost\];/);
+    expect(hosted).toMatch(/const sellerHost = new URL\(o\.sellerUrl\)\.host;/);
+    expect(hosted).toMatch(/\.\.\.\(!\(search && o\.skipSellerList\) && \{ allowedHosts: hosts \}\)/);
     expect(readFileSync("src/main.ts", "utf8")).toMatch(/\.\.\.\(!scripted && \{ allowedHosts: \[new URL\(urls\.seller\)\.host\] \}\)/);
   });
 });

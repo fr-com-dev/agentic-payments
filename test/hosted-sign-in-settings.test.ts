@@ -60,6 +60,7 @@ describe("T-AGT-18 GET /.well-known/agent-auth (019 FR-024, FR-025)", () => {
     const SECRETISH = "PlantedDesktopClient0019";
     const env = (over: Record<string, string>) => ({
       NETWORK: "local",
+      AGENT_TEST_MODE: "1", // 021: the agent of before 021 (NFR-006)
       MODEL_PROVIDER: "anthropic",
       ANTHROPIC_API_KEY: "test-key-not-used",
       AUTH_ISSUER: TENANT_TEST_ISSUER,

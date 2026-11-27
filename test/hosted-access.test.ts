@@ -450,6 +450,7 @@ describe("T-AGT-07 a portal token is refused by the agent service (013 SEC-20)",
   it("T-AGT-07 the service refuses to start with the portal's client on its list", () => {
     const env = {
       NETWORK: "local",
+      AGENT_TEST_MODE: "1", // 021: the agent of before 021 (NFR-006)
       MODEL_PROVIDER: "anthropic",
       ANTHROPIC_API_KEY: "test-key-not-used",
       AUTH_ISSUER: "urn:x402:dev-issuer",

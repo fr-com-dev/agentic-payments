@@ -13,7 +13,7 @@
 //   enterprise    @Enterprise   bulk data, a substantial price        denies (above the per-payment cap)
 //
 // Tiers are labels with a price, not policy: L2 decides from the price alone (INV-5), whatever the tier says.
-import { declarePart } from "./endpoints.js";
+import { declarePart, EndpointDeclarationError } from "./endpoints.js";
 
 export type Tier = "free" | "pay-per-use" | "premium" | "enterprise";
 export const TIERS: readonly Tier[] = ["free", "pay-per-use", "premium", "enterprise"];
@@ -39,18 +39,32 @@ export function usdc(amount: string): Price {
   return { usdc: amount, atomic: atomic.toString() };
 }
 
-/** How an endpoint earns: free, or a paid tier with its per-call price. `description` is what the buyer sees. */
-export type Monetization = { tier: "free"; description: string; price: null } | { tier: PaidTier; description: string; price: Price };
+/**
+ * How an endpoint earns: free, or a paid tier with its per-call price. `description` is the short label the buyer
+ * sees; 021: a paid tier also says, in `about`, what the route returns (1–500 characters, plain text), which the
+ * catalog and the payment challenge's discovery declaration carry.
+ */
+export type Monetization = { tier: "free"; description: string; price: null } | { tier: PaidTier; description: string; about: string; price: Price };
 
 interface Paid {
   price: Price;
   description: string;
+  /** 021: what the route returns, for a buyer choosing among routes and for the discovery index. */
+  about: string;
 }
+
+const ABOUT_MAX = 500;
 
 type Method = (this: unknown, ...args: never[]) => unknown;
 
 function tier(monetization: Monetization) {
   if (monetization.description.trim() === "") throw new RangeError(`@${monetization.tier}: needs a description`);
+  if (monetization.tier !== "free") {
+    const about = (monetization as { about?: unknown }).about;
+    if (typeof about !== "string" || about.trim() === "" || about.length > ABOUT_MAX || /[\p{Cc}]/u.test(about)) {
+      throw new EndpointDeclarationError(`@${monetization.tier}: needs an about of 1–${ABOUT_MAX} characters of plain text`);
+    }
+  }
   return <T extends Method>(method: T, context: ClassMethodDecoratorContext): T => {
     declarePart(method, context, { monetization });
     return method;
@@ -61,10 +75,10 @@ function tier(monetization: Monetization) {
 export const Free = (description: string) => tier({ tier: "free", description, price: null });
 
 /** Pay-per-use: everyday data, paid per call. */
-export const PayPerUse = ({ price, description }: Paid) => tier({ tier: "pay-per-use", description, price });
+export const PayPerUse = ({ price, description, about }: Paid) => tier({ tier: "pay-per-use", description, about, price });
 
 /** Premium: high-value data, priced higher. */
-export const Premium = ({ price, description }: Paid) => tier({ tier: "premium", description, price });
+export const Premium = ({ price, description, about }: Paid) => tier({ tier: "premium", description, about, price });
 
 /** Enterprise: extensive access, bulk data, at a substantial per-call price. */
-export const Enterprise = ({ price, description }: Paid) => tier({ tier: "enterprise", description, price });
+export const Enterprise = ({ price, description, about }: Paid) => tier({ tier: "enterprise", description, about, price });

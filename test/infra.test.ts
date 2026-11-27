@@ -26,6 +26,9 @@
 // secrets come from the portal vault only, always referenced; its settings from userAccounts.coinbase, which main
 // checks; the portal stays one process, with the grants in their own folder of its share. Rule 21 lets the portal
 // hold those two secrets, and rule 8 knows the grant key's name.
+// 021 (specs/021 contracts/config.md "Azure"): rule 27 is new: the agent's mode. Every parameter file sets
+// agent.testMode (a bool; rule 23 (e) knows the key), only the agent's container gets AGENT_TEST_MODE, '1' or '0' from
+// that parameter, and no template sets DISCOVERY_URL: the network's default applies.
 import { cpSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, posix, resolve } from "node:path";
@@ -251,7 +254,9 @@ const IDENTITY_CHECK = "rule 21: main must refuse (fail()) user accounts turned 
 const ONE_REGISTRATION = "rule 16: the only app registration must be the deploy app: every caller of the agent, a person or a machine, gets its token from the sign-in tenant (auth0/), through no Entra app of ours";
 const MAIN_PARAMETERS = "rule 16: pre-deploy's mainParameters output must be the two lines main's parameter file takes: deployClientId and operatorsGroupId";
 /** Rule 23 (016): the keys of a parameter file's agent object, the machine caller's secret in the l1 vault, and what the smoke job gets. */
-const AGENT_KEYS = ["clientId", "desktopClientId", "apiDocs", "machineClientId", "machineKeyId"];
+const AGENT_KEYS = ["clientId", "desktopClientId", "apiDocs", "testMode", "machineClientId", "machineKeyId"];
+/** 021 rule 27. */
+const TEST_MODE = "rule 27: the agent's AGENT_TEST_MODE must be agent.testMode ('1' or '0') and nothing else: each environment's parameter file says which mode its agent runs in";
 /** 019 rule 23 (g). */
 const DESKTOP_ID = "rule 23: the agent's AGENT_DESKTOP_CLIENT_ID must be agent.desktopClientId and nothing else: the client its sign-in settings advertise";
 const MACHINE_SECRET = "machine-client-key";
@@ -1158,6 +1163,25 @@ export function violations(arms: Templates, params: Params, infraFiles: Record<s
     const keys = Object.keys(ag);
     if (JSON.stringify([...keys].sort()) !== JSON.stringify([...AGENT_KEYS].sort())) v.push(`rule 23: ${file}'s agent must have exactly the keys ${AGENT_KEYS.join(", ")} (it has ${keys.join(", ")})`);
     else if (typeof ag.apiDocs !== "boolean" || ["clientId", "desktopClientId", "machineClientId", "machineKeyId"].some((k) => typeof ag[k] !== "string")) v.push(`rule 23: ${file}'s agent.apiDocs must be true or false, and its four IDs strings`);
+    // 021 rule 27: the mode, a bool in every environment's file.
+    if (typeof ag.testMode !== "boolean") v.push(`rule 27: ${file}'s agent.testMode must be true or false`);
+  }
+  // 021 rule 27: AGENT_TEST_MODE on the agent's container only, from agent.testMode; DISCOVERY_URL nowhere.
+  if (agentApp) {
+    const env = containersOf(agentApp).find((c) => c.name === "agent")?.env;
+    if (!fromParam(env, "AGENT_TEST_MODE", `[if(${AG}.testMode, '1', '0')]`)) v.push(TEST_MODE);
+  }
+  for (const a of apps(main)) {
+    const isAgent = namesOf(a).includes(MN.apps.l1);
+    for (const c of containersOf(a)) {
+      for (const e of c.env ?? []) {
+        if (e.name === "AGENT_TEST_MODE" && !(isAgent && c.name === "agent")) v.push(`rule 27: AGENT_TEST_MODE in ${label(a)}/${c.name}: only the hosted agent has a mode`);
+        if (e.name === "DISCOVERY_URL") v.push(`rule 27: DISCOVERY_URL in ${label(a)}/${c.name}: no template sets the index's address; the network's default applies`);
+      }
+    }
+  }
+  for (const [file, text] of Object.entries(infraFiles)) {
+    if (/\bDISCOVERY_URL\b/.test(text)) v.push(`rule 27: ${file} names DISCOVERY_URL: no template sets the index's address`);
   }
   const unitsChecked = `or(not(contains(createArray('l1', 'l2'), parameters('unit'))), and(and(and(startsWith(${ID}.issuer, 'https://'), endsWith(${ID}.issuer, '/')), not(empty(${ID}.audience))), not(empty(${AG}.clientId))))`;
   const docsChecked = `or(or(not(equals(parameters('unit'), 'l1')), not(${AG}.apiDocs)), not(empty(${AG}.clientId)))`;
@@ -1394,7 +1418,7 @@ describe.skipIf(!BICEP_PATH)("T-IAC-01 Azure identity, secret, exposure and nami
     return violations(arms, params, infraSources(dir));
   }
 
-  it("T-IAC-01 the real templates and parameter files pass rules 1–26", async () => {
+  it("T-IAC-01 the real templates and parameter files pass rules 1–27", async () => {
     const { arms, params } = await compile("infra");
     expect(violations(arms, params, infraSources("infra"))).toEqual([]);
   }, 60_000);
@@ -2192,16 +2216,17 @@ resource leaked 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
   it("T-IAC-01 must-fail rule 23 (e): a parameter file whose agent has another key, lacks one, or holds a switch that isn't true or false, is reported", async () => {
     const keys = (has: string) => `rule 23: main.dev.bicepparam's agent must have exactly the keys ${AGENT_KEYS.join(", ")} (it has ${has})`;
     const agent = (lines: string[]) => `param agent = {\n${lines.map((l) => `  ${l}\n`).join("")}}`;
-    // Not vacuous: the real object has exactly the five, and a tenant's values pass.
+    // Not vacuous: the real object has exactly the six, and a tenant's values pass.
     const { params } = await compile("infra");
     expect(Object.keys(params["main.dev.bicepparam"]!.agent as Json)).toEqual(AGENT_KEYS);
-    expect(await mutant("main.dev.bicepparam", DEV_AGENT, agent(["clientId: 'AgentClient01'", "desktopClientId: 'DesktopClient01'", "apiDocs: false", "machineClientId: 'ChecksClient01'", "machineKeyId: 'checks-key-1'"]))).toEqual([]);
+    expect(await mutant("main.dev.bicepparam", DEV_AGENT, agent(["clientId: 'AgentClient01'", "desktopClientId: 'DesktopClient01'", "apiDocs: false", "testMode: false", "machineClientId: 'ChecksClient01'", "machineKeyId: 'checks-key-1'"]))).toEqual([]);
     // The private key is a secret of the l1 vault, never a value of the parameter file.
-    const extra = await mutant("main.dev.bicepparam", DEV_AGENT, agent(["clientId: ''", "desktopClientId: ''", "apiDocs: true", "machineClientId: ''", "machineKeyId: ''", "machineKey: 'off'"]));
-    expect(extra).toEqual([keys("clientId, desktopClientId, apiDocs, machineClientId, machineKeyId, machineKey")]);
+    const extra = await mutant("main.dev.bicepparam", DEV_AGENT, agent(["clientId: ''", "desktopClientId: ''", "apiDocs: true", "testMode: true", "machineClientId: ''", "machineKeyId: ''", "machineKey: 'off'"]));
+    expect(extra).toEqual([keys("clientId, desktopClientId, apiDocs, testMode, machineClientId, machineKeyId, machineKey")]);
     const fewer = await mutant("main.dev.bicepparam", DEV_AGENT, agent(["clientId: ''", "machineClientId: ''", "machineKeyId: ''", "apiDocs: true"]));
-    expect(fewer).toEqual([keys("clientId, machineClientId, machineKeyId, apiDocs")]);
-    const text = await mutant("main.dev.bicepparam", DEV_AGENT, agent(["clientId: ''", "desktopClientId: ''", "apiDocs: '1'", "machineClientId: ''", "machineKeyId: ''"]));
+    // 021: without testMode, rule 27 reports it too.
+    expect(fewer).toEqual([keys("clientId, machineClientId, machineKeyId, apiDocs"), "rule 27: main.dev.bicepparam's agent.testMode must be true or false"]);
+    const text = await mutant("main.dev.bicepparam", DEV_AGENT, agent(["clientId: ''", "desktopClientId: ''", "apiDocs: '1'", "testMode: true", "machineClientId: ''", "machineKeyId: ''"]));
     expect(text).toEqual(["rule 23: main.dev.bicepparam's agent.apiDocs must be true or false, and its four IDs strings"]);
   }, 300_000);
 
@@ -2288,4 +2313,18 @@ resource leaked 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
     const name = await mutant("pre-deploy.dev.bicepparam", "var environment = 'dev'", "var environment = readEnvironmentVariable('ENVIRONMENT', 'dev')");
     expect(name).toContain(`rule 17: pre-deploy.dev.bicepparam reads var environment = readEnvironmentVariable('ENVIRONMENT', 'dev') from the environment; only ${PER_RUN.join(", ")} may be`);
   }, 180_000);
+
+  it("T-IAC-01 must-fail rule 27: AGENT_TEST_MODE not from agent.testMode, on another container, missing from a parameter file, or DISCOVERY_URL set", async () => {
+    const ON = "            { name: 'AGENT_TEST_MODE', value: agent.testMode ? '1' : '0' }\n";
+    expect(await mutant("modules/l1-apps.bicep", ON, "            { name: 'AGENT_TEST_MODE', value: '1' }\n")).toEqual([TEST_MODE]);
+    expect(await mutant("modules/l1-apps.bicep", ON, "            { name: 'AGENT_TEST_MODE', value: agent.apiDocs ? '1' : '0' }\n")).toEqual([TEST_MODE]);
+    expect(await mutant("modules/l1-apps.bicep", ON, "")).toEqual([TEST_MODE]);
+    const onJob = await mutant("modules/l1-apps.bicep", ON, `${ON}            { name: 'DISCOVERY_URL', value: 'https://index.example/discovery/search' }\n`);
+    expect(onJob).toContain(`rule 27: DISCOVERY_URL in ${N.main.apps.l1}/agent: no template sets the index's address; the network's default applies`);
+    expect(onJob.some((m) => /^rule 27: \S*modules\/l1-apps\.bicep names DISCOVERY_URL: no template sets the index's address$/.test(m))).toBe(true);
+    expect(await mutant("main.dev.bicepparam", "  testMode: true\n", "  testMode: 'yes'\n")).toEqual(["rule 27: main.dev.bicepparam's agent.testMode must be true or false"]);
+    const missing = await mutant("main.dev.bicepparam", "  testMode: true\n", "");
+    expect(missing.some((m) => m.startsWith("rule 23: main.dev.bicepparam's agent must have exactly the keys"))).toBe(true);
+    expect(missing).toContain("rule 27: main.dev.bicepparam's agent.testMode must be true or false");
+  }, 600_000);
 });

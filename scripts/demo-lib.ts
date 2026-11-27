@@ -122,6 +122,9 @@ export function childEnv(
     env.FACILITATOR_PRIVATE_KEY = localDevKeys({ NETWORK }).facilitator;
   }
   if (p.role === "seller" && local && !value("SELLER_PAY_TO")) env.SELLER_PAY_TO = localAddress("sellerPayTo");
+  // 021: locally the hosted agent runs in test mode (the local chain has no public discovery index), unless its own
+  // env file sets AGENT_TEST_MODE: then the file's value, empty included, stands.
+  if (p.role === "hosted" && local && !(file !== null && Object.hasOwn(file.values, "AGENT_TEST_MODE"))) env.AGENT_TEST_MODE = "1";
   if (p.role === "agent") env.SESSION_ID = opts.sessionId;
   return env;
 }

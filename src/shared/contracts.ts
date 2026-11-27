@@ -99,6 +99,12 @@ export interface AuthorizationGatePort {
   authorize(intent: PaymentIntent): Promise<AuthorizationDecision>;
   /** 016: a gate made for a person answers with that person's view of the budget (`scope: "user_daily"`). */
   budget(sessionId: string): Promise<BudgetStatus>;
+  /**
+   * 021 (L2-5 `GET /v1/sellers`): the hosts L2 would pay at, for the hosted agent's search mode. Sent with
+   * `CONTROL_TOKEN` only, never a caller's token, even on a gate made for a caller (INV-13). Optional, so the CLI agent,
+   * the scripted plan and their fakes need no change (FR-020).
+   */
+  sellers?(): Promise<SellerHosts>;
 }
 
 /**
@@ -116,6 +122,16 @@ export interface SettlementVerifierPort {
 
 export interface ReconciliationPort {
   reconcile(report: SettlementReport): Promise<void>;
+}
+
+/**
+ * 021 (L2-5 `GET /v1/sellers`): the hosts any caller of the agent could be paid at: the platform mandate's
+ * `allowedHosts` and, with user accounts on, the platform seller list's hosts. L2 reads them from its configuration,
+ * never from the ledger.
+ */
+export interface SellerHosts {
+  /** `host[:port]`, lowercase, as `new URL(...).host` gives it; no duplicates; sorted. */
+  hosts: string[];
 }
 
 export interface BudgetStatus {
