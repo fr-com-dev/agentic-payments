@@ -1,27 +1,63 @@
-# Portal HTTP API (SPEC.md §8.2 L2-8; specs/013 contracts/portal-api.md) as OpenAPI 3.1.
-# SPEC.md and the contract stay normative. test/openapi-portal.test.ts (T-API-12..15) fails when this file and the
+# Portal HTTP API (SPEC.md §8.2 L2-8; specs/013, 014, 017, 020 contracts) as OpenAPI 3.1.
+# SPEC.md and the contracts stay normative. test/openapi-portal.test.ts (T-API-12..15) fails when this file and the
 # running portal disagree on routes, the bearer scheme or response shapes, so change both together.
 openapi: 3.1.0
 info:
   title: Portal API
-  version: "1.9"
-  summary: Onboarding, profile, wallet and expense policies of the x402 three-layer agent payments PoC.
+  version: "1.30.1"
+  summary: Onboarding, profile, wallet, connected platforms, expense policies and administration of the x402 three-layer agent payments PoC.
   description: |
     The portal is where a person sets up what their agent may spend. It serves a web app and this API from one
     origin, and it holds no payment key: deciding and signing stay in L2.
 
-    - **One person per request.** Every `/api` operation except `/api/config` needs the person's own access token
-      from the sign-in tenant (Auth0): for the API, issued to the portal's web app. No permission and no role is
-      asked for (since v1.14): whoever signs in through the portal's web app may use it, for their own account.
-      The user is derived from the token and nothing else: no operation takes a user identifier.
+    - **One person per request.** Every `/api` operation except `GET /api/config` needs the person's own access token
+      (`Authorization: Bearer <token>`, no cookie) from the sign-in tenant (Auth0): for the API, issued to the
+      portal's web app (`PORTAL_CLIENT_ID`). No permission and no role is asked for on user routes (since v1.14):
+      whoever signs in through the portal's web app may use it, for their own account. The user is derived from the
+      token (`userIdFor(issuer, sub)`) and nothing else: no operation takes a user identifier. Since v1.19, the portal
+      also forwards the person's token unchanged to L2 in `X-Person-Authorization` on every user and administration
+      call (except `GET /v1/platform`), and L2 verifies it itself.
     - **A token for the agent service is refused** (403: it comes from another client), and so is a machine token.
-      A token of any other issuer, the organization's directory included, is not valid here (401).
-    - **Amounts** go in as USDC text with at most 6 decimals (never rounded) and come back as decimal strings of
-      atomic units (`"20000"` is 0.02 USDC).
-    - **Loosening** a policy, resuming one or enabling the account needs a sign-in at most 15 minutes old; otherwise
-      403 `step_up_required`.
-    - **Cards** are saved at a card vault in test mode and never charged. The card number and security code never
-      reach this API.
+      A token of any other issuer, the organization's directory included, is not valid here (401). Since v1.27, every
+      401 carries `WWW-Authenticate: Bearer realm="x402-portal"`, with `, error="invalid_token"` when a token was sent
+      and failed a check; 403 carries none.
+    - **Local dev sign-in guard (v1.27).** With the local dev issuer (`AUTH_JWKS_FILE`, `NETWORK=local` only), the
+      portal binds a loopback address with `TRUSTED_PROXY_HOPS=0` and, right after setting security headers and before
+      every route (health, docs, `/api/config` and static screens included), answers `421 { "error": "misdirected
+      request" }` to any request whose `Host` is not a loopback name (`localhost`, `127.0.0.1`, `[::1]`, with or
+      without port) or that carries any forwarding header (`Forwarded`, `X-Forwarded-For`, `X-Forwarded-Host`,
+      `X-Forwarded-Proto`, `Via`).
+    - **Rate and body limits.** On every `/api` route except `GET /api/config` (unauthenticated and uncounted): 300
+      requests/minute per client address (before token verification), then 20 failed authentications (`401`) per
+      client address per minute (once reached, every `/api` request from that address gets 429 before the token is
+      read, v1.27), then 120 requests/minute per person, all per replica (`429 { "error": "too many requests" }` with
+      `Retry-After`). `POST /api/connections/coinbase/start` also enforces 10 starts/minute per person. JSON request
+      bodies are limited to 16 KB (`413 { "error": "body too large" }`); unparsable JSON answers `400 { "error":
+      "malformed JSON body" }`.
+    - **Security headers and SPA routing (v1.27).** Every response (errors and 421 included) carries
+      `Content-Security-Policy`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`,
+      `Permissions-Policy`, `Cross-Origin-Resource-Policy: same-origin`, `Cross-Origin-Opener-Policy:
+      same-origin-allow-popups`, and `Strict-Transport-Security: max-age=31536000; includeSubDomains` whenever `Host`
+      is not a loopback name. Every `/api` response also carries `Cache-Control: no-store`. Outside `/api`, the portal
+      returns 200 with the web app only for known screen paths (including `/wallet/return`, v1.30.1); unknown paths
+      return 404 (the web app HTML for browser `GET`/`HEAD` requests accepting `text/html`, otherwise `{ "error":
+      "not found" }`; dot-paths, traversals and missing `/assets/*` files always return JSON 404).
+    - **Amounts.** Policy inputs take USDC text with at most 6 decimals (never rounded) and come back as decimal
+      strings of atomic units (`"20000"` is 0.02 USDC). Connected-platform (Coinbase) balances come back as exact
+      decimal strings in each asset's own units with USD values rounded half-to-even to the cent.
+    - **Step-up and MFA.** Creating or loosening a policy, resuming one, or enabling the account needs a sign-in
+      (`AUTH_TIME_CLAIM`, default `https://x402.dev/auth_time`) at most 15 minutes old (60 s tolerance); otherwise
+      403 `step_up_required`. Approving an escalation in the administration area also needs a second factor
+      (`https://x402.dev/mfa_time`) at most 15 minutes old (v1.19); otherwise 403 `step_up_required`.
+    - **Cards** are saved at a card vault (Stripe in test mode, restricted test key `rk_test_…`, `usage=on_session`)
+      and never charged. The card number and security code never reach this API. Off unless `CARD_VAULT=stripe`.
+    - **Connected platforms (v1.30, v1.30.1).** Off by default (`CONNECTED_PLATFORMS` unset). With
+      `CONNECTED_PLATFORMS=coinbase`, users with a profile may connect their own Coinbase account read-only
+      (`wallet:accounts:read offline_access`) via OAuth 2.0 authorization code + PKCE S256 returning to
+      `/wallet/return` (v1.30.1). Balances are view-only and never enter any payment, policy, budget, approval or
+      reconciliation path.
+    - **Administration area (v1.15).** Mounted under `/api/admin/*` only when `PORTAL_ADMIN=1`; requires the
+      `portal:admin` permission.
     - **API docs.** With `API_DOCS=1`, the portal also serves this document and Swagger UI at `/docs`. Those
       routes take no token and are not mounted by default. When served, `servers` points at that portal.
 servers:
@@ -33,7 +69,7 @@ tags:
   - name: session
     description: Public configuration for the web app, and the signed-in person.
   - name: wallet
-    description: The crypto account and registered cards.
+    description: The crypto account, registered cards, and connected platforms (view-only Coinbase balances, v1.30).
   - name: policies
     description: Expense policies.
   - name: account
@@ -41,8 +77,9 @@ tags:
   - name: administration
     description: >-
       v1.15 the administration area (L2-8). Mounted only when `PORTAL_ADMIN=1`. For a signed-in person whose token
-      carries the permission `portal:admin`; anyone else gets 403 and the control service is not called. No operation takes
-      a user identifier or any text: the decider comes from the verified token.
+      carries the permission `portal:admin` (verified by the portal and again by L2 on the forwarded token, v1.19);
+      anyone else gets 403 and the control service is not called. No operation takes a user identifier or any free
+      text: the decider, sign-in time and second-factor time come from the verified token.
   - name: docs
     description: Swagger UI and this document. Mounted only when `API_DOCS=1`; no token.
 
@@ -87,8 +124,9 @@ paths:
       operationId: getConfig
       summary: "Public values the web app needs before anyone signs in"
       description: |
-        The sign-in mode and identifiers, the network, whether cards are available, and (v1.15) whether the
-        administration area is on. Nothing here is a secret.
+        The sign-in mode and identifiers, and whether cards are available (plus the card vault's publishable test key
+        when cards are on). Nothing here is a secret. Unauthenticated and exempt from the `/api` rate limits. The
+        network profile and administration flag were removed in v1.27 (the web app reads `admin` from `GET /api/me`).
       security: []
       responses:
         "200":
@@ -104,8 +142,8 @@ paths:
       operationId: getMe
       summary: "The signed-in person: onboarding steps, account state and profile"
       description: |
-        v1.15: `admin` says whether the person may use the administration area. Every signed-in person is a user,
-        an administrator included.
+        v1.15: `admin` is `true` only when `PORTAL_ADMIN=1` and the token carries `portal:admin`. Every signed-in
+        person is a user, an administrator included. `profile` is present once saved via `PUT /api/profile`.
       security:
         - personToken: []
       responses:
@@ -158,11 +196,7 @@ paths:
         "403":
           $ref: "#/components/responses/Forbidden"
         "413":
-          description: "Body over 16 KB."
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
+          $ref: "#/components/responses/PayloadTooLarge"
         "422":
           description: "A field is invalid, or the first save lacks the acknowledgement."
           content:
@@ -328,10 +362,13 @@ paths:
       operationId: adminApproveEscalation
       summary: "Approve one waiting payment"
       description: |
-        The request says only which payment. Who decides, and when they last entered their credentials, come from
-        the verified token; a body that tries to say either is refused. The control service then checks that the
-        payment is still pending, that it is not the decider's own, and that the sign-in is at most 15 minutes old.
-        An approval lets the agent make that one payment once, if it still fits the rules at that moment.
+        The request says only which payment. Who decides, when they last entered their credentials (`AUTH_TIME_CLAIM`),
+        and when they last completed a second factor (`https://x402.dev/mfa_time`, v1.19) all come from the verified
+        token forwarded to L2 in `X-Person-Authorization`; any body field is refused before L2 is called. The control
+        service then checks that the payment is still pending, that it is not the decider's own (`own_payment`), that
+        the sign-in is at most 15 minutes old (60 s tolerance), and that the second factor (`mfa_time`) is present and
+        also at most 15 minutes old (60 s tolerance). An approval is valid for 600 s and lets the agent make that one
+        payment once, if it still fits the rules at that moment.
       security:
         - personToken: []
       parameters:
@@ -350,7 +387,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ApprovedOutcome"
         "400":
-          description: "A malformed ID, or a body field that is not allowed. The control service is not called."
+          description: "A malformed ID, unparsable JSON, or any body field. The control service is not called."
           content:
             application/json:
               schema:
@@ -358,7 +395,7 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          description: "`forbidden` (not an administrator), `own_payment` (the payment is the decider's own), or `step_up_required` (the sign-in is older than 15 minutes)."
+          description: "`forbidden` (not an administrator), `own_payment` (the payment is the decider's own), or `step_up_required` (the sign-in or second factor `https://x402.dev/mfa_time` is missing or older than 15 minutes)."
           content:
             application/json:
               schema:
@@ -377,6 +414,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/NotPending"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
         "429":
           $ref: "#/components/responses/TooManyRequests"
         "502":
@@ -388,9 +427,9 @@ paths:
       operationId: adminRejectEscalation
       summary: "Reject one waiting payment"
       description: |
-        A reason from the fixed list and nothing else: there is no text field. The same checks as an approval, without
-        the sign-in age. The agent's next attempt at that purchase is refused, and it learns neither the reason nor
-        who rejected.
+        A reason from the fixed list and nothing else: there is no text field. Runs the same checks as an approval,
+        without the sign-in or second-factor (MFA) age checks. The agent's next attempt at that purchase is refused,
+        and it learns neither the reason nor who rejected.
       security:
         - personToken: []
       parameters:
@@ -409,7 +448,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/DeniedOutcome"
         "400":
-          description: "A malformed ID, or a body field that is not allowed. The control service is not called."
+          description: "A malformed ID, unparsable JSON, an invalid `reasonCode`, or any other body field. The control service is not called."
           content:
             application/json:
               schema:
@@ -434,6 +473,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/NotPending"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
         "429":
           $ref: "#/components/responses/TooManyRequests"
         "502":
@@ -443,11 +484,12 @@ paths:
     get:
       tags: [administration]
       operationId: adminVerifyLedger
-      summary: "Whether the ledger's hash chain verifies"
+      summary: "Whether the ledger's integrity chain verifies"
       description: |
-        The number of entries, whether the chain verifies, the position of the first entry that does not, and when it
-        was checked. Read-only: nothing here repairs, rewrites or deletes. One check answers for 10 seconds, whoever
-        asks.
+        The number of entries, whether the ledger's chain (including keyed MAC when configured, v1.19, and external
+        ledger head check against truncation, v1.23) verifies, the position of the first entry that does not, and when
+        it was checked. Read-only: nothing here repairs, rewrites or deletes. One successful check answers for 10
+        seconds, whoever asks (failures are not cached).
       security:
         - personToken: []
       responses:
@@ -470,10 +512,17 @@ paths:
     get:
       tags: [wallet]
       operationId: getWallet
-      summary: "The wallet: the crypto account and registered cards"
+      summary: "The wallet: the crypto account, registered cards, and connected platforms"
       description: |
-        The balance is read from the network (at most 20 s cached) and comes with its read time; if the read fails,
-        the last value is returned with `balanceStale: true`. Committed and spent figures come from L2's ledger.
+        Returns the L2 crypto account (if created), registered cards, and connected-platform rows (v1.30).
+        The on-chain USDC balance is read from the network RPC (at most 20 s cached) and comes with its read time; if
+        the read fails, the last value is returned with `balanceStale: true` (or `balanceAtomic`/`balanceReadAt` are
+        omitted if never read). Committed and spent figures come from L2's ledger. When cards are on, the card list is
+        reconciled between the card vault and L2; if the vault fails, the wallet still returns with `cards: []` and
+        `cardsAvailable: false`. For connected platforms, the portal reconciles its local grant store against L2's
+        active connections whenever either is non-empty (removing local grants absent at L2 and revoking them in the
+        background after answering, and closing L2 connections whose local grant is gone) without calling Coinbase;
+        balances are fetched separately from `GET /api/connections/coinbase/balances`.
       security:
         - personToken: []
       responses:
@@ -533,12 +582,13 @@ paths:
     post:
       tags: [wallet]
       operationId: startCoinbaseConnection
-      summary: "020: start connecting the person's Coinbase account, read only"
+      summary: "Start connecting the person's Coinbase account (read only)"
       description: |
-        Returns Coinbase's authorize address with the read-only scopes (`wallet:accounts:read offline_access`), a
-        `state` bound to this person and this sign-in for 10 minutes, and a PKCE S256 challenge (specs/020 FR-007,
-        FR-009). The web app opens it in the same tab. With connected platforms off: 404 `not found`. At most 10 starts
-        a minute per person.
+        v1.30 (return path updated in v1.30.1). Returns Coinbase's authorize address with the read-only scopes
+        (`wallet:accounts:read offline_access`), a `state` bound to this person and this sign-in for 10 minutes (at
+        most 3 pending starts per person; a fourth drops the oldest; lost on restart), a PKCE S256 challenge, and
+        `redirect_uri` pointing at the portal's `/wallet/return` screen. The web app opens it in the same tab. With
+        connected platforms off: 404 `not found`. At most 10 starts a minute per person (`429` with `Retry-After`).
       security:
         - personToken: []
       responses:
@@ -579,11 +629,16 @@ paths:
     post:
       tags: [wallet]
       operationId: completeCoinbaseConnection
-      summary: "020: finish connecting with the code Coinbase returned"
+      summary: "Finish connecting Coinbase with the returned authorization code"
       description: |
-        Exchanges the code with the start's PKCE verifier and keeps the grant only when its scopes are exactly the
-        read-only ones and it comes with a refresh token; any other grant is revoked first (FR-008). A second
-        connection replaces the first, whose grant is revoked (FR-010). The ledger records identifiers only.
+        v1.30 (return path `/wallet/return` in v1.30.1). Called by the web app's `/wallet/return` screen after
+        stripping `code` and `state` from the URL. Checks and consumes the pending `state` first (single use, within
+        10 minutes, same user and same sign-in time), verifies the account is registered and enabled, exchanges `code`
+        with the start's PKCE verifier, and keeps the grant only when its scopes match the read-only allow-list
+        (`wallet:accounts:read`, `offline_access`) and a refresh token is returned; any other grant is revoked and
+        checked first. Seals the refresh token in the portal's grant store under a new `connectionId`, records the
+        connection at L2 (identifiers only), and removes and revokes any replaced earlier Coinbase connection. Every
+        failure after Coinbase issues a grant revokes it.
       security:
         - personToken: []
       requestBody:
@@ -600,7 +655,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/CoinbaseConnected"
         "400":
-          description: "`invalid_request` (the body), `invalid_state` (unknown, used, expired, another person's or another sign-in's start, or a code Coinbase refused), or `scope_refused` with `reason`."
+          description: "`invalid_request` (the body) or malformed JSON, `invalid_state` (unknown, used, expired, another person's or another sign-in's start, or a code Coinbase refused), or `scope_refused` with `reason`."
           content:
             application/json:
               schema:
@@ -623,10 +678,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
         "429":
           $ref: "#/components/responses/TooManyRequests"
         "502":
-          description: "`platform_unavailable` (Coinbase didn't answer) or `control_unavailable` (L2 can't be reached; the grant was revoked)."
+          description: "`platform_unavailable` (Coinbase didn't answer or refused the client) or `control_unavailable` (L2 can't be reached; the grant was removed and revoked)."
           content:
             application/json:
               schema:
@@ -642,17 +699,24 @@ paths:
     get:
       tags: [wallet]
       operationId: getCoinbaseBalances
-      summary: "020: the connected Coinbase account's balances, view only"
+      summary: "The connected Coinbase account's balances (view only)"
       description: |
-        Every funded asset with its exact amount, its value in US dollars at Coinbase's own rate (half to even, to the
-        cent) and the exact total; at most 20 s old from memory, a fresh read (`fresh=1`) at most every 10 s; an answer
-        within 5 s, marked stale or unreadable when Coinbase fails (FR-013..FR-017). Never stored, never sent to L2.
+        v1.30. Reads funded `wallet`, `fiat` and `vault` accounts from Coinbase (up to 10 pages of 100; at most 200
+        assets returned, sorted by USD value descending then code) with exact decimal amounts, USD values at Coinbase's
+        public exchange rates (cached 60 s across users, rounded half-to-even to the cent) and the exact USD total.
+        Figures under 20 s old come from memory; `fresh=1` reads again at most every 10 s per person. Renewals and
+        reads are serialized per person so rotating refresh tokens are never used twice. Answers within 5 s: on
+        Coinbase failure, timeout or 429 (which backs off reads for that person for 60 s), returns the last figures
+        with `stale: true` or `{ "status": "unreadable" }`; when Coinbase refuses the grant (or a renewal returns a
+        disallowed scope), drops the grant and answers `{ "status": "reconnect" }`. Never stored on disk, never sent
+        to L2, and never used on the payment path.
       security:
         - personToken: []
       parameters:
         - name: fresh
           in: query
           required: false
+          description: "Pass `1` to bypass the 20 s cache (throttled to at most one fresh read every 10 s per person)."
           schema:
             type: string
             enum: ["1"]
@@ -696,12 +760,14 @@ paths:
     delete:
       tags: [wallet]
       operationId: disconnectCoinbase
-      summary: "020: disconnect Coinbase"
+      summary: "Disconnect Coinbase"
       description: |
-        Takes the grant out of the store first, revokes it and checks the revocation (only a 401 on the revoked token
-        confirms: Coinbase's revoke answers 200 whatever happens), then records it at L2 (FR-018). Allowed while the
-        account is disabled, and with connected platforms switched off for a connection stored before (then
-        `revokedAtPlatform` is false).
+        v1.30. Removes the grant from the local store first, then revokes it at Coinbase and verifies revocation
+        within a 5 s deadline (only a 401 on the revoked token confirms, because Coinbase's revoke endpoint answers
+        200 regardless; a connection already in `reconnect` state returns `revokedAtPlatform: true`), then closes the
+        connection at L2. If L2 cannot be reached after local removal, this route still returns 200 and the next
+        `GET /api/wallet` reconciles L2. Allowed while the account is disabled, and with connected platforms switched
+        off for a connection stored before (then `revokedAtPlatform` is `false`).
       security:
         - personToken: []
       responses:
@@ -793,7 +859,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Card"
         "400":
-          description: "Malformed body."
+          description: "Malformed body: not an object, unknown field, invalid `setupIntentId` or `nickname`, or unparsable JSON."
           content:
             application/json:
               schema:
@@ -814,6 +880,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/CardRefused"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
         "422":
           description: "`card_expired` or `not_a_card`."
           content:
@@ -916,7 +984,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Policy"
         "400":
-          description: "Malformed body."
+          description: "Malformed body: not an object, unknown field (including `expectedVersion`), wrong field type, or unparsable JSON."
           content:
             application/json:
               schema:
@@ -924,7 +992,7 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          description: "`forbidden` (the token is not allowed here), or `step_up_required` (the change loosens and the sign-in is older than 15 minutes)."
+          description: "`forbidden` (the token is not allowed here), or `step_up_required` (creating a policy always loosens and the sign-in is older than 15 minutes)."
           content:
             application/json:
               schema:
@@ -937,6 +1005,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
         "422":
           description: "One or more values are invalid. Every issue is listed."
           content:
@@ -1004,7 +1074,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Policy"
         "400":
-          description: "Malformed body, or no `expectedVersion`."
+          description: "Malformed body, unknown field, unparsable JSON, or missing/invalid `expectedVersion` (integer >= 1)."
           content:
             application/json:
               schema:
@@ -1033,6 +1103,8 @@ paths:
                 oneOf:
                   - $ref: "#/components/schemas/Error"
                   - $ref: "#/components/schemas/VersionConflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
         "422":
           description: "One or more values are invalid."
           content:
@@ -1086,6 +1158,9 @@ paths:
       tags: [policies]
       operationId: resumePolicy
       summary: "Resume a paused policy"
+      description: |
+        Resuming restores spending, so unless already active it needs a sign-in at most 15 minutes old and is
+        re-validated against the current seller list, active policies, policy limit, and end date.
       security:
         - personToken: []
       parameters:
@@ -1100,7 +1175,7 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          description: "`forbidden` (the token is not allowed here), or `step_up_required` (the change loosens and the sign-in is older than 15 minutes)."
+          description: "`forbidden` (the token is not allowed here), or `step_up_required` (resuming loosens and the sign-in is older than 15 minutes)."
           content:
             application/json:
               schema:
@@ -1173,7 +1248,10 @@ paths:
       operationId: disableAccount
       summary: "Disable the account"
       description: |
-        From the next decision on, the agent can pay nothing for this person. Nothing is deleted.
+        From the next decision on, the agent can pay nothing for this person. Nothing in the ledger or profile store
+        is deleted. v1.30: after L2 records the disabling, every connected platform (Coinbase) is disconnected as by
+        `DELETE /api/connections/coinbase` (local grant removed, revoked at Coinbase, and closed at L2); a failure in
+        disconnecting never fails the disabling, and the next `GET /api/wallet` reconcile finishes it.
       security:
         - personToken: []
       requestBody:
@@ -1190,7 +1268,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Me"
         "400":
-          description: "`confirm` is not `true`."
+          description: "Malformed body, unknown field, unparsable JSON, or `confirm` is not `true`."
           content:
             application/json:
               schema:
@@ -1205,6 +1283,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
         "429":
           $ref: "#/components/responses/TooManyRequests"
         "502":
@@ -1216,7 +1296,8 @@ paths:
       operationId: enableAccount
       summary: "Enable a disabled account"
       description: |
-        Needs a sign-in at most 15 minutes old. Every policy that was active comes back paused.
+        Needs a sign-in at most 15 minutes old (unless already enabled). Every policy that was active comes back
+        paused (`cause: "account_enabled"`). Connected platforms disconnected on disable stay disconnected.
       security:
         - personToken: []
       responses:
@@ -1229,7 +1310,7 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          description: "`forbidden` (the token is not allowed here), or `step_up_required` (the change loosens and the sign-in is older than 15 minutes)."
+          description: "`forbidden` (the token is not allowed here), or `step_up_required` (enabling loosens and the sign-in is older than 15 minutes)."
           content:
             application/json:
               schema:
@@ -1252,10 +1333,19 @@ paths:
       tags: [docs]
       operationId: getDocs
       summary: "Swagger UI page"
+      description: >-
+        Same-origin Swagger UI page backed by the pinned `swagger-ui-dist` assets. Overrides `Content-Security-Policy`
+        with a same-origin policy (`default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src
+        'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`).
       security: []
       responses:
         "200":
           description: "The page."
+          headers:
+            Content-Security-Policy:
+              required: true
+              schema:
+                type: string
           content:
             text/html:
               schema:
@@ -1312,9 +1402,13 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: >-
-        The person's access token from the sign-in tenant (Auth0): `iss` the tenant, `aud` containing the API's
-        identifier, the portal's web app as the client (`azp`, or `client_id`), and the sign-in time claim
-        (`https://x402.dev/auth_time` by default). Never a machine token. `permissions` is not read (v1.14).
+        The person's access token from the sign-in tenant (Auth0, RS256; or the local dev issuer `urn:x402:dev-issuer`,
+        ES256, with `NETWORK=local` and `AUTH_JWKS_FILE`): `iss` exact, `aud` containing `AUTH_AUDIENCE`, non-empty
+        `sub`, the portal's web app as the client (`azp`, or `client_id`), and the sign-in time claim
+        (`AUTH_TIME_CLAIM`, default `https://x402.dev/auth_time`). Never a machine token. For user routes no
+        permission is required (v1.14); when `PORTAL_ADMIN=1` (v1.15), `/api/admin/*` requires `portal:admin` in
+        `permissions`, and escalation approvals also require a fresh second-factor claim (`https://x402.dev/mfa_time`,
+        v1.19). Forwarded unchanged to L2 in `X-Person-Authorization` on every user and admin call (v1.19).
 
   parameters:
     EscalationId:
@@ -1336,7 +1430,7 @@ components:
       name: cardId
       in: path
       required: true
-      description: A registered card of the signed-in person.
+      description: A registered card of the signed-in person. Anyone else's answers 404, like an unknown one.
       schema:
         type: string
 
@@ -1362,7 +1456,14 @@ components:
       description: >-
         A valid token that is not allowed here: a machine token, or a token issued to an agent client or to any
         other client. Since v1.14 never a missing permission, except on the administration routes (v1.15), which
-        need `portal:admin`. Nothing is written and the control service is not called.
+        need `portal:admin`. Carries no `WWW-Authenticate` header. Nothing is written and the control service is not
+        called.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    PayloadTooLarge:
+      description: 'JSON request body over 16 KB (`{ "error": "body too large" }`).'
       content:
         application/json:
           schema:
@@ -1370,9 +1471,13 @@ components:
     TooManyRequests:
       description: >-
         Too many requests: more than 120 in a minute for this person, more than 300 in a minute from this address,
-        or 20 failed authentications (401) from this address in a minute, counted before the token is read (v1.27).
+        20 failed authentications (401) from this address in a minute counted before the token is read (v1.27), or
+        more than 10 Coinbase connection starts in a minute for this person (`POST /api/connections/coinbase/start`,
+        v1.30).
       headers:
         Retry-After:
+          description: Seconds until the rate-limit window resets (at least 1).
+          required: true
           schema:
             type: string
       content:
@@ -1380,7 +1485,7 @@ components:
           schema:
             $ref: "#/components/schemas/Error"
     ControlUnavailable:
-      description: The control service (L2) can't be reached. Nothing was granted.
+      description: The control service (L2) can't be reached, timed out, or returned 401/5xx (`control_unavailable`). Nothing was granted.
       content:
         application/json:
           schema:
@@ -1435,13 +1540,15 @@ components:
         approvalRequest:
           type: string
           description: >-
-            The state of the phone request to the payment's owner, when backchannel approval is on. v1.16:
-            `no_owner`, `no_identity` and `identity_mismatch` mean nobody was asked by phone.
+            The state of the phone request to the payment's owner, when backchannel approval is on (`requested`,
+            `capped`, `operator_only`, `reevaluation`, `no_owner`, `no_identity`, `identity_mismatch`, `failed`,
+            `verification_failed`, `lapsed`, `answered`, `abandoned`, or `unanswered`). v1.16: `no_owner`,
+            `no_identity` and `identity_mismatch` mean nobody was asked by phone.
 
     EmptyBody:
       type: object
       additionalProperties: false
-      description: Nothing. The decider and the time of their identity confirmation come from the token.
+      description: Nothing. The decider, sign-in time, and second-factor (MFA) time come from the verified token.
 
     RejectionReasonCode:
       type: string
@@ -1581,6 +1688,7 @@ components:
         referenceCode:
           type: string
           pattern: "^[0-9a-f]{8}$"
+          description: The short 8-hex-character code carried on every event in the admin event page for the same escalation.
         approvalRequest:
           type: string
           enum: [requested, capped, operator_only, reevaluation, no_owner, no_identity, identity_mismatch]
@@ -1619,7 +1727,7 @@ components:
         userId:
           type: string
           pattern: "^usr_[0-9a-f]{32}$"
-          description: v1.10. On `escalated` events of a user's payment.
+          description: v1.15. Present on every event of a user's payment (absent for the platform account).
 
     AdminEventPage:
       type: object
@@ -1748,6 +1856,10 @@ components:
           $ref: "#/components/schemas/IsoTime"
         approvalRequest:
           type: string
+          description: >-
+            The state of the phone request to the payment's owner when backchannel approval is on (`requested`,
+            `capped`, `operator_only`, `reevaluation`, `no_owner`, `no_identity`, `identity_mismatch`, `failed`,
+            `verification_failed`, `lapsed`, `answered`, `abandoned`, or `unanswered`).
         state:
           type: string
           enum: [pending, approved, denied, expired]
@@ -1896,6 +2008,7 @@ components:
       type: object
       additionalProperties: false
       required: [field, code]
+      description: "Profile validation issue (`invalid_name` on `displayName`, `invalid_email` on `contactEmail`, `required` on `acknowledgedTestFunds`)."
       properties:
         field:
           type: string
@@ -2043,7 +2156,10 @@ components:
         disabled:
           type: boolean
         connections:
-          description: "020: one row per platform offered (only `coinbase`); empty with connected platforms off and nothing stored."
+          description: >-
+            v1.30: one row per platform offered (only `coinbase`); empty with connected platforms off and nothing
+            stored, or a single `unavailable` row when off with a stored connection or when the grant file cannot be
+            read.
           type: array
           items:
             $ref: "#/components/schemas/ConnectionRow"
@@ -2059,13 +2175,19 @@ components:
         status:
           type: string
           enum: [not_connected, connected, reconnect, unavailable]
+          description: >-
+            `not_connected` (offered, no connection), `connected` (active), `reconnect` (Coinbase refused the grant),
+            or `unavailable` (feature switched off with a stored connection, or the grant file cannot be read).
         connectedAt:
           type: string
           format: date-time
+          description: Present for `connected`, `reconnect`, and readable `unavailable` rows; absent for `not_connected` or an unreadable grant file.
         privacyPolicyUrl:
           type: string
+          description: Deployment's `PRIVACY_POLICY_URL` (empty when connected platforms are off or unset).
         supportUrl:
           type: string
+          description: Deployment's `SUPPORT_URL` (empty when connected platforms are off or unset).
 
     CoinbaseStart:
       type: object
@@ -2207,6 +2329,7 @@ components:
       properties:
         setupIntentId:
           type: string
+          pattern: "^seti_[A-Za-z0-9_]{1,200}$"
         nickname:
           type: string
           maxLength: 40
@@ -2220,7 +2343,10 @@ components:
           type: string
         vaultCode:
           type: string
-          description: A code from a fixed list (or `other`) when the vault refused the card. Never the vault's text.
+          description: >-
+            A whitelisted code when the vault refused the card (`card_declined`, `expired_card`, `incorrect_cvc`,
+            `invalid_cvc`, `invalid_expiry_month`, `invalid_expiry_year`, `incorrect_number`, `processing_error`,
+            `setup_intent_authentication_failure`, or `other`). Never the vault's text.
 
     PolicyInput:
       type: object
@@ -2252,6 +2378,7 @@ components:
           description: The policy ends at the end of this day, UTC.
         paymentMethod:
           type: string
+          description: Must be `crypto_account` (cards can never pay; any other value is refused with 422 `payment_method_unsupported`).
 
     PolicyChange:
       type: object
@@ -2260,12 +2387,15 @@ components:
       properties:
         name:
           type: string
+          minLength: 1
+          maxLength: 60
         sellers:
           type: array
           items:
             type: string
         autoApproveUsdc:
           type: string
+          description: USDC text, at most 6 decimals. `0` means every payment needs a person.
         perPaymentUsdc:
           type: string
         perRunUsdc:
@@ -2276,10 +2406,14 @@ components:
           type: number
         endsOn:
           type: string
+          pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+          description: The policy ends at the end of this day, UTC.
         paymentMethod:
           type: string
+          description: Must be `crypto_account`.
         expectedVersion:
           type: integer
+          minimum: 1
 
     PolicyValues:
       type: object
@@ -2357,10 +2491,12 @@ components:
           type: boolean
         limitedByPlatform:
           type: array
+          description: L2 policy field names (`hardCapPerPaymentAtomic`, `sessionBudgetAtomic`, `dailyBudgetAtomic`, `maxAuthorizationsPerMinute`) where the current platform limit is stricter than the saved value.
           items:
             type: string
         unlistedSellers:
           type: array
+          description: Sellers in the policy that are no longer on the platform seller list.
           items:
             type: string
         updatedAt:
@@ -2384,6 +2520,13 @@ components:
       type: object
       additionalProperties: false
       required: [field, code]
+      description: >-
+        One validation issue, with L2's field names mapped to the portal's input field names (`autoApproveUsdc`,
+        `perPaymentUsdc`, `perRunUsdc`, `perDayUsdc`, `paymentsPerMinute`, `endsOn`, plus `name`, `sellers`,
+        `sellers[i]`, `paymentMethod`, `policy`). Codes: `invalid_name`, `not_a_number`, `too_many_decimals`,
+        `negative`, `invalid_date`, `not_atomic`, `order_auto_below_cap`, `order_cap_within_session`,
+        `above_platform_limit`, `rate_invalid`, `no_sellers`, `too_many_sellers`, `seller_not_listed`,
+        `seller_conflict`, `expires_in_past`, `expires_too_late`, `payment_method_unsupported`, `policy_limit`.
       properties:
         field:
           type: string

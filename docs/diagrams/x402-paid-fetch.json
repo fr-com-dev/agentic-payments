@@ -4,36 +4,25 @@
   "meta": {
     "title": "x402 Paid Fetch on Base Sepolia",
     "locale": "en",
-    "output": "x402-paid-fetch.html",
+    "output": "docs/diagrams/x402-paid-fetch.html",
     "quality_profile": "showcase",
-    "column_fit": "spread",
-    "viewBox": [
-      1080,
-      690
-    ],
+    "parentHref": "x402-architecture.html",
+    "repository": {
+      "url": "https://github.com/fr-com-dev/agentic-payments.git",
+      "revision": "b1cfed3065407c7da4311704bc58c6193bb7ac9e"
+    },
     "views": [
       {
         "id": "authorize-and-pay",
         "label": "Authorize and pay",
-        "focus": [
-          "agent",
-          "l2",
-          "seller",
-          "cdp",
-          "chain"
-        ],
-        "note": "L2 decides and signs; the seller settles the signed authorization through CDP."
+        "focus": ["agent", "l2", "seller", "cdp", "chain"],
+        "note": "Hosted agent checks account readiness, forwards caller JWT to L2, and pays via seller + CDP."
       },
       {
         "id": "verify",
         "label": "Verify on-chain",
-        "focus": [
-          "agent",
-          "l3",
-          "chain",
-          "l2"
-        ],
-        "note": "L3 reads the receipt and Transfer log, then reconciles into the L2 ledger."
+        "focus": ["agent", "l3", "chain", "l2"],
+        "note": "L3 checks receipt, Transfer log, finality, and EIP-3009 nonce before reconciling into L2."
       }
     ]
   },
@@ -42,76 +31,95 @@
       "id": "agent",
       "type": "frontend",
       "label": "L1 Agent",
-      "sublabel": "no keys",
-      "brand": "claude"
+      "sublabel": ":4024 / CLI · no keys",
+      "brand": "claude",
+      "sources": [
+        { "path": "src/layer1-intent/hosted/server.ts", "line": 208, "end_line": 249 },
+        { "path": "src/layer1-intent/orchestrator.ts", "line": 137, "end_line": 268 }
+      ]
     },
     {
       "id": "l2",
       "type": "security",
       "label": "L2 Control",
-      "sublabel": ":4020 · signer"
+      "sublabel": ":4020 · sole signer",
+      "sources": [
+        { "path": "src/layer2-control/service.ts", "line": 488, "end_line": 660 },
+        { "path": "src/layer2-control/caller.ts", "line": 1, "end_line": 90 },
+        { "path": "src/layer2-control/signer.ts" }
+      ]
     },
     {
       "id": "l3",
       "type": "backend",
       "label": "L3 Verifier",
-      "sublabel": ":4023 · read-only"
+      "sublabel": ":4023 · read-only",
+      "sources": [
+        { "path": "src/layer3-settlement/verifier.ts", "line": 98, "end_line": 241 },
+        { "path": "src/layer3-settlement/service.ts" }
+      ]
     },
     {
       "id": "seller",
       "type": "backend",
       "label": "Seller",
-      "sublabel": ":4021 · CDP key"
+      "sublabel": ":4021 · CDP key (A8)",
+      "sources": [
+        { "path": "src/counterparty/seller.ts", "line": 49, "end_line": 120 },
+        { "path": "src/counterparty/cdp-facilitator.ts" }
+      ]
     },
     {
       "id": "cdp",
       "type": "cloud",
-      "label": "CDP facilitator",
-      "sublabel": "x402 verify/settle"
+      "label": "CDP Facilitator",
+      "sublabel": "x402 verify / settle"
     },
     {
       "id": "chain",
       "type": "database",
       "label": "Base Sepolia",
-      "sublabel": "USDC"
+      "sublabel": "USDC · EIP-3009"
     }
   ],
   "segments": [
-    {
-      "from": 150,
-      "to": 224,
-      "label": "402 challenge"
-    },
-    {
-      "from": 236,
-      "to": 298,
-      "label": "Authorize"
-    },
-    {
-      "from": 310,
-      "to": 474,
-      "label": "Pay through CDP"
-    },
-    {
-      "from": 486,
-      "to": 616,
-      "label": "Verify on-chain"
-    }
+    { "from": 152, "to": 362, "label": "Account readiness & 402 challenge" },
+    { "from": 374, "to": 480, "label": "Authorize & sign" },
+    { "from": 492, "to": 716, "label": "Pay through CDP" },
+    { "from": 728, "to": 936, "label": "Verify on-chain & reconcile" }
   ],
   "messages": [
+    {
+      "id": "account-check",
+      "from": "agent",
+      "to": "l2",
+      "y": 178,
+      "label": "GET /v1/budget (+ caller JWT)",
+      "variant": "security",
+      "note": "person runs check account=ready before model calls (409 if not onboarded/disabled)"
+    },
+    {
+      "id": "account-ready",
+      "from": "l2",
+      "to": "agent",
+      "y": 258,
+      "label": "200 account: ready",
+      "variant": "return"
+    },
     {
       "id": "get",
       "from": "agent",
       "to": "seller",
-      "y": 176,
+      "y": 292,
       "label": "GET /api/weather",
-      "variant": "emphasis"
+      "variant": "emphasis",
+      "note": "seller host only; redirects never followed (SEC-1)"
     },
     {
       "id": "challenge",
       "from": "seller",
       "to": "agent",
-      "y": 210,
+      "y": 350,
       "label": "402 + PAYMENT-REQUIRED",
       "variant": "return"
     },
@@ -119,41 +127,42 @@
       "id": "authorize",
       "from": "agent",
       "to": "l2",
-      "y": 250,
-      "label": "POST /v1/authorize",
+      "y": 396,
+      "label": "POST /v1/authorize (+ caller JWT)",
       "variant": "security"
     },
     {
       "id": "authorized",
       "from": "l2",
       "to": "agent",
-      "y": 284,
-      "label": "AUTHORIZED + paymentHeaders",
+      "y": 430,
+      "label": "AUTHORIZED + headers + nonce",
       "variant": "return",
-      "note": "R1–R14 → sign EIP-3009 → append ledger; otherwise DENIED or ESCALATE"
+      "note": "verify JWT -> R1-R17 -> sign EIP-3009 -> append keyed ledger + head"
     },
     {
       "id": "retry",
       "from": "agent",
       "to": "seller",
-      "y": 324,
+      "y": 514,
       "label": "retry + PAYMENT-SIGNATURE",
-      "variant": "emphasis"
+      "variant": "emphasis",
+      "note": "600 req/min/IP limit; 402 reason codes forwarded to step.error (1.29.2)"
     },
     {
       "id": "settle",
       "from": "seller",
       "to": "cdp",
-      "y": 358,
+      "y": 574,
       "label": "verify, settle + JWT",
       "variant": "security",
-      "note": "fresh JWT per request, valid 120 s"
+      "note": "fresh 120 s CDP JWT per request"
     },
     {
       "id": "transfer",
       "from": "cdp",
       "to": "chain",
-      "y": 392,
+      "y": 626,
       "label": "transferWithAuthorization",
       "variant": "emphasis",
       "note": "CDP pays gas"
@@ -162,7 +171,7 @@
       "id": "tx",
       "from": "cdp",
       "to": "seller",
-      "y": 426,
+      "y": 674,
       "label": "tx hash",
       "variant": "return"
     },
@@ -170,7 +179,7 @@
       "id": "served",
       "from": "seller",
       "to": "agent",
-      "y": 460,
+      "y": 706,
       "label": "200 + PAYMENT-RESPONSE",
       "variant": "return"
     },
@@ -178,66 +187,63 @@
       "id": "claim",
       "from": "agent",
       "to": "l3",
-      "y": 500,
-      "label": "POST /v1/settlements",
+      "y": 750,
+      "label": "POST /v1/settlements (with nonce)",
       "variant": "default"
     },
     {
       "id": "read",
       "from": "l3",
       "to": "chain",
-      "y": 534,
+      "y": 784,
       "label": "receipt, Transfer log, finality",
-      "variant": "dashed"
+      "variant": "dashed",
+      "note": "if unsettled: PENDING until validBefore+60s, then read authorizationState(nonce)"
     },
     {
       "id": "reconcile",
       "from": "l3",
       "to": "l2",
-      "y": 568,
+      "y": 848,
       "label": "POST /v1/reconcile",
       "variant": "security",
-      "note": "CONFIRMED is final"
+      "note": "CONFIRMED is final; RPC URL keys redacted from detail (SEC-54)"
     },
     {
       "id": "confirmed",
       "from": "l3",
       "to": "agent",
-      "y": 602,
+      "y": 918,
       "label": "SettlementReport (CONFIRMED)",
       "variant": "return"
     }
   ],
   "activations": [
+    { "participant": "l2", "from": 172, "to": 264, "type": "security" },
+    { "participant": "seller", "from": 286, "to": 356, "type": "backend" },
+    { "participant": "l2", "from": 390, "to": 438, "type": "security" },
+    { "participant": "seller", "from": 508, "to": 712, "type": "backend" },
+    { "participant": "cdp", "from": 568, "to": 680, "type": "cloud" },
+    { "participant": "l3", "from": 744, "to": 924, "type": "backend" }
+  ],
+  "cards": [
     {
-      "participant": "seller",
-      "from": 170,
-      "to": 216,
-      "type": "backend"
+      "dot": "rose",
+      "title": "Caller attribution & signing",
+      "items": [
+        "L1 forwards X-Caller-Authorization; L2 re-verifies it and selects the user's wallet or platform account",
+        "Person runs check GET /v1/budget before starting; not onboarded or disabled stops with 409 before model calls",
+        "Every ledger write updates the keyed chain and external head anchor before returning paymentHeaders"
+      ]
     },
     {
-      "participant": "l2",
-      "from": 244,
-      "to": 290,
-      "type": "security"
-    },
-    {
-      "participant": "seller",
-      "from": 318,
-      "to": 466,
-      "type": "backend"
-    },
-    {
-      "participant": "cdp",
-      "from": 352,
-      "to": 432,
-      "type": "cloud"
-    },
-    {
-      "participant": "l3",
-      "from": 494,
-      "to": 608,
-      "type": "backend"
+      "dot": "cyan",
+      "title": "On-chain truth & budget release",
+      "items": [
+        "L3 never trusts PAYMENT-RESPONSE alone; CONFIRMED requires a matching ERC-20 Transfer log and finality",
+        "Unsettled claims stay PENDING until validBefore + 60 s and release budget only if EIP-3009 nonce is unused",
+        "RPC endpoint keys are stripped to origin-only before entering L3 logs or L2 ledger details (SEC-54)"
+      ]
     }
   ]
 }

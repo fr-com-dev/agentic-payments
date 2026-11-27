@@ -4,269 +4,67 @@
   "meta": {
     "title": "x402 Three-Layer Agent Payments",
     "locale": "en",
-    "output": "x402-architecture.html",
+    "output": "docs/diagrams/x402-architecture.html",
     "quality_profile": "showcase",
     "repository": {
-      "url": "https://github.com/fr-com-dev/agentic-payments",
-      "revision": "759a9bbaa85e1850b97ae4240ca66a1f228f6a5b"
+      "url": "https://github.com/fr-com-dev/agentic-payments.git",
+      "revision": "b1cfed3065407c7da4311704bc58c6193bb7ac9e"
     },
     "views": [
       {
         "id": "paid-fetch",
         "label": "Paid fetch",
-        "focus": [
-          "agent",
-          "l2",
-          "ledger",
-          "seller",
-          "cdp",
-          "chain"
-        ],
-        "note": "The agent asks, L2 decides and signs, the seller settles through CDP on Base Sepolia."
+        "focus": ["agent", "l2", "ledger", "seller", "cdp", "chain"],
+        "note": "Hosted or CLI agent forwards caller JWT to L2; L2 decides and signs; seller settles via CDP on Base Sepolia."
       },
       {
         "id": "verification",
         "label": "Settlement verification",
-        "focus": [
-          "agent",
-          "l3",
-          "chain",
-          "l2"
-        ],
-        "note": "L3 checks the receipt on-chain and reconciles the result into the L2 ledger."
+        "focus": ["agent", "l3", "chain", "l2"],
+        "note": "L3 verifies Transfer logs, finality, and EIP-3009 nonces on-chain, then reconciles into L2."
       },
       {
         "id": "approval",
         "label": "Human approval",
-        "focus": [
-          "operator",
-          "l2",
-          "ledger",
-          "agent"
-        ],
-        "note": "Payments above 0.02 USDC escalate; an operator, or an administrator in the portal, approves once."
+        "focus": ["operator", "portal", "auth0", "l2", "ledger", "agent"],
+        "note": "Escalations end once via Operator CLI, owner CIBA phone push, or Portal admin with fresh MFA."
+      },
+      {
+        "id": "portal-and-auth",
+        "label": "Portal, Auth0 & Coinbase",
+        "focus": ["auth0", "proxy", "portal", "coinbase", "l2", "ledger"],
+        "note": "Self-hosted portal behind Caddy manages accounts, policies, and optional read-only Coinbase balances."
       },
       {
         "id": "local-network",
         "label": "Local network",
-        "focus": [
-          "seller",
-          "localfac",
-          "ganache"
-        ],
-        "note": "Offline baseline: local facilitator and ganache replace CDP and Base Sepolia."
-      },
-      {
-        "id": "user-accounts",
-        "label": "User accounts",
-        "focus": [
-          "portal",
-          "l2",
-          "ledger",
-          "agent"
-        ],
-        "note": "Optional: a person sets up a profile, wallet and policies in the portal; L2 records them and signs with that person's account."
+        "focus": ["seller", "localnet"],
+        "note": "Offline baseline: local facilitator (:4022) and Ganache (:8545) replace CDP and Base Sepolia."
       }
     ]
   },
+  "layout": {
+    "mode": "auto"
+  },
   "components": [
     {
-      "id": "operator",
-      "type": "external",
-      "label": "Human operator",
-      "sublabel": "npm run approve",
-      "pos": [
-        40,
-        360
-      ],
-      "size": [
-        180,
-        64
-      ]
-    },
-    {
-      "id": "agent",
-      "type": "frontend",
-      "label": "L1 Agent",
-      "sublabel": "Claude or scripted · no keys",
-      "brand": "claude",
-      "pos": [
-        320,
-        200
-      ],
-      "size": [
-        180,
-        64
-      ],
-      "sources": [
-        {
-          "path": "src/main.ts"
-        },
-        {
-          "path": "src/layer1-intent/orchestrator.ts"
-        }
-      ]
-    },
-    {
-      "id": "l2",
+      "id": "auth0",
       "type": "security",
-      "label": "L2 Control :4020",
-      "sublabel": "loopback · sole signer",
-      "tag": "payer key",
-      "pos": [
-        320,
-        360
-      ],
-      "size": [
-        180,
-        64
-      ],
+      "label": "Auth0 Tenant",
+      "sublabel": "PKCE · MFA · CIBA push",
       "sources": [
-        {
-          "path": "src/layer2-control/service.ts"
-        },
-        {
-          "path": "src/layer2-control/signer.ts"
-        },
-        {
-          "path": "src/layer2-control/policy.ts"
-        }
+        { "path": "auth0/main.tf" },
+        { "path": "auth0/sign-in-time.js" },
+        { "path": "auth0/mfa-time.js" }
       ]
     },
     {
-      "id": "ledger",
-      "type": "database",
-      "label": "Audit ledger",
-      "sublabel": "hash-chained JSONL",
-      "pos": [
-        320,
-        500
-      ],
-      "size": [
-        180,
-        64
-      ],
-      "sources": [
-        {
-          "path": "src/layer2-control/ledger.ts"
-        }
-      ]
-    },
-    {
-      "id": "seller",
-      "type": "backend",
-      "label": "Seller :4021",
-      "sublabel": "x402 paywall",
-      "tag": "CDP key (A8)",
-      "pos": [
-        680,
-        200
-      ],
-      "size": [
-        180,
-        64
-      ],
-      "sources": [
-        {
-          "path": "src/counterparty/seller.ts"
-        },
-        {
-          "path": "src/counterparty/cdp-facilitator.ts"
-        },
-        {
-          "path": "src/counterparty/facilitator-client.ts"
-        }
-      ]
-    },
-    {
-      "id": "l3",
-      "type": "backend",
-      "label": "L3 Verifier :4023",
-      "sublabel": "loopback · read-only",
-      "pos": [
-        680,
-        360
-      ],
-      "size": [
-        180,
-        64
-      ],
-      "sources": [
-        {
-          "path": "src/layer3-settlement/verifier.ts"
-        },
-        {
-          "path": "src/layer3-settlement/service.ts"
-        }
-      ]
-    },
-    {
-      "id": "cdp",
+      "id": "proxy",
       "type": "cloud",
-      "label": "CDP x402 facilitator",
-      "sublabel": "api.cdp.coinbase.com",
-      "pos": [
-        1040,
-        200
-      ],
-      "size": [
-        180,
-        64
-      ]
-    },
-    {
-      "id": "chain",
-      "type": "database",
-      "label": "Base Sepolia",
-      "sublabel": "USDC · EIP-3009",
-      "pos": [
-        1040,
-        360
-      ],
-      "size": [
-        180,
-        64
-      ]
-    },
-    {
-      "id": "localfac",
-      "type": "backend",
-      "label": "Local facilitator :4022",
-      "sublabel": "NETWORK=local",
-      "pos": [
-        680,
-        60
-      ],
-      "size": [
-        180,
-        64
-      ],
+      "label": "Caddy Proxy",
+      "sublabel": "HTTPS :443 · CIDR list",
       "sources": [
-        {
-          "path": "scripts/facilitator.ts"
-        },
-        {
-          "path": "src/counterparty/facilitator.ts"
-        }
-      ]
-    },
-    {
-      "id": "ganache",
-      "type": "database",
-      "label": "Ganache :8545",
-      "sublabel": "MockUSDC",
-      "pos": [
-        1040,
-        60
-      ],
-      "size": [
-        180,
-        64
-      ],
-      "sources": [
-        {
-          "path": "scripts/local-chain.ts"
-        }
+        { "path": "docs/self-hosted/Caddyfile", "line": 1, "end_line": 57 }
       ]
     },
     {
@@ -274,177 +72,271 @@
       "type": "frontend",
       "label": "Portal :4025",
       "sublabel": "accounts · admin · no keys",
-      "pos": [
-        40,
-        200
-      ],
-      "size": [
-        180,
-        64
+      "drilldowns": [
+        { "href": "x402-approval.html", "label": "Escalation & human approval", "diagram_type": "sequence" }
       ],
       "sources": [
-        {
-          "path": "src/portal-main.ts"
-        },
-        {
-          "path": "src/portal/routes.ts"
-        },
-        {
-          "path": "web/portal/src/app.tsx"
-        }
+        { "path": "src/portal-main.ts", "line": 16, "end_line": 74 },
+        { "path": "src/portal/routes.ts" },
+        { "path": "src/portal/connections.ts", "line": 1, "end_line": 111 }
+      ]
+    },
+    {
+      "id": "coinbase",
+      "type": "external",
+      "label": "Coinbase OAuth",
+      "sublabel": "read-only balances (020)",
+      "sources": [
+        { "path": "src/portal/coinbase/client.ts" },
+        { "path": "src/portal/coinbase/grants.ts" }
+      ]
+    },
+    {
+      "id": "operator",
+      "type": "external",
+      "label": "Operator CLI",
+      "sublabel": "approve · reject · verify",
+      "href": "x402-approval.html",
+      "sources": [
+        { "path": "scripts/approve.ts" },
+        { "path": "scripts/reject.ts" },
+        { "path": "scripts/escalations.ts" }
+      ]
+    },
+    {
+      "id": "agent",
+      "type": "frontend",
+      "label": "L1 Agent :4024",
+      "sublabel": "hosted / CLI · SSE · no keys",
+      "brand": "claude",
+      "drilldowns": [
+        { "href": "x402-paid-fetch.html", "label": "Paid fetch on Base Sepolia", "diagram_type": "sequence" },
+        { "href": "x402-approval.html", "label": "Escalation & human approval", "diagram_type": "sequence" }
+      ],
+      "sources": [
+        { "path": "src/hosted-main.ts" },
+        { "path": "src/layer1-intent/hosted/server.ts", "line": 116, "end_line": 280 },
+        { "path": "src/layer1-intent/orchestrator.ts", "line": 137, "end_line": 268 }
+      ]
+    },
+    {
+      "id": "l2",
+      "type": "security",
+      "label": "L2 Control :4020",
+      "sublabel": "loopback · sole signer",
+      "tag": "payer key + mnemonic",
+      "sources": [
+        { "path": "src/layer2-control/service.ts", "line": 564, "end_line": 660 },
+        { "path": "src/layer2-control/signer.ts" },
+        { "path": "src/layer2-control/backchannel.ts", "line": 1, "end_line": 120 }
+      ]
+    },
+    {
+      "id": "ledger",
+      "type": "database",
+      "label": "Audit Ledger + Head",
+      "sublabel": "keyed JSONL · cut guard",
+      "sources": [
+        { "path": "src/layer2-control/ledger.ts" },
+        { "path": "src/layer2-control/ledger-key.ts" },
+        { "path": "src/layer2-control/ledger-head.ts", "line": 1, "end_line": 84 }
+      ]
+    },
+    {
+      "id": "seller",
+      "type": "backend",
+      "label": "Seller :4021",
+      "sublabel": "x402 paywall · 600/min",
+      "tag": "CDP key (A8)",
+      "sources": [
+        { "path": "src/counterparty/seller.ts", "line": 49, "end_line": 120 },
+        { "path": "src/counterparty/cdp-facilitator.ts" }
+      ]
+    },
+    {
+      "id": "l3",
+      "type": "backend",
+      "label": "L3 Verifier :4023",
+      "sublabel": "loopback · read-only",
+      "sources": [
+        { "path": "src/layer3-settlement/verifier.ts", "line": 98, "end_line": 241 },
+        { "path": "src/layer3-settlement/service.ts" }
+      ]
+    },
+    {
+      "id": "cdp",
+      "type": "cloud",
+      "label": "CDP Facilitator",
+      "sublabel": "Base Sepolia · pays gas"
+    },
+    {
+      "id": "chain",
+      "type": "database",
+      "label": "Base Sepolia",
+      "sublabel": "USDC · EIP-3009"
+    },
+    {
+      "id": "localnet",
+      "type": "database",
+      "label": "Local Net (offline)",
+      "sublabel": "fac :4022 · Ganache :8545",
+      "sources": [
+        { "path": "scripts/facilitator.ts" },
+        { "path": "scripts/local-chain.ts" }
       ]
     }
   ],
   "boundaries": [
     {
       "kind": "security-group",
-      "label": "Payment authority (payer key)",
-      "wraps": [
-        "l2",
-        "ledger"
-      ]
+      "label": "Payment authority (sole signer)",
+      "wraps": ["l2", "ledger"]
     },
     {
       "kind": "region",
       "label": "Base Sepolia (live)",
-      "wraps": [
-        "cdp",
-        "chain"
-      ]
-    },
-    {
-      "kind": "region",
-      "label": "Local network (offline)",
-      "wraps": [
-        "localfac",
-        "ganache"
-      ]
+      "wraps": ["cdp", "chain"]
     }
   ],
   "connections": [
     {
-      "id": "fetch",
-      "from": "agent",
-      "to": "seller",
-      "label": "402 · signed retry",
-      "variant": "emphasis"
-    },
-    {
-      "id": "authorize",
-      "from": "agent",
-      "to": "l2",
-      "label": "POST /v1/authorize",
-      "variant": "security",
-      "fromSide": "bottom",
-      "toSide": "top",
-      "labelDy": 24
-    },
-    {
-      "id": "append",
-      "from": "l2",
-      "to": "ledger",
-      "label": "append",
-      "fromSide": "bottom",
-      "toSide": "top",
-      "labelDy": 24
-    },
-    {
-      "id": "approve",
-      "from": "operator",
-      "to": "l2",
-      "label": "approve",
-      "variant": "security",
-      "labelDy": 18
-    },
-    {
-      "id": "settle-cdp",
-      "from": "seller",
-      "to": "cdp",
-      "label": "verify/settle + JWT",
-      "variant": "emphasis"
-    },
-    {
-      "id": "transfer",
-      "from": "cdp",
-      "to": "chain",
-      "label": "transferWithAuthorization",
-      "variant": "emphasis",
-      "fromSide": "bottom",
-      "toSide": "top",
-      "labelDy": 24
-    },
-    {
-      "id": "claim",
-      "from": "agent",
-      "to": "l3",
-      "label": "POST /v1/settlements",
-      "fromSide": "right",
-      "toSide": "top"
-    },
-    {
-      "id": "read-chain",
-      "from": "l3",
-      "to": "chain",
-      "label": "receipt, Transfer log, finality",
-      "variant": "dashed"
-    },
-    {
-      "id": "reconcile",
-      "from": "l3",
-      "to": "l2",
-      "label": "reconcile",
+      "id": "auth-agent",
+      "from": "auth0",
+      "to": "agent",
+      "label": "JWT (agent:run)",
       "variant": "security"
     },
     {
-      "id": "settle-local",
-      "from": "seller",
-      "to": "localfac",
-      "label": "verify/settle",
-      "variant": "dashed",
-      "fromSide": "top",
-      "toSide": "bottom"
+      "id": "auth-portal",
+      "from": "auth0",
+      "to": "portal",
+      "label": "JWT + MFA",
+      "variant": "security"
     },
     {
-      "id": "transfer-local",
-      "from": "localfac",
-      "to": "ganache",
-      "label": "transfer",
+      "id": "proxy-portal",
+      "from": "proxy",
+      "to": "portal",
+      "label": "HTTPS -> 127.0.0.1",
+      "variant": "emphasis"
+    },
+    {
+      "id": "portal-coinbase",
+      "from": "portal",
+      "to": "coinbase",
+      "label": "OAuth read-only",
       "variant": "dashed"
     },
     {
       "id": "portal-l2",
       "from": "portal",
       "to": "l2",
-      "label": "user-account + admin routes",
+      "label": "user + admin JWT",
+      "variant": "security"
+    },
+    {
+      "id": "operator-l2",
+      "from": "operator",
+      "to": "l2",
+      "label": "approve / reject",
+      "variant": "security"
+    },
+    {
+      "id": "l2-ciba",
+      "from": "l2",
+      "to": "auth0",
+      "label": "CIBA push (owner)",
+      "variant": "dashed"
+    },
+    {
+      "id": "agent-l2",
+      "from": "agent",
+      "to": "l2",
+      "label": "authorize + JWT",
+      "variant": "security"
+    },
+    {
+      "id": "l2-ledger",
+      "from": "l2",
+      "to": "ledger",
+      "label": "append + head MAC"
+    },
+    {
+      "id": "agent-seller",
+      "from": "agent",
+      "to": "seller",
+      "label": "402 · signed retry",
+      "variant": "emphasis"
+    },
+    {
+      "id": "seller-cdp",
+      "from": "seller",
+      "to": "cdp",
+      "label": "verify/settle + JWT",
+      "variant": "emphasis"
+    },
+    {
+      "id": "cdp-chain",
+      "from": "cdp",
+      "to": "chain",
+      "label": "transferWithAuth",
+      "variant": "emphasis"
+    },
+    {
+      "id": "seller-local",
+      "from": "seller",
+      "to": "localnet",
+      "label": "NETWORK=local",
+      "variant": "dashed"
+    },
+    {
+      "id": "agent-l3",
+      "from": "agent",
+      "to": "l3",
+      "label": "POST /v1/settlements"
+    },
+    {
+      "id": "l3-chain",
+      "from": "l3",
+      "to": "chain",
+      "label": "receipt, Transfer, nonce",
+      "variant": "dashed"
+    },
+    {
+      "id": "l3-l2",
+      "from": "l3",
+      "to": "l2",
+      "label": "POST /v1/reconcile",
       "variant": "security"
     }
   ],
   "cards": [
     {
       "dot": "rose",
-      "title": "Payment authority",
+      "title": "Payment authority & ledger",
       "items": [
-        "L1 holds no keys; L2 is the only signer",
-        "Budgets come from the hash-chained ledger",
-        "L3 is read-only and verifies every settlement",
-        "The portal holds no key; L2 records an administrator's decision"
+        "L1 and Portal hold no keys; L2 is the sole signer (payer key + user wallet mnemonic)",
+        "L2 independently verifies forwarded caller/person JWTs (X-Caller-Authorization, X-Person-Authorization)",
+        "Keyed hash-chained JSONL ledger + separate head anchor catch tampering and truncation",
+        "L3 is read-only; CONFIRMED is final and NOT_SETTLED requires unused nonce after validBefore"
       ]
     },
     {
       "dot": "cyan",
-      "title": "CDP facilitator",
+      "title": "Auth0, Portal & Coinbase (017-020)",
       "items": [
-        "Default on Base Sepolia; JWT per request (120 s)",
-        "CDP key held by the seller only (rule A8)",
-        "No fallback; startup fails closed; CDP pays gas"
+        "Auth0 issues PKCE tokens for portal, docs, and desktop clients (S256 + MFA); Google sign-up has no role",
+        "Self-hosted portal behind Caddy front proxy (CIDR allow-list, HSTS, hidden health/docs)",
+        "Optional Coinbase balances (020): read-only sealed grants confined to portal (rule A18), never in decisions"
       ]
     },
     {
       "dot": "slate",
-      "title": "Local network",
+      "title": "Settlement & local baseline",
       "items": [
-        "Local facilitator and ganache, fully offline",
-        "npm run check baseline: 0.006 USDC spent"
+        "Base Sepolia uses CDP facilitator by default (120 s JWT, CDP key in seller only, rule A8; CDP pays gas)",
+        "Seller rate-limits priced routes (600 req/min/IP) before calling the facilitator",
+        "NETWORK=local runs offline on local facilitator + Ganache (demo:local spends 0.006 USDC)"
       ]
     }
   ]

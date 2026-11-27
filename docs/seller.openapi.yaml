@@ -5,7 +5,7 @@
 openapi: 3.1.0
 info:
   title: Seller API
-  version: "1.24"
+  version: "1.30.1"
   summary: The demo seller of the x402 three-layer agent payments PoC, selling JSON resources for USDC.
   description: |
     A simulated external party: a free catalog and four priced routes, paid with x402 v2 (`exact` scheme, an
@@ -26,29 +26,43 @@ info:
     agent's premium purchase escalates to an operator and an enterprise purchase is denied.
 
     **Paying for a route** (what L1 does, with L2 signing):
-    1. `GET` the route without payment: **402** with an empty body and a `PAYMENT-REQUIRED` header, base64
-       JSON naming the price (`amount` in atomic units), the asset, the network and `payTo`.
+    1. `GET` the route without payment: **402** with `Cache-Control: no-store`, a JSON body
+       (`{"error": "Payment required"}`, since `@x402/*` 2.31), and a `PAYMENT-REQUIRED` header (base64 JSON
+       naming the price `amount` in atomic units, the asset, the network, `payTo`, `maxTimeoutSeconds: 120`,
+       and the token's EIP-712 domain in `extra`).
     2. Sign a payment for exactly those requirements and repeat the request with it in `PAYMENT-SIGNATURE`.
-    3. The seller has its facilitator verify the payment, serves the resource, settles, and answers **200** with
-       the resource and a `PAYMENT-RESPONSE` header (base64 JSON with the transaction hash).
+    3. The seller has its facilitator verify the payment, prepares the resource, settles, and answers **200**
+       with the resource, `Cache-Control: private`, and a `PAYMENT-RESPONSE` header (base64 JSON with the
+       transaction hash).
 
-    A rejected payment, or one for another route, gets the 402 challenge again (its `error` says why). A failed
-    settlement gets 402 with a `PAYMENT-RESPONSE` whose `success` is false, and the resource is not served. While
-    the facilitator is unreachable, priced routes answer 503 before a challenge and 502 during a paid retry.
+    A rejected payment, or one for another route, gets the 402 challenge again (its `error` — in both the
+    `PAYMENT-REQUIRED` payload and the JSON body — says why). A failed settlement gets 402 with an empty JSON
+    body `{}` and a `PAYMENT-RESPONSE` whose `success` is false (no `PAYMENT-REQUIRED`), and the resource is
+    not served. When the facilitator fails (`unavailable`, `authentication`, `rate-limited`, or `unsupported`),
+    priced routes answer 503 before a challenge (lazy `/supported` sync, retried on the next priced request)
+    and 502 during a paid retry (`/verify` or `/settle`). Hosted facilitators time out after 30 s.
 
-    **Limits** (v1.24): at most 600 requests a minute per client address to the priced routes (anything but the
-    catalog and the docs), counted before the payment middleware, so before any facilitator call: 429 with
-    `Retry-After` beyond it. Behind a proxy (`TRUSTED_PROXY_HOPS=1`, as in Azure) the address is the client's.
+    **Limits** (v1.24): at most 600 requests a minute per client address to anything other than the free routes
+    (the catalog and, when enabled, the docs), counted in memory before the payment middleware — so before any
+    facilitator call, including retried `/supported` syncs. Beyond 600/min, the seller answers 429 with
+    `Retry-After` (and no `RateLimit-*` headers). Behind a single reverse proxy (`TRUSTED_PROXY_HOPS=1`, as in
+    Azure) the address comes from `X-Forwarded-For`; when unset or `0`, that header is ignored.
 
-    - **Amounts** are decimal strings of atomic units (USDC has 6 decimals: `"1000"` is 0.001 USDC).
-    - **Networks.** Locally `eip155:31337` with a mock USDC and the local facilitator; on Base Sepolia
-      `eip155:84532` with USDC and the CDP facilitator (CP-3). The catalog names the network and asset in use.
-    - **API docs.** With `API_DOCS=1`, the seller also serves this document and Swagger UI at `/docs`. Those
-      routes are free and not mounted by default; the Azure deployment never sets `API_DOCS`. A browser can't
-      sign a payment, so "Try it out" on a priced route shows its 402 challenge.
+    - **Amounts** are decimal strings of atomic units (USDC has 6 decimals: `"1000"` is 0.001 USDC; the seller
+      refuses any network profile whose asset does not have 6 decimals).
+    - **Networks & facilitators.** Locally `eip155:31337` with a mock USDC (EIP-712 name `"USD Coin"`) and the
+      local facilitator (`FACILITATOR=local`); on Base Sepolia `eip155:84532` with Circle USDC (EIP-712 name
+      `"USDC"`) and the JWT-authenticated CDP facilitator (`FACILITATOR=cdp` by default; `FACILITATOR=public`
+      opts into `https://x402.org/facilitator` with no runtime fallback; CP-3). The catalog names the network
+      and asset in use.
+    - **API docs.** With `API_DOCS=1`, the seller also serves this document and Swagger UI at `/docs`, mounted
+      before the rate limiter and payment middleware (free, never rate-limited, never calls the facilitator).
+      Unset, empty, or `0` leaves those routes unmounted; any other value fails startup. The Azure deployment
+      never sets `API_DOCS`. A browser can't sign a payment, so "Try it out" on a priced route shows its 402
+      challenge.
 servers:
   - url: http://127.0.0.1:4021
-    description: Default local bind (npm run seller; 0.0.0.0 in a container)
+    description: Default local URL (npm run seller binds 0.0.0.0:4021; override port with SELLER_PORT)
 tags:
   - name: free
     description: Freemium discovery, no payment.
@@ -67,7 +81,7 @@ paths:
       tags: [free]
       operationId: getCatalog
       summary: The price list
-      description: Free, and always available, also while the facilitator is down.
+      description: Free, never rate-limited, and always available, even while the facilitator is down.
       x-monetization-tier: free
       responses:
         "200":
@@ -89,7 +103,7 @@ paths:
         - name: city
           in: query
           required: false
-          description: The city; `Lima` when missing or empty.
+          description: The city; defaults to `Lima` when missing, empty, or repeated.
           schema:
             type: string
             examples: [Lima]
@@ -100,18 +114,20 @@ paths:
           headers:
             PAYMENT-RESPONSE:
               $ref: "#/components/headers/PaymentResponse"
+            Cache-Control:
+              $ref: "#/components/headers/PaidCacheControl"
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Weather"
         "402":
           $ref: "#/components/responses/PaymentRequired"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
         "502":
           $ref: "#/components/responses/FacilitatorFailed"
         "503":
           $ref: "#/components/responses/FacilitatorUnavailable"
-        "429":
-          $ref: "#/components/responses/TooManyRequests"
 
   /api/market-brief:
     get:
@@ -128,18 +144,20 @@ paths:
           headers:
             PAYMENT-RESPONSE:
               $ref: "#/components/headers/PaymentResponse"
+            Cache-Control:
+              $ref: "#/components/headers/PaidCacheControl"
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/MarketBrief"
         "402":
           $ref: "#/components/responses/PaymentRequired"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
         "502":
           $ref: "#/components/responses/FacilitatorFailed"
         "503":
           $ref: "#/components/responses/FacilitatorUnavailable"
-        "429":
-          $ref: "#/components/responses/TooManyRequests"
 
   /api/premium-report:
     get:
@@ -157,18 +175,20 @@ paths:
           headers:
             PAYMENT-RESPONSE:
               $ref: "#/components/headers/PaymentResponse"
+            Cache-Control:
+              $ref: "#/components/headers/PaidCacheControl"
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/PremiumReport"
         "402":
           $ref: "#/components/responses/PaymentRequired"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
         "502":
           $ref: "#/components/responses/FacilitatorFailed"
         "503":
           $ref: "#/components/responses/FacilitatorUnavailable"
-        "429":
-          $ref: "#/components/responses/TooManyRequests"
 
   /api/dataset-export:
     get:
@@ -186,18 +206,20 @@ paths:
           headers:
             PAYMENT-RESPONSE:
               $ref: "#/components/headers/PaymentResponse"
+            Cache-Control:
+              $ref: "#/components/headers/PaidCacheControl"
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/DatasetExport"
         "402":
           $ref: "#/components/responses/PaymentRequired"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
         "502":
           $ref: "#/components/responses/FacilitatorFailed"
         "503":
           $ref: "#/components/responses/FacilitatorUnavailable"
-        "429":
-          $ref: "#/components/responses/TooManyRequests"
 
   /docs:
     get:
@@ -205,11 +227,20 @@ paths:
       operationId: getApiDocsPage
       summary: Swagger UI for this document
       description: |
-        Only with `API_DOCS=1`. The page loads its scripts and styles from the seller itself (`/docs/{asset}`),
-        never from a CDN, and its Content-Security-Policy limits scripts and requests to the seller's origin.
+        Only with `API_DOCS=1` (free, never rate-limited, makes no facilitator call). The page loads its scripts
+        and styles from the seller itself (`/docs/{asset}`), never from a CDN, and its Content-Security-Policy
+        limits scripts and requests to the seller's origin.
       responses:
         "200":
           description: The Swagger UI page.
+          headers:
+            Content-Security-Policy:
+              description: >-
+                `default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;
+                connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`
+              required: true
+              schema:
+                type: string
           content:
             text/html:
               schema:
@@ -220,7 +251,7 @@ paths:
       tags: [docs]
       operationId: getApiDocsAsset
       summary: A Swagger UI file
-      description: Only with `API_DOCS=1`. Serves these three files and nothing else.
+      description: Only with `API_DOCS=1` (free, never rate-limited). Serves these three files and nothing else.
       parameters:
         - name: asset
           in: path
@@ -250,7 +281,7 @@ paths:
       tags: [docs]
       operationId: getApiDocument
       summary: This document
-      description: Only with `API_DOCS=1`. Identical to the file, except `servers` is `/`, the seller serving it.
+      description: Only with `API_DOCS=1` (free, never rate-limited). Identical to the file, except `servers` is `/`, the seller serving it.
       responses:
         "200":
           description: The OpenAPI document.
@@ -301,6 +332,18 @@ components:
         contentMediaType: application/json
         contentSchema:
           $ref: "#/components/schemas/SettleResponse"
+    PaidCacheControl:
+      description: Always `private` on settled 200 responses so shared caches do not store settlement metadata.
+      required: true
+      schema:
+        type: string
+        const: private
+    PaymentRequiredCacheControl:
+      description: Always `no-store` on 402 responses (challenges and failed settlements).
+      required: true
+      schema:
+        type: string
+        const: no-store
 
   responses:
     PaymentRequired:
@@ -313,19 +356,25 @@ components:
           $ref: "#/components/headers/PaymentRequired"
         PAYMENT-RESPONSE:
           $ref: "#/components/headers/FailedSettlement"
+        Cache-Control:
+          $ref: "#/components/headers/PaymentRequiredCacheControl"
       content:
         application/json:
           schema:
             type: object
             additionalProperties: false
             description: |
-              The challenge's `error`, repeated (`@x402/*` 2.31 and later), or empty when the challenge has none
-              (a failed settlement).
+              Repeats the challenge's `error` (e.g. `"Payment required"` when unpaid, or the verification
+              rejection reason, since `@x402/*` 2.31), or an empty object `{}` on a failed settlement (where
+              `PAYMENT-RESPONSE` carries `errorReason`).
             properties:
               error:
                 type: string
     FacilitatorFailed:
-      description: The facilitator failed while verifying or settling a paid retry. The resource is not served.
+      description: |
+        The facilitator failed while verifying or settling a paid retry (30 s timeout on hosted facilitators).
+        The resource is not served. Only the failure category is returned; upstream detail is redacted and logged
+        to stderr.
       content:
         application/json:
           schema:
@@ -337,7 +386,10 @@ components:
                 type: string
                 pattern: "^facilitator (unavailable|authentication|rate-limited|unsupported)$"
     FacilitatorUnavailable:
-      description: The facilitator can't be reached (or refuses the seller), so no challenge can be issued. Retried on the next request.
+      description: |
+        The facilitator's `/supported` sync failed, so no challenge can be issued (retried on the next priced
+        request). Categories: `unavailable` (timeout, network error, 5xx, malformed body), `authentication`
+        (401 or 403), `rate-limited` (429 or 402), `unsupported` (`exact` on this network missing from `/supported`).
       content:
         application/json:
           schema:
@@ -409,6 +461,7 @@ components:
           $ref: "#/components/schemas/Address"
         decimals:
           type: integer
+          description: Token decimals (always `6` for USDC).
         items:
           type: array
           items:
@@ -440,6 +493,7 @@ components:
           type: string
         tempC:
           type: integer
+          description: Deterministic mock temperature in Celsius (`0`–`34`).
         condition:
           type: string
           enum: [sunny, cloudy, rain, fog]
@@ -510,6 +564,7 @@ components:
           $ref: "#/components/schemas/Address"
         maxTimeoutSeconds:
           type: integer
+          description: Maximum authorization validity window in seconds (`120` on this seller).
         extra:
           type: object
           description: The token's EIP-712 domain (`name`, `version`).
@@ -519,6 +574,7 @@ components:
               examples: [USD Coin, USDC]
             version:
               type: string
+              examples: ["2"]
 
     PaymentRequired:
       type: object
@@ -567,7 +623,7 @@ components:
           $ref: "#/components/schemas/Address"
         transaction:
           type: string
-          description: The transaction hash; empty when nothing was settled.
+          description: The transaction hash (`0x…`), or empty when no transaction was submitted; may still be present on a failed settlement.
         network:
           $ref: "#/components/schemas/Network"
         amount:
