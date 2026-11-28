@@ -690,13 +690,14 @@ export function auth0Problems(s: Sources): string[] {
     p.push(IDENTITY_OUTPUT);
   }
   if (!has(block(tf, /output\s+"bicepparam_portal_client_id"\s*\{/), /value\s*=\s*auth0_client\.portal\.client_id\b/)) p.push("output bicepparam_portal_client_id must be the portal client's ID (userAccounts.portalClientId)");
-  // 016: the agent object, with exactly the keys main.bicep reads but apiDocs, which is the parameter file's own
-  // choice: the agent's client, and the pipeline's machine caller with its key's ID, empty until it is declared.
-  const wantAgent = Object.keys(bicepObject(s.bicepparam, "agent")).filter((key) => key !== "apiDocs").sort();
+  // 016: the agent object, with exactly the keys main.bicep reads but apiDocs and (021) testMode, which are the
+  // parameter file's own choices: the agent's client, and the pipeline's machine caller with its key's ID, empty until
+  // it is declared.
+  const wantAgent = Object.keys(bicepObject(s.bicepparam, "agent")).filter((key) => key !== "apiDocs" && key !== "testMode").sort();
   const agentOut = block(block(tf, /output\s+"bicepparam_agent"\s*\{/) ?? "", /value\s*=\s*\{/) ?? "";
   const gotAgent = [...agentOut.matchAll(/^\s*(\w+)\s*=/gm)].map((m) => m[1]!).sort();
   if (wantAgent.length === 0 || JSON.stringify(gotAgent) !== JSON.stringify(wantAgent)) {
-    p.push(`output bicepparam_agent must have exactly the agent keys of the parameter file but apiDocs (${wantAgent.join(", ")}), got ${gotAgent.join(", ")}`);
+    p.push(`output bicepparam_agent must have exactly the agent keys of the parameter file but apiDocs and testMode (${wantAgent.join(", ")}), got ${gotAgent.join(", ")}`);
   }
   if (
     !/^\s*clientId\s*=\s*auth0_client\.agent\.client_id$/m.test(agentOut) ||
@@ -1138,8 +1139,8 @@ describe("T-IAC-02 Auth0 tenant as code (auth0/)", () => {
     expect(Object.keys(bicepObject(load().bicepparam, "identity")).sort()).toEqual(["audience", "issuer"]);
   });
 
-  it("016, 019: the parameter file's agent object has the five keys main.bicep reads: Terraform's four and its own apiDocs", () => {
-    expect(Object.keys(bicepObject(load().bicepparam, "agent")).sort()).toEqual(["apiDocs", "clientId", "desktopClientId", "machineClientId", "machineKeyId"]);
+  it("016, 019, 021: the parameter file's agent object has the six keys main.bicep reads: Terraform's four and its own apiDocs and testMode", () => {
+    expect(Object.keys(bicepObject(load().bicepparam, "agent")).sort()).toEqual(["apiDocs", "clientId", "desktopClientId", "machineClientId", "machineKeyId", "testMode"]);
   });
 
   it.each<[string, string, string | RegExp, string, string]>([
@@ -1232,7 +1233,7 @@ describe("T-IAC-02 Auth0 tenant as code (auth0/)", () => {
   // 016: the hosted agent's callers. One mutant, at least, for each rule of contracts/tenant-and-config.md "The tenant".
   const AGENT_PUBLIC = "the agent's client must be a public spa client: authentication_method none, no secret and no key";
   const AGENT_GRANT = "the agent's client must have only its own grant (authorization_code)";
-  const AGENT_KEYS = "output bicepparam_agent must have exactly the agent keys of the parameter file but apiDocs (clientId, desktopClientId, machineClientId, machineKeyId), got clientId, desktopClientId, machineClientId";
+  const AGENT_KEYS = "output bicepparam_agent must have exactly the agent keys of the parameter file but apiDocs and testMode (clientId, desktopClientId, machineClientId, machineKeyId), got clientId, desktopClientId, machineClientId";
   const GRANT_FOR_PAYMENTS = 'resource "auth0_client_grant" "machine_payments" {\n  for_each = var.machine_caller_keys\n\n  client_id = auth0_client.machine[each.key].client_id\n  audience  = auth0_resource_server.payments.identifier\n  scopes    = []\n}\n\n';
   it.each<[string, string, string | RegExp, string, string]>([
     // The applications (FR-026).

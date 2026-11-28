@@ -2,6 +2,11 @@
 
 **Feature**: [../spec.md](../spec.md) | **Data model**: [../data-model.md](../data-model.md)
 
+> **2026-11-26, extended by feature 021** ([specs/021 contracts/hosted-agent-api.md](../../021-bazaar-discovery-search/contracts/hosted-agent-api.md),
+> SPEC v1.31): in search mode a step can also be a search step, `{ index, tool: "search_resources", query, result }`,
+> in the JSON answer and in the stream's `step` and `result` events alike; the request body is unchanged, so a field
+> for the mode is 400 `unknown field` like any other. Test mode is this contract as it was.
+
 What changes on the hosted agent's HTTP API. Everything not named here is unchanged.
 `docs/l1-hosted.openapi.yaml` changes with it, and T-API-05..08 fail until both match the service.
 

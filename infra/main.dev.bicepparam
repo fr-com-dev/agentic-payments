@@ -134,6 +134,8 @@ param agent = {
   // 019: the desktop client's ID (Terraform's output bicepparam_agent); empty while the tenant has none.
   desktopClientId: ''
   apiDocs: true
+  // 021: test mode, the agent of before 021, so the pipeline's smoke run keeps its fixed path; false is search mode.
+  testMode: true
   machineClientId: ''
   machineKeyId: ''
 }

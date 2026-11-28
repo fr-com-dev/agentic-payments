@@ -472,3 +472,26 @@ OPERATOR_TOKEN=<random, shared with l2-control>
 ```
 
 `env/facilitator.env` and the chain are no longer used.
+
+## 021: the search demo with `seller.fabriciorojas.com` (SPEC 1.31)
+
+The hosted agent has two modes (SPEC L1-6, `specs/021`). Set the mode in the agent's file **before** pulling 021: a
+file made before it has no `AGENT_TEST_MODE`, and the agent's next restart would be in search mode against the public
+index.
+
+| File | Setting | Value |
+|---|---|---|
+| `env/l1-hosted.env` | `SELLER_URL` | `https://seller.fabriciorojas.com` (the address the index lists, public and reachable) |
+| `env/l1-hosted.env` | `AGENT_TEST_MODE` | `1` to go straight to the seller, as before; `0` for the search demo |
+| `env/l1-hosted.env` | `DISCOVERY_URL` | not set: on base-sepolia the default is the public index |
+| `env/l2-control.env` | `ALLOWED_HOSTS` | today's host(s), `127.0.0.1:4021` kept, plus `seller.fabriciorojas.com` |
+| `env/l2-control.env` | `PLATFORM_SELLERS` | today's entry, plus one for `seller.fabriciorojas.com` with the same payee |
+
+Each person in the demo adds `seller.fabriciorojas.com` to their expense policy in the portal, or L2 denies their
+purchases there (`host_not_allowed`), as designed.
+
+Deploy in this order: L2 (it serves `GET /v1/sellers`), then the seller (its challenges now carry the Bazaar
+declaration), then the agent. Pay each priced route once through the agent, so the hosted facilitator settles it; the
+index lists a route up to 15 minutes after its first settlement (`specs/021` quickstart §3). Rollback:
+`AGENT_TEST_MODE=1` and restart the agent.
+

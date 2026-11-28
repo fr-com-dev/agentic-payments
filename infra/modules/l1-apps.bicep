@@ -11,6 +11,7 @@
 //   same values L2 gets, AGENT_DESKTOP_CLIENT_ID from agent.desktopClientId, and nothing of the
 //   directory (no AUTH_TENANT_ID, no SERVICE_AUDIENCE). It is the only container with API_DOCS, which is
 //   agent.apiDocs and nothing else;
+// - 021 (rule 27): the agent is the only container with AGENT_TEST_MODE, which is agent.testMode and nothing else;
 // - 016 (rule 23): the two jobs call as the pipeline's machine caller. Each gets the tenant, the machine client's ID
 //   and its key's ID from the parameters, and the key itself as a reference to the l1 vault's machine-client-key,
 //   which every environment seeds (the placeholder off until the tenant has the client). The agent's container gets
@@ -104,6 +105,10 @@ resource agentApp 'Microsoft.App/containerApps@2025-01-01' = {
             // agent's own client.
             { name: 'API_DOCS', value: agent.apiDocs ? '1' : '0' }
             { name: 'API_DOCS_CLIENT_ID', value: agent.apiDocs ? agent.clientId : '' }
+            // 021: the agent's mode, from this environment's parameter file: test mode is the agent of before 021,
+            // straight to the configured seller; search mode may search the public x402 discovery index first, at
+            // the network's default address (rule 27).
+            { name: 'AGENT_TEST_MODE', value: agent.testMode ? '1' : '0' }
             { name: 'AGENT_BIND_HOST', value: '0.0.0.0' }
             // One proxy, the environment's ingress, is in front: the per-address request limit reads the client's
             // address from X-Forwarded-For (T-IAC-01 rule 3).

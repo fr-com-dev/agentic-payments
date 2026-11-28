@@ -1,10 +1,10 @@
-# L1 hosted agent service HTTP API (SPEC.md §8.1 L1-6; specs/011, 016, 017, 019 contracts) as OpenAPI 3.1.
+# L1 hosted agent service HTTP API (SPEC.md §8.1 L1-6; specs/011, 016, 017, 019, 021 contracts) as OpenAPI 3.1.
 # SPEC.md and the contracts stay normative. test/openapi-hosted.test.ts (T-API-05..08, T-API-16..18) fails when
 # this file and the running service disagree on routes, auth or response shapes, so change both together.
 openapi: 3.1.0
 info:
   title: L1 hosted agent API
-  version: "1.30.1"
+  version: "1.31.0"
   summary: The purchasing agent of the x402 three-layer agent payments PoC, as an HTTP service.
   description: |
     A Claude agent that buys HTTP resources with x402 within a spending mandate. It holds no key: every
@@ -32,8 +32,9 @@ info:
       or 503 `control_unavailable` when L2 can't say. Machine callers skip this check. Nothing is spent, no
       model call is made, and a refusal is not counted as a start.
     - **One call, one run.** The response arrives when the run has ended (completed, stopped or failed), at
-      most 200 s later (at most 10 tool steps). Allow up to 220 s on the client. v1.19: `fetch_resource` fetches
-      only the configured seller's host (`SELLER_URL`) and never follows redirects. v1.17: send
+      most 200 s later (at most 10 tool steps). Allow up to 220 s on the client. v1.19/v1.31: `fetch_resource`
+      fetches only hosts L2 would pay at (`SELLER_URL` in test mode, or hosts from L2's seller list in search
+      mode) and never follows redirects. v1.17: send
       `Accept: text/event-stream` to receive the run as it happens instead: its identifier at once, the text as
       it is written, each finished step, and the same result object last.
     - **Sessions.** Each new run gets a session and a budget. Send the returned `sessionRef` with the next
@@ -74,12 +75,13 @@ paths:
         Checks, in order: with the local dev issuer (`AUTH_JWKS_FILE`), loopback host and no forwarding headers
         (421); per-address request and failed-auth limits (429); the token (401, 403); the requester's run limits
         (429); the body (413, 400); the session (400, 404); v1.29 for a person whether they can pay now (409,
-        401, 503: one question to L2, within 1 s); then runs the goal with exactly two tools, `fetch_resource`
-        (configured seller host only, no redirects, v1.19) and `check_budget`, for at most 10 steps and 200 s.
-        A refused call makes no model or L3 call, and no L2 call other than that question. Every finished step is
-        listed, also for a stopped or failed run. An ESCALATED purchase carries an `authorizationId`: approve it
-        (on the person's phone when backchannel approval is on, in the portal, or by an operator), then call again
-        with the same `sessionRef`.
+        401, 503: one question to L2, within 1 s); then runs the goal with the agent's tools, `fetch_resource`
+        (allowed seller hosts only, no redirects, v1.19/v1.31), `check_budget`, and, where the deployment offers
+        it (v1.31), the read-only `search_resources`, for at most 10 steps and 200 s. A refused call makes no
+        model or L3 call, and no L2 call other than that question. Every finished step is listed, also for a
+        stopped or failed run. An ESCALATED purchase carries an `authorizationId`: approve it (on the person's
+        phone when backchannel approval is on, in the portal, or by an operator), then call again with the same
+        `sessionRef`.
       security:
         # sign-in:begin (served only where the docs page signs in; see src/shared/api-docs.ts)
         - signIn: []
@@ -587,11 +589,13 @@ components:
       oneOf:
         - $ref: "#/components/schemas/FetchStep"
         - $ref: "#/components/schemas/BudgetStep"
+        - $ref: "#/components/schemas/SearchStep"
       discriminator:
         propertyName: tool
         mapping:
           fetch_resource: "#/components/schemas/FetchStep"
           check_budget: "#/components/schemas/BudgetStep"
+          search_resources: "#/components/schemas/SearchStep"
 
     FetchStep:
       type: object
@@ -625,6 +629,88 @@ components:
           oneOf:
             - $ref: "#/components/schemas/BudgetStatus"
             - $ref: "#/components/schemas/ToolError"
+
+    SearchStep:
+      type: object
+      additionalProperties: false
+      required: [index, tool, query, result]
+      description: >-
+        v1.31 (EXT-10): a search of the public x402 discovery index. It buys nothing and reaches neither the control
+        layer nor the settlement layer.
+      properties:
+        index:
+          type: integer
+        tool:
+          const: search_resources
+        query:
+          type: string
+          maxLength: 200
+          description: The query as sent to the index, cut to 200 characters.
+        result:
+          oneOf:
+            - $ref: "#/components/schemas/SearchOutput"
+            - $ref: "#/components/schemas/ToolError"
+
+    SearchOutput:
+      type: object
+      additionalProperties: false
+      required: [outcome, results]
+      properties:
+        outcome:
+          type: string
+          enum: [OK, UNAVAILABLE, LIMIT_REACHED]
+          description: >-
+            UNAVAILABLE: the index failed, was slow (5 s) or answered something unreadable; LIMIT_REACHED: the run
+            already searched 3 times, and nothing was sent.
+        results:
+          type: array
+          maxItems: 10
+          description: Results on the seller list first, then the rest, each group in the index's order.
+          items:
+            $ref: "#/components/schemas/SearchResult"
+
+    SearchResult:
+      type: object
+      additionalProperties: false
+      required: [url, host, priceAtomic, priceUsd, network, about, inputs, onSellerList]
+      description: >-
+        What the model sees of one listing: these fields and nothing else. A listing's other text (its payee, service
+        name, tags, quality figures, the inputs' descriptions) never reaches the model, a step or an answer.
+      properties:
+        url:
+          type: string
+        host:
+          type: string
+        priceAtomic:
+          type: string
+          pattern: "^[1-9][0-9]{0,30}$"
+          description: The listing's price, atomic units. Display only; L2 decides from the seller's own challenge.
+        priceUsd:
+          type: string
+        network:
+          type: string
+        about:
+          type: string
+          maxLength: 300
+          description: The listing's description as plain text, cut to 300 characters. Untrusted.
+        inputs:
+          type: array
+          maxItems: 8
+          items:
+            type: object
+            additionalProperties: false
+            required: [name, type, required]
+            properties:
+              name:
+                type: string
+              type:
+                type: string
+                enum: [string, number, integer, boolean]
+              required:
+                type: boolean
+        onSellerList:
+          type: boolean
+          description: Whether the agent may fetch and buy from this host. A host off the list is never fetched or paid.
 
     FetchResult:
       type: object

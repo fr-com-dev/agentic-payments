@@ -131,6 +131,17 @@ describe("T-DEV-02 each process gets its own env file, its own local key and NET
     expect(env.ENV_FILE).toBe("env/l2-control.env.example");
   });
 
+  it("T-DEV-01 021: the hosted agent runs in test mode unless its env file sets AGENT_TEST_MODE, and no other role gets it", () => {
+    expect(localRunEnv("hosted", { path: "env/l1-hosted.env", values: { NETWORK: "local" } }, {}).AGENT_TEST_MODE).toBe("1");
+    expect(localRunEnv("hosted", null, {}).AGENT_TEST_MODE).toBe("1");
+    // The file's own value stands, whatever it is: the agent itself reads it from the file.
+    for (const v of ["0", "1", ""]) expect(localRunEnv("hosted", { path: "env/l1-hosted.env", values: { AGENT_TEST_MODE: v } }, {}).AGENT_TEST_MODE, JSON.stringify(v)).toBeUndefined();
+    expect(template("env/l1-hosted.env.example").values.AGENT_TEST_MODE).toBe("1");
+    for (const role of (Object.keys(RUN_ROLES) as RunRole[]).filter((r) => r !== "hosted")) {
+      expect(localRunEnv(role, template(`${RUN_ROLES[role].envFile}.example`), {}).AGENT_TEST_MODE, role).toBeUndefined();
+    }
+  });
+
   it("T-DEV-02 must-fail: a non-local env file still runs locally, and VS Code's own keys and settings never reach a process", () => {
     process.env.PAYER_PRIVATE_KEY = "0xdecoy";
     process.env.ANTHROPIC_API_KEY = "decoy";

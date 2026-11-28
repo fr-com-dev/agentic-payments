@@ -20,7 +20,7 @@ import { addressLimit } from "../shared/address-limit.js";
 import { requireRole } from "../shared/auth.js";
 import { apiDocsEnabled, ConfigError, CONTROL_BIND_HOST, controlPort, loadEnv, networkProfile, ROLE_TOKEN_VAR, tokenFor, type NetworkProfile } from "../shared/config.js";
 import { USER_ID_RE } from "../shared/user-id.js";
-import { ACCEPTS_MAX, PURPOSE_MAX_CHARS, type AuthorizationDecision, type BudgetStatus, type EscalationBudget, type PaymentIntent, type PolicyViolation } from "../shared/contracts.js";
+import { ACCEPTS_MAX, PURPOSE_MAX_CHARS, type AuthorizationDecision, type BudgetStatus, type EscalationBudget, type PaymentIntent, type PolicyViolation, type SellerHosts } from "../shared/contracts.js";
 import { mountAdminRoutes, toEscalationBudget, type AdminDeps } from "./admin-routes.js";
 import { mountApiDocs } from "./api-docs.js";
 import { issuerKeys } from "./approval-evidence.js";
@@ -657,6 +657,18 @@ export function createControlService(deps: ControlServiceDeps): ControlService {
       perPaymentCapAtomic: mandate.autoApproveMaxAtomic,
     };
     res.json(status);
+  });
+
+  // 021 (L2-5, FR-010): the hosts L2 would pay at, which bound what the hosted agent fetches in search mode: the
+  // platform mandate's allowedHosts and, with user accounts on, the platform seller list's hosts. Configuration only,
+  // computed once: no ledger read, no sweep, nothing appended, no serialization. CONTROL_TOKEN only: the route takes
+  // no caller's token, because INV-13 and SEC-32 let only authorize and budget read one, and the answer is the same for
+  // every caller.
+  const sellerHosts: SellerHosts = {
+    hosts: [...new Set([...mandate.allowedHosts, ...(users ? users.platform.sellers.map((seller) => seller.host) : [])].map((h) => h.toLowerCase()))].sort(),
+  };
+  app.get("/v1/sellers", requireRole("agent-control", tok(deps.tokens?.control)), (_req, res) => {
+    res.json(sellerHosts);
   });
 
   mountLedgerRoutes(app, {

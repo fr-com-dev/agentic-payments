@@ -17,6 +17,7 @@ import { loadHostedConfig } from "../src/layer1-intent/hosted/config.js";
 import { agentAuthSettings } from "../src/layer1-intent/hosted/server.js";
 import { ConfigError } from "../src/shared/config.js";
 import type { AuthorizationDecision, PaymentIntent } from "../src/shared/contracts.js";
+import { listing, startDiscoveryStub } from "./helpers/discovery-stub.js";
 import { fakePorts, mockModel, startHostedApp, text, toolCall, type HostedTestApp } from "./helpers/hosted.js";
 import {
   conformance,
@@ -367,6 +368,32 @@ describe("T-API-07 live responses match the documented status, headers and schem
     expect(documented.filter((d) => !seen.has(d))).toEqual([]);
   });
 
+  it("T-API-07 021: a search-mode run's search steps (OK with results, UNAVAILABLE, LIMIT_REACHED) conform to the document", async () => {
+    const doc = loadDoc();
+    const index = await startDiscoveryStub({ listings: [listing("http://127.0.0.1:4021/api/weather"), listing("https://other.example/api/weather")] });
+    cleanups.push(() => index.close());
+    index.script({ listings: [listing("http://127.0.0.1:4021/api/weather"), listing("https://other.example/api/weather")] }, { status: 500 });
+    const model = mockModel([...Array.from({ length: 4 }, (_, i) => toolCall("search_resources", { query: `weather ${i}` })), text("done")]);
+    const a = await start(DOCS, { model, discovery: { url: index.url } });
+    const res = await send(a.base, "POST", "/v1/runs", await a.token("alice"), { goal: "weather" });
+    expect(res.status).toBe(200);
+    const steps = (res.body as { steps: { result: { outcome: string; results: unknown[] } }[] }).steps;
+    expect(steps.map((x) => [x.result.outcome, x.result.results.length])).toEqual([
+      ["OK", 2],
+      ["UNAVAILABLE", 0],
+      ["OK", 2],
+      ["LIMIT_REACHED", 0],
+    ]);
+    const schema = responseContent(doc, "POST", "/v1/runs", 200)?.["application/json"]?.schema;
+    expect(schema).toBeDefined();
+    expect(conformance(doc, schema!, res.body)).toEqual([]);
+    // Must fail: a result with a listing's extra field, or a step without its query, is reported.
+    const leaked = structuredClone(res.body) as { steps: { query?: string; result: { results: Record<string, unknown>[] } }[] };
+    leaked.steps[0]!.result.results[0]!.payTo = "0xbad";
+    delete leaked.steps[1]!.query;
+    expect(conformance(doc, schema!, leaked).length).toBeGreaterThanOrEqual(2);
+  });
+
   it("T-API-07 the run stream is documented as the run route's other 200 form, and its last event conforms to the Run schema (v1.17)", async () => {
     const doc = loadDoc();
     const content = responseContent(doc, "POST", "/v1/runs", 200)!;
@@ -442,6 +469,7 @@ describe("T-API-08 the docs routes are off by default, and in Azure only the age
   it("T-API-08 API_DOCS accepts 1, 0 or empty in env/l1-hosted.env; anything else is a startup error", () => {
     const env = {
       NETWORK: "local",
+      AGENT_TEST_MODE: "1", // 021: the agent of before 021 (NFR-006)
       MODEL_PROVIDER: "anthropic",
       ANTHROPIC_API_KEY: "k",
       AUTH_ISSUER: "urn:x402:dev-issuer",

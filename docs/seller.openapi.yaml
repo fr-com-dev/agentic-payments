@@ -5,7 +5,7 @@
 openapi: 3.1.0
 info:
   title: Seller API
-  version: "1.30.1"
+  version: "1.31.0"
   summary: The demo seller of the x402 three-layer agent payments PoC, selling JSON resources for USDC.
   description: |
     A simulated external party: a free catalog and four priced routes, paid with x402 v2 (`exact` scheme, an
@@ -470,7 +470,7 @@ components:
     CatalogItem:
       type: object
       additionalProperties: false
-      required: [path, priceAtomic, description, tier]
+      required: [path, priceAtomic, description, tier, about, inputs]
       properties:
         path:
           type: string
@@ -479,10 +479,39 @@ components:
           $ref: "#/components/schemas/AtomicAmount"
         description:
           type: string
+          description: The route's short label.
         tier:
           type: string
           enum: [pay-per-use, premium, enterprise]
           description: The route's monetization tier. The catalog lists priced routes only, so never `free`.
+        about:
+          type: string
+          minLength: 1
+          maxLength: 500
+          description: >-
+            v1.31 (021): what the route returns, as declared with its tier. The payment challenge's
+            `resource.description` carries the same text.
+          examples: ["Current weather for one city: the temperature in °C and the sky (sunny, cloudy, rain or fog)."]
+        inputs:
+          type: array
+          description: v1.31 (021) the query inputs the route reads, as declared with its route; empty for none.
+          items:
+            $ref: "#/components/schemas/CatalogInput"
+
+    CatalogInput:
+      type: object
+      additionalProperties: false
+      required: [name, type, required]
+      properties:
+        name:
+          type: string
+          pattern: "^[a-z][a-zA-Z0-9]{0,39}$"
+          examples: [city]
+        type:
+          type: string
+          enum: [string, number, integer, boolean]
+        required:
+          type: boolean
 
     Weather:
       type: object
@@ -544,8 +573,13 @@ components:
           type: string
         description:
           type: string
+          description: v1.31 (021) the route's `about`, what it returns.
         mimeType:
           type: string
+        serviceName:
+          type: string
+          description: v1.31 (021) the name the discovery index shows for this seller.
+          examples: [x402 PoC demo seller]
 
     PaymentRequirements:
       type: object
@@ -592,6 +626,26 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/PaymentRequirements"
+        extensions:
+          $ref: "#/components/schemas/Extensions"
+
+    Extensions:
+      type: object
+      description: >-
+        v1.31 (021): `bazaar`, the route's discovery declaration for the x402 discovery index (Coinbase's Bazaar),
+        made with the x402 SDK's `declareDiscoveryExtension` from the route's one declaration: `info.input` (the
+        method and the inputs' example values), `info.output.example` (the route's own answer to those examples) and
+        `schema` (the inputs' JSON Schema: type, description, the required ones). The x402 client copies it into the
+        payment payload; the hosted facilitator can list the route after its first settlement.
+      properties:
+        bazaar:
+          type: object
+          required: [info, schema]
+          properties:
+            info:
+              type: object
+            schema:
+              type: object
 
     PaymentPayload:
       type: object
@@ -607,6 +661,8 @@ components:
         payload:
           type: object
           description: The scheme's proof; for `exact` on EVM, an EIP-3009 authorization and its signature.
+        extensions:
+          $ref: "#/components/schemas/Extensions"
 
     SettleResponse:
       type: object

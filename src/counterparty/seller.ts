@@ -3,7 +3,12 @@
 // are mounted before the x402 middleware, priced ones after it, and each priced route offers exactly one `exact`
 // option priced as an explicit AssetAmount (never a "$" string), so the asset and its EIP-712 domain come from the
 // network profile. docs/seller.openapi.yaml describes the routes; with API_DOCS=1 the seller also serves it.
+// 021 (CP-1, EXT-10): each priced route's challenge also describes the route for the x402 discovery index (Coinbase's
+// Bazaar), from its one declaration: what it returns (`about`), the inputs it reads, and its own answer to their
+// examples. The x402 client copies that into the payment, so the hosted facilitator can list the route after its first
+// settlement; the local facilitator ignores it.
 import { pathToFileURL } from "node:url";
+import type { Request } from "express";
 import express from "express";
 import type { FacilitatorClient, RouteConfig, RoutesConfig } from "@x402/core/server";
 import {
@@ -13,6 +18,7 @@ import {
   x402ResourceServer,
 } from "@x402/express";
 import { ExactEvmScheme } from "@x402/evm/exact/server";
+import { bazaarResourceServerExtension, declareDiscoveryExtension } from "@x402/extensions/bazaar";
 import {
   apiDocsEnabled,
   ConfigError,
@@ -25,7 +31,7 @@ import {
 } from "../shared/config.js";
 import { addressLimit, trustedProxyHops, trustProxies } from "../shared/address-limit.js";
 import { mountSellerApiDocs } from "./api-docs.js";
-import { mountEndpoints } from "./endpoints.js";
+import { EndpointDeclarationError, mountEndpoints, type Endpoint } from "./endpoints.js";
 import { USDC_DECIMALS } from "./monetization.js";
 import { FREE_ENDPOINTS, PAID_ENDPOINTS, SellerApi } from "./seller-api.js";
 import {
@@ -55,13 +61,41 @@ import {
  */
 export const MAX_PRICED_REQUESTS_PER_MINUTE = 600;
 
+/** 021: the name the discovery index shows for this seller's routes. */
+export const SERVICE_NAME = "x402 PoC demo seller";
+
+/**
+ * 021: a priced route's discovery declaration (contracts/seller-api.md): its inputs' examples, their schema (type and
+ * `about`, required ones listed), and the handler's own answer to those examples, computed when the seller is built.
+ */
+export function discoveryDeclaration(e: Endpoint, api: SellerApi): Record<string, unknown> {
+  const input = Object.fromEntries(e.route.inputs.map((i) => [i.name, i.example]));
+  const example = e.handler.call(api, { query: Object.fromEntries(e.route.inputs.map((i) => [i.name, String(i.example)])) } as unknown as Request);
+  if (example !== null && typeof example === "object" && typeof (example as { then?: unknown }).then === "function") {
+    throw new EndpointDeclarationError(`${e.name}: the example answer must be computed synchronously`);
+  }
+  return declareDiscoveryExtension({
+    input,
+    inputSchema: {
+      properties: Object.fromEntries(e.route.inputs.map((i) => [i.name, { type: i.type, description: i.about }])),
+      required: e.route.inputs.filter((i) => i.required).map((i) => i.name),
+    },
+    output: { example },
+  });
+}
+
 /** One payment option per route; the query string never affects the price. */
 export function sellerRoutes(net: NetworkProfile, payTo: string): Record<string, RouteConfig> {
   const routes: Record<string, RouteConfig> = {};
-  for (const { route, monetization } of PAID_ENDPOINTS) {
+  const api = new SellerApi(net);
+  for (const e of PAID_ENDPOINTS) {
+    const { route, monetization } = e;
     if (monetization.price === null) continue;
     routes[`${route.method} ${route.path}`] = {
-      description: monetization.description,
+      // 021: the challenge's resource description is what the route returns; the short label stays the catalog's.
+      description: monetization.about,
+      serviceName: SERVICE_NAME,
+      extensions: discoveryDeclaration(e, api),
       mimeType: "application/json",
       accepts: {
         scheme: "exact",
@@ -120,7 +154,8 @@ export function sellerPaymentMiddleware(
       if (operation !== "supported") log(category, operation, err);
     });
   }
-  const resourceServer = new x402ResourceServer(facilitator).register(net.caip2, new ExactEvmScheme());
+  // 021: the Bazaar extension fills in each declaration (the method) and puts it in the route's challenge.
+  const resourceServer = new x402ResourceServer(facilitator).register(net.caip2, new ExactEvmScheme()).registerExtension(bazaarResourceServerExtension);
   const httpServer = new x402HTTPResourceServer(resourceServer, routes);
   const x402 = paymentMiddlewareFromHTTPServer(httpServer, undefined, undefined, false);
   let synced: Promise<void> | null = null;

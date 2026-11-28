@@ -178,8 +178,9 @@ describe("T-AGT-05 secret shapes", () => {
 
 describe("T-AGT-05 logs", () => {
   // 019: `client`, the client of the caller's token, on both kinds of line (T-AGT-20).
-  const STEP_KEYS = ["event", "runId", "requester", "client", "sessionId", "index", "tool", "outcome", "intentId", "authorizationId", "ms"];
-  const RUN_KEYS = ["event", "runId", "requester", "client", "sessionId", "status", "stopReason", "steps", "ms"];
+  // 021: a search step's line adds `results` (a count), and the run line `mode` (T-AGT-20).
+  const STEP_KEYS = ["event", "runId", "requester", "client", "sessionId", "index", "tool", "outcome", "intentId", "authorizationId", "results", "ms"];
+  const RUN_KEYS = ["event", "runId", "requester", "client", "sessionId", "mode", "status", "stopReason", "steps", "ms"];
 
   it("every line is JSON with only whitelisted keys, and no planted value appears in any line", async () => {
     const s = await seller();

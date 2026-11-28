@@ -3,6 +3,11 @@
 > **2026-11-15, extended by feature 016** (`specs/016-agent-auth0-streaming/contracts/hosted-agent-api.md`, SPEC
 > v1.17): one issuer for every caller, an event-stream form of the answer (`Accept: text/event-stream`), and a
 > docs page that can sign a person in at the tenant.
+>
+> **2026-11-26, extended by feature 021** (`specs/021-bazaar-discovery-search/contracts/hosted-agent-api.md`, SPEC
+> v1.31): two modes, set by the operator (`AGENT_TEST_MODE`). In search mode the model also gets the read-only tool
+> `search_resources`, and the answer's and the stream's steps can be a search step, `{ index, tool:
+> "search_resources", query, result }`. Test mode is this contract as it was.
 
 **Names**: SPEC calls this unit the *hosted agent service*. Its env role is `l1-hosted`, its
 Azure app is `ca-l1-eastus2-dev`, and its code lives in `src/layer1-intent/hosted/`.

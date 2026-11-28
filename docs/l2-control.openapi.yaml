@@ -4,7 +4,7 @@
 openapi: 3.1.0
 info:
   title: L2 control API
-  version: "1.30.1"
+  version: "1.31.0"
   summary: Policy, signing and ledger service of the x402 three-layer agent payments PoC.
   description: |
     L2 is the only process that holds the payer key. It decides every payment against the spending
@@ -190,6 +190,28 @@ paths:
           $ref: "#/components/responses/CallerForbidden"
         "429":
           $ref: "#/components/responses/TooManyCallerChecks"
+
+  /v1/sellers:
+    get:
+      tags: [agent]
+      operationId: getSellerHosts
+      summary: The hosts L2 would pay at (v1.31, EXT-10)
+      description: |
+        The platform mandate's `allowedHosts` and, with user accounts on, the platform seller list's hosts: every host
+        any caller of the agent could be paid at. The hosted agent asks once at the start of a search-mode run and
+        fetches no other host. From L2's configuration: no ledger read, nothing appended. The agent's role token only:
+        this route reads no caller's token (INV-13), and its answer is the same for every caller.
+      security:
+        - controlToken: []
+      responses:
+        "200":
+          description: The seller hosts, sorted, lowercase, without duplicates.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SellerHosts"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
 
   /v1/reconcile:
     post:
@@ -1773,6 +1795,19 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/PolicyViolation"
+
+    SellerHosts:
+      type: object
+      additionalProperties: false
+      required: [hosts]
+      description: v1.31 (EXT-10) the hosts any caller of the agent could be paid at.
+      properties:
+        hosts:
+          type: array
+          description: "`host[:port]`, lowercase, as URL parsing gives it; no duplicates; sorted."
+          items:
+            type: string
+          examples: [["127.0.0.1:4021", "seller.fabriciorojas.com"]]
 
     BudgetStatus:
       type: object

@@ -43,3 +43,9 @@ of L2 gets the parsed key, and no other process names it. The test asserts that 
 like A14 does for the caller's: the header it travels in to L2 (`X-Person-Authorization`) is named only in
 `src/portal/person-context.ts` and `src/layer2-control/person.ts`. The test asserts that no other rule catches its
 fixture.
+
+`a19-violation.ts` (021) is checked with `checkDiscoveryConfinement`. A19 gives the public x402 discovery index one
+client: its path (`/discovery/search`) is written only in `src/layer1-intent/hosted/discovery.ts`, which only
+`src/layer1-intent/hosted/agent.ts` imports; only the seller (`src/counterparty/`) imports `@x402/extensions`; and no
+payment decision, signer or ledger key code names the index or the search tool. The test asserts that no other rule
+catches its fixture.

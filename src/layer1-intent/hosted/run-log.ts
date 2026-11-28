@@ -4,7 +4,10 @@
 // (runId, requester `<issuer host>:<sub>`, sessionId, authorizationId) correlate a run with the L2 ledger (FR-025).
 // 019: `client` names the client the caller's token was issued to (the docs page's, the desktop client, a machine
 // caller's own), a public identifier, so a run can be traced to the way its person signed in (specs/019 FR-023).
+// 021: the run line says which mode the run used (`search` or `test`), for the operator only (FR-003, FR-017); a search
+// step's line has its outcome and the number of results, never the query, a listing's text or an address.
 import type { RunStatus, StopReason } from "./agent.js";
+import type { AgentMode } from "./config.js";
 
 export interface StepLine {
   runId: string;
@@ -17,6 +20,8 @@ export interface StepLine {
   outcome: string;
   intentId?: string;
   authorizationId?: string;
+  /** 021: a search step's number of results. */
+  results?: number;
   ms: number;
 }
 
@@ -26,6 +31,8 @@ export interface RunLine {
   /** 019: the client of the caller's token. */
   client: string;
   sessionId: string;
+  /** 021: the run's mode. */
+  mode: AgentMode;
   status: RunStatus;
   stopReason: StopReason | null;
   steps: number;
@@ -60,6 +67,7 @@ export function createRunLog(write: (line: string) => void = (line) => process.s
           outcome: e.outcome,
           ...(e.intentId !== undefined && { intentId: e.intentId }),
           ...(e.authorizationId !== undefined && { authorizationId: e.authorizationId }),
+          ...(e.results !== undefined && { results: e.results }),
           ms: e.ms,
         }),
       ),
@@ -71,6 +79,7 @@ export function createRunLog(write: (line: string) => void = (line) => process.s
           requester: e.requester,
           client: e.client,
           sessionId: e.sessionId,
+          mode: e.mode,
           status: e.status,
           stopReason: e.stopReason,
           steps: e.steps,
@@ -81,9 +90,20 @@ export function createRunLog(write: (line: string) => void = (line) => process.s
   };
 }
 
-/** A step's outcome for the log: the fetch outcome, `ok` for a budget read, `error` when the tool threw. */
-export function stepOutcome(result: unknown): { outcome: string; authorizationId?: string } {
-  const r = result as { outcome?: unknown; error?: unknown; authorizationId?: unknown } | null;
+const SEARCH_OUTCOMES: Record<string, string> = { OK: "ok", UNAVAILABLE: "unavailable", LIMIT_REACHED: "limit_reached" };
+
+/**
+ * A step's outcome for the log: the fetch outcome, `ok` for a budget read, `error` when the tool threw. 021: a search's
+ * `ok`, `unavailable` or `limit_reached`, and its number of results.
+ */
+export function stepOutcome(result: unknown, tool?: string): { outcome: string; authorizationId?: string; results?: number } {
+  const r = result as { outcome?: unknown; error?: unknown; authorizationId?: unknown; results?: unknown } | null;
+  if (tool === "search_resources") {
+    if (r !== null && typeof r === "object" && typeof r.outcome === "string" && Array.isArray(r.results)) {
+      return { outcome: SEARCH_OUTCOMES[r.outcome] ?? "error", results: r.results.length };
+    }
+    return { outcome: "error" };
+  }
   if (r !== null && typeof r === "object" && typeof r.outcome === "string") {
     return { outcome: r.outcome, ...(typeof r.authorizationId === "string" && { authorizationId: r.authorizationId }) };
   }

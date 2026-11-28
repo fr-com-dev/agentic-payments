@@ -1,5 +1,25 @@
 <!--
 Sync Impact Report
+- Version change: 3.2.0 → 3.3.0 (MINOR, 2026-11-26, SPEC 1.31, feature 021-bazaar-discovery-search). MINOR because
+  guidance is materially expanded and nothing is removed or redefined: the hosted agent may search a public x402
+  discovery index, and the seller uses the x402 SDK's extensions package. No MUST is loosened: the search tool reads
+  data and can't sign, approve, reject or edit a policy (Principle I); nothing from the index reaches a decision
+  (Principle II); the caller's token still goes to L2 only, on authorize and budget only, and never to the index
+  (Principle V: the new seller-hosts read takes the agent's role credential alone).
+- Modified principles: none.
+- Modified sections: Technology & Scope Constraints (stack: the x402 SDK's pinned version, 2.31.0 since SPEC 1.18, and
+  its extensions package for the seller; scope: the hosted agent may search a public x402 discovery index over HTTPS
+  with no credential, and what it returns is untrusted data; the extension range is EXT-1..EXT-10).
+- Added sections: none. Removed sections: none.
+- Templates reviewed: plan-template.md, spec-template.md, tasks-template.md (no change)
+- Source: SPEC.md v1.31 (Changes in 1.31, §3.1, §4.1 A19, §5, §7, L1-1, L1-2, L1-6, L2-5, CP-1, CFG-2, §11
+  SEC-60..64, §12, §15 EXT-10)
+- Documents changed with it: SPEC.md, CLAUDE.md, specs/README.md, docs/self-hosted/base-sepolia.md.
+- Deferred TODOs: the demo seller is listed by the index only after its first settlement through the hosted
+  facilitator, which the operator makes by hand on the VPS (specs/021 quickstart §3); the model checks SC-001..003 are
+  hand runs (quickstart §4).
+
+Previous report (3.2.0)
 - Version change: 3.1.0 → 3.2.0 (MINOR, 2026-11-25, SPEC 1.30, feature 020-coinbase-wallet-balances). MINOR because
   guidance is materially expanded and nothing is removed or redefined (Governance: "MINOR when a principle or
   section is added or materially expanded"): a person may connect their own Coinbase account to the portal, read
@@ -380,7 +400,7 @@ Rationale: authorization must be reproducible, auditable and race-free.
 
 ## Technology & Scope Constraints
 
-- Stack (pinned, SPEC.md §5): Node.js 22 ESM, strict TypeScript, x402 SDK 2.28.0, viem,
+- Stack (pinned, SPEC.md §5): Node.js 22 ESM, strict TypeScript, x402 SDK 2.31.0 (2.28.0 before SPEC 1.18), viem,
   express, Anthropic SDK and vitest. Ganache and solc are used for the local chain only. The
   CDP SDK 1.59.0 is used by the seller only, through its auth subpath, to sign facilitator JWTs.
   Added in 1.2.0, for the hosted agent service (L1) only: Mastra 1.75.0 used as a library,
@@ -426,8 +446,12 @@ Rationale: authorization must be reproducible, auditable and race-free.
   forwarding a person's token from the portal to the control layer stays out. Since 3.2.0 a person may connect
   their own Coinbase account to the portal, read only: the portal reads its balances and Coinbase's valuation of
   them over HTTPS, as Coinbase's OAuth client. Moving funds to or from a connected account, and any other
-  platform, stay out. Each extension (EXT-1..EXT-9) is delivered one per change and MUST
-  preserve every invariant.
+  platform, stay out. Since 3.3.0 the hosted agent may search a public x402 discovery index (Coinbase's Bazaar)
+  over HTTPS, with no credential. What it returns is untrusted data: the model sees fixed fields only, the agent
+  fetches only hosts the control layer names, and nothing from it decides a payment. The seller uses the x402 SDK's
+  extensions package, at the SDK's pinned version, to describe its routes for that index. Paying a seller found by
+  search that the operator never allowed stays out. Each extension (EXT-1..EXT-10) is delivered one per change and
+  MUST preserve every invariant.
 - Cross-layer types live only in the shared contract module. Changing them is a contract
   change: update every producer, consumer and test together.
 - Accepted residual risks (v1): bearer tokens over loopback, key in an environment variable,
@@ -507,4 +531,4 @@ New policy rules get a snake_case rule ID, a row in the SPEC rule table and a po
   design and again before implementation. Every review verifies the quality gates above.
 - Runtime guidance for agents lives in `CLAUDE.md`.
 
-**Version**: 3.2.0 | **Ratified**: 2026-10-16 | **Last Amended**: 2026-11-25
+**Version**: 3.3.0 | **Ratified**: 2026-10-16 | **Last Amended**: 2026-11-26

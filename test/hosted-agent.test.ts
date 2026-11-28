@@ -9,10 +9,11 @@ import express from "express";
 import { afterEach, describe, expect, it } from "vitest";
 import { z } from "zod";
 import { ConfigError } from "../src/shared/config.js";
-import { AGENT_TOOLS } from "../src/layer1-intent/agent.js";
-import { runGoal } from "../src/layer1-intent/hosted/agent.js";
+import { AGENT_TOOLS, systemPrompt } from "../src/layer1-intent/agent.js";
+import { runGoal, SEARCH_TOOL_DESCRIPTION, searchSystemPrompt } from "../src/layer1-intent/hosted/agent.js";
 import { DEV_ISSUER, loadHostedConfig } from "../src/layer1-intent/hosted/config.js";
 import { createModel } from "../src/layer1-intent/hosted/model.js";
+import { startDiscoveryStub, STUB_LOCAL } from "./helpers/discovery-stub.js";
 import { fakePorts, mockModel, startHostedApp, text, toolCall, toolNamesSeen, type HostedTestApp } from "./helpers/hosted.js";
 
 const SECRET_HEX = "ab".repeat(32);
@@ -28,6 +29,7 @@ const AGENT_CLIENT = "AgentCliClient0123456789abcdefgh";
 function env(over: Record<string, string | undefined> = {}): NodeJS.ProcessEnv {
   const base: Record<string, string | undefined> = {
     NETWORK: "local",
+    AGENT_TEST_MODE: "1", // 021: the agent of before 021 (NFR-006)
     MODEL_PROVIDER: "anthropic",
     ANTHROPIC_API_KEY: API_KEY,
     AUTH_ISSUER: SIGN_IN_ISSUER,
@@ -266,6 +268,41 @@ describe("T-AGT-02 tool set", () => {
     }
   });
 
+  it("021 test mode: the L1-3 prompt byte for byte, and no request to the discovery index (NFR-003)", async () => {
+    const index = await startDiscoveryStub();
+    cleanups.push(() => index.close());
+    const seller = await freeSeller();
+    const model = mockModel([toolCall("check_budget", {}), text("done")]);
+    const a = await hosted({ model, env: { SELLER_URL: seller, DISCOVERY_URL: index.url } });
+    expect((await a.run("alice", { goal: "read the catalog" })).status).toBe(200);
+    for (const call of model.doStreamCalls) {
+      expect(call.prompt.filter((m) => m.role === "system").map((m) => m.content).join("\n")).toBe(systemPrompt(seller));
+    }
+    expect(index.requests).toHaveLength(0);
+  });
+
+  it("021 search mode: exactly fetch_resource, check_budget and search_resources, in that order, with the fixed description and schema and the search-mode prompt", async () => {
+    const index = await startDiscoveryStub();
+    cleanups.push(() => index.close());
+    const seller = await freeSeller();
+    const model = mockModel([toolCall("search_resources", { query: "weather" }), toolCall("check_budget", {}), text("done")]);
+    const a = await hosted({ model, discovery: { url: index.url }, env: { SELLER_URL: seller } });
+    expect((await a.run("alice", { goal: "weather" })).status).toBe(200);
+    expect(toolNamesSeen(model)).toEqual([0, 1, 2].map(() => ["fetch_resource", "check_budget", "search_resources"]));
+    for (const call of model.doStreamCalls) {
+      expect(call.maxOutputTokens).toBe(2048);
+      const tools = (call.tools ?? []) as { name: string; description?: string; inputSchema?: unknown }[];
+      for (const [i, t] of tools.slice(0, 2).entries()) {
+        expect(t.description).toBe(AGENT_TOOLS[i]!.description);
+        expect(schemaCore(t.inputSchema)).toEqual(schemaCore(AGENT_TOOLS[i]!.input_schema));
+      }
+      expect(tools[2]!.description).toBe(SEARCH_TOOL_DESCRIPTION);
+      expect(schemaCore(tools[2]!.inputSchema)).toEqual({ type: "object", properties: { query: { type: "string" } }, required: ["query"] });
+      expect((tools[2]!.inputSchema as { additionalProperties?: unknown }).additionalProperties).toBe(false);
+      expect(call.prompt.filter((m) => m.role === "system").map((m) => m.content).join("\n")).toBe(searchSystemPrompt(seller));
+    }
+  });
+
   it("019 US4 check_budget's output has no account, even when L2's budget has one: the model and a step's result keep their fields", async () => {
     const model = mockModel([toolCall("check_budget", {}), text("done")]);
     // The default fake L2 answers the user view with `account: "ready"`, as L2 does for a person.
@@ -317,11 +354,12 @@ describe("T-AGT-02 tool set", () => {
 
   async function runOnce(model: Parameters<typeof runGoal>[0]["model"]) {
     const { gate, settlement } = fakePorts();
-    return runGoal({ goal: "hello", sessionId: "sess_0123456789abcdef", signal: new AbortController().signal, model, gate, settlement, sellerUrl: "http://127.0.0.1:4021" });
+    return runGoal({ goal: "hello", sessionId: "sess_0123456789abcdef", signal: new AbortController().signal, model, gate, settlement, sellerUrl: "http://127.0.0.1:4021", mode: "test" });
   }
 
   const base = {
     MODEL_PROVIDER: "anthropic",
+    AGENT_TEST_MODE: "1", // 021: the agent of before 021 (NFR-006)
     ANTHROPIC_API_KEY: "sk-test",
     AUTH_ISSUER: SIGN_IN_ISSUER,
     AUTH_AUDIENCE: API_IDENTIFIER,
@@ -396,11 +434,33 @@ describe("T-AGT-02 must-fail", () => {
       gate,
       settlement,
       sellerUrl: "http://127.0.0.1:4021",
+      mode: "test",
       extraTools: { approve_payment: approve_payment as never },
     });
     const seen = toolNamesSeen(model);
     expect(seen[0]).toEqual(["fetch_resource", "check_budget", "approve_payment"]);
     expect(seen.every((names) => names.length === 2)).toBe(false);
+  });
+
+  it("021 an extra tool injected through the test-only hook shows up as a fourth tool name in search mode, and the check reports it", async () => {
+    const model = mockModel([text("done")]);
+    const { gate, settlement } = fakePorts();
+    const approve_payment = createTool({ id: "approve_payment", description: "x", inputSchema: z.object({}), execute: async () => ({}) });
+    await runGoal({
+      goal: "hi",
+      sessionId: "sess_0123456789abcdef",
+      signal: new AbortController().signal,
+      model,
+      gate,
+      settlement,
+      sellerUrl: "http://127.0.0.1:4021",
+      mode: "search",
+      discovery: { url: "http://127.0.0.1:1/discovery/search", network: STUB_LOCAL },
+      extraTools: { approve_payment: approve_payment as never },
+    });
+    const seen = toolNamesSeen(model);
+    expect(seen[0]).toEqual(["fetch_resource", "check_budget", "search_resources", "approve_payment"]);
+    expect(seen.every((names) => names.length === 3)).toBe(false);
   });
 
   it("an unrecognized model id is refused at startup", () => {
@@ -458,7 +518,7 @@ describe("012 FR-007 operator-only intents (hosted)", () => {
       toolCall("fetch_resource", { url: `${seller}/api/premium-report`, purpose: "p", operatorApprovalOnly: true }),
       text("done"),
     ]);
-    await runGoal({ goal: "buy it", sessionId: "sess_0123456789abcdef", signal: new AbortController().signal, model, gate, settlement, sellerUrl: seller });
+    await runGoal({ goal: "buy it", sessionId: "sess_0123456789abcdef", signal: new AbortController().signal, model, gate, settlement, sellerUrl: seller, mode: "test" });
     expect(intents.length).toBeGreaterThanOrEqual(1);
     for (const i of intents) expect("operatorApprovalOnly" in i).toBe(false);
   });

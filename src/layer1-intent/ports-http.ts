@@ -10,6 +10,7 @@ import type {
   AuthorizationGatePort,
   BudgetStatus,
   PaymentIntent,
+  SellerHosts,
   SettlementClaim,
   SettlementReport,
   SettlementVerifierPort,
@@ -87,6 +88,14 @@ export class HttpAuthorizationGate implements AuthorizationGatePort {
   /** 016: for a person's token L2 answers with the user view of the budget (`scope: "user_daily"`). */
   budget(sessionId: string): Promise<BudgetStatus> {
     return call(this.fetchImpl, "GET", `${this.base}/v1/budget/${encodeURIComponent(sessionId)}`, this.controlToken, undefined, this.callerToken);
+  }
+
+  /**
+   * 021 (L2-5 `GET /v1/sellers`): the hosts L2 would pay at. `CONTROL_TOKEN` only: never this gate's caller token,
+   * because only authorize and budget read one (INV-13, SEC-32). The run bounds the call at 2 s (agent.ts).
+   */
+  sellers(): Promise<SellerHosts> {
+    return call(this.fetchImpl, "GET", `${this.base}/v1/sellers`, this.controlToken);
   }
 }
 
