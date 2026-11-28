@@ -4,25 +4,44 @@
 openapi: 3.1.0
 info:
   title: L2 control API
-  version: "1.5"
+  version: "1.31.0"
   summary: Policy, signing and ledger service of the x402 three-layer agent payments PoC.
   description: |
     L2 is the only process that holds the payer key. It decides every payment against the spending
     mandate, signs the approved ones, and records everything in a hash-chained, append-only ledger.
 
     - **Loopback only.** L2 binds `127.0.0.1` (SPEC §3.1); `CONTROL_PORT` changes the port, never the host.
-    - **One bearer token per caller** (INV-13). Each `/v1` operation accepts exactly one token,
+    - **One bearer token per caller** (INV-13). Each `/v1` operation accepts exactly one role token,
       and a wrong or missing token gets 401 before the body is read, so it never appends a ledger entry.
-    - **User accounts** (v1.10, L2-8). With `USER_ACCOUNTS=1`, L2 also serves the `portal` operations to the
-      portal's own token, and an intent that names a user is decided against that user's policy and signed with
-      that user's account. Off (the default), those operations are not mounted and answer 404, and
-      `PaymentIntent.userId` is ignored.
+      Forwarded JWT headers (`X-Caller-Authorization` on the two `agent` routes when sign-in is configured;
+      `X-Person-Authorization` on `portal` user routes and `admin` routes) are verified by L2 itself after the
+      role token and open nothing on their own.
+    - **User accounts** (v1.10, L2-8). With `USER_ACCOUNTS=1` (which also requires sign-in configured via
+      `AUTH_ISSUER`, `AUTH_AUDIENCE`, `AGENT_CLIENT_IDS`, plus `PORTAL_CLIENT_ID`), L2 serves the `portal`
+      operations behind `PORTAL_TOKEN` (and `X-Person-Authorization` on every user route; `GET /v1/platform`
+      needs `PORTAL_TOKEN` only), and a person's verified `X-Caller-Authorization` token on `/v1/authorize` or
+      `/v1/budget/{sessionId}` is decided against that person's effective policy and signed with that person's
+      account, never the platform account. Off (the default), the `portal` operations are not mounted and answer
+      404, and (v1.29) a person's caller token on the two agent routes is refused with 403 `user_accounts_off`.
+      In either mode (v1.17), `PaymentIntent.userId` and `PaymentIntent.approvalSubject` are never accepted and
+      are rejected with 400 (`malformed PaymentIntent`): who a payment is for comes only from
+      `X-Caller-Authorization`.
     - **Portal administration** (v1.15, L2-8). With `PORTAL_ADMIN=1` as well, L2 serves the `admin` operations
-      to the portal's second token: the pending escalations, the two decisions, the events, the budget behind an
-      escalation and the ledger check. Off (the default), they are not mounted and answer 404. The operator's
-      operations are separate and unchanged.
+      behind `PORTAL_ADMIN_TOKEN` and the administrator's own `X-Person-Authorization` token (`portal:admin`):
+      the pending escalations, the two decisions, the events, the budget behind an escalation and the ledger
+      check. Off (the default), they are not mounted and answer 404. The operator's operations are separate and
+      unchanged.
+    - **Request bodies** (v1.18). Every route that reads a JSON body checks authentication first, accepts at most
+      16 KB (`256 KB` on `POST /v1/authorize`), and never inflates compressed bodies (`Content-Encoding` other
+      than identity is 415; oversized bodies are 413). Unreadable bodies receive a fixed JSON error without
+      echoing or logging the request.
     - **Amounts** are decimal strings of atomic units (USDC has 6 decimals: `"1000"` is 0.001 USDC).
-    - **Single writer.** Writes run in one serialized section; run one L2 per ledger file.
+    - **Single writer & ledger integrity.** Writes run in one serialized section under an exclusive lock file
+      (`<ledger>.lock`, fenced before every append and head write, L2-6); run one L2 per ledger file. With
+      `LEDGER_MAC_KEY` (v1.19), every entry carries an HMAC-SHA256 MAC over its hash. With `LEDGER_HEAD_URL`
+      (v1.23), L2 writes the ledger head outside the share inside every serialized section that appended, before
+      returning the response; if the head cannot be written, the request answers 500 `internal error` and
+      returns nothing it decided.
     - **API docs.** With `API_DOCS=1`, L2 also serves this document and Swagger UI at `/docs`. Those
       routes take no token and are not mounted by default. When served, `servers` points at that L2.
 servers:
@@ -30,21 +49,26 @@ servers:
     description: Default local bind (loopback only)
 tags:
   - name: agent
-    description: Called by the agent process (L1) with `CONTROL_TOKEN`.
+    description: >-
+      Called by the agent process (L1) with `CONTROL_TOKEN`, and `X-Caller-Authorization` beside it when sign-in
+      is configured (v1.17).
   - name: settlement
     description: Called by the settlement verifier (L3) with `SETTLEMENT_TOKEN`.
   - name: operator
     description: Called by the human operator's CLIs with `OPERATOR_TOKEN`.
   - name: portal
     description: >-
-      v1.10 user accounts (L2-8). Called by the portal process with `PORTAL_TOKEN`. Mounted only when
-      `USER_ACCOUNTS=1`. No body carries text typed by a person: only identifiers, seller hosts, ISO dates and
-      atomic amounts.
+      v1.10 user accounts (L2-8). Called by the portal process with `PORTAL_TOKEN`, plus the person's own
+      `X-Person-Authorization` token on every user route (`GET /v1/platform` excepted; v1.19, bounded at 6,000
+      checks/min per address). Mounted only when `USER_ACCOUNTS=1`. No body carries text typed by a person: only
+      identifiers, seller hosts, platform codes (v1.30), ISO dates and atomic amounts.
   - name: admin
     description: >-
-      v1.15 portal administration (L2-8). Called by the portal process with `PORTAL_ADMIN_TOKEN`, for a signed-in
-      administrator. Mounted only when `USER_ACCOUNTS=1` and `PORTAL_ADMIN=1`. Reads append nothing. No body
-      carries text typed by a person: only an identifier, a time and a code from a fixed list.
+      v1.15 portal administration (L2-8). Called by the portal process with `PORTAL_ADMIN_TOKEN` and the
+      administrator's own `X-Person-Authorization` token holding `portal:admin` (v1.19, bounded at 6,000
+      checks/min per address). Mounted only when `USER_ACCOUNTS=1` and `PORTAL_ADMIN=1`. Reads append nothing.
+      No body carries text typed by a person: approve takes an empty object `{}` and reject takes only a
+      `reasonCode` from a fixed list; the administrator and confirmation times come from `X-Person-Authorization`.
   - name: docs
     description: Swagger UI and this document. Mounted only when `API_DOCS=1`; no token.
 
@@ -56,16 +80,25 @@ paths:
       summary: Decide a payment intent and, when authorized, sign it
       description: |
         Runs the policy over the x402 challenge and answers AUTHORIZED (with signed payment headers),
-        DENIED or ESCALATE. Every call appends an `INTENT` entry and one outcome entry. `purpose` is
-        recorded for audit only and is never an input to the decision (INV-5).
+        DENIED or ESCALATE. Every call appends an `INTENT` entry and one outcome entry (`AUTHORIZED`,
+        `DENIED`, `ESCALATED` or `ESCALATION_REPEATED`). `purpose` is recorded for audit only and is never
+        an input to the decision (INV-5). If policy evaluation throws unexpectedly, L2 records `DENIED` with
+        `decision_failed` (v1.19); if signing fails, L2 records `DENIED` with `signer_rejected`.
+
+        v1.8/v1.16 (L2-7): with backchannel approval on (`CIBA_APPROVAL=1`), a call that creates a new
+        eligible escalation sends an approval request to the owner's phone and waits up to 120 s outside the
+        serialized section; if the escalation reaches `approved` or `denied` on any path during that wait, L2
+        runs a second serialized decision (`INTENT` with `reevaluationOf`) and returns that decision instead
+        of `ESCALATE`.
 
         v1.17: who the payment is for comes from the caller's token (`X-Caller-Authorization`), which L2
         verifies itself: a person's token decides under that person's policy and signs with that person's
-        account, never the platform account; a machine caller's token names no user, and the platform account
-        pays. Checks run in this order: the control token (401), the caller's token (401, 400, 403), then the
-        body (400). A refusal decides nothing, signs nothing and appends nothing. Verifying a token costs a
-        signature check, so the requests one address sends to this route and to the budget route are counted
-        between the first two checks: 429 beyond 600 a minute.
+        account, never the platform account (or gets 403 `user_accounts_off` when user accounts are off,
+        v1.29); a machine caller's token (or no token when sign-in is unconfigured) names no user, and the
+        platform account pays. Checks run in this order: the control token (401), the per-address rate limit
+        when sign-in is configured (429 beyond 600/min, shared with `/v1/budget/{sessionId}`), the caller's
+        token (400, 401, 403), then the body (uncompressed JSON up to 256 KB; 413 oversized, 415 compressed,
+        400 malformed). A refusal decides nothing, signs nothing and appends nothing.
       security:
         - controlToken: []
       parameters:
@@ -85,10 +118,13 @@ paths:
                 $ref: "#/components/schemas/AuthorizationDecision"
         "400":
           description: >-
-            Malformed intent (missing ids, `paymentRequired.accepts` not an array, non-http(s) URL, a non-boolean
-            `operatorApprovalOnly`, or, v1.17, a `userId` or an `approvalSubject`: a request names nobody), or a
-            body that is not JSON. Also `caller_token_not_accepted`: a caller's token was sent to an L2 with no
-            sign-in configured. The answer never repeats a value, and L2 logs nothing of the body.
+            Malformed intent (missing `intentId`/`sessionId`, non-http(s) `resourceUrl`, `paymentRequired.accepts`
+            not an array or more than 20 options or an option missing valid requirement field types, non-object
+            `paymentRequired.resource`, `purpose` not a string or longer than 500 characters, non-boolean
+            `operatorApprovalOnly`, or, v1.17, a `userId` or `approvalSubject`: a request names nobody), or a
+            body that is not JSON (`malformed PaymentIntent`). Also `caller_token_not_accepted`: a caller's token
+            was sent to an L2 with no sign-in configured. The answer never repeats a value, and L2 logs nothing
+            of the body.
           content:
             application/json:
               schema:
@@ -100,7 +136,9 @@ paths:
         "429":
           $ref: "#/components/responses/TooManyCallerChecks"
         "500":
-          description: Unexpected failure inside the decision.
+          description: >-
+            Unexpected failure inside the decision, or (v1.23) failure to write the external ledger head after
+            the serialized section; returns fixed `{ "error": "internal error" }` and returns no signed payment.
           content:
             application/json:
               schema:
@@ -114,11 +152,14 @@ paths:
       description: |
         An unknown session returns 200 with zero spend. v1.17: for a person's token (`X-Caller-Authorization`)
         the answer is the user view (`scope: user_daily`): the user daily ceiling, that person's committed spend
-        over the last 24 hours, and the highest auto-approve limit among their active policies. A person who has
-        not finished onboarding or is disabled gets zeros. For a machine caller's token, or with no sign-in
-        configured, it is the session view. The `userId` query of v1.10 is no longer accepted. v1.29: the user view
-        also says whether the person can pay now (`account`), from the ledger, in the same read: the hosted agent
-        asks before a person's run. Nothing is appended.
+        over the last 24 hours, and the highest auto-approve limit among their active, unexpired policies
+        (bounded by the platform cap). A person who has not finished onboarding or is disabled gets zeros. For a
+        machine caller's token, or with no sign-in configured, it is the session view. When sign-in is configured
+        and user accounts are off, a person's token gets 403 `user_accounts_off` (v1.29). The `userId` query of
+        v1.10 is no longer accepted. v1.29: the user view also says whether the person can pay now (`account`),
+        from the ledger, in the same read: the hosted agent asks before a person's run. Shares the 600/min
+        per-address caller-token check limit with `POST /v1/authorize` when sign-in is configured. Nothing is
+        appended.
       security:
         - controlToken: []
       parameters:
@@ -178,8 +219,13 @@ paths:
       operationId: reconcile
       summary: Record a settlement report for an authorization
       description: |
-        Stores L3's on-chain verdict. A CONFIRMED settlement is final; a later contradicting report
-        is stored with `anomaly: true` and does not change the effective status (INV-11).
+        Stores L3's on-chain verdict. Compares `verified.{asset, payer, payTo, amount}` (case-insensitive) and,
+        v1.19, `verified.nonce` (when both the `AUTHORIZED` entry and the report carry one) against the
+        authorization; any mismatch is stored as `status: "MISMATCH"` with `anomaly: true`. A CONFIRMED
+        settlement is final; a later contradicting report is stored with `anomaly: true` and does not change the
+        effective status (INV-11). For an authorization that recorded a `nonce` (v1.19), a `NOT_SETTLED` report
+        releases its committed amount only when `verified.nonce` matches and both `observedAt` and the read time
+        are after `validBefore`.
       security:
         - settlementToken: []
       requestBody:
@@ -196,7 +242,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ReconcileResult"
         "400":
-          description: Malformed report (missing `authorizationId` or a `verified` field).
+          description: Malformed report (missing non-empty `authorizationId` or `verified.{asset, payer, payTo, amount}`, or non-JSON body).
           content:
             application/json:
               schema:
@@ -306,6 +352,9 @@ paths:
       tags: [operator]
       operationId: listPendingEscalations
       summary: Pending escalations, oldest first
+      description: |
+        Runs the escalation sweep inside the serialized section so due expiries and lapses are recorded first,
+        then returns pending escalations oldest first with the ledger cursor.
       security:
         - operatorToken: []
       responses:
@@ -375,7 +424,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/AdminPendingEscalations"
         "401":
-          $ref: "#/components/responses/Unauthorized"
+          $ref: "#/components/responses/UnauthorizedOrPerson"
         "403":
           $ref: "#/components/responses/PersonRefused"
 
@@ -430,7 +479,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "401":
-          $ref: "#/components/responses/Unauthorized"
+          $ref: "#/components/responses/UnauthorizedOrPerson"
         "403":
           $ref: "#/components/responses/PersonRefused"
 
@@ -463,7 +512,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "401":
-          $ref: "#/components/responses/Unauthorized"
+          $ref: "#/components/responses/UnauthorizedOrPerson"
         "403":
           $ref: "#/components/responses/PersonRefused"
         "404":
@@ -483,8 +532,9 @@ paths:
         Checked inside the serialized section, in this order: the escalation exists (404); it is pending (the same
         decision returns the first one with `already: true`, any other final state is 409); the decider is not the
         escalation's owner (403 `own_payment`); the identity confirmation is at most 15 minutes old, 60 s tolerance
-        (403 `step_up_required`); v1.19: so is the second factor. The decider and both times are the administrator's
-        own token's (`X-Person-Authorization`), never body fields. A refusal appends nothing.
+        (403 `step_up_required`); v1.19: so is the second factor (`https://x402.dev/mfa_time`). The decider and both
+        times are the administrator's own token's (`X-Person-Authorization`), never body fields. A refusal appends
+        nothing.
       security:
         - portalAdminToken: []
       parameters:
@@ -504,15 +554,20 @@ paths:
               schema:
                 $ref: "#/components/schemas/ApprovedOutcome"
         "400":
-          description: A malformed ID, decider or confirmation time, or any other body field. Nothing is appended.
+          description: >-
+            A malformed `authorizationId`, a non-JSON or non-object body, or any body field (including `decidedBy`
+            or `identityConfirmedAtMs`, which come from `X-Person-Authorization`). Nothing is appended.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
         "401":
-          $ref: "#/components/responses/Unauthorized"
+          $ref: "#/components/responses/UnauthorizedOrPerson"
         "403":
-          description: The decider owns this payment, or their identity confirmation is too old. Nothing is appended.
+          description: >-
+            The administrator's token is refused (`person_forbidden`), the decider owns this payment
+            (`own_payment`), or their sign-in time or second-factor time (`https://x402.dev/mfa_time`) is missing
+            or older than 15 minutes (`step_up_required`). Nothing is appended.
           content:
             application/json:
               schema:
@@ -537,8 +592,9 @@ paths:
       description: |
         Appends one `HUMAN_REJECTION` with `channel: "portal"`, the administrator's identifier as `approver` and a
         reason code from a fixed list. No text is accepted. Later requests for the same (session, resource) are
-        DENIED with `human_rejected` (R15); the agent learns only the rejection's ID. A rejection needs no identity
-        confirmation. The same checks as an approval otherwise.
+        DENIED with `human_rejected` (R15); the agent learns only the rejection's ID. A rejection needs no fresh
+        sign-in or second-factor confirmation; the administrator still comes from `X-Person-Authorization` (with
+        `portal:admin`). The same checks as an approval otherwise.
       security:
         - portalAdminToken: []
       parameters:
@@ -558,15 +614,20 @@ paths:
               schema:
                 $ref: "#/components/schemas/DeniedOutcome"
         "400":
-          description: A malformed ID or decider, a reason outside the list, or any other body field. Nothing is appended.
+          description: >-
+            A malformed `authorizationId`, a non-JSON or non-object body, a `reasonCode` outside the fixed list,
+            or any other body field (including `decidedBy`, which comes from `X-Person-Authorization`). Nothing
+            is appended.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
         "401":
-          $ref: "#/components/responses/Unauthorized"
+          $ref: "#/components/responses/UnauthorizedOrPerson"
         "403":
-          description: The decider owns this payment. Nothing is appended.
+          description: >-
+            The administrator's token is refused (`person_forbidden`), or the decider owns this payment
+            (`own_payment`). Nothing is appended.
           content:
             application/json:
               schema:
@@ -597,18 +658,21 @@ paths:
       responses:
         "200":
           description: >-
-            Chain check result. `ok` is false and `brokenAt` set when an entry was altered, and (v1.23) when the file
-            is shorter than the ledger head L2 last wrote outside the share (`brokenAt` is then the file's length).
+            Chain check result. `ok` is false and `brokenAt` set when an entry is malformed or altered; (v1.19)
+            with `LEDGER_MAC_KEY`, when a MAC is missing or invalid or the file is shorter than `keyedFrom`
+            (`brokenAt` is then the file's length); and (v1.23) with `LEDGER_HEAD_URL`, when the file is shorter
+            than the ledger head L2 last wrote outside the share (`brokenAt` is the file's length) or the entry
+            at `head.entries - 1` has another hash (`brokenAt` is that entry's index).
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ChainCheck"
         "401":
-          $ref: "#/components/responses/Unauthorized"
+          $ref: "#/components/responses/UnauthorizedOrPerson"
         "403":
           $ref: "#/components/responses/PersonRefused"
         "429":
-          description: More than 30 checks in a minute from one address. `Retry-After` says when to ask again. Nothing was read.
+          description: More than 30 checks in a minute from one address (or more than 6,000 person-token checks on `/v1/admin`). `Retry-After` says when to ask again. Nothing was read.
           headers:
             Retry-After:
               description: Seconds until the next check is accepted.
@@ -632,8 +696,11 @@ paths:
       responses:
         "200":
           description: >-
-            Chain check result. `ok` is false and `brokenAt` set when an entry was altered, and (v1.23) when the file
-            is shorter than the ledger head L2 last wrote outside the share (`brokenAt` is then the file's length).
+            Chain check result. `ok` is false and `brokenAt` set when an entry is malformed or altered; (v1.19)
+            with `LEDGER_MAC_KEY`, when a MAC is missing or invalid or the file is shorter than `keyedFrom`
+            (`brokenAt` is then the file's length); and (v1.23) with `LEDGER_HEAD_URL`, when the file is shorter
+            than the ledger head L2 last wrote outside the share (`brokenAt` is the file's length) or the entry
+            at `head.entries - 1` has another hash (`brokenAt` is that entry's index).
           content:
             application/json:
               schema:
@@ -659,6 +726,7 @@ paths:
       summary: The platform limits and the seller list in force
       description: |
         The operator's ceilings for every user and the sellers users may list (CFG-4). Read-only.
+        Names no user, so `PORTAL_TOKEN` alone is required (no `X-Person-Authorization`).
       security:
         - portalToken: []
       responses:
@@ -677,8 +745,10 @@ paths:
       operationId: getUser
       summary: One user's state, derived from the ledger
       description: |
-        Registration, account state, onboarding steps, wallet figures, card identifiers and policies.
-        An unknown user returns 200 with `registered: false` and empty lists, never 404: it is the caller's own user.
+        Registration, account state, onboarding steps, wallet figures, card identifiers, active connected
+        platforms (`connections`, v1.30 — identifiers only, never grants or balances), and policies (sorted by
+        newest `updatedAt` first, without `history`). An unknown user returns 200 with `registered: false` and
+        empty lists, never 404: it is the caller's own user.
       security:
         - portalToken: []
       parameters:
@@ -694,7 +764,7 @@ paths:
         "400":
           $ref: "#/components/responses/InvalidUserId"
         "401":
-          $ref: "#/components/responses/Unauthorized"
+          $ref: "#/components/responses/UnauthorizedOrPerson"
         "403":
           $ref: "#/components/responses/PersonRefused"
 
@@ -731,7 +801,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "401":
-          $ref: "#/components/responses/Unauthorized"
+          $ref: "#/components/responses/UnauthorizedOrPerson"
         "403":
           $ref: "#/components/responses/PersonRefused"
 
@@ -758,7 +828,7 @@ paths:
         "400":
           $ref: "#/components/responses/InvalidUserId"
         "401":
-          $ref: "#/components/responses/Unauthorized"
+          $ref: "#/components/responses/UnauthorizedOrPerson"
         "403":
           $ref: "#/components/responses/PersonRefused"
         "409":
@@ -795,15 +865,15 @@ paths:
               schema:
                 $ref: "#/components/schemas/PolicyView"
         "400":
-          description: "`userId` is not a user identifier, or the body is malformed (a wrong type, a missing or unknown field, an unparsable date)."
+          description: "`userId` is not a user identifier, or the body is malformed (a wrong type, a missing or unknown field including `identityConfirmedAtMs`, or an unparsable date)."
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
         "401":
-          $ref: "#/components/responses/Unauthorized"
+          $ref: "#/components/responses/UnauthorizedOrPerson"
         "403":
-          description: A loosening change without a fresh sign-in time (`step_up_required`), or (v1.19) the person's token refused. Nothing is appended.
+          description: A loosening change without a fresh sign-in time (`step_up_required`), or (v1.19) the person's token refused (`person_forbidden`, `person_mismatch`). Nothing is appended.
           content:
             application/json:
               schema:
@@ -840,7 +910,7 @@ paths:
         "400":
           $ref: "#/components/responses/InvalidUserId"
         "401":
-          $ref: "#/components/responses/Unauthorized"
+          $ref: "#/components/responses/UnauthorizedOrPerson"
         "403":
           $ref: "#/components/responses/PersonRefused"
         "404":
@@ -873,15 +943,15 @@ paths:
               schema:
                 $ref: "#/components/schemas/PolicyView"
         "400":
-          description: "`userId` is not a user identifier, or the body is malformed."
+          description: "`userId` is not a user identifier, or the body is malformed (a wrong type, `expectedVersion` < 1, a missing or unknown field including `identityConfirmedAtMs`, or an unparsable date)."
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
         "401":
-          $ref: "#/components/responses/Unauthorized"
+          $ref: "#/components/responses/UnauthorizedOrPerson"
         "403":
-          description: A loosening change without a fresh sign-in time (`step_up_required`), or (v1.19) the person's token refused. Nothing is appended.
+          description: A loosening change without a fresh sign-in time (`step_up_required`), or (v1.19) the person's token refused (`person_forbidden`, `person_mismatch`). Nothing is appended.
           content:
             application/json:
               schema:
@@ -928,7 +998,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "401":
-          $ref: "#/components/responses/Unauthorized"
+          $ref: "#/components/responses/UnauthorizedOrPerson"
         "403":
           $ref: "#/components/responses/PersonRefused"
         "404":
@@ -975,9 +1045,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "401":
-          $ref: "#/components/responses/Unauthorized"
+          $ref: "#/components/responses/UnauthorizedOrPerson"
         "403":
-          description: A loosening change without a fresh sign-in time (`step_up_required`), or (v1.19) the person's token refused. Nothing is appended.
+          description: A loosening change without a fresh sign-in time (`step_up_required`), or (v1.19) the person's token refused (`person_forbidden`, `person_mismatch`). Nothing is appended.
           content:
             application/json:
               schema:
@@ -1023,7 +1093,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "401":
-          $ref: "#/components/responses/Unauthorized"
+          $ref: "#/components/responses/UnauthorizedOrPerson"
         "403":
           $ref: "#/components/responses/PersonRefused"
         "404":
@@ -1058,7 +1128,7 @@ paths:
         "400":
           $ref: "#/components/responses/InvalidUserId"
         "401":
-          $ref: "#/components/responses/Unauthorized"
+          $ref: "#/components/responses/UnauthorizedOrPerson"
         "403":
           $ref: "#/components/responses/PersonRefused"
         "409":
@@ -1102,9 +1172,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "401":
-          $ref: "#/components/responses/Unauthorized"
+          $ref: "#/components/responses/UnauthorizedOrPerson"
         "403":
-          description: A loosening change without a fresh sign-in time (`step_up_required`), or (v1.19) the person's token refused. Nothing is appended.
+          description: A loosening change without a fresh sign-in time (`step_up_required`), or (v1.19) the person's token refused (`person_forbidden`, `person_mismatch`). Nothing is appended.
           content:
             application/json:
               schema:
@@ -1146,7 +1216,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "401":
-          $ref: "#/components/responses/Unauthorized"
+          $ref: "#/components/responses/UnauthorizedOrPerson"
         "403":
           $ref: "#/components/responses/PersonRefused"
         "409":
@@ -1181,7 +1251,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "401":
-          $ref: "#/components/responses/Unauthorized"
+          $ref: "#/components/responses/UnauthorizedOrPerson"
         "403":
           $ref: "#/components/responses/PersonRefused"
 
@@ -1227,11 +1297,11 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "401":
-          $ref: "#/components/responses/Unauthorized"
+          $ref: "#/components/responses/UnauthorizedOrPerson"
         "403":
           $ref: "#/components/responses/PersonRefused"
         "409":
-          description: "`not_registered`, `account_disabled`, or `connection_reused` (this identifier was closed before; one is never reused)."
+          description: "`not_registered`, `account_disabled`, or `connection_reused` (this identifier was previously opened in the ledger; an identifier is never reused)."
           content:
             application/json:
               schema:
@@ -1263,7 +1333,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "401":
-          $ref: "#/components/responses/Unauthorized"
+          $ref: "#/components/responses/UnauthorizedOrPerson"
         "403":
           $ref: "#/components/responses/PersonRefused"
 
@@ -1362,11 +1432,14 @@ components:
       required: false
       description: >-
         v1.17 (SEC-32). `Bearer <token>`: the access token the hosted agent's caller presented, forwarded
-        unchanged beside the control token. L2 verifies it itself (signature, issuer, audience, validity, the
-        permission `agent:run`, and for a person the agent's client) and takes the user from it. Required where
-        sign-in is configured at L2 (`AUTH_ISSUER`, `AUTH_AUDIENCE`, `AGENT_CLIENT_IDS`), which user accounts
-        need; not accepted where it is not. It opens nothing by itself and no other operation reads it. It is
-        never stored, logged or returned.
+        unchanged beside the control token. L2 verifies it itself (signature, issuer, audience, validity, usable
+        `sub`, the permission `agent:run`, for a machine caller `sub === <client>@clients`, and for a person a
+        client in `AGENT_CLIENT_IDS`) and takes the user from it. Required where sign-in is configured at L2
+        (`AUTH_ISSUER`, `AUTH_AUDIENCE`, `AGENT_CLIENT_IDS`), which user accounts need; not accepted where it is
+        not (400 `caller_token_not_accepted`). A person's token when user accounts are off gets 403
+        `user_accounts_off` (v1.29). Bounded at 600 checks/min per address across `/v1/authorize` and
+        `/v1/budget/{sessionId}` when sign-in is configured. It opens nothing by itself and no other operation
+        reads it. It is never stored, logged or returned.
       schema:
         type: string
         pattern: "^Bearer \\S+$"
@@ -1376,13 +1449,17 @@ components:
       required: true
       description: >-
         v1.19 (SEC-35). `Bearer <token>`: the person's own access token, forwarded by the portal unchanged beside
-        its role token. L2 verifies it itself: the sign-in tenant's signature, issuer, audience and validity and a
-        usable `sub` (401), not a machine token and issued to the portal's client, `PORTAL_CLIENT_ID` (403), and a
-        sign-in time that is not in the future (401). The user is the token's, never a request value: a path's
-        `userId` must be that user (403 `person_mismatch`). The step-up time of a loosening change is the token's
-        sign-in time; an administrator's approval also needs its second-factor time (`https://x402.dev/mfa_time`).
-        The administration routes need `portal:admin` in it (403). It opens nothing by itself and is never stored,
-        logged or returned.
+        its role token. Checked after the role token and a 6,000/min per-address rate limit (429 `too many
+        requests` with `Retry-After`), before the body is read. L2 verifies it itself: the sign-in tenant's
+        signature, issuer, audience, validity and a usable `sub` (401 `person_token_invalid`), not a machine token
+        and issued to the portal's client `PORTAL_CLIENT_ID` (403 `person_forbidden`), and a sign-in time claim
+        (`AUTH_TIME_CLAIM`, default `https://x402.dev/auth_time`) that is a non-negative integer not in the future
+        beyond 60 s (401 `person_token_invalid`). The user is the token's, never a request value: on user-account
+        routes, `:userId` format is checked first (400 `invalid userId`), then it must equal the token's user
+        (403 `person_mismatch`). The step-up time of a loosening change is the token's sign-in time; an
+        administrator's approval also needs its second-factor time (`https://x402.dev/mfa_time`). The
+        administration routes need `portal:admin` in the token (403 `person_forbidden`). It opens nothing by
+        itself and is never stored, logged or returned.
       schema:
         type: string
         pattern: "^Bearer \\S+$"
@@ -1437,10 +1514,17 @@ components:
 
   responses:
     Unauthorized:
+      description: Missing or wrong role bearer token (`unauthorized`). Nothing is appended.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    UnauthorizedOrPerson:
       description: >-
-        Missing or wrong bearer token (`unauthorized`). v1.19, on the user-account and administration routes, with
-        the role token accepted: the person's token, `person_token_required` (none was forwarded) or
-        `person_token_invalid` (anything else about it). Nothing is appended.
+        Missing or wrong role bearer token (`unauthorized`). Or, v1.19, with the role token accepted, the person's
+        token in `X-Person-Authorization`: `person_token_required` (missing or malformed header) or
+        `person_token_invalid` (invalid signature, issuer, audience, expiry, `sub`, or sign-in time claim).
+        Nothing is appended.
       content:
         application/json:
           schema:
@@ -1606,6 +1690,9 @@ components:
 
     PaymentIntent:
       type: object
+      description: >-
+        Payment authorization request from L1. Must not include `userId` or `approvalSubject` (v1.17: rejected
+        with 400; the user comes from `X-Caller-Authorization`).
       required: [intentId, sessionId, resourceUrl, paymentRequired, purpose, createdAt]
       properties:
         intentId:
@@ -1641,7 +1728,9 @@ components:
       properties:
         rule:
           type: string
-          description: Snake_case rule ID from SPEC §8.2 L2-2.
+          description: >-
+            Snake_case rule ID from SPEC §8.2 L2-2 (R1–R17, plus `no_payment_options`, `signer_rejected`, and
+            v1.19 `decision_failed`).
           examples: [human_approval_required]
         detail:
           type: string
@@ -1697,7 +1786,7 @@ components:
         status:
           type: string
           enum: [DENIED, ESCALATE]
-          description: ESCALATE waits for an operator decision; DENIED is final for this request.
+          description: ESCALATE waits for an operator, administrator or backchannel phone decision; DENIED is final for this request.
         authorizationId:
           type: string
         intentId:
@@ -1745,7 +1834,8 @@ components:
           enum: [session, user_daily]
           description: >-
             v1.10. What the figures count. Absent means the session (the platform account). `user_daily`: the user
-            daily ceiling and the user's last 24 hours, with the highest auto-approve limit among their policies.
+            daily ceiling and the user's last 24 hours, with the highest auto-approve limit among their active,
+            unexpired policies bounded by the platform cap (or zeros when not onboarded or disabled).
         account:
           type: string
           enum: [ready, not_onboarded, disabled]
@@ -1938,9 +2028,10 @@ components:
       type: string
       description: >-
         v1.8 (L2-7). The backchannel approval request's state for a pending escalation. Present only when backchannel
-        approval is on. v1.16: `no_owner` (the escalation records no user), `no_identity` (the payment request
-        carried no subject for its user) and `identity_mismatch` (the subject is not that user's) ask nobody: the
-        escalation waits for the operator and the administrators.
+        approval is on. v1.16/v1.17: `no_owner` (the escalation records no user, e.g., a machine caller or
+        unconfigured sign-in), `no_identity` (a user with no subject; no longer arises from a request since v1.17
+        because user and subject come from the same verified caller token), and `identity_mismatch` (`AUTH_ISSUER`
+        differs from `CIBA_ISSUER`) ask nobody: the escalation waits for the operator and the administrators.
       enum: [requested, capped, operator_only, reevaluation, no_owner, no_identity, identity_mismatch, failed, verification_failed, lapsed]
 
     PendingEscalations:
@@ -2131,6 +2222,9 @@ components:
         referenceCode:
           type: string
           pattern: "^[0-9a-f]{8}$"
+          description: >-
+            Present on `escalated` and `approval_requested` events in `GET /v1/escalations/events`, and on every
+            event in `GET /v1/admin/escalations/events`.
         approvalRequest:
           type: string
           enum: [requested, capped, operator_only, reevaluation, no_owner, no_identity, identity_mismatch]
@@ -2174,7 +2268,9 @@ components:
             escalation is for) replaces `approver`, which only entries written before v1.16 hold.
         userId:
           $ref: "#/components/schemas/UserId"
-          description: v1.10. On `escalated` events of a user's payment.
+          description: >-
+            v1.10. On `escalated` events of a user's payment in `GET /v1/escalations/events`, and on every event
+            of a user's payment in `GET /v1/admin/escalations/events`.
 
     EscalationEvents:
       type: object
@@ -2334,7 +2430,10 @@ components:
           type: boolean
         brokenAt:
           type: integer
-          description: "`seq` of the first entry that fails verification."
+          description: >-
+            0-based index (`seq`) of the first entry that fails hash, link, MAC (v1.19), or ledger-head hash
+            verification, or the file's entry count (`entries`) when the file is shorter than `keyedFrom` (v1.19)
+            or shorter than the stored ledger head (v1.23).
 
     # ---- v1.10 user accounts (L2-8) ---------------------------------------------------------------
 
@@ -2467,7 +2566,8 @@ components:
           type: string
         expectedVersion:
           type: integer
-          description: The version the caller edited. A mismatch is 409 `version_conflict`.
+          minimum: 1
+          description: The version the caller edited (integer ≥ 1). A mismatch is 409 `version_conflict`.
 
     PolicyVersion:
       type: object
@@ -2666,7 +2766,9 @@ components:
           description: The operator's name for the seller, shown to users.
         payees:
           type: array
-          description: Accepted payee addresses, lower-cased. Empty means any payee at that host.
+          description: >-
+            Accepted payee addresses, lower-cased. Empty means any payee at that host (allowed only on
+            `NETWORK=local`; outside local, L2 refuses to start if any listed seller has empty `payees`, v1.19).
           items:
             type: string
 
@@ -2695,8 +2797,8 @@ components:
         phoneApproval:
           type: boolean
           description: >-
-            v1.16 (L2-7): true when backchannel approval is on in this L2, so a person can be asked on their own
-            phone.
+            v1.16 (L2-7): whether phone approval is advertised to the portal; currently always `false` until the
+            per-user waiting-payments view lands.
 
     PolicyIssue:
       type: object

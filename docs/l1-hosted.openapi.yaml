@@ -1,41 +1,57 @@
-# L1 hosted agent service HTTP API (SPEC.md §8.1 L1-6; specs/011 contracts/hosted-agent-api.md) as OpenAPI 3.1.
-# SPEC.md and the contract stay normative. test/openapi-hosted.test.ts (T-API-05..08) fails when this file and the
-# running service disagree on routes, auth or response shapes, so change both together.
+# L1 hosted agent service HTTP API (SPEC.md §8.1 L1-6; specs/011, 016, 017, 019, 021 contracts) as OpenAPI 3.1.
+# SPEC.md and the contracts stay normative. test/openapi-hosted.test.ts (T-API-05..08, T-API-16..18) fails when
+# this file and the running service disagree on routes, auth or response shapes, so change both together.
 openapi: 3.1.0
 info:
   title: L1 hosted agent API
-  version: "1.29"
+  version: "1.31.0"
   summary: The purchasing agent of the x402 three-layer agent payments PoC, as an HTTP service.
   description: |
     A Claude agent that buys HTTP resources with x402 within a spending mandate. It holds no key: every
     payment is decided and signed by L2, and settled payments are verified on-chain by L3. One call runs one
     goal to the end and answers with every step and a receipt.
 
-    - **Auth.** An access token of the sign-in tenant (Auth0), checked before anything else. A person's carries
-      the permission `agent:run` and comes from one of the agent's clients; a machine caller's (client
-      credentials) carries `agent:run` from its grant. Without a valid token every path answers 401, except
-      `/healthz`, `/readyz` and the docs routes. v1.17: the agent forwards the token to L2 with each payment
-      request and budget question, and L2 verifies it again and takes the user from it. A person's run pays from
-      that person's own account; a machine caller's from the platform account. v1.29: a 401 says why in
-      `error_code` (`missing_token`, `token_expired`: renew, `invalid_token`: sign in again), and a person can
-      sign in from a desktop client on their own computer (browser, loopback return, PKCE), whose settings are at
-      `/.well-known/agent-auth`.
-    - **Account.** v1.29: before a person's run the agent asks L2 whether that person can pay now, and answers
-      409 with a code when they can't (no account at the portal, turned off there, or no person accounts at this
-      L2), or 503 when L2 can't say. Nothing is spent and the run is not counted.
+    - **Auth.** An access token of the sign-in tenant (Auth0), checked before the body is read (after the
+      per-address rate limits). A person's carries the permission `agent:run` in `permissions` and comes from
+      one of the agent's clients (`AGENT_CLIENT_IDS`); a machine caller's (client credentials) carries
+      `agent:run` from its grant. Without a valid token every path answers 401, except `/healthz`, `/readyz`,
+      the docs routes (when mounted) and `/.well-known/agent-auth` (when `AGENT_DESKTOP_CLIENT_ID` is set).
+      v1.17: the agent forwards the token to L2 with each payment request and budget question, and L2 verifies
+      it again and takes the user from it. A person's run pays from that person's own account; a machine
+      caller's from the platform account. v1.27: every 401 carries an RFC 6750 `WWW-Authenticate` challenge;
+      with the local dev issuer (`AUTH_JWKS_FILE`, `NETWORK=local`), the service binds loopback only
+      (`TRUSTED_PROXY_HOPS=0`) and answers `421 { "error": "misdirected request" }` before any route (health
+      and docs included) if `Host` is not a loopback name (`localhost`, `127.0.0.1`, `[::1]`) or any forwarding
+      header (`Forwarded`, `X-Forwarded-For`, `X-Forwarded-Host`, `X-Forwarded-Proto`, `Via`) is present.
+      v1.29: every 401 says why in `error_code` (`missing_token`, `token_expired`: renew, `invalid_token`: sign
+      in again), and a person can sign in from a desktop client on their own computer (browser, loopback return,
+      PKCE), whose public settings are at `/.well-known/agent-auth`.
+    - **Account.** v1.29: before a person's run the agent asks L2 once (within 1 s) whether that person can pay
+      now, and answers 409 with a code when they can't (`account_not_onboarded`, `account_disabled`, or
+      `accounts_off`), 401 `token_expired` if the forwarded token expired between the agent's check and L2's,
+      or 503 `control_unavailable` when L2 can't say. Machine callers skip this check. Nothing is spent, no
+      model call is made, and a refusal is not counted as a start.
     - **One call, one run.** The response arrives when the run has ended (completed, stopped or failed), at
-      most 200 s later. Allow up to 220 s on the client. v1.17: send `Accept: text/event-stream` to receive the
-      run as it happens instead: its identifier at once, the text as it is written, each finished step, and the
-      same result object last.
+      most 200 s later (at most 10 tool steps). Allow up to 220 s on the client. v1.19/v1.31: `fetch_resource`
+      fetches only hosts L2 would pay at (`SELLER_URL` in test mode, or hosts from L2's seller list in search
+      mode) and never follows redirects. v1.17: send
+      `Accept: text/event-stream` to receive the run as it happens instead: its identifier at once, the text as
+      it is written, each finished step, and the same result object last.
     - **Sessions.** Each new run gets a session and a budget. Send the returned `sessionRef` with the next
       goal to continue that session; it works for the requester it was issued to only.
-    - **Limits** per requester: 2 concurrent runs and 20 starts per sliding hour (429 with `Retry-After`).
+    - **Limits.** Before auth (on every path except `/healthz`, `/readyz` and docs): 300 requests/minute per
+      client address and 20 failed authentications (401s)/minute per client address (v1.27), both answering
+      `429 { "error": "too many requests" }` with `Retry-After` (behind a reverse proxy, `TRUSTED_PROXY_HOPS=1`
+      reads the client address from `X-Forwarded-For`). Per requester (`<issuer host>:<sub>`, shared across all
+      clients): 2 concurrent runs and 20 starts per sliding hour (`429 { "error": "too many runs" }` with
+      `Retry-After`). Request body ≤ 16 KB (`413`); goal 1–4,000 characters after trimming (`400`).
     - **Amounts.** `amountUsd` is a decimal string; budget fields are decimal strings of atomic units (USDC
       has 6 decimals: `"1000"` is 0.001 USDC).
-    - **API docs.** With `API_DOCS=1`, the agent also serves this document and Swagger UI at `/docs`. Those
-      routes take no token and are not mounted by default; in Azure they exist only where the environment's
-      parameter file turns them on. When served, `servers` points at that agent. v1.17: with
-      `API_DOCS_CLIENT_ID`, the page's Authorize button signs a person in at the tenant.
+    - **API docs.** With `API_DOCS=1` (in `env/l1-hosted.env`, or `agent.apiDocs` in an Azure parameter file),
+      the agent also serves this document and Swagger UI at `/docs`. Those routes take no token, are never rate
+      limited and are not mounted by default. When served, `servers` points at that agent; without
+      `API_DOCS_CLIENT_ID` the browser sign-in scheme is omitted, and with `API_DOCS_CLIENT_ID` (v1.17) the
+      page's Authorize button signs a person in at the tenant with PKCE.
 servers:
   - url: http://127.0.0.1:4024
     description: Default local bind (npm run agent:hosted; 0.0.0.0 in a container)
@@ -56,12 +72,16 @@ paths:
       operationId: runGoal
       summary: Run one goal to the end
       description: |
-        Checks, in order: the token (401, 403), the requester's limits (429), the body (400, 413), the session
-        (400, 404), v1.29 for a person whether they can pay now (409, 401, 503: one question to L2, within 1 s),
-        then runs the goal with the agent's tools, `fetch_resource` and `check_budget` and, where the deployment offers
-        it (v1.31), the read-only `search_resources`, for at most 10 steps and 200 s. A refused call makes no model or L3 call, and no L2 call but that question. Every finished step is listed, also
-        for a stopped or failed run. An ESCALATED purchase carries an `authorizationId`: give it to an operator,
-        then call again with the same `sessionRef`.
+        Checks, in order: with the local dev issuer (`AUTH_JWKS_FILE`), loopback host and no forwarding headers
+        (421); per-address request and failed-auth limits (429); the token (401, 403); the requester's run limits
+        (429); the body (413, 400); the session (400, 404); v1.29 for a person whether they can pay now (409,
+        401, 503: one question to L2, within 1 s); then runs the goal with the agent's tools, `fetch_resource`
+        (allowed seller hosts only, no redirects, v1.19/v1.31), `check_budget`, and, where the deployment offers
+        it (v1.31), the read-only `search_resources`, for at most 10 steps and 200 s. A refused call makes no
+        model or L3 call, and no L2 call other than that question. Every finished step is listed, also for a
+        stopped or failed run. An ESCALATED purchase carries an `authorizationId`: approve it (on the person's
+        phone when backchannel approval is on, in the portal, or by an operator), then call again with the same
+        `sessionRef`.
       security:
         # sign-in:begin (served only where the docs page signs in; see src/shared/api-docs.ts)
         - signIn: []
@@ -97,18 +117,21 @@ paths:
               schema:
                 type: string
                 description: |
-                  Server-sent events, each `event: <name>` and one `data:` line of JSON, in this order:
+                  Server-sent events (`Content-Type: text/event-stream; charset=utf-8`,
+                  `Cache-Control: no-cache, no-transform`, `X-Accel-Buffering: no`), each `event: <name>` and one
+                  `data:` line of JSON (`run` once first, `text` and `step` as they happen, and `result` once last):
 
                   | Event | When | `data` |
                   |---|---|---|
-                  | `run` | once, first | `{ "runId", "startedAt" }` |
-                  | `text` | whenever the model writes text | `{ "delta" }` |
+                  | `run` | once, first, as soon as the run is accepted | `{ "runId", "startedAt" }` |
+                  | `text` | whenever the model writes non-empty text (including before tool calls) | `{ "delta" }` |
                   | `step` | once per finished tool call, in completion order | the step, as `steps[]` lists it |
-                  | `result` | once, last | the `Run` object of the JSON answer |
+                  | `result` | once, last | the `Run` object of the JSON answer (`finalText` is the final answer to keep) |
 
                   A line `: keep-alive` is sent whenever 15 seconds pass with nothing else sent. Nothing follows
                   `result`. The stream carries nothing the JSON answer does not. A request refused before the run
-                  starts (401, 403, 429, 400, 413, 404, 409, 503) gets the JSON error, with or without this header.
+                  starts (401, 403, 429, 400, 413, 404, 409, 503, or 421 with the local dev issuer) gets the JSON
+                  error, with or without this header.
               examples:
                 stream:
                   summary: A run that reads the catalog and answers
@@ -117,17 +140,18 @@ paths:
                     data: {"runId":"run_0b6c2a4e-9d1f-4c3a-8b7e-5f6a7b8c9d0e","startedAt":"2026-11-15T10:00:00.000Z"}
 
                     event: step
-                    data: {"index":1,"tool":"fetch_resource","url":"http://127.0.0.1:4021/api/catalog","purpose":"Browse the catalog","result":{"outcome":"FREE","httpStatus":200}}
+                    data: {"index":1,"tool":"fetch_resource","url":"http://127.0.0.1:4021/api/catalog","purpose":"Browse the catalog","result":{"outcome":"FREE","httpStatus":200,"body":{"items":["weather","market-brief","premium-report","dataset-export"]},"payment":null,"violations":null,"authorizationId":null,"error":null}}
 
                     event: text
                     data: {"delta":"The catalog lists four items."}
 
                     event: result
-                    data: {"runId":"run_0b6c2a4e-9d1f-4c3a-8b7e-5f6a7b8c9d0e","sessionRef":"sr1.sess_0123456789abcdef.x","status":"completed","stopReason":null,"error":null,"finalText":"The catalog lists four items.","steps":[],"startedAt":"2026-11-15T10:00:00.000Z","finishedAt":"2026-11-15T10:00:07.000Z"}
+                    data: {"runId":"run_0b6c2a4e-9d1f-4c3a-8b7e-5f6a7b8c9d0e","sessionRef":"sr1.sess_0123456789abcdef.Zm9yLWRvY3Mtb25seS1ub3QtYS1yZWFsLW1hYy0xMjM","status":"completed","stopReason":null,"error":null,"finalText":"The catalog lists four items.","steps":[{"index":1,"tool":"fetch_resource","url":"http://127.0.0.1:4021/api/catalog","purpose":"Browse the catalog","result":{"outcome":"FREE","httpStatus":200,"body":{"items":["weather","market-brief","premium-report","dataset-export"]},"payment":null,"violations":null,"authorizationId":null,"error":null}}],"startedAt":"2026-11-15T10:00:00.000Z","finishedAt":"2026-11-15T10:00:07.000Z"}
         "400":
           description: |
-            The body is not a JSON object; `goal` is missing, not a string, or empty or over 4,000 characters
-            after trimming; an unknown field; `sessionRef` is not a string, is malformed or is a raw `sess_…` ID.
+            Malformed JSON body; the body is not a JSON object; `goal` is missing, not a string, or empty or over
+            4,000 characters after trimming; an unknown field; `sessionRef` is not a string, is malformed or is a
+            raw `sess_…` ID.
           content:
             application/json:
               schema:
@@ -148,25 +172,27 @@ paths:
             stream (`account not ready`): `account_not_onboarded` (no account set up at the portal),
             `account_disabled` (turned off at the portal) or `accounts_off` (this agent's L2 has no person accounts).
             A person whose policies are all paused is ready: the run starts and each purchase is denied by policy.
-            No model call, no payment request, and the refusal is not counted as a start.
+            Never returned for a machine caller. No model call, no payment request, no `sessionRef`, and the refusal
+            is not counted as a start.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
         "413":
-          description: The body is over 16 KB.
+          description: The body is over 16 KB (`body too large`).
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
         "429":
           description: >-
-            More than 2 concurrent runs, or 20 starts in the last hour, for this requester (`too many runs`); or, before
-            the token is read, more than 300 requests in a minute from this address, or 20 failed authentications (401)
-            from it in a minute (v1.27; `too many requests`).
+            More than 2 concurrent runs (`Retry-After: 5`) or 20 starts in the last sliding hour for this requester
+            across all clients (`too many runs`); or, before the token is read, more than 300 requests in a minute
+            from this client address, or 20 failed authentications (401s) from it in a minute (v1.27; 403s, health
+            and docs do not count; `too many requests`).
           headers:
             Retry-After:
-              description: Seconds until a run may start.
+              description: Seconds until the caller may retry (5 s for concurrency; seconds until the rate-limit window resets otherwise).
               required: true
               schema:
                 type: integer
@@ -177,8 +203,9 @@ paths:
         "503":
           description: >-
             v1.29. L2 couldn't say whether the person can pay (`control unavailable`, `control_unavailable`): no
-            answer within 1 s, or an answer the agent doesn't expect. Answered before the run starts, as JSON; nothing
-            is spent.
+            answer within 1 s, a network error, an unexpected L2 status or code, or a 200 budget response without a
+            recognized `account` value. Answered before the run starts, as JSON with a fixed body (never echoing L2
+            error text); nothing is spent and the refusal is not counted as a start.
           content:
             application/json:
               schema:
@@ -192,9 +219,11 @@ paths:
       description: |
         v1.29. The public values a desktop client signs a person in with: the tenant's issuer and its two
         addresses, people's API, the desktop client, the scopes and the loopback return address. All of them
-        come from the agent's own settings; none is a secret. Mounted only with `AGENT_DESKTOP_CLIENT_ID`;
-        without it the path is like any unknown one (401 without a token, 404 with one). Counted by the
-        per-address limit. It reads no session and calls no model, L2 or L3.
+        come from the agent's own settings; none is a secret. Mounted only with `AGENT_DESKTOP_CLIENT_ID`
+        (must be on `AGENT_CLIENT_IDS` and requires the real sign-in tenant, never `AUTH_JWKS_FILE`);
+        without it the path is like any unknown one (401 without a token, 404 with one). Sits behind both
+        per-address limits (300 requests/min and 20 failed 401s/min → 429). It reads no session and calls no
+        model, L2 or L3.
       security: []
       responses:
         "200":
@@ -209,13 +238,29 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/AgentAuthSettings"
+        "429":
+          description: >-
+            More than 300 requests in a minute from this client address, or the address is blocked after 20 failed
+            authentications (401s) in a minute (v1.27; `too many requests`).
+          headers:
+            Retry-After:
+              description: Seconds until the per-address rate-limit window resets.
+              required: true
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /healthz:
     get:
       tags: [health]
       operationId: getHealth
       summary: Liveness
-      description: 200 while the process runs. Never returns configuration, versions or secrets.
+      description: >-
+        200 while the process runs. Never returns configuration, versions or secrets, and is never counted by
+        rate limits (with `AUTH_JWKS_FILE`, the local-only 421 guard still runs before it).
       security: []
       responses:
         "200":
@@ -235,7 +280,9 @@ paths:
       tags: [health]
       operationId: getReadiness
       summary: Readiness
-      description: 200 once the agent listens, 503 before. Never returns configuration, versions or secrets.
+      description: >-
+        200 once the agent listens, 503 before. Never returns configuration, versions or secrets, and is never
+        counted by rate limits (with `AUTH_JWKS_FILE`, the local-only 421 guard still runs before it).
       security: []
       responses:
         "200":
@@ -268,12 +315,23 @@ paths:
       summary: Swagger UI for this document
       description: |
         Only with `API_DOCS=1`. The page loads its scripts and styles from the agent itself (`/docs/{asset}`),
-        never from a CDN, and its Content-Security-Policy limits scripts and requests to the agent's origin.
-        Use **Authorize** to paste a bearer token; Swagger UI keeps it in memory only.
+        never from a CDN. Its Content-Security-Policy limits scripts to `'self'` and requests (`connect-src`) to
+        the agent's origin (plus the sign-in tenant's origin when `API_DOCS_CLIENT_ID` is set). Use **Authorize**
+        to paste a bearer token, or to sign in at the tenant with PKCE when `API_DOCS_CLIENT_ID` is set; Swagger
+        UI keeps the token in memory only and forgets it on reload.
       security: []
       responses:
         "200":
           description: The Swagger UI page.
+          headers:
+            Content-Security-Policy:
+              description: >-
+                `default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;
+                connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'` (with
+                `API_DOCS_CLIENT_ID`, `connect-src` adds the sign-in tenant's origin).
+              required: true
+              schema:
+                type: string
           content:
             text/html:
               schema:
@@ -284,7 +342,9 @@ paths:
       tags: [docs]
       operationId: getApiDocsAsset
       summary: A Swagger UI file
-      description: Only with `API_DOCS=1`. Serves these three files and nothing else.
+      description: >-
+        Only with `API_DOCS=1`. Serves these three files (plus the Swagger UI sign-in redirect HTML page and its
+        script from `swagger-ui-dist` when `API_DOCS_CLIENT_ID` is set) and nothing else.
       security: []
       parameters:
         - name: asset
@@ -303,8 +363,11 @@ paths:
             text/javascript:
               schema:
                 type: string
+            text/html:
+              schema:
+                type: string
         "404":
-          description: Not one of the three files.
+          description: Not one of the served files.
           content:
             application/json:
               schema:
@@ -315,7 +378,10 @@ paths:
       tags: [docs]
       operationId: getApiDocument
       summary: This document
-      description: Only with `API_DOCS=1`. Identical to the file, except `servers` is `/`, the agent serving it.
+      description: >-
+        Only with `API_DOCS=1`. Serves this document with `servers` set to `/` (the agent serving it). With
+        `API_DOCS_CLIENT_ID` set, the browser sign-in scheme's URLs point at `AUTH_ISSUER`; without it, that
+        scheme and its use on `/v1/runs` are omitted.
       security: []
       responses:
         "200":
@@ -356,34 +422,44 @@ components:
       bearerFormat: JWT
       description: |
         An access token of the issuer in `AUTH_ISSUER`, the sign-in tenant, for people's API (`AUTH_AUDIENCE`).
-        Signature, issuer, audience, validity (60 s tolerance on `exp` and `nbf`) and a usable `sub`: 401. A
-        token of any other issuer, the organization's directory included, is 401.
+        Signature (RS256 from `<AUTH_ISSUER>.well-known/jwks.json`, or ES256 from `AUTH_JWKS_FILE` locally),
+        exact issuer, audience, required `exp` and validity (60 s tolerance on `exp` and `nbf`) and a usable
+        non-empty `sub` without line breaks: 401. A token of any other issuer, the organization's directory
+        included, is 401.
 
-        **A person**: the permission `agent:run` in `permissions` (a tenant administrator assigns the role that
-        holds it), issued to a client on the service's list (`AGENT_CLIENT_IDS`, never the portal's): otherwise
-        403. The run's payments are that person's.
+        **A person**: the permission `agent:run` in `permissions` (a person's `scope` does not count; a tenant
+        administrator assigns the role `x402-agent` that holds it), issued to a client (`azp` or `client_id`) on
+        the service's list (`AGENT_CLIENT_IDS`, never `PORTAL_CLIENT_ID`): otherwise 403. The run's payments are
+        that person's.
 
-        **A machine caller**: a client-credentials token (`gty: client-credentials`, `sub` `<client>@clients`)
-        whose grant gives `agent:run`: otherwise 403. The run names no user, and the platform account pays.
+        **A machine caller**: a client-credentials token (`gty` containing `client-credentials`, or `sub` ending
+        in `@clients`) naming a client (`azp` or `client_id`) matching `sub` (`<client>@clients`; otherwise 401)
+        whose grant gives `agent:run` in `permissions` or space-separated `scope` (otherwise 403). The run names
+        no user, and the platform account pays.
 
-        Locally (`NETWORK=local`, `AUTH_JWKS_FILE`), `npm run -s dev-token -- --subject alice` prints a
-        dev-issuer token for a person, and `--service` one for a machine caller.
+        Locally (`NETWORK=local`, `AUTH_JWKS_FILE`, `AUTH_ISSUER=urn:x402:dev-issuer`), `npm run -s dev-token --
+        --subject alice` prints a dev-issuer token for a person (`--desktop` for the dev desktop client), and
+        `--service` one for a machine caller. With `AUTH_JWKS_FILE`, the service binds loopback only
+        (`TRUSTED_PROXY_HOPS=0`) and refuses non-loopback `Host` or any forwarding header with 421 before any
+        route (v1.27).
 
 
   responses:
     Unauthorized:
       description: >-
-        Missing, malformed, invalid, expired or wrong-audience token, a machine token whose subject is not its
-        client's, or a token of an issuer the service does not know. v1.29: `error_code` says which of three
-        cases it is, and nothing more: `missing_token` (no bearer token: send one), `token_expired` (its validity
-        period is its only fault: renew it; also when it expired between the agent's check and L2's) or
-        `invalid_token` (anything else, the same answer whichever check failed: sign in again).
+        Missing, malformed, invalid, expired, not-yet-valid (`nbf`), missing-`exp` or wrong-audience token, a
+        machine token whose client is missing or whose subject is not `<client>@clients`, or a token of an issuer
+        the service does not know (`error: "unauthorized"`). v1.29: `error_code` says which of three cases it is,
+        and nothing more: `missing_token` (no bearer token: send one), `token_expired` (its `exp` passed after
+        signature, issuer and audience passed: renew it; also when it expired between the agent's check and L2's
+        during the person's account check) or `invalid_token` (anything else, byte-identical whichever check
+        failed: sign in again). Every 401 counts toward the per-address failed-authentication limit (20/min).
       headers:
         WWW-Authenticate:
           description: >-
-            v1.27 (RFC 6750): `Bearer realm="x402-agent"` when no bearer token was sent, and
-            `Bearer realm="x402-agent", error="invalid_token"` when one was sent and failed a check. Never a
-            description of the check.
+            v1.27 (RFC 6750): `Bearer realm="x402-agent"` when no bearer token was sent (`missing_token`), and
+            `Bearer realm="x402-agent", error="invalid_token"` when one was sent and failed a check
+            (`token_expired` or `invalid_token`). Never a description of the check.
           required: true
           schema:
             type: string
@@ -393,9 +469,10 @@ components:
             $ref: "#/components/schemas/Error"
     Forbidden:
       description: >-
-        A valid token that may not start a run. A person's: without the permission `agent:run`, or from a client
-        that is not on the service's list (which covers the portal's web app, SEC-20). A machine caller's: without
-        `agent:run` from its grant.
+        A valid token that may not start a run (`{ "error": "forbidden" }`, no `error_code`, no
+        `WWW-Authenticate` header). A person's: without the permission `agent:run` in `permissions`, or from a
+        client that is not on `AGENT_CLIENT_IDS` (which excludes the portal's web app, SEC-20). A machine
+        caller's: without `agent:run` in `permissions` or `scope` from its grant.
       content:
         application/json:
           schema:
@@ -486,17 +563,19 @@ components:
           type: string
           enum: [completed, stopped, failed]
         stopReason:
-          description: Why a stopped run stopped; null otherwise.
+          description: >-
+            Why a stopped run stopped; null otherwise. (`client_disconnected` aborts the run and is recorded in
+            server run logs, but is never returned in a response because the client connection has closed.)
           enum: [deadline, step_limit, null]
         error:
           type: [string, "null"]
           description: Why a failed run failed (at most 300 characters); null otherwise.
         finalText:
           type: string
-          description: The agent's final answer, with a receipt list. Empty when the run failed.
+          description: The agent's final answer, with a receipt list. Empty when the run failed or aborted before writing text.
         steps:
           type: array
-          description: Every finished tool call, in order, including one still in progress when the run stopped.
+          description: Every finished tool call, ordered by `index`, including any still in progress when the run stopped.
           items:
             $ref: "#/components/schemas/Step"
         startedAt:
@@ -531,7 +610,7 @@ components:
           type: string
         purpose:
           type: string
-          description: The agent's reason, sent to L2 as audit text only; never an input to a decision.
+          description: The agent's reason, sent to L2 as audit text only (truncated to 500 characters at L1); never an input to a decision.
         result:
           oneOf:
             - $ref: "#/components/schemas/FetchResult"
@@ -642,10 +721,14 @@ components:
         outcome:
           type: string
           enum: [FREE, PAID, DENIED, ESCALATED, PAYMENT_FAILED, ERROR]
+          description: >-
+            `PAID` requires a 2xx paid retry and an L3 report of `CONFIRMED`, or `PENDING` without `settlesBy`
+            (v1.19: a `PENDING` report with `settlesBy` is `PAYMENT_FAILED`).
         httpStatus:
           type: [integer, "null"]
+          description: HTTP status from the resource (`0` if the paid retry threw a network error, or null if no HTTP response was reached before payment).
         body:
-          description: The resource's response body (any JSON), or null.
+          description: The resource's response body (parsed JSON, or text truncated to 2,000 characters when non-JSON), or null.
         payment:
           oneOf:
             - $ref: "#/components/schemas/Payment"
@@ -659,14 +742,20 @@ components:
             - type: "null"
         authorizationId:
           type: [string, "null"]
-          description: L2's ID for the decision. For ESCALATED, the ID an operator approves or rejects.
+          description: L2's ID for the decision. For ESCALATED, the ID approved or rejected on the phone, in the portal or by an operator.
         error:
           type: [string, "null"]
           description: >-
-            Why the step did not end as asked, or null. v1.29.2: for a PAYMENT_FAILED whose paid retry the seller did
-            not serve, `the seller answered HTTP <status>: <code>` when the seller gave an x402 reason code (for example
-            `invalid_exact_evm_insufficient_balance`: the payer's account can't cover the price); any other seller text
-            is dropped. It never says whether money moved: `payment.settlement` does.
+            Why the step did not end as asked, or null. Covers refused URLs/hosts (only `SELLER_URL`'s host, no
+            redirects, v1.19), network or challenge-decode errors, L2 authorization refusals (`the sign-in has
+            expired: sign in again` on L2 `caller_token_expired`, `the caller was refused by the control layer` on
+            other caller refusals, or `authorization failed: …`), paid-retry network errors (`paid request
+            failed: …`), v1.29.2 non-2xx paid-retry x402 reason codes (`the seller answered HTTP <status>: <code>`
+            when the seller gave a code matching `^[a-z][a-z0-9_]{0,99}$` in `PAYMENT-RESPONSE` `errorReason` or
+            `PAYMENT-REQUIRED` `error`, such as `invalid_exact_evm_insufficient_balance`, `compliance_declined` or
+            `settlement_pending`; any other seller text is dropped), and L3 verification failures (`settlement
+            verification failed: …`, appended after `; ` to any prior paid-retry error). It never says whether
+            money moved: `payment.settlement` does.
 
     Payment:
       type: object
@@ -683,6 +772,7 @@ components:
           type: object
           additionalProperties: false
           required: [status, tx, finality]
+          description: L3's settlement report; all three fields are null when L3 verification threw after the paid retry (payment details are still kept because money may have moved).
           properties:
             status:
               enum: [CONFIRMED, PENDING, MISMATCH, NOT_SETTLED, null]
@@ -707,7 +797,9 @@ components:
       type: object
       additionalProperties: false
       required: [sessionId, asset, decimals, sessionCapAtomic, spentOrReservedAtomic, remainingAtomic, perPaymentCapAtomic]
-      description: The session's budget, as L2 derives it from its ledger.
+      description: >-
+        The run's budget, as L2 derives it from its ledger. v1.29: `check_budget` strips L2's `account`
+        readiness field (used only by the agent's pre-run account check) before returning to the model or caller.
       properties:
         sessionId:
           type: string
@@ -723,6 +815,7 @@ components:
           $ref: "#/components/schemas/AtomicAmount"
         perPaymentCapAtomic:
           $ref: "#/components/schemas/AtomicAmount"
+          description: Auto-approve ceiling per payment (the mandate's ceiling, or the highest active policy ceiling for `user_daily`, `"0"` when none).
         scope:
           type: string
           enum: [session, user_daily]
@@ -738,3 +831,4 @@ components:
       properties:
         error:
           type: string
+          description: Error message, truncated to at most 300 characters.

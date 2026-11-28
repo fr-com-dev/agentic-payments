@@ -4,69 +4,109 @@
   "meta": {
     "title": "x402 Escalation and Human Approval",
     "locale": "en",
-    "output": "x402-approval.html",
+    "output": "docs/diagrams/x402-approval.html",
     "quality_profile": "showcase",
-    "column_fit": "spread",
-    "viewBox": [
-      1080,
-      692
+    "parentHref": "x402-architecture.html",
+    "repository": {
+      "url": "https://github.com/fr-com-dev/agentic-payments.git",
+      "revision": "b1cfed3065407c7da4311704bc58c6193bb7ac9e"
+    },
+    "views": [
+      {
+        "id": "ciba-phone",
+        "label": "CIBA phone push",
+        "focus": ["approvers", "auth0", "l2", "agent"],
+        "note": "Owner approves or rejects on their phone via Auth0 Guardian within L2's 120 s wait."
+      },
+      {
+        "id": "portal-admin",
+        "label": "Portal admin",
+        "focus": ["approvers", "portal", "l2", "agent"],
+        "note": "Admin approves (fresh MFA, not own payment) or rejects with a fixed reason code."
+      },
+      {
+        "id": "operator-cli",
+        "label": "Operator CLI",
+        "focus": ["approvers", "l2", "agent", "seller"],
+        "note": "Operator approves or rejects via CLI; agent retries in the same session to consume approval."
+      }
     ]
   },
   "participants": [
     {
-      "id": "operator",
+      "id": "approvers",
       "type": "external",
-      "label": "Operator",
-      "sublabel": "npm run approve"
+      "label": "Owner / Admin / Op",
+      "sublabel": "phone · portal · CLI",
+      "sources": [
+        { "path": "scripts/approve.ts" },
+        { "path": "scripts/reject.ts" }
+      ]
+    },
+    {
+      "id": "auth0",
+      "type": "security",
+      "label": "Auth0 CIBA",
+      "sublabel": "Guardian push (owner)",
+      "sources": [
+        { "path": "auth0/main.tf" },
+        { "path": "src/layer2-control/ciba-client.ts" }
+      ]
+    },
+    {
+      "id": "portal",
+      "type": "frontend",
+      "label": "Portal :4025",
+      "sublabel": "admin UI · no keys",
+      "sources": [
+        { "path": "src/portal/admin-routes.ts" },
+        { "path": "src/portal/admin-client.ts" }
+      ]
     },
     {
       "id": "l2",
       "type": "security",
       "label": "L2 Control",
-      "sublabel": ":4020 · policy + ledger"
+      "sublabel": ":4020 · decision core",
+      "sources": [
+        { "path": "src/layer2-control/approval-routes.ts", "line": 83, "end_line": 120 },
+        { "path": "src/layer2-control/backchannel.ts", "line": 1, "end_line": 120 },
+        { "path": "src/layer2-control/admin-routes.ts", "line": 150, "end_line": 187 }
+      ]
     },
     {
       "id": "agent",
       "type": "frontend",
       "label": "L1 Agent",
-      "sublabel": "fixed SESSION_ID",
-      "brand": "claude"
+      "sublabel": "hosted / CLI · sessionRef",
+      "brand": "claude",
+      "sources": [
+        { "path": "src/layer1-intent/orchestrator.ts", "line": 166, "end_line": 229 },
+        { "path": "src/layer1-intent/hosted/server.ts", "line": 183, "end_line": 221 }
+      ]
     },
     {
       "id": "seller",
       "type": "backend",
       "label": "Seller",
-      "sublabel": ":4021 · CDP facilitator"
+      "sublabel": ":4021 · x402",
+      "sources": [
+        { "path": "src/counterparty/seller.ts", "line": 58, "end_line": 76 }
+      ]
     }
   ],
   "segments": [
-    {
-      "from": 150,
-      "to": 292,
-      "label": "Challenge and escalate"
-    },
-    {
-      "from": 304,
-      "to": 378,
-      "label": "Operator approves: single use, never overrides a DENY"
-    },
-    {
-      "from": 390,
-      "to": 536,
-      "label": "Same-session retry"
-    },
-    {
-      "from": 548,
-      "to": 622,
-      "label": "Pay"
-    }
+    { "from": 152, "to": 304, "label": "Challenge & escalate (> auto-approve limit)" },
+    { "from": 316, "to": 686, "label": "Three decision paths (first recorded wins; never reversed)" },
+    { "from": 698, "to": 878, "label": "Re-evaluate or same-session retry" },
+    { "from": 890, "to": 990, "label": "Paid retry" }
   ],
   "messages": [
     {
       "id": "get",
       "from": "agent",
       "to": "seller",
-      "y": 176,
+      "y": 178,
       "label": "GET /api/premium-report",
       "variant": "emphasis"
     },
@@ -74,82 +114,109 @@
       "id": "challenge",
       "from": "seller",
       "to": "agent",
-      "y": 210,
-      "label": "402 + PAYMENT-REQUIRED",
+      "y": 212,
+      "label": "402 + PAYMENT-REQUIRED (0.05 USDC)",
       "variant": "return"
     },
     {
       "id": "premium",
       "from": "agent",
       "to": "l2",
-      "y": 244,
-      "label": "POST /v1/authorize (0.05 USDC)",
-      "variant": "default"
-    },
-    {
-      "id": "escalate",
-      "from": "l2",
-      "to": "agent",
-      "y": 278,
-      "label": "ESCALATE + authorizationId",
-      "variant": "return",
-      "note": "above the 0.02 USDC auto-approve limit"
-    },
-    {
-      "id": "approve",
-      "from": "operator",
-      "to": "l2",
-      "y": 330,
-      "label": "POST /v1/approvals/:id",
+      "y": 246,
+      "label": "POST /v1/authorize (+ caller JWT)",
       "variant": "security",
-      "note": "OPERATOR_TOKEN"
+      "note": "above auto-approve limit; records ESCALATED (expires in 300 s)"
     },
     {
-      "id": "approval-id",
+      "id": "ciba-start",
       "from": "l2",
-      "to": "operator",
-      "y": 364,
-      "label": "approvalId, expires in 600 s",
+      "to": "auth0",
+      "y": 338,
+      "label": "CIBA start (if on, owner only)",
+      "variant": "dashed",
+      "note": "authorize waits up to 120 s outside lock; max 10 req/hr per owner"
+    },
+    {
+      "id": "ciba-push",
+      "from": "auth0",
+      "to": "approvers",
+      "y": 406,
+      "label": "Guardian push (#refCode + exact payment)",
+      "variant": "dashed"
+    },
+    {
+      "id": "ciba-answer",
+      "from": "approvers",
+      "to": "auth0",
+      "y": 440,
+      "label": "approve or reject on phone",
       "variant": "return"
     },
     {
-      "id": "get-again",
-      "from": "agent",
-      "to": "seller",
-      "y": 416,
-      "label": "GET /api/premium-report",
-      "variant": "emphasis"
+      "id": "ciba-poll",
+      "from": "auth0",
+      "to": "l2",
+      "y": 474,
+      "label": "verified CIBA token (exact payment)",
+      "variant": "security"
     },
     {
-      "id": "challenge-again",
-      "from": "seller",
+      "id": "portal-decide",
+      "from": "approvers",
+      "to": "portal",
+      "y": 518,
+      "label": "Admin: approve or reject (fixed reason)",
+      "variant": "default"
+    },
+    {
+      "id": "portal-l2",
+      "from": "portal",
+      "to": "l2",
+      "y": 552,
+      "label": "POST /v1/admin/escalations/:id/approve|reject",
+      "variant": "security",
+      "note": "PORTAL_ADMIN_TOKEN + X-Person-Authorization; blocks own_payment; approve needs MFA <= 15m"
+    },
+    {
+      "id": "cli-decide",
+      "from": "approvers",
+      "to": "l2",
+      "y": 632,
+      "label": "CLI: POST /v1/approvals|:rejections/:id",
+      "variant": "security",
+      "note": "OPERATOR_TOKEN; 600 s single-use approval or session-wide R15 human_rejected"
+    },
+    {
+      "id": "escalate-ret",
+      "from": "l2",
       "to": "agent",
-      "y": 450,
-      "label": "402 + PAYMENT-REQUIRED",
-      "variant": "return"
+      "y": 720,
+      "label": "AUTHORIZED (CIBA <= 120 s) or ESCALATE",
+      "variant": "return",
+      "note": "if ESCALATE returned: retry in same session after portal/CLI approval"
     },
     {
-      "id": "again",
+      "id": "retry-auth",
       "from": "agent",
       "to": "l2",
-      "y": 484,
-      "label": "POST /v1/authorize (same session)",
-      "variant": "default"
+      "y": 790,
+      "label": "POST /v1/authorize (same sessionRef)",
+      "variant": "security"
     },
     {
       "id": "authorized",
       "from": "l2",
       "to": "agent",
-      "y": 518,
-      "label": "AUTHORIZED (approvalRef)",
+      "y": 824,
+      "label": "AUTHORIZED (consumes approvalRef)",
       "variant": "return",
-      "note": "consumes the approval"
+      "note": "re-checks all rules; approval lifts R14 once and never overrides a DENY"
     },
     {
       "id": "retry",
       "from": "agent",
       "to": "seller",
-      "y": 574,
+      "y": 912,
       "label": "retry + PAYMENT-SIGNATURE",
       "variant": "emphasis"
     },
@@ -157,48 +224,38 @@
       "id": "served",
       "from": "seller",
       "to": "agent",
-      "y": 608,
+      "y": 946,
       "label": "200 + PAYMENT-RESPONSE",
       "variant": "return",
-      "note": "settled and verified as in the paid fetch"
+      "note": "settled via CDP and verified on-chain by L3"
     }
   ],
   "activations": [
+    { "participant": "seller", "from": 172, "to": 218, "type": "backend" },
+    { "participant": "l2", "from": 240, "to": 728, "type": "security" },
+    { "participant": "auth0", "from": 332, "to": 480, "type": "security" },
+    { "participant": "portal", "from": 512, "to": 560, "type": "frontend" },
+    { "participant": "l2", "from": 784, "to": 832, "type": "security" },
+    { "participant": "seller", "from": 906, "to": 954, "type": "backend" }
+  ],
+  "cards": [
     {
-      "participant": "seller",
-      "from": 170,
-      "to": 216,
-      "type": "backend"
+      "dot": "rose",
+      "title": "One decision core (INV-12)",
+      "items": [
+        "Every path copies payee, amount, resource, and session from ESCALATED, never from the decision request",
+        "Final states (approved, denied, expired at 300 s) are written inside L2's lock and never reversed",
+        "Rejections block (session, resource) at any amount via R15; operator text never reaches L1"
+      ]
     },
     {
-      "participant": "l2",
-      "from": 238,
-      "to": 284,
-      "type": "security"
-    },
-    {
-      "participant": "l2",
-      "from": 324,
-      "to": 370,
-      "type": "security"
-    },
-    {
-      "participant": "seller",
-      "from": 410,
-      "to": 456,
-      "type": "backend"
-    },
-    {
-      "participant": "l2",
-      "from": 478,
-      "to": 524,
-      "type": "security"
-    },
-    {
-      "participant": "seller",
-      "from": 568,
-      "to": 614,
-      "type": "backend"
+      "dot": "cyan",
+      "title": "Channel safeguards",
+      "items": [
+        "CIBA (012/015): sent to the escalation's owner only; L2 verifies issuer, signature, owner, and exact payment",
+        "Portal admin (014/1.19): L2 verifies X-Person-Authorization, blocks self-approval, and requires fresh MFA",
+        "Operator CLI (004/010): OPERATOR_TOKEN only; approvals expire in 600 s (max 3600 s) and pay once"
+      ]
     }
   ]
 }

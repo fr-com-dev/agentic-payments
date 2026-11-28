@@ -3,8 +3,9 @@
 // deploy-l1/l2/l3/operator/portal/seller.yml for one unit each), on deploy.yml, the steps they all call with their
 // unit, and on the infra scripts. Checked:
 // - one pipeline per unit, and nothing else in the folder but the Auth0 tenant's offline check (validate-auth0.yml,
-//   which T-IAC-02 checks; SPEC 1.26: it changes nothing, and no workflow reads a GitHub secret or variable) and the
-//   pull request check (checks.yml, T-CI-01 below): each pipeline runs by hand or on its own tag, holds the one
+//   which T-IAC-02 checks; SPEC 1.26: it changes nothing, and no workflow reads a GitHub secret or variable), the
+//   pull request check (checks.yml, T-CI-01 below) and CodeQL static analysis (codeql.yml, which ignores docs/ via
+//   .github/codeql/codeql-config.yml): each pipeline runs by hand or on its own tag, holds the one
 //   concurrency group, and only calls deploy.yml with its unit; each image of scripts/image-closure.ts is built by
 //   exactly one pipeline;
 // - OIDC only, with the sign-in, target and resource names compiled from infra/main.<environment>.bicepparam by the
@@ -94,7 +95,10 @@ const PIPELINES: Record<string, { unit: Unit; inputs: string[] }> = {
 const AUTH0 = "validate-auth0.yml";
 /** The pull request check (T-CI-01): not a pipeline, it deploys nothing. */
 const CHECKS_FILE = "checks.yml";
-const FILES = [SHARED, AUTH0, CHECKS_FILE, ...Object.keys(PIPELINES)].sort();
+/** CodeQL static analysis (Advanced Setup): ignores docs/ via .github/codeql/codeql-config.yml, deploys nothing. */
+const CODEQL_FILE = "codeql.yml";
+const CODEQL_CONFIG = ".github/codeql/codeql-config.yml";
+const FILES = [SHARED, AUTH0, CHECKS_FILE, CODEQL_FILE, ...Object.keys(PIPELINES)].sort();
 /** The image each unit's run builds, promotes and rolls back; the platform has none. */
 const UNIT_IMAGES: Record<Exclude<Unit, "platform">, ImageName> = { l1: "l1-agent", l2: "l2-control", l3: "l3-verifier", operator: "operator", portal: "portal", seller: "seller" };
 /** What each pipeline passes to deploy.yml: its unit, its environment, and each input it offers. */
@@ -239,9 +243,9 @@ export function tokenProblems(file: string, text: string): string[] {
     .map((c) => `${file} asks for an access token (${c.split(" ").slice(0, 5).join(" ")}): the pipeline holds no caller's token; the smoke job and the regression job get their own`);
 }
 
-const FOLDER_PROBLEM = `${DIR} must hold exactly ${FILES.join(", ")}: one pipeline per unit, the steps they share, the Auth0 tenant's offline check and the pull request check`;
+const FOLDER_PROBLEM = `${DIR} must hold exactly ${FILES.join(", ")}: one pipeline per unit, the steps they share, the Auth0 tenant's offline check, the pull request check and the CodeQL scan`;
 
-/** The folder holds the seven pipelines, deploy.yml, the Auth0 tenant's offline check and the pull request check, and the pipelines' units build every image exactly once. */
+/** The folder holds the seven pipelines, deploy.yml, the Auth0 tenant's offline check, the pull request check and the CodeQL scan, and the pipelines' units build every image exactly once. */
 export function folderProblems(files: string[]): string[] {
   const out: string[] = [];
   if (JSON.stringify([...files].sort()) !== JSON.stringify(FILES)) out.push(FOLDER_PROBLEM);
@@ -290,6 +294,75 @@ const CHECKS_NODES = ["22", "26"];
 const CHECKS_DEMO = "npm run demo:local";
 /** An action pinned by its full commit SHA: a tag can be moved to other code. */
 const PINNED_ACTION = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+@[0-9a-f]{40}$/;
+/** An action (including a sub-action like github/codeql-action/init) pinned by its full commit SHA. */
+const PINNED_SUBACTION = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*@[0-9a-f]{40}$/;
+const CODEQL_PERMISSIONS = JSON.stringify({ actions: "read", contents: "read", "security-events": "write" });
+const CODEQL_MATRIX = [
+  { language: "actions", "build-mode": "none" },
+  { language: "javascript-typescript", "build-mode": "none" },
+];
+const CODEQL_TRIGGER = `${CODEQL_FILE} must run on pull_request and push to main (plus optional schedule), no paths filter, never pull_request_target`;
+
+/**
+ * CodeQL static analysis (Advanced Setup): runs on every pull request and push to main with minimal permissions
+ * (actions: read, contents: read, security-events: write), no environment or secrets, every action pinned by full
+ * commit SHA, persist-credentials: false, and ./.github/codeql/codeql-config.yml ignoring docs/.
+ */
+export function codeqlProblems(w: Workflow): string[] {
+  const out: string[] = [];
+  if (w.name !== "CodeQL") out.push(`${CODEQL_FILE} must be named CodeQL`);
+  const on = w.on ?? {};
+  const keys = Object.keys(on).sort();
+  const validKeys = JSON.stringify(keys) === JSON.stringify(["pull_request", "push"]) || JSON.stringify(keys) === JSON.stringify(["pull_request", "push", "schedule"]);
+  if (
+    !validKeys ||
+    JSON.stringify(on.pull_request) !== JSON.stringify({ branches: ["main"] }) ||
+    JSON.stringify(on.push) !== JSON.stringify({ branches: ["main"] })
+  ) {
+    out.push(CODEQL_TRIGGER);
+  }
+  const perms = Object.fromEntries(Object.entries(w.permissions ?? {}).sort(([a], [b]) => a.localeCompare(b)));
+  if (JSON.stringify(perms) !== CODEQL_PERMISSIONS) {
+    out.push(`${CODEQL_FILE}'s permissions must be actions: read, contents: read, security-events: write and nothing else`);
+  }
+  if (w.concurrency?.group !== "codeql-${{ github.ref }}") out.push(`${CODEQL_FILE} must hold its own concurrency group per ref (codeql-\${{ github.ref }}), never deploy-azure`);
+  if (w.defaults?.run?.shell !== "bash") out.push(`${CODEQL_FILE}'s steps must run with pipefail (defaults.run.shell: bash)`);
+  const jobs = Object.values(w.jobs ?? {}) as CheckJob[];
+  const job = jobs[0];
+  if (jobs.length !== 1 || !job) return [...out, `${CODEQL_FILE} must have one job`];
+  if (job.environment !== undefined) out.push(`${CODEQL_FILE}'s job must run in no GitHub environment`);
+  if (job.permissions !== undefined || job.secrets !== undefined || job.uses !== undefined) out.push(`${CODEQL_FILE}'s job must widen no permission, pass no secret and call no workflow`);
+  if (job.if !== undefined || job.needs !== undefined || job["continue-on-error"] !== undefined) out.push(`${CODEQL_FILE}'s job may not be skipped or allowed to fail`);
+  const timeout = job["timeout-minutes"];
+  if (typeof timeout !== "number" || timeout < 1 || timeout > 60) out.push(`${CODEQL_FILE}'s job must time out within 60 minutes`);
+  if (JSON.stringify(job.strategy) !== JSON.stringify({ "fail-fast": false, matrix: { include: CODEQL_MATRIX } })) {
+    out.push(`${CODEQL_FILE} must scan actions and javascript-typescript with build-mode: none and fail-fast: false`);
+  }
+  const steps = job.steps ?? [];
+  for (const s of steps) {
+    if (s.uses !== undefined && !PINNED_SUBACTION.test(s.uses)) out.push(`${CODEQL_FILE} uses ${s.uses}: pin every action by its full commit SHA`);
+    if (s.run !== undefined) out.push(`${CODEQL_FILE} runs a shell step: use pinned checkout and codeql-action steps only`);
+    if (s.if !== undefined || s["continue-on-error"] !== undefined) out.push(`${CODEQL_FILE}'s step ${s.name ?? s.uses} may not be skipped or allowed to fail`);
+  }
+  if (!steps[0]?.uses?.startsWith("actions/checkout@") || steps[0].with?.["persist-credentials"] !== false) {
+    out.push(`${CODEQL_FILE} must start with a checkout that keeps no credential (persist-credentials: false)`);
+  }
+  const init = steps[1];
+  if (
+    !init?.uses?.startsWith("github/codeql-action/init@") ||
+    init.with?.languages !== "${{ matrix.language }}" ||
+    init.with["build-mode"] !== "${{ matrix.build-mode }}" ||
+    init.with["config-file"] !== `./${CODEQL_CONFIG}`
+  ) {
+    out.push(`${CODEQL_FILE}'s second step must initialize CodeQL with ./${CODEQL_CONFIG}`);
+  }
+  const analyze = steps[2];
+  if (!analyze?.uses?.startsWith("github/codeql-action/analyze@") || analyze.with?.category !== "/language:${{ matrix.language }}") {
+    out.push(`${CODEQL_FILE}'s third step must run github/codeql-action/analyze for the matrix language`);
+  }
+  if (steps.length !== 3) out.push(`${CODEQL_FILE} must have exactly checkout, init and analyze steps`);
+  return out;
+}
 /** The Bicep CLI's checksum, checked before the binary is made executable or put on PATH. */
 const BICEP_CHECKSUM = 'echo "$BICEP_SHA256  $RUNNER_TEMP/bicep/bicep" | sha256sum -c -';
 const CHECKS_TRIGGER = `${CHECKS_FILE} must run on every pull request to main and every push to main: pull_request and push with branches [main] only, no paths filter, never pull_request_target`;
@@ -1051,5 +1124,35 @@ describe("T-CI-01 the pull request check", () => {
 
   it("T-CI-01 must-fail: a folder without the pull request check is reported", () => {
     expect(folderProblems(readdirSync(DIR).filter((f) => f !== CHECKS_FILE))).toEqual([FOLDER_PROBLEM]);
+  });
+});
+
+describe("CodeQL advanced setup (codeql.yml)", () => {
+  const codeql = read(CODEQL_FILE);
+  const job = () => Object.values(codeql.jobs)[0] as CheckJob;
+  const withJob = (f: (j: CheckJob) => CheckJob): Workflow => ({ ...codeql, jobs: { analyze: f(job()) as Job } });
+
+  it("codeql.yml: runs on PRs and pushes to main, minimal permissions, pinned SHAs, and excludes docs/ via codeql-config.yml", () => {
+    expect(codeqlProblems(codeql)).toEqual([]);
+    const cfg = parse(readFileSync(CODEQL_CONFIG, "utf8")) as { "paths-ignore"?: string[]; "disable-default-queries"?: boolean };
+    expect(cfg["paths-ignore"]).toEqual(["docs", "docs/**"]);
+    expect(cfg["disable-default-queries"]).not.toBe(true);
+  });
+
+  it("codeql.yml must-fail: pull_request_target, wider permissions, unpinned action, missing config-file, or missing workflow is reported", () => {
+    expect(codeqlProblems({ ...codeql, on: { ...codeql.on, pull_request_target: { branches: ["main"] } } })).toEqual([CODEQL_TRIGGER]);
+    expect(codeqlProblems({ ...codeql, permissions: { "id-token": "write", contents: "read", "security-events": "write" } })).toEqual([
+      `${CODEQL_FILE}'s permissions must be actions: read, contents: read, security-events: write and nothing else`,
+    ]);
+    expect(codeqlProblems(withJob((j) => ({ ...j, steps: j.steps!.map((s, i) => (i === 1 ? { ...s, uses: "github/codeql-action/init@v4" } : s)) })))).toEqual([
+      `${CODEQL_FILE} uses github/codeql-action/init@v4: pin every action by its full commit SHA`,
+    ]);
+    expect(codeqlProblems(withJob((j) => ({ ...j, steps: j.steps!.map((s, i) => (i === 1 ? { ...s, with: { ...s.with, "config-file": undefined } } : s)) })))).toEqual([
+      `${CODEQL_FILE}'s second step must initialize CodeQL with ./${CODEQL_CONFIG}`,
+    ]);
+    expect(codeqlProblems(withJob((j) => ({ ...j, steps: j.steps!.map((s, i) => (i === 0 ? { ...s, with: {} } : s)) })))).toEqual([
+      `${CODEQL_FILE} must start with a checkout that keeps no credential (persist-credentials: false)`,
+    ]);
+    expect(folderProblems(readdirSync(DIR).filter((f) => f !== CODEQL_FILE))).toEqual([FOLDER_PROBLEM]);
   });
 });
